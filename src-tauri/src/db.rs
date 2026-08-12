@@ -58,11 +58,17 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
 
         CREATE TABLE IF NOT EXISTS vaults (
             id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1,
+            vault_id TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            deleted_at INTEGER,
             owner_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             name TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT '{}'
         );
 
         -- Synced tables: shared envelope (id, revision, vault_id, created_at,
@@ -92,6 +98,9 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             deleted_at INTEGER,
             name TEXT NOT NULL,
             os TEXT,
+            auth_type TEXT NOT NULL DEFAULT 'password',
+            tags TEXT NOT NULL DEFAULT '[]',
+            color TEXT,
             group_id TEXT,
             key_id TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +117,9 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             deleted_at INTEGER,
             name TEXT NOT NULL,
             description TEXT,
+            key_type TEXT NOT NULL DEFAULT 'ed25519',
+            fingerprint TEXT,
+            public_key TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
             data TEXT NOT NULL DEFAULT '{}'
         );
@@ -122,6 +134,7 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             deleted_at INTEGER,
             name TEXT NOT NULL,
             description TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
             sort_order INTEGER NOT NULL DEFAULT 0,
             data TEXT NOT NULL DEFAULT '{}'
         );
@@ -179,9 +192,45 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))?;
+    migrate_add_columns(&conn)?;
     Ok(LocalDb {
         conn: Mutex::new(conn),
     })
+}
+
+/// Add columns introduced after the initial DDL to pre-existing databases.
+/// Column presence is checked per table via PRAGMA table_info, so this is
+/// idempotent and needs no version bookkeeping.
+fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
+    const COLUMNS: &[(&str, &str, &str)] = &[
+        ("hosts", "auth_type", "TEXT NOT NULL DEFAULT 'password'"),
+        ("hosts", "tags", "TEXT NOT NULL DEFAULT '[]'"),
+        ("hosts", "color", "TEXT"),
+        ("keys", "key_type", "TEXT NOT NULL DEFAULT 'ed25519'"),
+        ("keys", "fingerprint", "TEXT"),
+        ("keys", "public_key", "TEXT"),
+        ("snippets", "tags", "TEXT NOT NULL DEFAULT '[]'"),
+        ("vaults", "revision", "INTEGER NOT NULL DEFAULT 1"),
+        ("vaults", "vault_id", "TEXT NOT NULL DEFAULT ''"),
+        ("vaults", "deleted_at", "INTEGER"),
+        ("vaults", "sort_order", "INTEGER NOT NULL DEFAULT 0"),
+        ("vaults", "is_default", "INTEGER NOT NULL DEFAULT 0"),
+        ("vaults", "data", "TEXT NOT NULL DEFAULT '{}'"),
+    ];
+    for (table, column, ddl) in COLUMNS {
+        let has: bool = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|e| format!("migrate table_info {table}: {e}"))?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("migrate table_info {table}: {e}"))?
+            .filter_map(|r| r.ok())
+            .any(|name| name == *column);
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))
+                .map_err(|e| format!("migrate ADD COLUMN {table}.{column}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -323,35 +372,22 @@ pub fn get_keyring(db: &LocalDb, user_id: &str) -> Result<Vec<UserKeyRow>, Strin
     Ok(rows)
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VaultRow {
-    pub id: String,
-    pub owner_id: String,
-    pub kind: String,
-    pub name: String,
-    pub created_at: String,
-    pub updated_at: String,
+/// Vaults are sync rows like any other table (per-user instead of per-vault:
+/// `vault_id` is empty and `db_list` skips the vault filter for them). The
+/// envelope revision/outbox/tombstone machinery applies unchanged.
+pub fn upsert_vault(db: &LocalDb, vault: &SyncRow) -> Result<SyncRow, String> {
+    let mut row = vault.clone();
+    row.vault_id = String::new();
+    row.deleted_at = None;
+    upsert_sync_row(db, Table::Vaults, &row)
 }
 
-pub fn upsert_vault(db: &LocalDb, vault: &VaultRow) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO vaults (id, owner_id, kind, name, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(id) DO UPDATE SET
-            owner_id=excluded.owner_id, kind=excluded.kind, name=excluded.name,
-            updated_at=excluded.updated_at",
-        params![
-            vault.id,
-            vault.owner_id,
-            vault.kind,
-            vault.name,
-            vault.created_at,
-            vault.updated_at,
-        ],
-    )
-    .map_err(|e| format!("upsert_vault: {e}"))?;
-    Ok(())
+pub fn list_vaults(db: &LocalDb, include_deleted: bool) -> Result<Vec<SyncRow>, String> {
+    list_sync_rows(db, Table::Vaults, "", include_deleted)
+}
+
+pub fn delete_vault(db: &LocalDb, id: &str) -> Result<(), String> {
+    tombstone_sync_row(db, Table::Vaults, id)
 }
 
 fn chrono_utc_now() -> String {
@@ -365,13 +401,19 @@ fn chrono_utc_now() -> String {
 
 const ENVELOPE_COLS: &str = "id, revision, vault_id, created_at, updated_at, deleted_at";
 
+// SELECT-side variant: CAST timestamps to INTEGER so rows written by previous
+// schemas (TEXT-affinity created_at/updated_at on migrated vaults) still read
+// correctly. GET is not applied on the INSERT side — casting there is invalid.
+const ENVELOPE_COLS_SELECT: &str = "id, revision, vault_id, CAST(created_at AS INTEGER), CAST(updated_at AS INTEGER), CAST(deleted_at AS INTEGER)";
+
 #[rustfmt::skip]
 fn table_cols(table: Table) -> &'static str {
     match table {
+        Table::Vaults     => "owner_id, kind, name, sort_order, is_default, data",
         Table::Groups     => "name, parent_id, sort_order, data",
-        Table::Hosts      => "name, os, group_id, key_id, sort_order, data",
-        Table::Keys       => "name, description, sort_order, data",
-        Table::Snippets   => "name, description, sort_order, data",
+        Table::Hosts      => "name, os, auth_type, tags, color, group_id, key_id, sort_order, data",
+        Table::Keys       => "name, description, key_type, fingerprint, public_key, sort_order, data",
+        Table::Snippets   => "name, description, tags, sort_order, data",
         Table::Workspaces => "name, sort_order, data",
         Table::Presets    => "name, sort_order, data",
     }
@@ -397,23 +439,44 @@ fn row_vals(row: &SyncRow, cols: &str) -> Vec<rusqlite::types::Value> {
         v.push(val.map(|s| s.clone().into()).unwrap_or(rusqlite::types::Value::Null));
     };
     match cols {
+        "owner_id, kind, name, sort_order, is_default, data" => {
+            add(&mut v, row.owner_id.as_ref());
+            add(&mut v, row.kind.as_ref());
+            add(&mut v, row.name.as_ref());
+            v.push(row.sort_order.into());
+            v.push(row.is_default.into());
+            v.push(row.data.clone().into());
+        }
         "name, parent_id, sort_order, data" => {
             add(&mut v, row.name.as_ref());
             add(&mut v, row.parent_id.as_ref());
             v.push(row.sort_order.into());
             v.push(row.data.clone().into());
         }
-        "name, os, group_id, key_id, sort_order, data" => {
+        "name, os, auth_type, tags, color, group_id, key_id, sort_order, data" => {
             add(&mut v, row.name.as_ref());
             add(&mut v, row.os.as_ref());
+            add(&mut v, row.auth_type.as_ref());
+            add(&mut v, row.tags.as_ref());
+            add(&mut v, row.color.as_ref());
             add(&mut v, row.group_id.as_ref());
             add(&mut v, row.key_id.as_ref());
             v.push(row.sort_order.into());
             v.push(row.data.clone().into());
         }
-        "name, description, sort_order, data" => {
+        "name, description, key_type, fingerprint, public_key, sort_order, data" => {
             add(&mut v, row.name.as_ref());
             add(&mut v, row.description.as_ref());
+            add(&mut v, row.key_type.as_ref());
+            add(&mut v, row.fingerprint.as_ref());
+            add(&mut v, row.public_key.as_ref());
+            v.push(row.sort_order.into());
+            v.push(row.data.clone().into());
+        }
+        "name, description, tags, sort_order, data" => {
+            add(&mut v, row.name.as_ref());
+            add(&mut v, row.description.as_ref());
+            add(&mut v, row.tags.as_ref());
             v.push(row.sort_order.into());
             v.push(row.data.clone().into());
         }
@@ -441,11 +504,20 @@ fn row_from(_table: Table, row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRow>
         deleted_at: row.get(5)?,
         name: opt("name"),
         os: opt("os"),
+        auth_type: opt("auth_type"),
+        tags: opt("tags"),
+        color: opt("color"),
         description: opt("description"),
+        key_type: opt("key_type"),
+        fingerprint: opt("fingerprint"),
+        public_key: opt("public_key"),
+        owner_id: opt("owner_id"),
+        kind: opt("kind"),
         group_id: opt("group_id"),
         parent_id: opt("parent_id"),
         key_id: opt("key_id"),
         sort_order: row.get::<_, Option<i64>>("sort_order").ok().flatten().unwrap_or(0),
+        is_default: row.get::<_, Option<i64>>("is_default").ok().flatten().unwrap_or(0),
         data: row.get("data")?,
     })
 }
@@ -453,6 +525,7 @@ fn row_from(_table: Table, row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRow>
 impl Table {
     pub fn parse(s: &str) -> Result<Table, String> {
         match s {
+            "vaults" => Ok(Table::Vaults),
             "groups" => Ok(Table::Groups),
             "hosts" => Ok(Table::Hosts),
             "keys" => Ok(Table::Keys),
@@ -464,6 +537,7 @@ impl Table {
     }
     pub fn as_str(self) -> &'static str {
         match self {
+            Table::Vaults => "vaults",
             Table::Groups => "groups",
             Table::Hosts => "hosts",
             Table::Keys => "keys",
@@ -576,7 +650,7 @@ fn get_sync_row_unlocked(conn: &Connection, table: Table, id: &str) -> Result<Op
     let cols = table_cols(table);
     let sql = format!(
         "SELECT {envelope}, {cols} FROM {t} WHERE id = ?1",
-        envelope = ENVELOPE_COLS, t = table.as_str(), cols = cols,
+        envelope = ENVELOPE_COLS_SELECT, t = table.as_str(), cols = cols,
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let mut rows = stmt.query_map(rusqlite::params![id], |r| row_from(table, r)).map_err(|e| e.to_string())?;
@@ -586,21 +660,41 @@ fn get_sync_row_unlocked(conn: &Connection, table: Table, id: &str) -> Result<Op
 pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_deleted: bool) -> Result<Vec<SyncRow>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let cols = table_cols(table);
-    let deleted_filter = if include_deleted { "" } else { "deleted_at IS NULL AND" };
+    // Vaults are per-user, not per-vault: skip the vault_id filter for them.
+    let vid: Option<&str> = match (include_deleted, table == Table::Vaults) {
+        (true, true) => None,
+        (true, false) => Some(vault_id),
+        (false, true) => None,
+        (false, false) => Some(vault_id),
+    };
+    let where_clause = if vid.is_some() {
+        if include_deleted { "WHERE vault_id = ?1" } else { "WHERE deleted_at IS NULL AND vault_id = ?1" }
+    } else if !include_deleted {
+        "WHERE deleted_at IS NULL"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT {envelope}, {cols} FROM {t} WHERE {filter} vault_id = ?1 ORDER BY sort_order, created_at",
-        envelope = ENVELOPE_COLS, t = table.as_str(), cols = cols, filter = deleted_filter,
+        "SELECT {envelope}, {cols} FROM {t} {where_clause} ORDER BY sort_order, created_at",
+        envelope = ENVELOPE_COLS_SELECT, t = table.as_str(), cols = cols, where_clause = where_clause,
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![vault_id], |r| row_from(table, r))
+    let vault_filter = vid.unwrap_or("");
+    let params: Vec<&dyn rusqlite::ToSql> = if vid.is_some() {
+        vec![&vault_filter]
+    } else {
+        vec![]
+    };
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params), |r| row_from(table, r))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect::<Vec<_>>();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("list_sync_rows({}): {e}", table.as_str()))?;
     Ok(rows)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Table { Groups, Hosts, Keys, Snippets, Workspaces, Presets }
+pub enum Table { Vaults, Groups, Hosts, Keys, Snippets, Workspaces, Presets }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", default)]
@@ -613,8 +707,17 @@ pub struct SyncRow {
     pub deleted_at: Option<i64>,
     pub name: Option<String>,
     pub os: Option<String>,
+    pub auth_type: Option<String>,
+    pub tags: Option<String>,
+    pub color: Option<String>,
     pub description: Option<String>,
+    pub key_type: Option<String>,
+    pub fingerprint: Option<String>,
+    pub public_key: Option<String>,
+    pub owner_id: Option<String>,
+    pub kind: Option<String>,
     pub sort_order: i64,
+    pub is_default: i64,
     pub parent_id: Option<String>,
     pub group_id: Option<String>,
     pub key_id: Option<String>,
@@ -648,6 +751,61 @@ mod tests {
     }
 
     #[test]
+    fn test_migrate_adds_whitelist_columns_to_old_schema() {
+        // Simulate a DB created before the plaintext whitelist columns existed:
+        // old DDL only (no auth_type/tags/color/key_type/fingerprint/public_key).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE hosts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE keys (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE snippets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             -- old vaults schema: no sync envelope at all
+             CREATE TABLE vaults (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                kind TEXT NOT NULL, name TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);",
+        )
+        .unwrap();
+
+        migrate_add_columns(&conn).unwrap();
+
+        for (table, column) in [
+            ("hosts", "auth_type"),
+            ("hosts", "tags"),
+            ("hosts", "color"),
+            ("keys", "key_type"),
+            ("keys", "fingerprint"),
+            ("keys", "public_key"),
+            ("snippets", "tags"),
+            ("vaults", "revision"),
+            ("vaults", "vault_id"),
+            ("vaults", "deleted_at"),
+            ("vaults", "sort_order"),
+            ("vaults", "is_default"),
+            ("vaults", "data"),
+        ] {
+            let cols: Vec<String> = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            assert!(cols.contains(&column.to_string()), "missing {table}.{column}");
+        }
+        // idempotent
+        migrate_add_columns(&conn).unwrap();
+    }
+
+    #[test]
     fn test_wipe_all_clears_every_row() {
         let db = test_db();
         let conn = db.conn.lock().unwrap();
@@ -670,8 +828,10 @@ mod tests {
         let db = test_db();
         let g1 = SyncRow { id: "g1".into(), revision: 99, vault_id: "v1".into(),
             created_at: 0, updated_at: 0, deleted_at: None, name: Some("Servers".into()),
-            os: None, description: None, sort_order: 0, parent_id: None, group_id: None,
-            key_id: None, data: "{}".into() };
+            os: None, auth_type: None, tags: None, color: None, description: None,
+            key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
+            sort_order: 0, is_default: 0,
+            parent_id: None, group_id: None, key_id: None, data: "{}".into() };
         let saved = upsert_sync_row(&db, Table::Groups, &g1).unwrap();
         assert_eq!(saved.revision, 1);                       // caller revision ignored
         assert_eq!(saved.vault_id, "v1");
@@ -688,13 +848,19 @@ mod tests {
         let db = test_db();
         let h = SyncRow { id: "h1".into(), revision: 1, vault_id: "v1".into(),
             created_at: 0, updated_at: 0, deleted_at: None, name: Some("prod".into()),
-            os: Some("linux".into()), description: None, sort_order: 3,
-            parent_id: None, group_id: Some("g1".into()), key_id: Some("k1".into()),
-            data: "encrypted".into() };
+            os: Some("linux".into()), auth_type: Some("password".into()),
+            tags: Some("[\"web\",\"prod\"]".into()), color: Some("#ff0000".into()),
+            description: None, key_type: None, fingerprint: None, public_key: None,
+            owner_id: None, kind: None, sort_order: 3, is_default: 0, parent_id: None, group_id: Some("g1".into()),
+            key_id: Some("k1".into()), data: "encrypted".into() };
         upsert_sync_row(&db, Table::Hosts, &h).unwrap();
         let loaded = get_sync_row(&db, Table::Hosts, "h1").unwrap().unwrap();
         assert_eq!(loaded.name.as_deref(), Some("prod"));
         assert_eq!(loaded.group_id.as_deref(), Some("g1"));
+        assert_eq!(loaded.os.as_deref(), Some("linux"));
+        assert_eq!(loaded.auth_type.as_deref(), Some("password"));
+        assert_eq!(loaded.tags.as_deref(), Some("[\"web\",\"prod\"]"));
+        assert_eq!(loaded.color.as_deref(), Some("#ff0000"));
         assert_eq!(loaded.data, "encrypted");                // opaque passthrough
         assert_eq!(list_sync_rows(&db, Table::Hosts, "v1", false).unwrap().len(), 1);
     }
@@ -705,8 +871,10 @@ mod tests {
         for (id, vault, order) in [("h1", "v1", 2), ("h2", "v1", 1), ("h3", "v2", 9)] {
             let h = SyncRow { id: id.into(), revision: 1, vault_id: vault.into(),
                 created_at: 1, updated_at: 1, deleted_at: None, name: Some(id.into()),
-                os: None, description: None, sort_order: order, parent_id: None,
-                group_id: None, key_id: None, data: "{}".into() };
+                os: None, auth_type: None, tags: None, color: None, description: None,
+                key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
+                sort_order: order, is_default: 0,
+                parent_id: None, group_id: None, key_id: None, data: "{}".into() };
             upsert_sync_row(&db, Table::Hosts, &h).unwrap();
         }
         let v1 = list_sync_rows(&db, Table::Hosts, "v1", false).unwrap();
@@ -801,9 +969,16 @@ mod tests {
         let db = test_db();
         let k = SyncRow { id: "k1".into(), revision: 1, vault_id: "v1".into(), created_at: 1,
             updated_at: 1, deleted_at: None, name: Some("key".into()), os: None,
-            description: None, sort_order: 0, parent_id: None, group_id: None, key_id: None,
-            data: "enc".into() };
+            auth_type: None, tags: None, color: None, description: None,
+            key_type: Some("ed25519".into()), fingerprint: Some("SHA256:abc".into()),
+            public_key: Some("ssh-ed25519 AAAA".into()), owner_id: None, kind: None,
+            sort_order: 0, is_default: 0,
+            parent_id: None, group_id: None, key_id: None, data: "enc".into() };
         upsert_sync_row(&db, Table::Keys, &k).unwrap();
+        let loaded = get_sync_row(&db, Table::Keys, "k1").unwrap().unwrap();
+        assert_eq!(loaded.key_type.as_deref(), Some("ed25519"));
+        assert_eq!(loaded.fingerprint.as_deref(), Some("SHA256:abc"));
+        assert_eq!(loaded.public_key.as_deref(), Some("ssh-ed25519 AAAA"));
         assert_eq!(list_sync_rows(&db, Table::Keys, "v1", false).unwrap().len(), 1);
 
         tombstone_sync_row(&db, Table::Keys, "k1").unwrap();
@@ -826,10 +1001,15 @@ mod tests {
         let db = test_db();
         for (table, id) in [(Table::Snippets, "s1"), (Table::Workspaces, "w1"), (Table::Presets, "p1")] {
             let row = SyncRow { id: id.into(), revision: 1, vault_id: "v1".into(), created_at: 1,
-                updated_at: 1, deleted_at: None, name: Some("n".into()), os: None, description: None,
-                sort_order: 0, parent_id: None, group_id: None, key_id: None, data: "enc".into() };
+                updated_at: 1, deleted_at: None, name: Some("n".into()), os: None,
+                auth_type: None, tags: Some("[\"t1\"]".into()), color: None, description: None,
+                key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
+                sort_order: 0, is_default: 0,
+                parent_id: None, group_id: None, key_id: None, data: "enc".into() };
             upsert_sync_row(&db, table, &row).unwrap();
         }
+        let s1 = get_sync_row(&db, Table::Snippets, "s1").unwrap().unwrap();
+        assert_eq!(s1.tags.as_deref(), Some("[\"t1\"]"));
         assert_eq!(list_sync_rows(&db, Table::Snippets, "v1", false).unwrap().len(), 1);
         assert_eq!(list_sync_rows(&db, Table::Workspaces, "v1", false).unwrap().len(), 1);
         assert_eq!(list_sync_rows(&db, Table::Presets, "v1", false).unwrap().len(), 1);
@@ -852,6 +1032,7 @@ mod tests {
     fn test_sync_row_deserializes_store_shapes() {
         let host = serde_json::from_value::<SyncRow>(serde_json::json!({
             "id": "h1", "vault_id": "v1", "name": "prod",
+            "auth_type": "key", "tags": "[\"web\"]", "color": "#0ff",
             "group_id": "g1", "key_id": "k1", "sort_order": 0, "data": "enc"
         })).unwrap();
         assert_eq!(host.revision, 0);
@@ -860,16 +1041,23 @@ mod tests {
         assert!(host.deleted_at.is_none());
         assert_eq!(host.name.as_deref(), Some("prod"));
         assert!(host.os.is_none());
+        assert_eq!(host.auth_type.as_deref(), Some("key"));
+        assert_eq!(host.tags.as_deref(), Some("[\"web\"]"));
+        assert_eq!(host.color.as_deref(), Some("#0ff"));
         assert_eq!(host.group_id.as_deref(), Some("g1"));
         assert_eq!(host.key_id.as_deref(), Some("k1"));
         assert_eq!(host.data, "enc");
 
         let key = serde_json::from_value::<SyncRow>(serde_json::json!({
             "id": "k1", "vault_id": "v1", "name": "ssh",
-            "description": "main", "sort_order": 0, "data": "enc"
+            "description": "main", "key_type": "rsa", "fingerprint": "SHA256:x",
+            "public_key": "ssh-rsa AAAA", "sort_order": 0, "data": "enc"
         })).unwrap();
         assert_eq!(key.revision, 0);
         assert_eq!(key.description.as_deref(), Some("main"));
+        assert_eq!(key.key_type.as_deref(), Some("rsa"));
+        assert_eq!(key.fingerprint.as_deref(), Some("SHA256:x"));
+        assert_eq!(key.public_key.as_deref(), Some("ssh-rsa AAAA"));
         assert!(key.group_id.is_none() && key.key_id.is_none());
 
         let snippet = serde_json::from_value::<SyncRow>(serde_json::json!({
@@ -891,20 +1079,154 @@ mod tests {
     #[test]
     fn test_upsert_vault_roundtrip() {
         let db = test_db();
-        let vault = VaultRow {
-            id: "v1".to_string(),
-            owner_id: "u1".to_string(),
-            kind: "personal".to_string(),
-            name: "Personal".to_string(),
-            created_at: "1700000000".to_string(),
-            updated_at: "1700000000".to_string(),
+        let vault = SyncRow {
+            id: "v1".into(),
+            revision: 0,
+            vault_id: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+            name: Some("Personal".into()),
+            owner_id: Some("u1".into()),
+            kind: Some("personal".into()),
+            sort_order: 0,
+            ..Default::default()
+        };
+        let saved = upsert_vault(&db, &vault).unwrap();
+        assert_eq!(saved.revision, 1);
+        assert_eq!(saved.name.as_deref(), Some("Personal"));
+        assert_eq!(saved.owner_id.as_deref(), Some("u1"));
+
+        // user-created vaults are never the default (the server-seeded one is)
+        assert_eq!(saved.is_default, 0);
+
+        let (revision, deleted_at): (i64, Option<i64>) = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row("SELECT revision, deleted_at FROM vaults WHERE id = 'v1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(revision, 1);
+        assert!(deleted_at.is_none());
+
+        // vault writes hit the outbox like any sync row
+        let outbox = outbox_pending(&db).unwrap();
+        assert!(outbox.iter().any(|o| o.table_name == "vaults" && o.record_id == "v1"));
+    }
+
+    #[test]
+    fn test_vaults_readable_on_migrated_text_schema() {
+        // Regression: live DBs created before the vault sync-envelope migration have
+        // TEXT-affinity created_at/updated_at. New writes store epoch-ms as TEXT, so
+        // list/get must CAST (a plain i64 read raises InvalidColumnType → empty lists).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE hosts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE keys (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE snippets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+             -- Regression: vaults table on live DBs has TEXT-affinity timestamps
+             CREATE TABLE vaults (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                kind TEXT NOT NULL, name TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE outbox (table_name TEXT NOT NULL, record_id TEXT NOT NULL, queued_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        migrate_add_columns(&conn).unwrap();
+        let db = LocalDb { conn: Mutex::new(conn) };
+
+        let vault = SyncRow {
+            id: "v1".into(),
+            revision: 0,
+            vault_id: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+            name: Some("Personal".into()),
+            owner_id: Some("u1".into()),
+            kind: Some("personal".into()),
+            sort_order: 0,
+            ..Default::default()
+        };
+        let saved = upsert_vault(&db, &vault).unwrap();
+        assert!(saved.created_at > 0);
+
+        let rows = list_vaults(&db, false).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "v1");
+        assert_eq!(rows[0].created_at, saved.created_at);
+        assert_eq!(rows[0].updated_at, saved.updated_at);
+
+        let got = get_sync_row(&db, Table::Vaults, "v1").unwrap();
+        assert_eq!(got.map(|r| r.name), Some(Some("Personal".to_string())));
+    }
+
+    #[test]
+    fn test_list_vaults_roundtrip() {
+        let db = test_db();
+        for (id, kind, name) in [("v1", "personal", "Personal"), ("v2", "team", "Team")] {
+            let vault = SyncRow {
+                id: id.into(),
+                revision: 0,
+                vault_id: String::new(),
+                created_at: 0,
+                updated_at: 0,
+                deleted_at: None,
+                name: Some(name.into()),
+                owner_id: Some("u1".into()),
+                kind: Some(kind.into()),
+                sort_order: 0,
+                ..Default::default()
+            };
+            upsert_vault(&db, &vault).unwrap();
+        }
+
+        // no vault_id filter for vaults: both rows come back
+        let rows = list_vaults(&db, false).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r.id == "v1" && r.kind.as_deref() == Some("personal")));
+        assert!(rows.iter().any(|r| r.id == "v2" && r.kind.as_deref() == Some("team")));
+
+        // generic db_list path also serves vaults
+        let rows = list_sync_rows(&db, Table::Vaults, "whatever", false).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_vault_tombstones_row() {
+        let db = test_db();
+        let vault = SyncRow {
+            id: "v1".into(),
+            revision: 0,
+            vault_id: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+            name: Some("Personal".into()),
+            owner_id: Some("u1".into()),
+            kind: Some("personal".into()),
+            sort_order: 0,
+            ..Default::default()
         };
         upsert_vault(&db, &vault).unwrap();
+        delete_vault(&db, "v1").unwrap();
 
-        let conn = db.conn.lock().unwrap();
-        let name: String = conn
-            .query_row("SELECT name FROM vaults WHERE id = 'v1'", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(name, "Personal");
+        assert!(list_vaults(&db, false).unwrap().is_empty());
+        // tombstone remains visible with include_deleted
+        let all = list_vaults(&db, true).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].deleted_at.is_some());
+        // tombstone queued for sync like any delete
+        let outbox = outbox_pending(&db).unwrap();
+        assert!(outbox.iter().any(|o| o.table_name == "vaults" && o.record_id == "v1"));
     }
 }

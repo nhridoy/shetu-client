@@ -52,11 +52,22 @@ fn wipe_local_data(db: tauri::State<'_, db::LocalDb>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn db_upsert(db: tauri::State<'_, db::LocalDb>, table: String, row: serde_json::Value) -> Result<db::SyncRow, String> {
+fn db_upsert(
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    table: String,
+    row: serde_json::Value,
+    plaintext: Option<String>,
+    record_type: Option<String>,
+) -> Result<db::SyncRow, String> {
     let table = db::Table::parse(&table)?;
-    let row: db::SyncRow = serde_json::from_value(row).map_err(|e| format!("db_upsert: bad row: {e}"))?;
-    db::upsert_sync_row(&db, table, &row)
-}
+    let mut row: db::SyncRow = serde_json::from_value(row).map_err(|e| format!("db_upsert: bad row: {e}"))?;
+    if let Some(plaintext) = plaintext {
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        let rt = record_type.as_deref().unwrap_or(table.as_str());
+        row.data = crypto::encrypt_secret(&plaintext, rt, &session)?;
+    }
+    db::upsert_sync_row(&db, table, &row)}
 
 #[tauri::command]
 fn db_get(db: tauri::State<'_, db::LocalDb>, table: String, id: String) -> Result<Option<db::SyncRow>, String> {
