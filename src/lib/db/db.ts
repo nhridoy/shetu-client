@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type TableName =
+  | "vaults"
   | "groups"
   | "hosts"
   | "keys"
@@ -17,8 +18,17 @@ export interface SyncRow {
   deleted_at: number | null;
   name?: string;
   os?: string | null;
+  auth_type?: string | null;
+  tags?: string | null;
+  color?: string | null;
   description?: string | null;
+  key_type?: string | null;
+  fingerprint?: string | null;
+  public_key?: string | null;
+  owner_id?: string | null;
+  kind?: string | null;
   sort_order: number;
+  is_default?: number;
   parent_id?: string | null;
   group_id?: string | null;
   key_id?: string | null;
@@ -48,9 +58,15 @@ export async function getRow(
 
 export async function upsertRow(
   table: TableName,
-  row: { id: string; vault_id: string; data: string } & Partial<SyncRow>,
+  row: { id: string; vault_id: string; data?: string } & Partial<SyncRow>,
+  opts?: { plaintext?: string; recordType?: string },
 ): Promise<SyncRow> {
-  return invoke<SyncRow>("db_upsert", { table, row });
+  return invoke<SyncRow>("db_upsert", {
+    table,
+    row,
+    plaintext: opts?.plaintext,
+    recordType: opts?.recordType,
+  });
 }
 
 export async function deleteRow(table: TableName, id: string): Promise<void> {

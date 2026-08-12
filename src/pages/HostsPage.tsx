@@ -48,8 +48,11 @@ export default function HostsPage() {
           setEditingGroup(group);
           groupModal.show();
         }}
-        onEditHost={(host) => {
-          setEditingHost(host);
+        onEditHost={async (host) => {
+          const decrypted = await useHostStore
+            .getState()
+            .getDecryptedHost(host.id);
+          setEditingHost(decrypted ?? host);
           hostModal.show();
         }}
         onConnect={handleConnect}
@@ -70,7 +73,8 @@ export default function HostsPage() {
                   address: editingHost.address,
                   port: editingHost.port,
                   username: editingHost.username || "root",
-                  authType: "password",
+                  authType: editingHost.authType || "password",
+                  keyId: editingHost.keyId || undefined,
                   color: editingHost.color,
                   groupId: editingHost.groupId || undefined,
                   tags: editingHost.tags,

@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/db/db");
 vi.mock("../../lib/crypto/crypto");
+vi.mock("../auth/authStore", () => ({
+  useAuthStore: {
+    getState: () => ({ user: { id: "u1", email: "a@b.c" } }),
+  },
+}));
 
-import { decryptRowData, encryptRowData } from "../../lib/crypto/crypto";
+import { decryptRowData } from "../../lib/crypto/crypto";
 import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "../vault/vaultStore";
 import { useWorkspaceStore } from "./workspaceStore";
@@ -13,7 +18,6 @@ const mockGet = vi.mocked(getRow);
 const mockUpsert = vi.mocked(upsertRow);
 const mockDelete = vi.mocked(deleteRow);
 const mockDecrypt = vi.mocked(decryptRowData);
-const mockEncrypt = vi.mocked(encryptRowData);
 
 const workspaceRow = {
   id: "w1",
@@ -34,6 +38,7 @@ beforeEach(() => {
     error: null,
   });
   vi.restoreAllMocks();
+  vi.clearAllMocks();
   useVaultStore.setState({ currentVaultId: null });
 });
 
@@ -67,8 +72,7 @@ describe("workspaceStore", () => {
     expect(useWorkspaceStore.getState().workspaces[0].layout).toBe("{}");
   });
 
-  it("createWorkspace encrypts stringified layout with AAD workspaces and upserts", async () => {
-    mockEncrypt.mockResolvedValue("enc");
+  it("createWorkspace passes stringified layout as plaintext with AAD workspaces and upserts", async () => {
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -82,17 +86,21 @@ describe("workspaceStore", () => {
     });
     useVaultStore.setState({ currentVaultId: "v1" });
     await useWorkspaceStore.getState().createWorkspace("monitoring", layout);
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "workspaces",
-      expect.objectContaining({ layout: JSON.stringify(layout) }),
-    );
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    expect(JSON.parse(opts.plaintext)).toMatchObject({
+      layout: JSON.stringify(layout),
+    });
+    expect(opts.recordType).toBe("workspaces");
     expect(mockUpsert).toHaveBeenCalledWith(
       "workspaces",
       expect.objectContaining({
         name: "monitoring",
         vault_id: "v1",
-        data: "enc",
       }),
+      expect.objectContaining({ recordType: "workspaces" }),
     );
     expect(useWorkspaceStore.getState().workspaces.length).toBe(1);
     expect(useWorkspaceStore.getState().workspaces[0].layout).toBe(
@@ -101,7 +109,6 @@ describe("workspaceStore", () => {
   });
 
   it("createWorkspace honors explicit vaultId over the current vault", async () => {
-    mockEncrypt.mockResolvedValue("enc");
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -120,11 +127,11 @@ describe("workspaceStore", () => {
     expect(mockUpsert).toHaveBeenCalledWith(
       "workspaces",
       expect.objectContaining({ vault_id: "v2" }),
+      expect.objectContaining({ recordType: "workspaces" }),
     );
   });
 
-  it("createWorkspace keeps layout/hostIds out of plaintext columns and whitelist fields out of the encrypt payload", async () => {
-    mockEncrypt.mockResolvedValue("enc");
+  it("createWorkspace keeps layout/hostIds out of plaintext columns and whitelist fields out of the payload", async () => {
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -139,10 +146,11 @@ describe("workspaceStore", () => {
     useVaultStore.setState({ currentVaultId: "v1" });
     await useWorkspaceStore.getState().createWorkspace("monitoring", layout);
     const rowArg = mockUpsert.mock.calls[0][1];
-    expect(rowArg.data).toBe("enc");
+    expect(rowArg).not.toHaveProperty("data");
     expect(rowArg).not.toHaveProperty("layout");
     expect(rowArg).not.toHaveProperty("hostIds");
-    const payloadArg = mockEncrypt.mock.calls[0][1] as Record<string, unknown>;
+    const opts = mockUpsert.mock.calls[0][2] as { plaintext: string };
+    const payloadArg = JSON.parse(opts.plaintext) as Record<string, unknown>;
     expect(payloadArg).toHaveProperty("layout", JSON.stringify(layout));
     expect(payloadArg).not.toHaveProperty("name");
     expect(payloadArg).not.toHaveProperty("sort_order");
@@ -152,6 +160,7 @@ describe("workspaceStore", () => {
         name: JSON.stringify(layout),
         sort_order: JSON.stringify(layout),
       }),
+      expect.objectContaining({ recordType: "workspaces" }),
     );
   });
 
@@ -173,18 +182,20 @@ describe("workspaceStore", () => {
       layout: JSON.stringify(layout),
       hostIds: "h1",
     });
-    mockEncrypt.mockResolvedValue("enc2");
     await useWorkspaceStore.getState().renameWorkspace("w1", "observability");
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "workspaces",
-      expect.objectContaining({
-        layout: JSON.stringify(layout),
-        hostIds: "h1",
-      }),
-    );
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    expect(JSON.parse(opts.plaintext)).toMatchObject({
+      layout: JSON.stringify(layout),
+      hostIds: "h1",
+    });
+    expect(opts.recordType).toBe("workspaces");
     expect(mockUpsert).toHaveBeenCalledWith(
       "workspaces",
-      expect.objectContaining({ name: "observability", data: "enc2" }),
+      expect.objectContaining({ name: "observability" }),
+      expect.objectContaining({ recordType: "workspaces" }),
     );
     expect(useWorkspaceStore.getState().workspaces[0]).toMatchObject({
       name: "observability",

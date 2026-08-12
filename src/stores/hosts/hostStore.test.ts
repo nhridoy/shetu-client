@@ -2,13 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/db/db");
 vi.mock("../../lib/crypto/crypto");
+vi.mock("../auth/authStore", () => ({
+  useAuthStore: {
+    getState: () => ({ user: { id: "u1", email: "a@b.c" } }),
+  },
+}));
 vi.mock("../keys/keyStore", () => ({
   useKeyStore: {
     getState: () => ({ getCredentialsForKey: vi.fn(async () => "PRIVATE") }),
   },
 }));
 
-import { decryptRowData, encryptRowData } from "../../lib/crypto/crypto";
+import { decryptRowData } from "../../lib/crypto/crypto";
 import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "../vault/vaultStore";
 import { useHostStore } from "./hostStore";
@@ -18,20 +23,20 @@ const mockGet = vi.mocked(getRow);
 const mockUpsert = vi.mocked(upsertRow);
 const mockDelete = vi.mocked(deleteRow);
 const mockDecrypt = vi.mocked(decryptRowData);
-const mockEncrypt = vi.mocked(encryptRowData);
 
-beforeEach(() =>
+beforeEach(() => {
+  vi.clearAllMocks();
   useHostStore.setState({
     hosts: [],
     groups: [],
     selectedHost: null,
     isLoading: false,
     error: null,
-  }),
-);
+  });
+});
 
 describe("hostStore", () => {
-  it("fetchHosts decrypts payloads into the Host model", async () => {
+  it("fetchHosts reads plaintext columns without decrypting", async () => {
     mockList.mockResolvedValue([
       {
         id: "h1",
@@ -42,32 +47,136 @@ describe("hostStore", () => {
         deleted_at: null,
         name: "prod",
         os: "linux",
+        auth_type: "key",
+        tags: '["prod","web"]',
+        color: "#f00",
         group_id: "g1",
+        key_id: "k1",
+        sort_order: 0,
+        data: "enc",
+      },
+    ]);
+    await useHostStore.getState().fetchHosts("v1");
+    expect(mockList).toHaveBeenCalledWith("hosts", "v1");
+    expect(mockDecrypt).not.toHaveBeenCalled();
+    const host = useHostStore.getState().hosts[0];
+    expect(host.address).toBe("");
+    expect(host.port).toBe(22);
+    expect(host.username).toBeUndefined();
+    expect(host.password).toBeUndefined();
+    expect(host.groupId).toBe("g1");
+    expect(host.tags).toEqual(["prod", "web"]);
+    expect(host.color).toBe("#f00");
+    expect(host.os).toBe("linux");
+    expect(host.authType).toBe("key");
+    expect(host.keyId).toBe("k1");
+    expect(host.data).toBe("enc");
+  });
+
+  it("getDecryptedHost decrypts on demand from state, no db_get", async () => {
+    mockList.mockResolvedValue([
+      {
+        id: "h1",
+        revision: 1,
+        vault_id: "v1",
+        created_at: 1000,
+        updated_at: 1000,
+        deleted_at: null,
+        name: "prod",
+        os: null,
+        auth_type: "password",
+        tags: "[]",
+        color: null,
+        group_id: null,
         key_id: null,
         sort_order: 0,
         data: "enc",
       },
     ]);
+    await useHostStore.getState().fetchHosts("v1");
     mockDecrypt.mockResolvedValue({
       address: "1.2.3.4",
-      port: 22,
+      port: 2222,
       username: "root",
-      authType: "password",
       password: "pw",
-      tags: ["prod"],
-      color: "#f00",
     });
-    await useHostStore.getState().fetchHosts("v1");
-    expect(mockList).toHaveBeenCalledWith("hosts", "v1");
-    const host = useHostStore.getState().hosts[0];
-    expect(host.address).toBe("1.2.3.4");
-    expect(host.port).toBe(22);
-    expect(host.groupId).toBe("g1");
-    expect(host.tags).toEqual(["prod"]);
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockDecrypt).toHaveBeenCalledWith("enc");
+    expect(host?.address).toBe("1.2.3.4");
+    expect(host?.port).toBe(2222);
+    expect(host?.username).toBe("root");
+    expect(host?.password).toBe("pw");
+    expect(host?.tags).toEqual([]);
   });
 
-  it("createHost encrypts payload with AAD hosts and upserts", async () => {
-    mockEncrypt.mockResolvedValue("enc");
+  it("getDecryptedHost falls back to db_get when not in state", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+      name: "prod",
+      os: null,
+      auth_type: "password",
+      tags: "[]",
+      color: null,
+      group_id: null,
+      key_id: null,
+      sort_order: 0,
+      data: "enc",
+    });
+    mockDecrypt.mockResolvedValue({
+      address: "1.2.3.4",
+      port: 2222,
+      username: "root",
+      password: "pw",
+    });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(mockGet).toHaveBeenCalledWith("hosts", "h1");
+    expect(host?.address).toBe("1.2.3.4");
+  });
+
+  it("updateHostOs writes only the plaintext os column", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "h1",
+      revision: 2,
+      vault_id: "v1",
+      created_at: 1,
+      updated_at: 2,
+      deleted_at: null,
+      sort_order: 0,
+      data: "enc",
+    });
+    useHostStore.setState({
+      hosts: [
+        {
+          id: "h1",
+          name: "prod",
+          address: "",
+          port: 22,
+          tags: [],
+          sortOrder: 0,
+          createdAt: "1",
+          updatedAt: "1",
+          vaultId: "v1",
+          data: "enc",
+        },
+      ],
+    });
+    await useHostStore.getState().updateHostOs("h1", "linux");
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "hosts",
+      expect.objectContaining({ id: "h1", vault_id: "v1", os: "linux" }),
+      {},
+    );
+    expect(useHostStore.getState().hosts[0].os).toBe("linux");
+  });
+
+  it("createHost passes plaintext payload with AAD hosts and upserts", async () => {
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -81,19 +190,28 @@ describe("hostStore", () => {
     useVaultStore.setState({ currentVaultId: "v1" });
     await useHostStore
       .getState()
-      .createHost({ name: "prod", address: "1.2.3.4" });
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "hosts",
-      expect.objectContaining({
-        address: "1.2.3.4",
-        port: 22,
-        username: "root",
-        authType: "password",
-      }),
-    );
+      .createHost({ name: "prod", address: "1.2.3.4", tags: ["web"] });
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    expect(JSON.parse(opts.plaintext)).toMatchObject({
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+    });
+    expect(JSON.parse(opts.plaintext)).not.toHaveProperty("authType");
+    expect(JSON.parse(opts.plaintext)).not.toHaveProperty("tags");
+    expect(opts.recordType).toBe("hosts");
     expect(mockUpsert).toHaveBeenCalledWith(
       "hosts",
-      expect.objectContaining({ name: "prod", vault_id: "v1" }),
+      expect.objectContaining({
+        name: "prod",
+        vault_id: "v1",
+        auth_type: "password",
+        tags: '["web"]',
+      }),
+      expect.objectContaining({ recordType: "hosts" }),
     );
     expect(useHostStore.getState().hosts.length).toBe(1);
   });
@@ -121,12 +239,16 @@ describe("hostStore", () => {
       tags: [],
       color: "#64748b",
     });
-    mockEncrypt.mockResolvedValue("enc2");
     await useHostStore.getState().updateHost("h1", { name: "prod2" });
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "hosts",
-      expect.objectContaining({ address: "1.2.3.4", password: "pw" }),
-    );
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    expect(JSON.parse(opts.plaintext)).toMatchObject({
+      address: "1.2.3.4",
+      password: "pw",
+    });
+    expect(opts.recordType).toBe("hosts");
   });
 
   it("deleteHost tombstones and clears selection", async () => {
@@ -169,6 +291,7 @@ describe("hostStore", () => {
       updated_at: 1,
       deleted_at: null,
       name: "prod",
+      auth_type: "key",
       key_id: "k1",
       sort_order: 0,
       data: "enc",
@@ -177,10 +300,7 @@ describe("hostStore", () => {
       address: "1.2.3.4",
       port: 22,
       username: "root",
-      authType: "key",
       password: null,
-      tags: [],
-      color: "#64748b",
     });
     const creds = await useHostStore.getState().getCredentialsForHost("h1");
     expect(creds.privateKey).toBe("PRIVATE");
@@ -195,6 +315,7 @@ describe("hostStore", () => {
       updated_at: 1,
       deleted_at: null,
       name: "prod",
+      auth_type: "password",
       key_id: null,
       sort_order: 0,
       data: "enc",
@@ -203,10 +324,7 @@ describe("hostStore", () => {
       address: "1.2.3.4",
       port: 22,
       username: "root",
-      authType: "password",
       password: "pw",
-      tags: [],
-      color: "#64748b",
     });
     const creds = await useHostStore.getState().getCredentialsForHost("h1");
     expect(creds.password).toBe("pw");
@@ -236,7 +354,6 @@ describe("hostStore", () => {
   });
 
   it("createGroup upserts with data encrypted '{}'", async () => {
-    mockEncrypt.mockResolvedValue("{}");
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -249,10 +366,10 @@ describe("hostStore", () => {
     });
     useVaultStore.setState({ currentVaultId: "v1" });
     await useHostStore.getState().createGroup({ name: "prod" });
-    expect(mockEncrypt).toHaveBeenCalledWith("groups", {});
     expect(mockUpsert).toHaveBeenCalledWith(
       "groups",
-      expect.objectContaining({ name: "prod", vault_id: "v1", data: "{}" }),
+      expect.objectContaining({ name: "prod", vault_id: "v1" }),
+      { plaintext: "{}", recordType: "groups" },
     );
     expect(useHostStore.getState().groups.length).toBe(1);
   });

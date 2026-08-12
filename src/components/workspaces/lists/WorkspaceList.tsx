@@ -4,7 +4,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { EmptyActionState } from "@/components/ui/EmptyActionState";
@@ -16,6 +16,7 @@ import {
   type PaneNode,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
+import { useVaultStore } from "@/stores/vault/vaultStore";
 import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 interface WorkspaceListProps {
@@ -54,11 +55,17 @@ export default function WorkspaceList({
   onLaunch,
   onSaveNew,
 }: WorkspaceListProps) {
-  const { workspaces, renameWorkspace, deleteWorkspace } = useWorkspaceStore();
+  const { workspaces, fetchWorkspaces, renameWorkspace, deleteWorkspace } =
+    useWorkspaceStore();
+  const currentVaultId = useVaultStore((s) => s.currentVaultId);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const renameModal = useModal();
   const deleteDialog = useModal();
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchWorkspaces(currentVaultId ?? undefined);
+  }, [fetchWorkspaces, currentVaultId]);
 
   // How many currently-open tabs have at least one connected pane. Used to
   // disable "New Workspace" until there is a real group to save.

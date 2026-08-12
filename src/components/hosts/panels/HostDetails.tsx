@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { useModal } from "@/hooks/useModal";
+import { formatRelativeTime } from "@/lib/format/relativeTime";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 
 interface HostDetailsProps {
@@ -55,8 +56,9 @@ export default function HostDetails({
             </p>
             {groupName && <Badge>{groupName}</Badge>}
           </div>
-          <p className="text-dark-400 text-xs truncate">
-            {host.username}@{host.address}:{host.port}
+          <p className="text-dark-400 text-xs truncate capitalize">
+            SSH • {host.os || "unknown"} •{" "}
+            {formatRelativeTime(Number(host.createdAt))}
           </p>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

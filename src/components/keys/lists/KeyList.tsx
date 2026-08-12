@@ -13,37 +13,35 @@ import { useVaultStore } from "@/stores/vault/vaultStore";
 import type { KeyItem } from "@/types/keys/types";
 
 export default function KeyList({ onMutation }: { onMutation?: () => void }) {
-  const [keys, setKeys] = useState<KeyItem[]>([]);
-  const importModal = useModal();
-  const generateModal = useModal();
+  const keys = useKeyStore((s) => s.keys);
+  const fetchKeys = useKeyStore((s) => s.fetchKeys);
+  const deleteKey = useKeyStore((s) => s.deleteKey);
   const [selectedKey, setSelectedKey] = useState<KeyItem | null>(null);
   const { currentVaultId } = useVaultStore();
   const deleteDialog = useModal();
+  const importModal = useModal();
+  const generateModal = useModal();
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
-  const fetchKeys = useCallback(async () => {
-    try {
-      setKeys([]);
-    } catch (error) {
-      console.error("Failed to fetch keys:", error);
-    }
-  }, []);
+  const loadKeys = useCallback(() => {
+    fetchKeys(currentVaultId ?? undefined);
+  }, [fetchKeys, currentVaultId]);
 
   useEffect(() => {
-    fetchKeys();
-  }, [fetchKeys]);
+    loadKeys();
+  }, [loadKeys]);
 
   const handleDelete = (id: string) => {
     setDeleteTargetId(id);
     deleteDialog.show();
   };
 
-  const confirmDeleteAction = () => {
+  const confirmDeleteAction = async () => {
     deleteDialog.hide();
     const id = deleteTargetId;
     setDeleteTargetId(null);
     if (!id) return;
-    setKeys(keys.filter((k) => k.id !== id));
+    await deleteKey(id);
     if (selectedKey?.id === id) setSelectedKey(null);
     onMutation?.();
   };
@@ -202,7 +200,7 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
           vaultId={currentVaultId || undefined}
           onClose={(savedKey?: KeyItem) => {
             if (savedKey) {
-              setKeys((prev) => [...prev, savedKey]);
+              loadKeys();
               onMutation?.();
             }
             generateModal.hide();

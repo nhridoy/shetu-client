@@ -20,6 +20,7 @@ interface VaultItem {
   id: string;
   name: string;
   description?: string;
+  kind?: string;
   isDefault?: boolean;
   isSystem?: boolean;
   createdAt: string;
@@ -98,14 +99,13 @@ export function VaultSelector() {
     deleteDialog.show();
   };
 
-  const confirmDeleteAction = () => {
+  const confirmDeleteAction = async () => {
     deleteDialog.hide();
     const vault = deleteTarget;
     setDeleteTarget(null);
     if (!vault) return;
     try {
-      const { fetchVaults } = useVaultStore.getState();
-      fetchVaults();
+      await useVaultStore.getState().deleteVault(vault.id);
     } catch (e) {
       console.error("Failed to delete vault:", e);
     }
@@ -176,7 +176,7 @@ export function VaultSelector() {
                       switchVault(vault.id);
                       setOpen(false);
                     }}
-                    className={`group w-full px-2.5 py-2 justify-start rounded-lg ${
+                    className={`w-full px-2.5 py-2 justify-start rounded-lg ${
                       active ? "bg-primary-600/15" : ""
                     }`}
                   >
@@ -207,33 +207,35 @@ export function VaultSelector() {
                       )}
                     </div>
                     {vault.isSystem ? (
-                      <span className="w-4 shrink-0" />
+                      <span className="w-7 shrink-0" />
                     ) : (
                       <div className="flex items-center gap-0.5 shrink-0">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditModal(vault);
+                          }}
+                          className="hover:bg-white/10 rounded"
+                          title="Edit vault"
+                        >
+                          <PencilSimpleIcon className="w-4 h-4" />
+                        </Button>
                         {active && (
-                          <CheckIcon
-                            className="w-4 h-4 text-primary-400 group-hover:hidden"
-                            weight="bold"
-                          />
+                          <span className="h-7 w-7 flex items-center justify-center shrink-0">
+                            <CheckIcon
+                              className="w-4 h-4 text-primary-400"
+                              weight="bold"
+                            />
+                          </span>
                         )}
-                        <div className="hidden group-hover:flex items-center gap-0.5">
+                        {!active && (
                           <Button
                             type="button"
                             variant="ghost"
-                            size="icon-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditModal(vault);
-                            }}
-                            className="hover:bg-white/10 rounded"
-                            title="Edit vault"
-                          >
-                            <PencilSimpleIcon className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
+                            size="icon-xs"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleDelete(vault);
@@ -243,7 +245,7 @@ export function VaultSelector() {
                           >
                             <TrashIcon className="w-4 h-4" />
                           </Button>
-                        </div>
+                        )}
                       </div>
                     )}
                   </Button>
@@ -274,6 +276,7 @@ export function VaultSelector() {
               ? {
                   id: editingVault.id,
                   name: editingVault.name,
+                  kind: editingVault.kind,
                   description: editingVault.description,
                 }
               : undefined

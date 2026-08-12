@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { decryptRowData, encryptRowData } from "@/lib/crypto/crypto";
+import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -12,6 +12,8 @@ interface Snippet {
   tags: string[];
   vaultId?: string;
   createdAt: string;
+  /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
+  data?: string;
 }
 
 interface SnippetState {
@@ -23,6 +25,7 @@ interface SnippetState {
 
   fetchSnippets: (vaultId?: string) => Promise<void>;
   selectSnippet: (snippet: Snippet | null) => void;
+  getDecryptedSnippet: (id: string) => Promise<Snippet | null>;
   createSnippet: (snippet: Partial<Snippet>) => Promise<void>;
   updateSnippet: (id: string, snippet: Partial<Snippet>) => Promise<void>;
   deleteSnippet: (id: string) => Promise<void>;
@@ -32,7 +35,16 @@ interface SnippetState {
 
 interface SnippetPayload {
   command: string;
-  tags: string[];
+}
+
+function parseTags(tags: string | null | undefined): string[] {
+  if (!tags) return [];
+  try {
+    const parsed = JSON.parse(tags);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function newId(): string {
@@ -43,16 +55,28 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function snippetFromRow(row: SyncRow): Promise<Snippet> {
-  const payload = (await decryptRowData(row.data)) as Partial<SnippetPayload>;
+/** List-safe mapping: reads plaintext columns only, no decryption.
+ * command stays empty until getDecryptedSnippet. */
+function snippetFromRow(row: SyncRow): Snippet {
   return {
     id: row.id,
     name: row.name ?? "",
-    command: payload.command ?? "",
+    command: "",
     description: row.description ?? undefined,
-    tags: payload.tags ?? [],
+    tags: parseTags(row.tags),
     vaultId: row.vault_id,
     createdAt: String(row.created_at),
+    data: row.data ?? "",
+  };
+}
+
+/** Full snippet with the decrypted command — decrypt on demand. */
+async function decryptSnippetRow(row: SyncRow): Promise<Snippet> {
+  const payload = ((await decryptRowData(row.data)) ??
+    {}) as Partial<SnippetPayload>;
+  return {
+    ...snippetFromRow(row),
+    command: payload.command ?? "",
   };
 }
 
@@ -72,9 +96,7 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const rows = await listRows("snippets", vid);
-      const snippets = await Promise.all(
-        rows.map((row) => snippetFromRow(row)),
-      );
+      const snippets = rows.map((row) => snippetFromRow(row));
       set({ snippets, isLoading: false });
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
@@ -82,6 +104,20 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
   },
 
   selectSnippet: (snippet) => set({ selectedSnippet: snippet }),
+
+  getDecryptedSnippet: async (id) => {
+    const cached = get().snippets.find((s) => s.id === id);
+    if (cached?.data) {
+      const payload = ((await decryptRowData(cached.data)) ??
+        {}) as Partial<SnippetPayload>;
+      return { ...cached, command: payload.command ?? "" };
+    }
+    const row = await getRow("snippets", id);
+    if (!row) {
+      return null;
+    }
+    return decryptSnippetRow(row);
+  },
 
   createSnippet: async (snippet) => {
     const vaultId = snippet.vaultId ?? useVaultStore.getState().currentVaultId;
@@ -91,17 +127,23 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
     }
     set({ isLoading: true, error: null });
     try {
-      const row = await upsertRow("snippets", {
-        id: newId(),
-        vault_id: vaultId,
-        name: snippet.name ?? "",
-        description: snippet.description ?? null,
-        sort_order: 0,
-        data: await encryptRowData("snippets", {
-          command: snippet.command ?? "",
-          tags: snippet.tags ?? [],
-        }),
-      });
+      const row = await upsertRow(
+        "snippets",
+        {
+          id: newId(),
+          vault_id: vaultId,
+          name: snippet.name ?? "",
+          description: snippet.description ?? null,
+          tags: JSON.stringify(snippet.tags ?? []),
+          sort_order: 0,
+        },
+        {
+          plaintext: JSON.stringify({
+            command: snippet.command ?? "",
+          }),
+          recordType: "snippets",
+        },
+      );
       const created: Snippet = {
         id: row.id,
         name: row.name ?? "",
@@ -131,18 +173,27 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
       >;
       const sensitive: Record<string, unknown> = {};
       if (patch.command !== undefined) sensitive.command = patch.command;
-      if (patch.tags !== undefined) sensitive.tags = patch.tags;
-      await upsertRow("snippets", {
-        id: row.id,
-        vault_id: row.vault_id,
-        name: patch.name ?? row.name,
-        description:
-          patch.description !== undefined
-            ? patch.description
-            : (row.description ?? null),
-        sort_order: row.sort_order,
-        data: await encryptRowData("snippets", { ...existing, ...sensitive }),
-      });
+      await upsertRow(
+        "snippets",
+        {
+          id: row.id,
+          vault_id: row.vault_id,
+          name: patch.name ?? row.name,
+          description:
+            patch.description !== undefined
+              ? patch.description
+              : (row.description ?? null),
+          tags:
+            patch.tags !== undefined
+              ? JSON.stringify(patch.tags)
+              : (row.tags ?? "[]"),
+          sort_order: row.sort_order,
+        },
+        {
+          plaintext: JSON.stringify({ ...existing, ...sensitive }),
+          recordType: "snippets",
+        },
+      );
       set({
         snippets: get().snippets.map((s) =>
           s.id === id ? { ...s, ...patch } : s,
@@ -177,7 +228,7 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
     return snippets.filter(
       (s) =>
         s.name.toLowerCase().includes(q) ||
-        s.command.toLowerCase().includes(q) ||
+        s.tags.some((tag) => tag.toLowerCase().includes(q)) ||
         (s.description || "").toLowerCase().includes(q),
     );
   },

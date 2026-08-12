@@ -1,10 +1,33 @@
 import { useDraggable } from "@dnd-kit/react";
-import { PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
+import {
+  AppleLogo,
+  DesktopIcon,
+  LinuxLogo,
+  PencilSimpleIcon,
+  TrashIcon,
+  WindowsLogo,
+} from "@phosphor-icons/react";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { useModal } from "@/hooks/useModal";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
+import { formatRelativeTime } from "@/lib/format/relativeTime";
 import type { Host } from "@/stores/hosts/hostStore";
+
+function osIconFor(os?: string) {
+  switch (os?.toLowerCase()) {
+    case "linux":
+      return LinuxLogo;
+    case "macos":
+    case "darwin":
+      return AppleLogo;
+    case "windows":
+      return WindowsLogo;
+    default:
+      return DesktopIcon;
+  }
+}
 
 export function DraggableHostCard({
   host,
@@ -45,10 +68,26 @@ export function DraggableHostCard({
           {host.name}
         </span>
       </div>
-      <p className="text-dark-500 text-xs mt-1 ml-[18px] truncate">
-        {host.username ? `${host.username}@` : ""}
-        {host.address}:{host.port}
+      <p className="flex items-center gap-1.5 text-dark-500 text-xs mt-1 ml-[18px] truncate">
+        {(() => {
+          const OsIcon = osIconFor(host.os);
+          return <OsIcon className="w-3 h-3 shrink-0" weight="fill" />;
+        })()}
+        <span className="capitalize">{host.os || "unknown"}</span>
+        <span className="text-dark-600">•</span>
+        <span>SSH</span>
+        <span className="text-dark-600">•</span>
+        <span className="shrink-0">
+          {formatRelativeTime(Number(host.createdAt))}
+        </span>
       </p>
+      {host.tags.length > 0 && (
+        <div className="flex gap-1 mt-1.5 ml-[18px]">
+          {[...new Set(host.tags)].slice(0, 3).map((tag) => (
+            <Badge key={tag}>{tag}</Badge>
+          ))}
+        </div>
+      )}
       <div className="absolute flex items-center gap-1 transition-opacity opacity-0 top-2 right-2 group-hover:opacity-100">
         <Button
           type="button"

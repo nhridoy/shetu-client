@@ -16,6 +16,9 @@ import Input from "@/components/ui/Input";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useModal } from "@/hooks/useModal";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
+import { formatRelativeTime } from "@/lib/format/relativeTime";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useVaultStore } from "@/stores/vault/vaultStore";
 
 interface Snippet {
   id: string;
@@ -32,27 +35,27 @@ interface SnippetListProps {
 }
 
 export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
-  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const snippets = useSnippetStore((s) => s.snippets);
+  const fetchSnippets = useSnippetStore((s) => s.fetchSnippets);
+  const deleteSnippet = useSnippetStore((s) => s.deleteSnippet);
+  const currentVaultId = useVaultStore((s) => s.currentVaultId);
   const [searchQuery, setSearchQuery] = useState("");
   const deleteDialog = useModal();
   const [deleteTarget, setDeleteTarget] = useState<Snippet | null>(null);
 
-  const fetchSnippets = useCallback(async () => {
-    try {
-      setSnippets([]);
-    } catch (e) {
-      console.error("Failed to fetch snippets:", e);
-    }
-  }, []);
+  const loadSnippets = useCallback(() => {
+    fetchSnippets(currentVaultId ?? undefined);
+  }, [fetchSnippets, currentVaultId]);
 
   useEffect(() => {
-    fetchSnippets();
-  }, [fetchSnippets]);
+    loadSnippets();
+  }, [loadSnippets]);
 
   const filteredSnippets = snippets.filter(
     (s) =>
       s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.command.toLowerCase().includes(searchQuery.toLowerCase()),
+      s.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (s.description || "").toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   const handleDelete = (snippet: Snippet) => {
@@ -60,18 +63,29 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
     deleteDialog.show();
   };
 
-  const confirmDeleteAction = () => {
+  const confirmDeleteAction = async () => {
     deleteDialog.hide();
     const snippet = deleteTarget;
     setDeleteTarget(null);
     if (!snippet) return;
-    setSnippets((prev) => prev.filter((s) => s.id !== snippet.id));
+    await deleteSnippet(snippet.id);
     toast.success(`Deleted "${snippet.name}"`);
   };
 
-  const handleCopy = (command: string) => {
-    navigator.clipboard.writeText(command);
+  const handleCopy = async (snippet: Snippet) => {
+    const decrypted = await useSnippetStore
+      .getState()
+      .getDecryptedSnippet(snippet.id);
+    if (!decrypted) return;
+    navigator.clipboard.writeText(decrypted.command);
     toast.success("Copied to clipboard");
+  };
+
+  const handleEdit = async (snippet: Snippet) => {
+    const decrypted = await useSnippetStore
+      .getState()
+      .getDecryptedSnippet(snippet.id);
+    onEdit(decrypted ?? snippet);
   };
 
   return (
@@ -118,8 +132,8 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                 key={snippet.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => onEdit(snippet)}
-                onKeyDown={accessibleClickHandler(() => onEdit(snippet))}
+                onClick={() => handleEdit(snippet)}
+                onKeyDown={accessibleClickHandler(() => handleEdit(snippet))}
                 className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 group"
               >
                 <div className="flex items-center gap-2">
@@ -128,12 +142,12 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                     {snippet.name}
                   </span>
                 </div>
-                <p className="text-dark-500 text-xs mt-1 ml-[22px] truncate font-mono">
-                  {snippet.command}
+                <p className="text-dark-500 text-xs mt-1 ml-[22px]">
+                  {formatRelativeTime(Number(snippet.createdAt))}
                 </p>
                 {snippet.tags.length > 0 && (
                   <div className="flex gap-1 mt-2 ml-[22px]">
-                    {snippet.tags.map((tag) => (
+                    {[...new Set(snippet.tags)].slice(0, 3).map((tag) => (
                       <Badge key={tag}>{tag}</Badge>
                     ))}
                   </div>
@@ -143,7 +157,7 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleCopy(snippet.command);
+                      handleCopy(snippet);
                     }}
                     variant="ghost"
                     size="icon-sm"
@@ -155,7 +169,7 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onEdit(snippet);
+                      handleEdit(snippet);
                     }}
                     variant="ghost"
                     size="icon-sm"

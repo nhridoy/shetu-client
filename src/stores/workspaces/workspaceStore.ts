@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { decryptRowData, encryptRowData } from "@/lib/crypto/crypto";
+import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -85,16 +85,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
     set({ isLoading: true, error: null });
     try {
-      const row = await upsertRow("workspaces", {
-        id: newId(),
-        vault_id: vid,
-        name: name ?? "",
-        sort_order: 0,
-        data: await encryptRowData("workspaces", {
-          layout: JSON.stringify(layout),
-          hostIds: undefined,
-        }),
-      });
+      const row = await upsertRow(
+        "workspaces",
+        {
+          id: newId(),
+          vault_id: vid,
+          name: name ?? "",
+          sort_order: 0,
+        },
+        {
+          plaintext: JSON.stringify({
+            layout: JSON.stringify(layout),
+            hostIds: undefined,
+          }),
+          recordType: "workspaces",
+        },
+      );
       const created: Workspace = {
         id: row.id,
         name: row.name ?? "",
@@ -122,16 +128,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         layout?: string;
         hostIds?: string;
       };
-      await upsertRow("workspaces", {
-        id: row.id,
-        vault_id: row.vault_id,
-        name: name ?? row.name,
-        sort_order: row.sort_order,
-        data: await encryptRowData("workspaces", {
-          layout: payload.layout ?? "{}",
-          hostIds: payload.hostIds,
-        }),
-      });
+      await upsertRow(
+        "workspaces",
+        {
+          id: row.id,
+          vault_id: row.vault_id,
+          name: name ?? row.name,
+          sort_order: row.sort_order,
+        },
+        {
+          plaintext: JSON.stringify({
+            layout: payload.layout ?? "{}",
+            hostIds: payload.hostIds,
+          }),
+          recordType: "workspaces",
+        },
+      );
       set({
         workspaces: get().workspaces.map((w) =>
           w.id === id ? { ...w, name: name ?? w.name } : w,

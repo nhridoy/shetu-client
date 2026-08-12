@@ -14,6 +14,7 @@ import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useModal } from "@/hooks/useModal";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
+import { formatRelativeTime } from "@/lib/format/relativeTime";
 import type { ShellInfo } from "@/lib/terminal/shellDetection";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
@@ -81,7 +82,7 @@ export default function HostBrowser({
   const filteredHosts = hosts.filter(
     (host) =>
       host.name.toLowerCase().includes(q) ||
-      host.address.toLowerCase().includes(q),
+      host.tags.some((tag) => tag.toLowerCase().includes(q)),
   );
   const presetMatches = tabGroups.filter((g) =>
     g.name.toLowerCase().includes(q),
@@ -96,7 +97,7 @@ export default function HostBrowser({
   }, []);
 
   const noExactHost = !hosts.some(
-    (h) => h.name.toLowerCase() === q || h.address.toLowerCase() === q,
+    (h) => h.name.toLowerCase() === q || h.tags.some((t) => t.toLowerCase() === q),
   );
 
   // Build a flat list of all selectable items for keyboard navigation
@@ -207,7 +208,9 @@ export default function HostBrowser({
       <div className="flex-1 overflow-y-auto">
         {query &&
           !filteredHosts.some(
-            (h) => h.name.toLowerCase() === q || h.address.toLowerCase() === q,
+            (h) =>
+              h.name.toLowerCase() === q ||
+              h.tags.some((t) => t.toLowerCase() === q),
           ) && (
             <Button
               type="button"
@@ -364,9 +367,9 @@ export default function HostBrowser({
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white">{host.name}</div>
-                      <div className="text-xs text-dark-400">
-                        {host.username ? `${host.username}@` : ""}
-                        {host.address}:{host.port}
+                      <div className="text-xs text-dark-400 capitalize">
+                        SSH • {host.os || "unknown"} •{" "}
+                        {formatRelativeTime(Number(host.createdAt))}
                       </div>
                     </div>
                     {host.tags && host.tags.length > 0 && (

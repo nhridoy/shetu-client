@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/db/db");
 vi.mock("../../lib/crypto/crypto");
+vi.mock("../auth/authStore", () => ({
+  useAuthStore: {
+    getState: () => ({ user: { id: "u1", email: "a@b.c" } }),
+  },
+}));
 
-import { decryptRowData, encryptRowData } from "../../lib/crypto/crypto";
+import { decryptRowData } from "../../lib/crypto/crypto";
 import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "../vault/vaultStore";
 import { useSnippetStore } from "./snippetStore";
@@ -13,7 +18,6 @@ const mockGet = vi.mocked(getRow);
 const mockUpsert = vi.mocked(upsertRow);
 const mockDelete = vi.mocked(deleteRow);
 const mockDecrypt = vi.mocked(decryptRowData);
-const mockEncrypt = vi.mocked(encryptRowData);
 
 const snippetRow = {
   id: "s1",
@@ -24,6 +28,7 @@ const snippetRow = {
   deleted_at: null,
   name: "deploy",
   description: "ship to prod",
+  tags: '["ci","prod"]',
   sort_order: 0,
   data: "enc",
 };
@@ -37,30 +42,55 @@ beforeEach(() => {
     searchQuery: "",
   });
   vi.restoreAllMocks();
+  vi.clearAllMocks();
   useVaultStore.setState({ currentVaultId: null });
 });
 
 describe("snippetStore", () => {
-  it("fetchSnippets decrypts payload into the Snippet model", async () => {
+  it("fetchSnippets reads plaintext columns without decrypting", async () => {
     mockList.mockResolvedValue([snippetRow]);
-    mockDecrypt.mockResolvedValue({
-      command: "pnpm build && pnpm deploy",
-      tags: ["ci", "prod"],
-    });
     await useSnippetStore.getState().fetchSnippets("v1");
     expect(mockList).toHaveBeenCalledWith("snippets", "v1");
+    expect(mockDecrypt).not.toHaveBeenCalled();
     const snippet = useSnippetStore.getState().snippets[0];
     expect(snippet.id).toBe("s1");
     expect(snippet.name).toBe("deploy");
     expect(snippet.description).toBe("ship to prod");
-    expect(snippet.command).toBe("pnpm build && pnpm deploy");
+    expect(snippet.command).toBe("");
     expect(snippet.tags).toEqual(["ci", "prod"]);
     expect(snippet.vaultId).toBe("v1");
     expect(snippet.createdAt).toBe("1000");
+    expect(snippet.data).toBe("enc");
   });
 
-  it("createSnippet encrypts payload with AAD snippets and upserts with vault fallback", async () => {
-    mockEncrypt.mockResolvedValue("enc");
+  it("getDecryptedSnippet decrypts on demand from state, no db_get", async () => {
+    mockList.mockResolvedValue([snippetRow]);
+    await useSnippetStore.getState().fetchSnippets("v1");
+    mockDecrypt.mockResolvedValue({
+      command: "pnpm build && pnpm deploy",
+    });
+    const snippet = await useSnippetStore
+      .getState()
+      .getDecryptedSnippet("s1");
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockDecrypt).toHaveBeenCalledWith("enc");
+    expect(snippet?.command).toBe("pnpm build && pnpm deploy");
+    expect(snippet?.tags).toEqual(["ci", "prod"]);
+  });
+
+  it("getDecryptedSnippet falls back to db_get when not in state", async () => {
+    mockGet.mockResolvedValue(snippetRow);
+    mockDecrypt.mockResolvedValue({
+      command: "pnpm build && pnpm deploy",
+    });
+    const snippet = await useSnippetStore
+      .getState()
+      .getDecryptedSnippet("s1");
+    expect(mockGet).toHaveBeenCalledWith("snippets", "s1");
+    expect(snippet?.command).toBe("pnpm build && pnpm deploy");
+  });
+
+  it("createSnippet passes plaintext payload with AAD snippets and upserts with vault fallback", async () => {
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -78,19 +108,18 @@ describe("snippetStore", () => {
       command: "pnpm build",
       tags: ["ci"],
     });
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "snippets",
-      expect.objectContaining({ command: "pnpm build", tags: ["ci"] }),
-    );
     expect(mockUpsert).toHaveBeenCalledWith(
       "snippets",
-      expect.objectContaining({ name: "deploy", vault_id: "v1", data: "enc" }),
+      expect.objectContaining({ name: "deploy", vault_id: "v1", tags: '["ci"]' }),
+      {
+        plaintext: JSON.stringify({ command: "pnpm build" }),
+        recordType: "snippets",
+      },
     );
     expect(useSnippetStore.getState().snippets.length).toBe(1);
   });
 
-  it("createSnippet keeps command/tags out of plaintext columns and whitelist fields out of the encrypt payload", async () => {
-    mockEncrypt.mockResolvedValue("enc");
+  it("createSnippet keeps command out of plaintext columns and whitelist fields out of the encrypt payload", async () => {
     mockUpsert.mockResolvedValue({
       id: "new",
       revision: 1,
@@ -110,16 +139,19 @@ describe("snippetStore", () => {
       command: "pnpm build",
       tags: ["ci"],
     });
-    const rowArg = mockUpsert.mock.calls[0][1];
-    expect(rowArg.data).toBe("enc");
-    expect(rowArg).not.toHaveProperty("command");
-    expect(rowArg).not.toHaveProperty("tags");
-    const payloadArg = mockEncrypt.mock.calls[0][1] as Record<string, unknown>;
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    const payloadArg = JSON.parse(opts.plaintext) as Record<string, unknown>;
     expect(payloadArg).toHaveProperty("command", "pnpm build");
-    expect(payloadArg).toHaveProperty("tags");
+    expect(payloadArg).not.toHaveProperty("tags");
     expect(payloadArg).not.toHaveProperty("name");
     expect(payloadArg).not.toHaveProperty("description");
     expect(payloadArg).not.toHaveProperty("sort_order");
+    const rowArg = mockUpsert.mock.calls[0][1];
+    expect(rowArg).not.toHaveProperty("command");
+    expect(rowArg).toHaveProperty("tags", '["ci"]');
     expect(mockUpsert).toHaveBeenCalledWith(
       "snippets",
       expect.not.objectContaining({
@@ -127,6 +159,7 @@ describe("snippetStore", () => {
         description: "pnpm build",
         sort_order: "pnpm build",
       }),
+      expect.objectContaining({ recordType: "snippets" }),
     );
   });
 
@@ -148,17 +181,21 @@ describe("snippetStore", () => {
       command: "pnpm build",
       tags: ["ci"],
     });
-    mockEncrypt.mockResolvedValue("enc2");
     await useSnippetStore
       .getState()
       .updateSnippet("s1", { name: "deploy2", description: "new" });
-    expect(mockEncrypt).toHaveBeenCalledWith(
-      "snippets",
-      expect.objectContaining({ command: "pnpm build", tags: ["ci"] }),
-    );
+    const opts = mockUpsert.mock.calls[0][2] as {
+      plaintext: string;
+      recordType: string;
+    };
+    expect(JSON.parse(opts.plaintext)).toMatchObject({
+      command: "pnpm build",
+      tags: ["ci"],
+    });
     expect(mockUpsert).toHaveBeenCalledWith(
       "snippets",
-      expect.objectContaining({ name: "deploy2", data: "enc2" }),
+      expect.objectContaining({ name: "deploy2" }),
+      expect.objectContaining({ recordType: "snippets" }),
     );
     expect(useSnippetStore.getState().snippets[0]).toMatchObject({
       name: "deploy2",

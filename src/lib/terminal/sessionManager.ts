@@ -96,6 +96,18 @@ async function connectViaTauri(session: Session) {
     let privateKey: string | null = null;
     let passphrase: string | null = null;
 
+    let { hostAddress, hostPort, hostUsername } = params;
+    if (!hostAddress && params.hostId) {
+      const decrypted = await useHostStore
+        .getState()
+        .getDecryptedHost(params.hostId);
+      if (decrypted) {
+        hostAddress = decrypted.address;
+        hostPort = decrypted.port;
+        hostUsername = decrypted.username;
+      }
+    }
+
     if (params.authType === "key" && params.keyId) {
       const privKey = await useKeyStore
         .getState()
@@ -116,9 +128,9 @@ async function connectViaTauri(session: Session) {
     }
 
     const config = {
-      host: params.hostAddress || "",
-      port: params.hostPort || 22,
-      username: params.hostUsername || "root",
+      host: hostAddress || "",
+      port: hostPort || 22,
+      username: hostUsername || "root",
       password,
       privateKey,
       passphrase,
@@ -152,6 +164,7 @@ async function connectViaTauri(session: Session) {
       sessionId: string;
       type: string;
       data: string;
+      os?: string;
     }>("ssh-output", (event) => {
       const { sessionId, type, data } = event.payload;
       if (sessionId !== params.paneId) return;
@@ -159,6 +172,11 @@ async function connectViaTauri(session: Session) {
       switch (type) {
         case "connected":
           update(params.tabId, params.paneId, "connected");
+          if (event.payload.os && params.hostId) {
+            void useHostStore
+              .getState()
+              .updateHostOs(params.hostId, event.payload.os);
+          }
           break;
         case "output":
           xterm.write(data);

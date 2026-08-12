@@ -18,7 +18,6 @@ import {
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
-import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 export default function Layout() {
   const location = useLocation();
@@ -64,11 +63,15 @@ export default function Layout() {
   }, []);
 
   useEffect(() => {
+    // Vaults are loaded once: switching vaults never changes the vault list
+    // (store mutations update it in memory), so it must not refire per switch.
     fetchVaults();
+  }, [fetchVaults]);
+
+  useEffect(() => {
     fetchHosts(currentVaultId || undefined);
     fetchGroups(currentVaultId || undefined);
-    useWorkspaceStore.getState().fetchWorkspaces(currentVaultId || undefined);
-  }, [currentVaultId, fetchHosts, fetchGroups, fetchVaults]);
+  }, [currentVaultId, fetchHosts, fetchGroups]);
 
   const {
     hosts,

@@ -47,8 +47,6 @@ export default function SnippetForm({ snippet, onClose }: SnippetFormProps) {
   };
 
   const handleSnippetSubmit = async (data: SnippetFormSchema) => {
-    await new Promise((r) => setTimeout(r, 1500));
-
     const tagArray = data.tags
       ? data.tags
           .split(",")
