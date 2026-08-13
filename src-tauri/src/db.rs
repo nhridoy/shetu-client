@@ -646,6 +646,24 @@ pub fn get_sync_row(db: &LocalDb, table: Table, id: &str) -> Result<Option<SyncR
     get_sync_row_unlocked(&conn, table, id)
 }
 
+pub fn update_host_os(db: &LocalDb, host_id: &str, os: &str) -> Result<(), String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| format!("update_host_os tx: {e}"))?;
+    let now = now_ms();
+    tx.execute(
+        "UPDATE hosts SET os = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![os, now, host_id],
+    )
+    .map_err(|e| format!("update_host_os: {e}"))?;
+    tx.execute(
+        "INSERT OR REPLACE INTO outbox (table_name, record_id, queued_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params!["hosts", host_id, now],
+    )
+    .map_err(|e| format!("update_host_os outbox: {e}"))?;
+    tx.commit().map_err(|e| format!("update_host_os commit: {e}"))?;
+    Ok(())
+}
+
 fn get_sync_row_unlocked(conn: &Connection, table: Table, id: &str) -> Result<Option<SyncRow>, String> {
     let cols = table_cols(table);
     let sql = format!(

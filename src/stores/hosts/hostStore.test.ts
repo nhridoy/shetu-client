@@ -142,31 +142,9 @@ describe("hostStore", () => {
     expect(host?.address).toBe("1.2.3.4");
   });
 
-  it("updateHostOs fetches the row and writes the plaintext os column", async () => {
-    mockGet.mockResolvedValue({
-      id: "h1",
-      revision: 1,
-      vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
-      deleted_at: null,
-      name: "prod",
-      os: null,
-      sort_order: 0,
-      data: "enc",
-      tags: "[]",
-    });
-    mockUpsert.mockResolvedValue({
-      id: "h1",
-      revision: 2,
-      vault_id: "v1",
-      created_at: 1,
-      updated_at: 2,
-      deleted_at: null,
-      name: "prod",
-      sort_order: 0,
-      data: "enc",
-    });
+  it("updateHostOs calls db_update_os and updates state", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue(undefined);
     useHostStore.setState({
       hosts: [
         {
@@ -184,11 +162,10 @@ describe("hostStore", () => {
       ],
     });
     await useHostStore.getState().updateHostOs("h1", "linux");
-    expect(mockGet).toHaveBeenCalledWith("hosts", "h1");
-    expect(mockUpsert).toHaveBeenCalledWith(
-      "hosts",
-      expect.objectContaining({ id: "h1", name: "prod", os: "linux" }),
-    );
+    expect(invoke).toHaveBeenCalledWith("db_update_os", {
+      hostId: "h1",
+      os: "linux",
+    });
     expect(useHostStore.getState().hosts[0].os).toBe("linux");
   });
 
