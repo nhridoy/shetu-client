@@ -14,7 +14,13 @@ export function useLayoutDragDrop({
 }: {
   setActiveView: (view: string) => void;
 }) {
-  const { hosts, groups, updateHost, updateGroup } = useHostStore();
+  const {
+    hosts,
+    groups,
+    updateHost,
+    updateGroup,
+    reorderHost,
+  } = useHostStore();
   const { tabs, movePane, mergeTabIntoPane } = useTerminalStore();
   const setDropPane = useDragStore((s) => s.setDropPane);
   const setSourcePane = useDragStore((s) => s.setSourcePane);
@@ -52,6 +58,8 @@ export function useLayoutDragDrop({
       return;
     if (sourceType === "host-source" && target?.data?.type === "root-target")
       return;
+    if (sourceType === "host-source" && target?.data?.type === "host-target")
+      return;
     if (sourceType === "group-source" && target?.data?.type === "group-target")
       return;
     if (sourceType === "group-source" && target?.data?.type === "root-target")
@@ -79,6 +87,20 @@ export function useLayoutDragDrop({
   const handleDragEnd = (event: DragEndEvent) => {
     const { source, target } = event.operation;
     if (event.canceled || !source) {
+      setDropPane(null);
+      setSourcePane(null);
+      return;
+    }
+
+    if (
+      source.data?.type === "host-source" &&
+      target?.data?.type === "host-target" &&
+      source.data.hostId !== target.data.hostId
+    ) {
+      void reorderHost(
+        String(source.data.hostId),
+        String(target.data.hostId),
+      );
       setDropPane(null);
       setSourcePane(null);
       return;

@@ -1,4 +1,5 @@
 import { useDraggable } from "@dnd-kit/react";
+import { useDraggable, useDroppable } from "@dnd-kit/react";
 import {
   CircleNotchIcon,
   PencilSimpleIcon,
@@ -22,17 +23,28 @@ export function DraggableHostCard({
   onConnect,
   onEdit,
   onDelete,
+  onReorder,
 }: {
   host: Host;
   isDropTarget?: boolean;
   onConnect: (host: Host) => void;
   onEdit: (host: Host) => void;
   onDelete: (id: string) => void;
+  onReorder?: (sourceId: string, targetId: string) => void;
 }) {
-  const { ref, isDragging } = useDraggable({
+  const { ref: draggableRef, isDragging } = useDraggable({
     id: `host:${host.id}`,
     data: { type: "host-source", hostId: host.id },
   });
+  const { ref: droppableRef, isOver } = useDroppable({
+    id: `host-drop:${host.id}`,
+    data: { type: "host-target", hostId: host.id },
+  });
+
+  const setRefs = (el: HTMLDivElement | null) => {
+    draggableRef(el);
+    droppableRef(el);
+  };
 
   const pingState = useHostPingStore((s) => s.pings[host.id]);
   const ping = useHostPingStore((s) => s.ping);
@@ -45,12 +57,12 @@ export function DraggableHostCard({
   return (
     // biome-ignore lint/a11y/useSemanticElements: contains nested <button> elements
     <div
-      ref={ref}
+      ref={setRefs}
       role="button"
       tabIndex={0}
       onClick={() => onConnect(host)}
       onKeyDown={accessibleClickHandler(() => onConnect(host))}
-      className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
+      className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border group ${isDragging ? "opacity-50" : ""} ${isOver ? "border-primary-500 ring-2 ring-primary-500" : "border-primary-500/10"}`}
     >
       <div
         className="absolute top-0 left-0 w-56 h-56 -translate-x-8 -translate-y-8 rounded-full pointer-events-none"
