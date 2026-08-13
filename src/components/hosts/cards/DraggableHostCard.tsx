@@ -63,8 +63,7 @@ export function DraggableHostCard({
         </span>
       </div>
 
-      <p className="relative z-10 flex items-center gap-1.5 text-dark-500 text-xs mt-1.5 ml-10">
-        <OsIcon os={host.os} className="w-3 h-3 shrink-0" />
+      <p className="relative z-10 flex items-center gap-1.5 text-dark-500 text-xs mt-1.5">
         <span className="capitalize">{osMeta(host.os).name}</span>
         <span className="text-dark-600">•</span>
         <span>SSH</span>
@@ -75,7 +74,7 @@ export function DraggableHostCard({
       </p>
 
       {pingState && (
-        <p className="relative z-10 flex items-center gap-1.5 text-xs mt-1 ml-10">
+        <p className="relative z-10 flex items-center gap-1.5 text-xs mt-1">
           {pingState.status === "pinging" && (
             <>
               <CircleNotchIcon className="w-3 h-3 animate-spin shrink-0 text-dark-500" />
@@ -102,15 +101,15 @@ export function DraggableHostCard({
       )}
 
       {host.tags.length > 0 && (
-        <div className="relative z-10 flex gap-1 mt-1.5 ml-10">
+        <div className="relative z-10 flex gap-1 mt-1.5">
           {[...new Set(host.tags)].slice(0, 3).map((tag) => (
             <Badge key={tag}>{tag}</Badge>
           ))}
         </div>
       )}
 
-      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
-        <OsIcon os={host.os} className="w-20 h-20 text-dark-400" />
+      <div className="absolute -bottom-2 -right-2 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
+        <OsIcon os={host.os} className="w-14 h-14 text-dark-400" />
       </div>
 
       <div className="absolute flex items-center gap-0.5 transition-opacity opacity-0 top-1.5 right-1.5 group-hover:opacity-100 z-20">
