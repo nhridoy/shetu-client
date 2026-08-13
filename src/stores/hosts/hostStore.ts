@@ -127,6 +127,10 @@ function errorMessage(err: unknown): string {
 async function probeHostOs(hostId: string): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    const { useHostPingStore } = await import("@/stores/hosts/hostPingStore");
+    useHostPingStore.setState((s) => ({
+      pings: { ...s.pings, [hostId]: { status: "pinging" } },
+    }));
     const hostStore = useHostStore.getState();
     const result = await invoke<{
       reachable: boolean;
@@ -136,7 +140,6 @@ async function probeHostOs(hostId: string): Promise<void> {
     if (result.os) {
       await hostStore.updateHostOs(hostId, result.os);
     }
-    const { useHostPingStore } = await import("@/stores/hosts/hostPingStore");
     useHostPingStore.setState((s) => ({
       pings: {
         ...s.pings,
@@ -168,7 +171,9 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const rows = await listRows("hosts", vid);
-      const hosts = rows.map((row) => hostFromRow(row));
+      const hosts = rows
+        .map((row) => hostFromRow(row))
+        .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
       set({ hosts, isLoading: false });
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
