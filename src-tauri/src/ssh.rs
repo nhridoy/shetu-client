@@ -77,10 +77,17 @@ impl KnownHosts {
             .map(|e| format!("{}|{}|{}", e.host, e.port, e.fingerprint))
             .collect::<Vec<_>>()
             .join("\n");
+        // Persistence failures must be visible: a silently-lost accepted
+        // fingerprint would re-trigger TOFU acceptance later and could mask
+        // a genuine key change (MITM window).
         if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("ssh: failed to create known_hosts dir: {e}");
+            }
         }
-        let _ = std::fs::write(&self.path, contents);
+        if let Err(e) = std::fs::write(&self.path, contents) {
+            eprintln!("ssh: failed to persist known_hosts: {e}");
+        }
     }
 }
 
