@@ -60,7 +60,7 @@ export function DraggableHostCard({
       />
       <div className="relative z-10 flex items-center gap-2.5">
         <div
-          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0"
+          className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold shrink-0"
           style={{
             backgroundColor: `${hostColor}33`,
             color: hostColor,
