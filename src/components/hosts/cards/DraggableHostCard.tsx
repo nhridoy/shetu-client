@@ -40,6 +40,7 @@ export function DraggableHostCard({
   const deleteDialog = useModal();
 
   const initial = host.name?.charAt(0)?.toUpperCase() || "?";
+  const hostColor = host.color || "#64748b";
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: contains nested <button> elements
@@ -49,8 +50,14 @@ export function DraggableHostCard({
       tabIndex={0}
       onClick={() => onConnect(host)}
       onKeyDown={accessibleClickHandler(() => onConnect(host))}
-      className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
+      className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
     >
+      <div
+        className="absolute top-0 left-0 w-32 h-32 -translate-x-4 -translate-y-4 rounded-full pointer-events-none opacity-30"
+        style={{
+          background: `radial-gradient(circle at center, ${hostColor}40 0%, transparent 70%)`,
+        }}
+      />
       <div className="relative z-10 flex items-center gap-2">
         <div
           className="flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold shrink-0"
@@ -108,8 +115,8 @@ export function DraggableHostCard({
         </div>
       )}
 
-      <div className="absolute -bottom-2 -right-2 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
-        <OsIcon os={host.os} className="w-14 h-14 text-dark-400" />
+      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
+        <OsIcon os={host.os} className="w-20 h-20 text-dark-400" />
       </div>
 
       <div className="absolute flex items-center gap-0.5 transition-opacity opacity-0 top-1.5 right-1.5 group-hover:opacity-100 z-20">
