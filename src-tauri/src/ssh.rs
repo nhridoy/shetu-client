@@ -279,7 +279,7 @@ pub enum SessionCmd {
 
 pub struct SshSessions {
     pub sessions: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCmd>>>>,
-    pub pending_keys: Arc<Mutex<Vec<oneshot::Sender<bool>>>>,
+    pub pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -287,7 +287,7 @@ impl SshSessions {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            pending_keys: Arc::new(Mutex::new(Vec::new())),
+            pending_keys: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(KnownHosts::load(&data_dir.join(KNOWN_HOSTS_FILE)))),
         }
     }
@@ -298,7 +298,7 @@ struct SshHandler {
     port: u16,
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<Vec<oneshot::Sender<bool>>>>,
+    pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     auto_accept: bool,
 }
 
@@ -338,11 +338,12 @@ impl russh::client::Handler for SshHandler {
             .lock()
             .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
             .get_fingerprint(&host, port);
+        let key = format!("{host}:{port}");
         let (tx, rx) = oneshot::channel();
         self.pending_keys
             .lock()
             .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?
-            .push(tx);
+            .insert(key.clone(), tx);
         let _ = self.app.emit(
             "ssh-host-key-changed",
             serde_json::json!({
@@ -352,15 +353,19 @@ impl russh::client::Handler for SshHandler {
                 "newFingerprint": fingerprint,
             }),
         );
-        match rx.await {
-            Ok(true) => {
-                self.known_hosts
-                    .lock()
-                    .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
-                    .accept(&host, port, &fingerprint);
-                Ok(true)
-            }
-            _ => Ok(false),
+        let accepted = rx.await.ok().unwrap_or(false);
+        self.pending_keys
+            .lock()
+            .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?
+            .remove(&key);
+        if accepted {
+            self.known_hosts
+                .lock()
+                .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
+                .accept(&host, port, &fingerprint);
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }
@@ -378,14 +383,17 @@ async fn connect_authenticated(
     config: &SshConfig,
 ) -> Result<russh::client::Handle<SshHandler>, String> {
     let addr = resolve_addr(&config.host, config.port).await?;
-    let client_config = Arc::new(russh::client::Config::default());
-    let mut session = tokio::time::timeout(
+    let socket = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        russh::client::connect(client_config, addr, handler),
+        tokio::net::TcpStream::connect(addr),
     )
     .await
     .map_err(|_| format!("connection timeout to {}:{}", config.host, config.port))?
     .map_err(|e| format!("connect {}:{}: {e}", config.host, config.port))?;
+    let client_config = Arc::new(russh::client::Config::default());
+    let mut session = russh::client::connect_stream(client_config, socket, handler)
+        .await
+        .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
 
     if let Some(pem) = config.private_key.as_deref() {
         let key = russh::keys::decode_secret_key(pem, config.passphrase.as_deref())
@@ -420,7 +428,7 @@ async fn probe_os(
     app: tauri::AppHandle,
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<Vec<oneshot::Sender<bool>>>>,
+    pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
 ) -> Option<String> {
     let handler = SshHandler {
         host: config.host.clone(),
@@ -430,28 +438,33 @@ async fn probe_os(
         pending_keys,
         auto_accept: true,
     };
-    let session = connect_authenticated(handler, config).await.ok()?;
-    let mut channel = session.channel_open_session().await.ok()?;
-    channel
-        .exec(
-            true,
-            "uname -s; echo __TERMVAULT_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null",
-        )
-        .await
-        .ok()?;
-    let mut out = String::new();
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            russh::ChannelMsg::Data { data } => out.push_str(&String::from_utf8_lossy(&data)),
-            russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
-            _ => {}
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let session = connect_authenticated(handler, config).await.ok()?;
+        let mut channel = session.channel_open_session().await.ok()?;
+        channel
+            .exec(
+                true,
+                "uname -s; echo __TERMVAULT_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null",
+            )
+            .await
+            .ok()?;
+        let mut out = String::new();
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { data } => out.push_str(&String::from_utf8_lossy(&data)),
+                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                _ => {}
+            }
         }
-    }
-    let (uname, os_release) = match out.split_once("__TERMVAULT_OS_RELEASE__") {
-        Some((a, b)) => (a, b),
-        None => return None,
-    };
-    detect_os(uname, os_release).map(|os| os.to_string())
+        let (uname, os_release) = match out.split_once("__TERMVAULT_OS_RELEASE__") {
+            Some((a, b)) => (a, b),
+            None => return None,
+        };
+        detect_os(uname, os_release).map(|os| os.to_string())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]
@@ -497,7 +510,7 @@ pub async fn connect(
             }
         };
 
-        let mut channel = match session.channel_open_session().await {
+        let channel = match session.channel_open_session().await {
             Ok(c) => c,
             Err(e) => {
                 emit(&app_handle, "error", &e.to_string());
@@ -519,7 +532,8 @@ pub async fn connect(
             return;
         }
 
-        let (tx, mut rx) = mpsc::channel::<SessionCmd>(32);
+        let (mut read_half, write_half) = channel.split();
+        let (tx, rx) = mpsc::channel::<SessionCmd>(32);
         {
             let mut sessions = match sessions.lock() {
                 Ok(g) => g,
@@ -527,6 +541,20 @@ pub async fn connect(
             };
             sessions.insert(session_id.clone(), tx);
         }
+        let writer = tokio::spawn(async move {
+            let mut rx = rx;
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    SessionCmd::Input(bytes) => {
+                        let _ = write_half.data_bytes(bytes).await;
+                    }
+                    SessionCmd::Resize(cols, rows) => {
+                        let _ = write_half.window_change(cols, rows, 0, 0).await;
+                    }
+                    SessionCmd::Close => break,
+                }
+            }
+        });
 
         let _ = app_handle.emit(
             "ssh-output",
@@ -538,36 +566,32 @@ pub async fn connect(
             }),
         );
 
+        let mut pending: Vec<u8> = Vec::new();
         loop {
-            tokio::select! {
-                msg = channel.wait() => {
-                    let Some(msg) = msg else { break };
-                    match msg {
-                        russh::ChannelMsg::Data { data } => {
-                            let text = String::from_utf8_lossy(&data);
-                            if !text.is_empty() {
-                                emit(&app_handle, "output", &text);
-                            }
-                        }
-                        russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
-                        _ => {}
+            let Some(msg) = read_half.wait().await else { break };
+            match msg {
+                russh::ChannelMsg::Data { data } => {
+                    if data.is_empty() {
+                        continue;
+                    }
+                    pending.extend_from_slice(&data);
+                    let valid = std::str::from_utf8(&pending)
+                        .map(|s| s.len())
+                        .unwrap_or_else(|e| e.valid_up_to());
+                    if valid > 0 {
+                        emit(&app_handle, "output", &String::from_utf8_lossy(&pending[..valid]));
+                        pending.drain(..valid);
                     }
                 }
-                cmd = rx.recv() => {
-                    match cmd {
-                        Some(SessionCmd::Input(bytes)) => {
-                            let _ = channel.data_bytes(bytes).await;
-                        }
-                        Some(SessionCmd::Resize(cols, rows)) => {
-                            let _ = channel.window_change(cols, rows, 0, 0).await;
-                        }
-                        Some(SessionCmd::Close) | None => break,
-                    }
-                }
+                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                _ => {}
             }
         }
-
+        if !pending.is_empty() {
+            emit(&app_handle, "output", &String::from_utf8_lossy(&pending));
+        }
         let _ = sessions.lock().map(|mut g| g.remove(&session_id));
+        writer.abort();
         emit(&app_handle, "disconnected", "");
         // session handle drops here → connection closed
     });
@@ -632,11 +656,18 @@ pub async fn disconnect(
 
 #[tauri::command]
 pub async fn accept_host_key(
+    host: String,
+    port: u16,
     accepted: bool,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let senders = std::mem::take(&mut *state.pending_keys.lock().map_err(|e| e.to_string())?);
-    for tx in senders {
+    let key = format!("{host}:{port}");
+    let tx = state
+        .pending_keys
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&key);
+    if let Some(tx) = tx {
         let _ = tx.send(accepted);
     }
     Ok(())
