@@ -4,7 +4,6 @@ import { Terminal as XTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useHostStore } from "@/stores/hosts/hostStore";
-import { useKeyStore } from "@/stores/keys/keyStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import {
   type TerminalTheme,
@@ -92,54 +91,30 @@ async function connectViaTauri(session: Session) {
   update(params.tabId, params.paneId, "connecting");
 
   try {
-    let password: string | null = null;
-    let privateKey: string | null = null;
-    let passphrase: string | null = null;
-
-    let { hostAddress, hostPort, hostUsername } = params;
-    if (!hostAddress && params.hostId) {
-      const decrypted = await useHostStore
-        .getState()
-        .getDecryptedHost(params.hostId);
-      if (decrypted) {
-        hostAddress = decrypted.address;
-        hostPort = decrypted.port;
-        hostUsername = decrypted.username;
-      }
-    }
-
-    if (params.authType === "key" && params.keyId) {
-      const privKey = await useKeyStore
-        .getState()
-        .getCredentialsForKey(params.keyId);
-      if (privKey) {
-        privateKey = privKey;
-      }
-    } else {
-      const creds = await useHostStore
-        .getState()
-        .getCredentialsForHost(params.hostId);
-      if (creds.password) {
-        password = creds.password;
-      } else if (creds.privateKey) {
-        privateKey = creds.privateKey;
-        passphrase = creds.passphrase || null;
-      }
-    }
-
-    const hostOs = params.hostId
-      ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)?.os
+    const savedHost = params.hostId
+      ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)
       : undefined;
 
-    const config = {
-      host: hostAddress || "",
-      port: hostPort || 22,
-      username: hostUsername || "root",
-      password,
-      privateKey,
-      passphrase,
-      detectOs: !hostOs,
-    };
+    if (savedHost) {
+      await invoke("connect_saved", {
+        sessionId: params.paneId,
+        hostId: params.hostId,
+        detectOs: !savedHost.os,
+      });
+    } else {
+      // Direct (QuickConnect) connections have no saved host row — plaintext
+      // path stays, but these carry no stored credentials.
+      const config = {
+        host: params.hostAddress || "",
+        port: params.hostPort || 22,
+        username: params.hostUsername || "root",
+        password: null,
+        privateKey: null,
+        passphrase: null,
+        detectOs: true,
+      };
+      await invoke("connect", { sessionId: params.paneId, config });
+    }
 
     const unlistenHostKey = await listen<{
       host: string;
@@ -164,8 +139,6 @@ async function connectViaTauri(session: Session) {
     });
 
     session.unlistenHostKey = unlistenHostKey;
-
-    await invoke("connect", { sessionId: params.paneId, config });
 
     const unlisten = await listen<{
       sessionId: string;

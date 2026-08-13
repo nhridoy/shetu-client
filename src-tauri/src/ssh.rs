@@ -492,6 +492,34 @@ pub async fn connect(
     config: SshConfig,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
+    run_connect_session(app_handle, session_id, config, &state).await;
+    Ok(())
+}
+
+/// Connect to a saved host entirely in Rust: loads + decrypts the host and
+/// key rows, so no plaintext credentials ever cross the IPC boundary.
+#[tauri::command]
+pub async fn connect_saved(
+    app_handle: tauri::AppHandle,
+    session_id: String,
+    host_id: String,
+    detect_os: bool,
+    db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
+    state: tauri::State<'_, SshSessions>,
+) -> Result<(), String> {
+    let mut config = load_host_config(&db, &crypto, &host_id)?;
+    config.detect_os = detect_os;
+    run_connect_session(app_handle, session_id, config, &state).await;
+    Ok(())
+}
+
+async fn run_connect_session(
+    app_handle: tauri::AppHandle,
+    session_id: String,
+    config: SshConfig,
+    state: &SshSessions,
+) {
     let known_hosts = Arc::clone(&state.known_hosts);
     let pending_keys = Arc::clone(&state.pending_keys);
     let sessions = Arc::clone(&state.sessions);
@@ -655,7 +683,6 @@ pub async fn connect(
     });
     // Store inflight handle so disconnect can abort during probe/handshake
     inflight_for_insert.lock().ok().map(|mut g| g.insert(connect_session_id, handle));
-    Ok(())
 }
 
 #[tauri::command]

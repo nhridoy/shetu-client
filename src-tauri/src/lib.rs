@@ -929,6 +929,7 @@ pub fn run() {
             resize_local,
             disconnect_local,
             ssh::connect,
+            ssh::connect_saved,
             ssh::disconnect,
             ssh::send_input,
             ssh::resize,
