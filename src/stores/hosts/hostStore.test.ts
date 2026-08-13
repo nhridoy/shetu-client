@@ -459,4 +459,78 @@ describe("post-save os probe", () => {
     });
     expect(useHostStore.getState().error).toBeNull();
   });
+
+  it("updateHost probe uses new credentials after address edit", async () => {
+    useHostStore.setState({
+      hosts: [
+        {
+          id: "h3",
+          name: "old",
+          address: "1.2.3.4",
+          port: 22,
+          username: "root",
+          groupId: null,
+          tags: [],
+          color: "#64748b",
+          os: null,
+          sortOrder: 0,
+          createdAt: "1000",
+          updatedAt: "1000",
+          vaultId: "v1",
+          authType: "password",
+          data: "old-enc",
+        },
+      ],
+    });
+    mockGet.mockResolvedValue({
+      id: "h3",
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+      name: "old",
+      os: null,
+      sort_order: 0,
+      data: "old-enc",
+      tags: "[]",
+    });
+    mockDecrypt.mockImplementation(async (data: string) => {
+      if (data === "old-enc") {
+        return { address: "1.2.3.4", port: 22, username: "root", password: "old-pw" };
+      }
+      return { address: "10.0.0.5", port: 22, username: "root", password: "new-pw" };
+    });
+    mockUpsert.mockResolvedValue({
+      id: "h3",
+      revision: 2,
+      vault_id: "v1",
+      created_at: 1000,
+      updated_at: 2000,
+      deleted_at: null,
+      name: "old",
+      os: null,
+      sort_order: 0,
+      data: "new-enc",
+      tags: "[]",
+    });
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue({
+      reachable: true,
+      latency_ms: 12,
+      os: "debian",
+    });
+    await useHostStore
+      .getState()
+      .updateHost("h3", { address: "10.0.0.5", password: "new-pw" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalled();
+    });
+    const config = vi.mocked(invoke).mock.calls[0]?.[1] as { config: Record<string, unknown> };
+    expect(config.config.host).toBe("10.0.0.5");
+    expect(config.config.password).toBe("new-pw");
+    await vi.waitFor(() => {
+      expect(useHostStore.getState().hosts[0]?.os).toBe("debian");
+    });
+  });
 });

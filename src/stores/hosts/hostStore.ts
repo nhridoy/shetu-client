@@ -274,7 +274,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (patch.port !== undefined) sensitive.port = patch.port;
       if (patch.username !== undefined) sensitive.username = patch.username;
       if (patch.password !== undefined) sensitive.password = patch.password;
-      await upsertRow(
+      const saved = await upsertRow(
         "hosts",
         {
           id: row.id,
@@ -300,7 +300,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         },
       );
       set({
-        hosts: get().hosts.map((h) => (h.id === id ? { ...h, ...patch } : h)),
+        hosts: get().hosts.map((h) => (h.id === id ? { ...h, ...patch, data: saved.data } : h)),
         isLoading: false,
       });
       void probeHostOs(id);
