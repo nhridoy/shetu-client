@@ -136,6 +136,17 @@ async function probeHostOs(hostId: string): Promise<void> {
     if (result.os) {
       await hostStore.updateHostOs(hostId, result.os);
     }
+    const { useHostPingStore } = await import("@/stores/hosts/hostPingStore");
+    useHostPingStore.setState((s) => ({
+      pings: {
+        ...s.pings,
+        [hostId]: {
+          status: result.reachable ? "reachable" : "unreachable",
+          latencyMs: result.latency_ms ?? undefined,
+          os: result.os ?? undefined,
+        },
+      },
+    }));
   } catch {
     // Silent — connect-time detection covers failures
   }
