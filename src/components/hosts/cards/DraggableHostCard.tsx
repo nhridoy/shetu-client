@@ -53,15 +53,19 @@ export function DraggableHostCard({
       className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
     >
       <div
-        className="absolute top-0 left-0 w-40 h-40 -translate-x-6 -translate-y-6 rounded-full pointer-events-none"
+        className="absolute top-0 left-0 w-48 h-48 -translate-x-8 -translate-y-8 rounded-full pointer-events-none"
         style={{
-          background: `radial-gradient(circle at center, ${hostColor}80 0%, ${hostColor}30 40%, transparent 70%)`,
+          background: `radial-gradient(circle at 24px 24px, ${hostColor}50 0%, ${hostColor}15 30%, transparent 60%)`,
         }}
       />
       <div className="relative z-10 flex items-center gap-2.5">
         <div
-          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0 ring-2 ring-white/10"
-          style={{ backgroundColor: hostColor, color: "#fff" }}
+          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0 shadow-lg"
+          style={{
+            backgroundColor: hostColor,
+            color: "#fff",
+            boxShadow: `0 0 12px 2px ${hostColor}60`,
+          }}
         >
           {initial}
         </div>
@@ -115,8 +119,8 @@ export function DraggableHostCard({
         </div>
       )}
 
-      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
-        <OsIcon os={host.os} className="w-20 h-20 text-dark-400" />
+      <div className="absolute -bottom-2 -right-2 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity">
+        <OsIcon os={host.os} className="w-16 h-16 text-dark-400" />
       </div>
 
       <div className="absolute flex items-center gap-0.5 transition-opacity opacity-0 top-1.5 right-1.5 group-hover:opacity-100 z-20">
