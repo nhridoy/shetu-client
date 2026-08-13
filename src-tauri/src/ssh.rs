@@ -277,9 +277,15 @@ pub enum SessionCmd {
     Close,
 }
 
+pub struct SessionSlot {
+    pub cmd_tx: mpsc::Sender<SessionCmd>,
+    pub writer_handle: tokio::task::JoinHandle<()>,
+}
+
 pub struct SshSessions {
-    pub sessions: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCmd>>>>,
-    pub pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
+    pub inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    pub pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -287,6 +293,7 @@ impl SshSessions {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
             pending_keys: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(KnownHosts::load(&data_dir.join(KNOWN_HOSTS_FILE)))),
         }
@@ -299,7 +306,7 @@ struct SshHandler {
     session_id: String,
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
     auto_accept: bool,
 }
 
@@ -339,27 +346,34 @@ impl russh::client::Handler for SshHandler {
             .lock()
             .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
             .get_fingerprint(&host, port);
-        let key = self.session_id.clone();
+        let host_port_key = format!("{}:{}", host, port);
         let (tx, rx) = oneshot::channel();
-        self.pending_keys
-            .lock()
-            .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?
-            .insert(key.clone(), tx);
-        let _ = self.app.emit(
-            "ssh-host-key-changed",
-            serde_json::json!({
-                "host": host,
-                "port": port,
-                "sessionId": self.session_id.clone(),
-                "oldFingerprint": old.unwrap_or_default(),
-                "newFingerprint": fingerprint,
-            }),
-        );
+        {
+            let mut pending = self
+                .pending_keys
+                .lock()
+                .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?;
+            if let Some(existing) = pending.get_mut(&host_port_key) {
+                existing.push(tx);
+            } else {
+                pending.insert(host_port_key.clone(), vec![tx]);
+                let _ = self.app.emit(
+                    "ssh-host-key-changed",
+                    serde_json::json!({
+                        "host": host,
+                        "port": port,
+                        "sessionId": self.session_id.clone(),
+                        "oldFingerprint": old.unwrap_or_default(),
+                        "newFingerprint": fingerprint,
+                    }),
+                );
+            }
+        }
         let accepted = rx.await.ok().unwrap_or(false);
         self.pending_keys
             .lock()
             .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?
-            .remove(&key);
+            .remove(&host_port_key);
         if accepted {
             self.known_hosts
                 .lock()
@@ -431,7 +445,7 @@ async fn probe_os(
     session_id: String,
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
 ) -> Option<String> {
     let handler = SshHandler {
         host: config.host.clone(),
@@ -481,8 +495,11 @@ pub async fn connect(
     let known_hosts = Arc::clone(&state.known_hosts);
     let pending_keys = Arc::clone(&state.pending_keys);
     let sessions = Arc::clone(&state.sessions);
+    let inflight_for_spawn = Arc::clone(&state.inflight);
+    let inflight_for_insert = Arc::clone(&state.inflight);
     let sid = session_id.clone();
-    tokio::spawn(async move {
+    let connect_session_id = session_id.clone();
+    let handle = tokio::spawn(async move {
         let emit = |app: &tauri::AppHandle, type_: &str, data: &str| {
             let _ = app.emit(
                 "ssh-output",
@@ -546,15 +563,8 @@ pub async fn connect(
 
         let (mut read_half, write_half) = channel.split();
         let (tx, rx) = mpsc::channel::<SessionCmd>(32);
-        {
-            let mut sessions = match sessions.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            sessions.insert(session_id.clone(), tx);
-        }
         let (close_tx, close_rx) = oneshot::channel::<()>();
-        let writer = tokio::spawn(async move {
+        let writer_handle = tokio::spawn(async move {
             let mut close_tx = Some(close_tx);
             let mut rx = rx;
             while let Some(cmd) = rx.recv().await {
@@ -572,6 +582,18 @@ pub async fn connect(
                 let _ = tx.send(());
             }
         });
+        {
+            let mut sessions = match sessions.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            sessions.insert(
+                session_id.clone(),
+                SessionSlot { cmd_tx: tx, writer_handle },
+            );
+        }
+        // Remove from inflight now that session is fully established
+        inflight_for_spawn.lock().ok().map(|mut g| g.remove(&session_id));
 
         let _ = app_handle.emit(
             "ssh-output",
@@ -624,11 +646,15 @@ pub async fn connect(
         if !pending.is_empty() {
             emit(&app_handle, "output", &String::from_utf8_lossy(&pending));
         }
-        let _ = sessions.lock().map(|mut g| g.remove(&session_id));
-        writer.abort();
+        // Remove session slot and abort writer
+        if let Some(slot) = sessions.lock().ok().and_then(|mut g| g.remove(&session_id)) {
+            slot.writer_handle.abort();
+        }
         emit(&app_handle, "disconnected", "");
         // session handle drops here → connection closed
     });
+    // Store inflight handle so disconnect can abort during probe/handshake
+    inflight_for_insert.lock().ok().map(|mut g| g.insert(connect_session_id, handle));
     Ok(())
 }
 
@@ -643,7 +669,7 @@ pub async fn send_input(
         .lock()
         .map_err(|e| e.to_string())?
         .get(&session_id)
-        .cloned();
+        .map(|s| s.cmd_tx.clone());
     if let Some(tx) = tx {
         tx.send(SessionCmd::Input(data.into_bytes()))
             .await
@@ -664,7 +690,7 @@ pub async fn resize(
         .lock()
         .map_err(|e| e.to_string())?
         .get(&session_id)
-        .cloned();
+        .map(|s| s.cmd_tx.clone());
     if let Some(tx) = tx {
         tx.send(SessionCmd::Resize(cols as u32, rows as u32))
             .await
@@ -678,34 +704,44 @@ pub async fn disconnect(
     session_id: String,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let tx = {
-        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(&session_id)
-    };
-    if let Some(tx) = tx {
-        let _ = tx.send(SessionCmd::Close).await;
-    }
-    let _ = state
-        .pending_keys
+    // Abort inflight connection attempt (during probe/handshake)
+    if let Some(handle) = state
+        .inflight
         .lock()
         .map_err(|e| e.to_string())?
-        .remove(&session_id);
+        .remove(&session_id)
+    {
+        handle.abort();
+    }
+    // Abort writer + remove established session
+    if let Some(slot) = state
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&session_id)
+    {
+        slot.writer_handle.abort();
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn accept_host_key(
-    session_id: String,
+    host: String,
+    port: u16,
     accepted: bool,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let tx = state
+    let host_port_key = format!("{}:{}", host, port);
+    let senders = state
         .pending_keys
         .lock()
         .map_err(|e| e.to_string())?
-        .remove(&session_id);
-    if let Some(tx) = tx {
-        let _ = tx.send(accepted);
+        .remove(&host_port_key);
+    if let Some(senders) = senders {
+        for tx in senders {
+            let _ = tx.send(accepted);
+        }
     }
     Ok(())
 }

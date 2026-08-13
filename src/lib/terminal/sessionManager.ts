@@ -160,7 +160,7 @@ async function connectViaTauri(session: Session) {
         { title: "Security Warning", kind: "warning" },
       );
 
-      await invoke("accept_host_key", { sessionId, accepted: confirmed });
+      await invoke("accept_host_key", { host, port, accepted: confirmed });
     });
 
     session.unlistenHostKey = unlistenHostKey;
