@@ -5,8 +5,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const mockHostStore = vi.hoisted(() => ({
-  getDecryptedHost: vi.fn(),
-  getCredentialsForHost: vi.fn(),
   updateHostOs: vi.fn(),
 }));
 
@@ -26,15 +24,17 @@ describe("hostPingStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useHostPingStore.setState({ pings: {} });
-    mockHostStore.getDecryptedHost.mockResolvedValue({
-      address: "1.2.3.4",
-      port: 22,
-      username: "root",
+  });
+
+  it("pings via rust-side command with only the host id", async () => {
+    mockInvoke.mockResolvedValue({
+      reachable: true,
+      latency_ms: 23,
+      os: "ubuntu",
     });
-    mockHostStore.getCredentialsForHost.mockResolvedValue({
-      password: "pw",
-      privateKey: "",
-      passphrase: "",
+    await useHostPingStore.getState().ping("h1");
+    expect(mockInvoke).toHaveBeenCalledWith("ping_host_saved", {
+      hostId: "h1",
     });
   });
 
@@ -61,13 +61,6 @@ describe("hostPingStore", () => {
     await useHostPingStore.getState().ping("h1");
     expect(useHostPingStore.getState().pings.h1.status).toBe("unreachable");
     expect(mockHostStore.updateHostOs).not.toHaveBeenCalled();
-  });
-
-  it("host without address is unreachable without invoking", async () => {
-    mockHostStore.getDecryptedHost.mockResolvedValue(null);
-    await useHostPingStore.getState().ping("h1");
-    expect(useHostPingStore.getState().pings.h1.status).toBe("unreachable");
-    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it("invoke failure degrades to unreachable", async () => {

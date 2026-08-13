@@ -747,13 +747,15 @@ pub async fn accept_host_key(
 }
 
 #[tauri::command]
-pub async fn ping_host(
+pub async fn ping_host_saved(
     app_handle: tauri::AppHandle,
-    config: SshConfig,
-    timeout_ms: Option<u64>,
+    host_id: String,
+    db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<PingResult, String> {
-    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(2000));
+    let config = load_host_config(&db, &crypto, &host_id)?;
+    let timeout = std::time::Duration::from_millis(2000);
     let start = std::time::Instant::now();
     let addr = resolve_addr(&config.host, config.port).await?;
     let connected = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
@@ -773,4 +775,43 @@ pub async fn ping_host(
     )
     .await;
     Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
+}
+
+/// Build the SSH config entirely in Rust from the saved (encrypted) host +
+/// key rows. Sensitive material never crosses the IPC boundary.
+fn load_host_config(
+    db: &crate::db::LocalDb,
+    crypto: &crate::CryptoState,
+    host_id: &str,
+) -> Result<SshConfig, String> {
+    let row = crate::db::get_sync_row(db, crate::db::Table::Hosts, host_id)?
+        .ok_or_else(|| "host not found".to_string())?;
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    let plaintext = crate::crypto::decrypt_secret(&row.data, &session)?;
+    drop(session);
+    let payload: serde_json::Value =
+        serde_json::from_str(&plaintext).map_err(|e| format!("bad host payload: {e}"))?;
+    let mut config = SshConfig {
+        host: payload["address"].as_str().unwrap_or_default().to_string(),
+        port: payload["port"].as_u64().unwrap_or(22) as u16,
+        username: payload["username"].as_str().unwrap_or("root").to_string(),
+        password: payload["password"].as_str().map(String::from),
+        private_key: None,
+        passphrase: None,
+        detect_os: false,
+    };
+    if row.auth_type.as_deref() == Some("key") {
+        if let Some(key_id) = row.key_id.as_deref() {
+            let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
+                .ok_or_else(|| "key not found".to_string())?;
+            let session = crypto.session.lock().map_err(|e| e.to_string())?;
+            let key_plain = crate::crypto::decrypt_secret(&key_row.data, &session)?;
+            drop(session);
+            let key_payload: serde_json::Value = serde_json::from_str(&key_plain)
+                .map_err(|e| format!("bad key payload: {e}"))?;
+            config.private_key = key_payload["privateKey"].as_str().map(String::from);
+            config.passphrase = key_payload["passphrase"].as_str().map(String::from);
+        }
+    }
+    Ok(config)
 }

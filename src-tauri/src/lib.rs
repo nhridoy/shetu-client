@@ -933,7 +933,7 @@ pub fn run() {
             ssh::send_input,
             ssh::resize,
             ssh::accept_host_key,
-            ssh::ping_host,
+            ssh::ping_host_saved,
             oauth::bind_oauth_listener,
             oauth::await_oauth_callback,
             oauth::cancel_oauth_listener,

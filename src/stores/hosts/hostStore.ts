@@ -128,23 +128,11 @@ async function probeHostOs(hostId: string): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const hostStore = useHostStore.getState();
-    const host = await hostStore.getDecryptedHost(hostId);
-    if (!host?.address) return;
-    const creds = await hostStore.getCredentialsForHost(hostId);
     const result = await invoke<{
       reachable: boolean;
       latency_ms: number | null;
       os: string | null;
-    }>("ping_host", {
-      config: {
-        host: host.address,
-        port: host.port,
-        username: host.username ?? "root",
-        password: creds.password,
-        privateKey: creds.privateKey,
-        passphrase: creds.passphrase,
-      },
-    });
+    }>("ping_host_saved", { hostId });
     if (result.os) {
       await hostStore.updateHostOs(hostId, result.os);
     }

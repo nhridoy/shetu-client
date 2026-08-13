@@ -402,12 +402,6 @@ describe("post-save os probe", () => {
       data: "enc",
       tags: "[]",
     });
-    mockDecrypt.mockResolvedValue({
-      address: "1.2.3.4",
-      port: 22,
-      username: "root",
-      password: "pw",
-    });
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockResolvedValue({
       reachable: true,
@@ -419,13 +413,8 @@ describe("post-save os probe", () => {
       .getState()
       .createHost({ name: "x", address: "1.2.3.4", port: 22, username: "root", password: "pw" });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("ping_host", expect.anything());
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h1" });
     });
-    const config = vi.mocked(invoke).mock.calls[0]?.[1] as { config: Record<string, unknown> };
-    expect(config.config.host).toBe("1.2.3.4");
-    expect(config.config.port).toBe(22);
-    expect(config.config.username).toBe("root");
-    expect(config.config.password).toBe("pw");
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("ubuntu");
     });
@@ -445,12 +434,6 @@ describe("post-save os probe", () => {
       data: "enc",
       tags: "[]",
     });
-    mockDecrypt.mockResolvedValue({
-      address: "9.9.9.9",
-      port: 22,
-      username: "root",
-      password: "pw",
-    });
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockRejectedValue(new Error("boom"));
     await useHostStore.getState().createHost({ name: "y", address: "9.9.9.9" });
@@ -460,7 +443,7 @@ describe("post-save os probe", () => {
     expect(useHostStore.getState().error).toBeNull();
   });
 
-  it("updateHost probe uses new credentials after address edit", async () => {
+  it("updateHost fires a background probe with the host id", async () => {
     useHostStore.setState({
       hosts: [
         {
@@ -524,11 +507,8 @@ describe("post-save os probe", () => {
       .getState()
       .updateHost("h3", { address: "10.0.0.5", password: "new-pw" });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h3" });
     });
-    const config = vi.mocked(invoke).mock.calls[0]?.[1] as { config: Record<string, unknown> };
-    expect(config.config.host).toBe("10.0.0.5");
-    expect(config.config.password).toBe("new-pw");
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("debian");
     });
