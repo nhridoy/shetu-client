@@ -12,6 +12,9 @@ vi.mock("../keys/keyStore", () => ({
     getState: () => ({ getCredentialsForKey: vi.fn(async () => "PRIVATE") }),
   },
 }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
 
 import { decryptRowData } from "../../lib/crypto/crypto";
 import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
@@ -381,5 +384,79 @@ describe("hostStore", () => {
     await useHostStore.getState().deleteGroup("g1");
     expect(mockDelete).toHaveBeenCalledWith("groups", "g1");
     expect(useHostStore.getState().groups).toEqual([]);
+  });
+});
+
+describe("post-save os probe", () => {
+  it("createHost fires a background probe and persists the detected os", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "h1",
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+      name: "x",
+      os: null,
+      sort_order: 0,
+      data: "enc",
+      tags: "[]",
+    });
+    mockDecrypt.mockResolvedValue({
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+      password: "pw",
+    });
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValue({
+      reachable: true,
+      latency_ms: 12,
+      os: "ubuntu",
+    });
+    useVaultStore.setState({ currentVaultId: "v1" });
+    await useHostStore
+      .getState()
+      .createHost({ name: "x", address: "1.2.3.4", port: 22, username: "root", password: "pw" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("ping_host", expect.anything());
+    });
+    const config = vi.mocked(invoke).mock.calls[0]?.[1] as { config: Record<string, unknown> };
+    expect(config.config.host).toBe("1.2.3.4");
+    expect(config.config.port).toBe(22);
+    expect(config.config.username).toBe("root");
+    expect(config.config.password).toBe("pw");
+    await vi.waitFor(() => {
+      expect(useHostStore.getState().hosts[0]?.os).toBe("ubuntu");
+    });
+  });
+
+  it("swallows probe failures without setting an error", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "h2",
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1000,
+      updated_at: 1000,
+      deleted_at: null,
+      name: "y",
+      os: null,
+      sort_order: 0,
+      data: "enc",
+      tags: "[]",
+    });
+    mockDecrypt.mockResolvedValue({
+      address: "9.9.9.9",
+      port: 22,
+      username: "root",
+      password: "pw",
+    });
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValue(new Error("boom"));
+    await useHostStore.getState().createHost({ name: "y", address: "9.9.9.9" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalled();
+    });
+    expect(useHostStore.getState().error).toBeNull();
   });
 });

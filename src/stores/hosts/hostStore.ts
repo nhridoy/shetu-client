@@ -124,6 +124,35 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+async function probeHostOs(hostId: string): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const hostStore = useHostStore.getState();
+    const host = await hostStore.getDecryptedHost(hostId);
+    if (!host?.address) return;
+    const creds = await hostStore.getCredentialsForHost(hostId);
+    const result = await invoke<{
+      reachable: boolean;
+      latency_ms: number | null;
+      os: string | null;
+    }>("ping_host", {
+      config: {
+        host: host.address,
+        port: host.port,
+        username: host.username ?? "root",
+        password: creds.password,
+        privateKey: creds.privateKey,
+        passphrase: creds.passphrase,
+      },
+    });
+    if (result.os) {
+      await hostStore.updateHostOs(hostId, result.os);
+    }
+  } catch {
+    // Silent — connect-time detection covers failures
+  }
+}
+
 export const useHostStore = create<HostState>((set, get) => ({
   hosts: [],
   groups: [],
@@ -219,8 +248,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         authType: host.authType ?? "password",
         password: undefined,
         keyId: host.keyId ?? undefined,
+        data: row.data,
       };
       set({ hosts: [created, ...get().hosts], isLoading: false });
+      void probeHostOs(created.id);
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
     }
@@ -272,6 +303,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         hosts: get().hosts.map((h) => (h.id === id ? { ...h, ...patch } : h)),
         isLoading: false,
       });
+      void probeHostOs(id);
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
     }
