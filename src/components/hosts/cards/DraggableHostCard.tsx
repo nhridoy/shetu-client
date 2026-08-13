@@ -40,74 +40,74 @@ export function DraggableHostCard({
   const deleteDialog = useModal();
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: contains nested <button> elements for edit/delete
+    // biome-ignore lint/a11y/useSemanticElements: contains nested <button> elements
     <div
       ref={ref}
       role="button"
       tabIndex={0}
       onClick={() => onConnect(host)}
       onKeyDown={accessibleClickHandler(() => onConnect(host))}
-      className={`relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
+      className={`relative flex items-center gap-3 p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
     >
-      <div className="flex items-center gap-2">
-        <div
-          className="w-2.5 h-2.5 rounded-full shrink-0"
-          style={{ backgroundColor: host.color || "#64748b" }}
-        />
-        <span className="text-sm font-medium text-white truncate">
-          {host.name}
-        </span>
-      </div>
-      <p className="flex items-center gap-1.5 text-dark-500 text-xs mt-1 ml-[18px] truncate">
-        <OsIcon os={host.os} className="w-3 h-3 shrink-0" />
-        <span className="capitalize">{osMeta(host.os).name}</span>
-        <span className="text-dark-600">•</span>
-        <span>SSH</span>
-        <span className="text-dark-600">•</span>
-        <span className="shrink-0">
-          {formatRelativeTime(Number(host.createdAt))}
-        </span>
-      </p>
-      {pingState && (
-        <p className="flex items-center gap-1.5 text-xs mt-1 ml-[18px]">
-          {pingState.status === "pinging" && (
-            <>
-              <CircleNotchIcon className="w-3 h-3 animate-spin shrink-0" />
-              <span className="text-dark-500">Checking…</span>
-            </>
-          )}
-          {pingState.status === "reachable" && (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-              <span className="text-emerald-400">
-                {pingState.latencyMs != null
-                  ? `${pingState.latencyMs} ms`
-                  : "Reachable"}
-              </span>
-              {pingState.os && (
-                <>
-                  <span className="text-dark-600">•</span>
-                  <OsIcon os={pingState.os} className="w-3 h-3 shrink-0" />
-                </>
-              )}
-            </>
-          )}
-          {pingState.status === "unreachable" && (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-              <span className="text-red-400">Unreachable</span>
-            </>
-          )}
-        </p>
-      )}
-      {host.tags.length > 0 && (
-        <div className="flex gap-1 mt-1.5 ml-[18px]">
-          {[...new Set(host.tags)].slice(0, 3).map((tag) => (
-            <Badge key={tag}>{tag}</Badge>
-          ))}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-white truncate">
+            {host.name}
+          </span>
         </div>
-      )}
-      <div className="absolute flex items-center gap-1 transition-opacity opacity-0 top-2 right-2 group-hover:opacity-100">
+
+        <p className="flex items-center gap-1.5 text-dark-500 text-xs mt-0.5">
+          <OsIcon os={host.os} className="w-3 h-3 shrink-0" />
+          <span className="capitalize">{osMeta(host.os).name}</span>
+          <span className="text-dark-600">•</span>
+          <span>SSH</span>
+          <span className="text-dark-600">•</span>
+          <span className="shrink-0">
+            {formatRelativeTime(Number(host.createdAt))}
+          </span>
+        </p>
+
+        {pingState && (
+          <p className="flex items-center gap-1.5 text-xs mt-1">
+            {pingState.status === "pinging" && (
+              <>
+                <CircleNotchIcon className="w-3 h-3 animate-spin shrink-0 text-dark-500" />
+                <span className="text-dark-500">Checking…</span>
+              </>
+            )}
+            {pingState.status === "reachable" && (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <span className="text-emerald-400">
+                  {pingState.latencyMs != null
+                    ? `Reachable · ${pingState.latencyMs}ms`
+                    : "Reachable"}
+                </span>
+              </>
+            )}
+            {pingState.status === "unreachable" && (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                <span className="text-red-400">Unreachable</span>
+              </>
+            )}
+          </p>
+        )}
+
+        {host.tags.length > 0 && (
+          <div className="flex gap-1 mt-1.5">
+            {[...new Set(host.tags)].slice(0, 3).map((tag) => (
+              <Badge key={tag}>{tag}</Badge>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-center w-12 h-12 rounded-full bg-dark-700/50 shrink-0">
+        <OsIcon os={host.os} className="w-7 h-7 text-dark-400" />
+      </div>
+
+      <div className="absolute flex items-center gap-0.5 transition-opacity opacity-0 top-1.5 right-1.5 group-hover:opacity-100">
         <Button
           type="button"
           onClick={(e) => {
