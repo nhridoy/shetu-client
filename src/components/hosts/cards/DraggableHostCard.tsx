@@ -88,7 +88,7 @@ export function DraggableHostCard({
         {!pingState && (
           <>
             <span className="w-1.5 h-1.5 rounded-full bg-dark-600 shrink-0" />
-            <span className="text-dark-500">Pending…</span>
+            <span className="text-dark-600">—</span>
           </>
         )}
         {pingState?.status === "pinging" && (
