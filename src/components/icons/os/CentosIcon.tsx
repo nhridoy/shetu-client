@@ -1,6 +1,6 @@
 import type { FC, SVGProps } from "react";
 
-const CentosIcon: FC<SVGProps<SVGElement>> = (props) => (
+const CentosIcon: FC<SVGProps<SVGSVGElement>> = (props) => (
   <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
     <path
       d="M59.033 64.192l-27.305 26.66-27.302-26.66 27.302-26.651zm0 0"

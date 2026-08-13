@@ -472,7 +472,7 @@ describe("post-save os probe", () => {
           groupId: null,
           tags: [],
           color: "#64748b",
-          os: null,
+          os: undefined,
           sortOrder: 0,
           createdAt: "1000",
           updatedAt: "1000",
