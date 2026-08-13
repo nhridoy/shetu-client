@@ -5,6 +5,7 @@ mod crypto;
 mod db;
 mod http;
 mod oauth;
+mod ssh;
 
 use std::collections::{HashMap, BTreeMap};
 use std::ffi::OsString;
