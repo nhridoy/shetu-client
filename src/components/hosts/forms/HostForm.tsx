@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useTransition } from "react";
+import { useEffect, useTransition } from "react";
 import { Controller, useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
 export interface HostData {
@@ -40,7 +41,13 @@ export default function HostForm({
 }: HostFormProps) {
   const { createHost, updateHost, groups } = useHostStore();
   const { currentVaultId } = useVaultStore();
+  const keys = useKeyStore((s) => s.keys);
+  const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    fetchKeys(currentVaultId ?? undefined);
+  }, [fetchKeys, currentVaultId]);
 
   const { control, handleSubmit, watch, reset } = useForm<HostFormSchema>({
     resolver: zodResolver(hostFormSchema),
@@ -207,7 +214,10 @@ export default function HostForm({
           name="keyId"
           label="SSH Key"
           control={control}
-          options={[{ value: "", label: "Select a key" }]}
+          options={[
+            { value: "", label: "Select a key" },
+            ...keys.map((key) => ({ value: key.id, label: key.name })),
+          ]}
           required
         />
       )}
