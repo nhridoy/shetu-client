@@ -21,11 +21,12 @@ export const useHostPingStore = create<HostPingState>((set) => ({
     set((s) => ({ pings: { ...s.pings, [hostId]: { status: "pinging" } } }));
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      const hostOs = useHostStore.getState().hosts.find((h) => h.id === hostId)?.os;
       const result = await invoke<{
         reachable: boolean;
         latency_ms: number | null;
         os: string | null;
-      }>("ping_host_saved", { hostId });
+      }>("ping_host_saved", { hostId, detectOs: !hostOs });
       if (result.reachable) {
         if (result.os) {
           void useHostStore.getState().updateHostOs(hostId, result.os);

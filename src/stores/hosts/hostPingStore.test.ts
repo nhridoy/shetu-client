@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const mockHostStore = vi.hoisted(() => ({
+  hosts: [],
   updateHostOs: vi.fn(),
 }));
 
@@ -35,6 +36,7 @@ describe("hostPingStore", () => {
     await useHostPingStore.getState().ping("h1");
     expect(mockInvoke).toHaveBeenCalledWith("ping_host_saved", {
       hostId: "h1",
+      detectOs: true,
     });
   });
 

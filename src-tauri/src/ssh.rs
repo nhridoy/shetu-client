@@ -777,11 +777,13 @@ pub async fn accept_host_key(
 pub async fn ping_host_saved(
     app_handle: tauri::AppHandle,
     host_id: String,
+    detect_os: bool,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<PingResult, String> {
-    let config = load_host_config(&db, &crypto, &host_id)?;
+    let mut config = load_host_config(&db, &crypto, &host_id)?;
+    config.detect_os = detect_os;
     let timeout = std::time::Duration::from_millis(2000);
     let start = std::time::Instant::now();
     let addr = resolve_addr(&config.host, config.port).await?;
@@ -793,14 +795,18 @@ pub async fn ping_host_saved(
         }
     }
     let latency_ms = start.elapsed().as_millis() as u64;
-    let os = probe_os(
-        app_handle,
-        "-".to_string(),
-        &config,
-        Arc::clone(&state.known_hosts),
-        Arc::clone(&state.pending_keys),
-    )
-    .await;
+    let os = if config.detect_os {
+        probe_os(
+            app_handle,
+            "-".to_string(),
+            &config,
+            Arc::clone(&state.known_hosts),
+            Arc::clone(&state.pending_keys),
+        )
+        .await
+    } else {
+        None
+    };
     Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
 }
 

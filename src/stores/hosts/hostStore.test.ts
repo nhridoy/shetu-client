@@ -142,7 +142,20 @@ describe("hostStore", () => {
     expect(host?.address).toBe("1.2.3.4");
   });
 
-  it("updateHostOs writes only the plaintext os column", async () => {
+  it("updateHostOs fetches the row and writes the plaintext os column", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1,
+      updated_at: 1,
+      deleted_at: null,
+      name: "prod",
+      os: null,
+      sort_order: 0,
+      data: "enc",
+      tags: "[]",
+    });
     mockUpsert.mockResolvedValue({
       id: "h1",
       revision: 2,
@@ -150,6 +163,7 @@ describe("hostStore", () => {
       created_at: 1,
       updated_at: 2,
       deleted_at: null,
+      name: "prod",
       sort_order: 0,
       data: "enc",
     });
@@ -170,11 +184,10 @@ describe("hostStore", () => {
       ],
     });
     await useHostStore.getState().updateHostOs("h1", "linux");
-    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockGet).toHaveBeenCalledWith("hosts", "h1");
     expect(mockUpsert).toHaveBeenCalledWith(
       "hosts",
-      expect.objectContaining({ id: "h1", vault_id: "v1", os: "linux" }),
-      {},
+      expect.objectContaining({ id: "h1", name: "prod", os: "linux" }),
     );
     expect(useHostStore.getState().hosts[0].os).toBe("linux");
   });
@@ -413,7 +426,7 @@ describe("post-save os probe", () => {
       .getState()
       .createHost({ name: "x", address: "1.2.3.4", port: 22, username: "root", password: "pw" });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h1" });
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h1", detectOs: true });
     });
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("ubuntu");
@@ -507,7 +520,7 @@ describe("post-save os probe", () => {
       .getState()
       .updateHost("h3", { address: "10.0.0.5", password: "new-pw" });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h3" });
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h3", detectOs: true });
     });
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("debian");

@@ -132,7 +132,7 @@ async function probeHostOs(hostId: string): Promise<void> {
       reachable: boolean;
       latency_ms: number | null;
       os: string | null;
-    }>("ping_host_saved", { hostId });
+    }>("ping_host_saved", { hostId, detectOs: true });
     if (result.os) {
       await hostStore.updateHostOs(hostId, result.os);
     }
@@ -335,24 +335,12 @@ export const useHostStore = create<HostState>((set, get) => ({
 
   updateHostOs: async (hostId, os) => {
     try {
-      const cached = get().hosts.find((h) => h.id === hostId);
-      let vaultId = cached?.vaultId;
-      if (vaultId == null) {
-        const row = await getRow("hosts", hostId);
-        if (!row) {
-          return;
-        }
-        vaultId = row.vault_id;
-      }
-      await upsertRow(
-        "hosts",
-        {
-          id: hostId,
-          vault_id: vaultId,
-          os,
-        },
-        {},
-      );
+      const row = await getRow("hosts", hostId);
+      if (!row) return;
+      await upsertRow("hosts", {
+        ...row,
+        os,
+      });
       set({
         hosts: get().hosts.map((h) => (h.id === hostId ? { ...h, os } : h)),
       });
