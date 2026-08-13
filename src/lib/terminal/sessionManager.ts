@@ -127,6 +127,10 @@ async function connectViaTauri(session: Session) {
       }
     }
 
+    const hostOs = params.hostId
+      ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)?.os
+      : undefined;
+
     const config = {
       host: hostAddress || "",
       port: hostPort || 22,
@@ -134,6 +138,7 @@ async function connectViaTauri(session: Session) {
       password,
       privateKey,
       passphrase,
+      detectOs: !hostOs,
     };
 
     const unlistenHostKey = await listen<{
