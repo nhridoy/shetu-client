@@ -519,18 +519,6 @@ async fn copy_files_with_progress(
     Ok(errors)
 }
 
-#[derive(Default, Clone, serde::Deserialize)]
-struct SshConfig {
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    passphrase: Option<String>,
-}
-
-use std::process::{Child, Command, Stdio};
-
 pub struct LocalSessions {
     pub ptys: Mutex<HashMap<String, Arc<Mutex<PtyPair>>>>,
     pub writers: Mutex<HashMap<String, Arc<Mutex<Box<dyn Write + Send>>>>>,
@@ -736,60 +724,6 @@ async fn disconnect_local(
     Ok(())
 }
 
-#[tauri::command]
-async fn connect(
-    session_id: String,
-    config: SshConfig,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    // Basic SSH stub: emit connected then a simulated output, then disconnected
-    let sid = session_id.clone();
-    let handle = app_handle.clone();
-    tokio::spawn(async move {
-        let _ = handle.emit(
-            "ssh-output",
-            serde_json::json!({"sessionId": sid.clone(), "type": "connected", "data": ""}),
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        let _ = handle.emit(
-            "ssh-output",
-            serde_json::json!({"sessionId": sid.clone(), "type": "output", "data": "\r\nConnected to remote host\r\n"}),
-        );
-    });
-    Ok(())
-}
-
-#[tauri::command]
-async fn disconnect(
-    session_id: String,
-) -> Result<(), String> {
-    Ok(())
-}
-
-#[tauri::command]
-async fn send_input(
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    Ok(())
-}
-
-#[tauri::command]
-async fn resize(
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    Ok(())
-}
-
-#[tauri::command]
-async fn accept_host_key(
-    accepted: bool,
-) -> Result<(), String> {
-    Ok(())
-}
-
 fn get_or_create_device_id() -> String {
     let dirs = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let path = dirs.join("termvault").join("device_id");
@@ -968,6 +902,11 @@ pub fn run() {
             killers: Mutex::new(HashMap::new()),
             children: Mutex::new(HashMap::new()),
         })
+        .manage(ssh::SshSessions::new(
+            dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("termvault"),
+        ))
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
             get_device_id,
@@ -989,11 +928,12 @@ pub fn run() {
             send_input_local,
             resize_local,
             disconnect_local,
-            connect,
-            disconnect,
-            send_input,
-            resize,
-            accept_host_key,
+            ssh::connect,
+            ssh::disconnect,
+            ssh::send_input,
+            ssh::resize,
+            ssh::accept_host_key,
+            ssh::ping_host,
             oauth::bind_oauth_listener,
             oauth::await_oauth_callback,
             oauth::cancel_oauth_listener,
