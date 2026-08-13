@@ -53,15 +53,15 @@ export function DraggableHostCard({
       className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "ring-2 ring-primary-500" : ""}`}
     >
       <div
-        className="absolute top-0 left-0 w-32 h-32 -translate-x-4 -translate-y-4 rounded-full pointer-events-none opacity-30"
+        className="absolute top-0 left-0 w-40 h-40 -translate-x-6 -translate-y-6 rounded-full pointer-events-none"
         style={{
-          background: `radial-gradient(circle at center, ${hostColor}40 0%, transparent 70%)`,
+          background: `radial-gradient(circle at center, ${hostColor}80 0%, ${hostColor}30 40%, transparent 70%)`,
         }}
       />
-      <div className="relative z-10 flex items-center gap-2">
+      <div className="relative z-10 flex items-center gap-2.5">
         <div
-          className="flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold shrink-0"
-          style={{ backgroundColor: host.color || "#64748b", color: "#fff" }}
+          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0 ring-2 ring-white/10"
+          style={{ backgroundColor: hostColor, color: "#fff" }}
         >
           {initial}
         </div>
