@@ -60,11 +60,11 @@ export function DraggableHostCard({
       />
       <div className="relative z-10 flex items-center gap-2.5">
         <div
-          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0 shadow-lg"
+          className="flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold shrink-0"
           style={{
-            backgroundColor: hostColor,
-            color: "#fff",
-            boxShadow: `0 0 12px 2px ${hostColor}60`,
+            backgroundColor: `${hostColor}33`,
+            color: hostColor,
+            border: `1px solid ${hostColor}`,
           }}
         >
           {initial}
@@ -119,8 +119,8 @@ export function DraggableHostCard({
         </div>
       )}
 
-      <div className="absolute -bottom-2 -right-2 pointer-events-none opacity-10 group-hover:opacity-20 transition-opacity">
-        <OsIcon os={host.os} className="w-16 h-16 text-dark-400" />
+      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
+        <OsIcon os={host.os} className="w-20 h-20 text-dark-400" />
       </div>
 
       <div className="absolute flex items-center gap-0.5 transition-opacity opacity-0 top-1.5 right-1.5 group-hover:opacity-100 z-20">
