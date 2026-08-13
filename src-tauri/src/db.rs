@@ -693,7 +693,7 @@ pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_delete
         ""
     };
     let sql = format!(
-        "SELECT {envelope}, {cols} FROM {t} {where_clause} ORDER BY sort_order, created_at",
+        "SELECT {envelope}, {cols} FROM {t} {where_clause} ORDER BY sort_order, created_at DESC",
         envelope = ENVELOPE_COLS_SELECT, t = table.as_str(), cols = cols, where_clause = where_clause,
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;

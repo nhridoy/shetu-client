@@ -171,9 +171,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const rows = await listRows("hosts", vid);
-      const hosts = rows
-        .map((row) => hostFromRow(row))
-        .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+      const hosts = rows.map((row) => hostFromRow(row));
       set({ hosts, isLoading: false });
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
