@@ -84,32 +84,36 @@ export function DraggableHostCard({
         </span>
       </p>
 
-      {pingState && (
-        <p className="relative z-10 flex items-center gap-1.5 text-xs mt-1">
-          {pingState.status === "pinging" && (
-            <>
-              <CircleNotchIcon className="w-3 h-3 animate-spin shrink-0 text-dark-500" />
-              <span className="text-dark-500">Checking…</span>
-            </>
-          )}
-          {pingState.status === "reachable" && (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-              <span className="text-emerald-400">
-                {pingState.latencyMs != null
-                  ? `Reachable · ${pingState.latencyMs}ms`
-                  : "Reachable"}
-              </span>
-            </>
-          )}
-          {pingState.status === "unreachable" && (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-              <span className="text-red-400">Unreachable</span>
-            </>
-          )}
-        </p>
-      )}
+      <p className="relative z-10 flex items-center gap-1.5 text-xs mt-1">
+        {!pingState && (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full bg-dark-600 shrink-0" />
+            <span className="text-dark-500">Pending…</span>
+          </>
+        )}
+        {pingState?.status === "pinging" && (
+          <>
+            <CircleNotchIcon className="w-3 h-3 animate-spin shrink-0 text-dark-500" />
+            <span className="text-dark-500">Checking…</span>
+          </>
+        )}
+        {pingState?.status === "reachable" && (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+            <span className="text-emerald-400">
+              {pingState.latencyMs != null
+                ? `Reachable · ${pingState.latencyMs}ms`
+                : "Reachable"}
+            </span>
+          </>
+        )}
+        {pingState?.status === "unreachable" && (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+            <span className="text-red-400">Unreachable</span>
+          </>
+        )}
+      </p>
 
       {host.tags.length > 0 && (
         <div className="relative z-10 flex gap-1 mt-1.5">
