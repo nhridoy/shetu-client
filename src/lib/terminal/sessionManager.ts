@@ -139,10 +139,12 @@ async function connectViaTauri(session: Session) {
     const unlistenHostKey = await listen<{
       host: string;
       port: number;
+      sessionId: string;
       oldFingerprint: string;
       newFingerprint: string;
     }>("ssh-host-key-changed", async (event) => {
-      const { host, port, oldFingerprint, newFingerprint } = event.payload;
+      const { host, port, sessionId, oldFingerprint, newFingerprint } =
+        event.payload;
 
       const confirmed = await confirm(
         `SSH Host Key Changed!\n\n` +
@@ -153,7 +155,7 @@ async function connectViaTauri(session: Session) {
         { title: "Security Warning", kind: "warning" },
       );
 
-      await invoke("accept_host_key", { host, port, accepted: confirmed });
+      await invoke("accept_host_key", { sessionId, accepted: confirmed });
     });
 
     session.unlistenHostKey = unlistenHostKey;

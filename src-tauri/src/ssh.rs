@@ -296,6 +296,7 @@ impl SshSessions {
 struct SshHandler {
     host: String,
     port: u16,
+    session_id: String,
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
@@ -338,7 +339,7 @@ impl russh::client::Handler for SshHandler {
             .lock()
             .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
             .get_fingerprint(&host, port);
-        let key = format!("{host}:{port}");
+        let key = self.session_id.clone();
         let (tx, rx) = oneshot::channel();
         self.pending_keys
             .lock()
@@ -349,6 +350,7 @@ impl russh::client::Handler for SshHandler {
             serde_json::json!({
                 "host": host,
                 "port": port,
+                "sessionId": self.session_id.clone(),
                 "oldFingerprint": old.unwrap_or_default(),
                 "newFingerprint": fingerprint,
             }),
@@ -426,6 +428,7 @@ async fn connect_authenticated(
 
 async fn probe_os(
     app: tauri::AppHandle,
+    session_id: String,
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
@@ -433,6 +436,7 @@ async fn probe_os(
     let handler = SshHandler {
         host: config.host.clone(),
         port: config.port,
+        session_id,
         app,
         known_hosts,
         pending_keys,
@@ -487,7 +491,14 @@ pub async fn connect(
         };
 
         let os = if config.detect_os {
-            probe_os(app_handle.clone(), &config, Arc::clone(&known_hosts), Arc::clone(&pending_keys)).await
+            probe_os(
+                app_handle.clone(),
+                session_id.clone(),
+                &config,
+                Arc::clone(&known_hosts),
+                Arc::clone(&pending_keys),
+            )
+            .await
         } else {
             None
         };
@@ -495,6 +506,7 @@ pub async fn connect(
         let handler = SshHandler {
             host: config.host.clone(),
             port: config.port,
+            session_id: session_id.clone(),
             app: app_handle.clone(),
             known_hosts: Arc::clone(&known_hosts),
             pending_keys: Arc::clone(&pending_keys),
@@ -541,7 +553,9 @@ pub async fn connect(
             };
             sessions.insert(session_id.clone(), tx);
         }
+        let (close_tx, close_rx) = oneshot::channel::<()>();
         let writer = tokio::spawn(async move {
+            let mut close_tx = Some(close_tx);
             let mut rx = rx;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -553,6 +567,9 @@ pub async fn connect(
                     }
                     SessionCmd::Close => break,
                 }
+            }
+            if let Some(tx) = close_tx.take() {
+                let _ = tx.send(());
             }
         });
 
@@ -567,24 +584,41 @@ pub async fn connect(
         );
 
         let mut pending: Vec<u8> = Vec::new();
+        let mut close_rx = close_rx;
         loop {
-            let Some(msg) = read_half.wait().await else { break };
-            match msg {
-                russh::ChannelMsg::Data { data } => {
-                    if data.is_empty() {
-                        continue;
-                    }
-                    pending.extend_from_slice(&data);
-                    let valid = std::str::from_utf8(&pending)
-                        .map(|s| s.len())
-                        .unwrap_or_else(|e| e.valid_up_to());
-                    if valid > 0 {
-                        emit(&app_handle, "output", &String::from_utf8_lossy(&pending[..valid]));
-                        pending.drain(..valid);
+            tokio::select! {
+                msg = read_half.wait() => {
+                    let Some(msg) = msg else { break };
+                    match msg {
+                        russh::ChannelMsg::Data { data } => {
+                            if data.is_empty() {
+                                continue;
+                            }
+                            pending.extend_from_slice(&data);
+                            match std::str::from_utf8(&pending) {
+                                Ok(s) => {
+                                    emit(&app_handle, "output", s);
+                                    pending.clear();
+                                }
+                                Err(e) => {
+                                    let valid = e.valid_up_to();
+                                    let end = valid + e.error_len().unwrap_or(0);
+                                    if end > 0 {
+                                        emit(
+                                            &app_handle,
+                                            "output",
+                                            &String::from_utf8_lossy(&pending[..end]),
+                                        );
+                                        pending.drain(..end);
+                                    }
+                                }
+                            }
+                        }
+                        russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                        _ => {}
                     }
                 }
-                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
-                _ => {}
+                _ = &mut close_rx => break,
             }
         }
         if !pending.is_empty() {
@@ -651,22 +685,25 @@ pub async fn disconnect(
     if let Some(tx) = tx {
         let _ = tx.send(SessionCmd::Close).await;
     }
+    let _ = state
+        .pending_keys
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&session_id);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn accept_host_key(
-    host: String,
-    port: u16,
+    session_id: String,
     accepted: bool,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let key = format!("{host}:{port}");
     let tx = state
         .pending_keys
         .lock()
         .map_err(|e| e.to_string())?
-        .remove(&key);
+        .remove(&session_id);
     if let Some(tx) = tx {
         let _ = tx.send(accepted);
     }
@@ -693,6 +730,7 @@ pub async fn ping_host(
     let latency_ms = start.elapsed().as_millis() as u64;
     let os = probe_os(
         app_handle,
+        "-".to_string(),
         &config,
         Arc::clone(&state.known_hosts),
         Arc::clone(&state.pending_keys),
