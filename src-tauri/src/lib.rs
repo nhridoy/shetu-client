@@ -53,11 +53,6 @@ fn wipe_local_data(db: tauri::State<'_, db::LocalDb>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn db_update_os(db: tauri::State<'_, db::LocalDb>, host_id: String, os: String) -> Result<(), String> {
-    db::update_host_os(&db, &host_id, &os)
-}
-
-#[tauri::command]
 fn db_upsert(
     db: tauri::State<'_, db::LocalDb>,
     crypto: tauri::State<'_, CryptoState>,
@@ -918,7 +913,6 @@ pub fn run() {
             set_api_url,
             get_api_url,
             wipe_local_data,
-            db_update_os,
             db_upsert,
             db_get,
             db_list,

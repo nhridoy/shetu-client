@@ -492,7 +492,7 @@ pub async fn connect(
     config: SshConfig,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    run_connect_session(app_handle, session_id, config, &state).await;
+    run_connect_session(app_handle, session_id, config, None, &state).await;
     Ok(())
 }
 
@@ -510,7 +510,29 @@ pub async fn connect_saved(
 ) -> Result<(), String> {
     let mut config = load_host_config(&db, &crypto, &host_id)?;
     config.detect_os = detect_os;
-    run_connect_session(app_handle, session_id, config, &state).await;
+    let os = if detect_os {
+        let existing_os = crate::db::get_sync_row(&db, crate::db::Table::Hosts, &host_id)?
+            .and_then(|r| r.os);
+        if existing_os.is_some() {
+            existing_os
+        } else {
+            let detected = probe_os(
+                app_handle.clone(),
+                session_id.clone(),
+                &config,
+                Arc::clone(&state.known_hosts),
+                Arc::clone(&state.pending_keys),
+            )
+            .await;
+            if let Some(ref os_val) = detected {
+                let _ = crate::db::update_host_os(&db, &host_id, os_val);
+            }
+            detected
+        }
+    } else {
+        None
+    };
+    run_connect_session(app_handle, session_id, config, os, &state).await;
     Ok(())
 }
 
@@ -518,6 +540,7 @@ async fn run_connect_session(
     app_handle: tauri::AppHandle,
     session_id: String,
     config: SshConfig,
+    pre_detected_os: Option<String>,
     state: &SshSessions,
 ) {
     let known_hosts = Arc::clone(&state.known_hosts);
@@ -535,7 +558,9 @@ async fn run_connect_session(
             );
         };
 
-        let os = if config.detect_os {
+        let os = if pre_detected_os.is_some() {
+            pre_detected_os
+        } else if config.detect_os {
             probe_os(
                 app_handle.clone(),
                 session_id.clone(),
@@ -807,6 +832,9 @@ pub async fn ping_host_saved(
     } else {
         None
     };
+    if let Some(ref os_val) = os {
+        let _ = crate::db::update_host_os(&db, &host_id, os_val);
+    }
     Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
 }
 

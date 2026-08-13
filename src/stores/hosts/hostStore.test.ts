@@ -142,9 +142,7 @@ describe("hostStore", () => {
     expect(host?.address).toBe("1.2.3.4");
   });
 
-  it("updateHostOs calls db_update_os and updates state", async () => {
-    const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockResolvedValue(undefined);
+  it("updateHostOs updates the in-memory host state", async () => {
     useHostStore.setState({
       hosts: [
         {
@@ -162,10 +160,6 @@ describe("hostStore", () => {
       ],
     });
     await useHostStore.getState().updateHostOs("h1", "linux");
-    expect(invoke).toHaveBeenCalledWith("db_update_os", {
-      hostId: "h1",
-      os: "linux",
-    });
     expect(useHostStore.getState().hosts[0].os).toBe("linux");
   });
 

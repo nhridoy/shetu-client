@@ -334,15 +334,9 @@ export const useHostStore = create<HostState>((set, get) => ({
   },
 
   updateHostOs: async (hostId, os) => {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("db_update_os", { hostId, os });
-      set({
-        hosts: get().hosts.map((h) => (h.id === hostId ? { ...h, os } : h)),
-      });
-    } catch (err) {
-      set({ error: errorMessage(err) });
-    }
+    set({
+      hosts: get().hosts.map((h) => (h.id === hostId ? { ...h, os } : h)),
+    });
   },
 
   getCredentialsForHost: async (hostId) => {
