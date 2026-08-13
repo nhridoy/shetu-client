@@ -1,8 +1,10 @@
 import { FolderIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
+import { OsIcon } from "@/components/icons/OsIcon";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { useModal } from "@/hooks/useModal";
+import { osMeta } from "@/lib/constants/os";
 import { formatRelativeTime } from "@/lib/format/relativeTime";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 
@@ -56,9 +58,13 @@ export default function HostDetails({
             </p>
             {groupName && <Badge>{groupName}</Badge>}
           </div>
-          <p className="text-dark-400 text-xs truncate capitalize">
-            SSH • {host.os || "unknown"} •{" "}
-            {formatRelativeTime(Number(host.createdAt))}
+          <p className="text-dark-400 text-xs truncate">
+            SSH •{" "}
+            <span className="inline-flex items-center gap-1">
+              <OsIcon os={host.os} className="w-3.5 h-3.5" />
+              {osMeta(host.os).name}
+            </span>{" "}
+            • {formatRelativeTime(Number(host.createdAt))}
           </p>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
