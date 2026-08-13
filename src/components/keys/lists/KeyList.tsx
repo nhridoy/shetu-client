@@ -112,7 +112,7 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
                 className={`rounded-lg p-3 cursor-pointer transition-colors group relative ${
                   selectedKey?.id === key.id
                     ? "bg-primary-600/20 border border-primary-500/50"
-                    : "bg-dark-800/50 hover:bg-dark-800"
+                    : "bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10"
                 }`}
               >
                 <div className="flex items-center gap-2">

@@ -175,7 +175,7 @@ export default function WorkspaceList({
                   onKeyDown={accessibleClickHandler(() =>
                     handleLaunch(ws.layout, ws.id, ws.name),
                   )}
-                  className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 group"
+                  className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group"
                 >
                   <div className="flex items-center gap-2">
                     <div className="flex items-center justify-center shrink-0 w-8 h-8 rounded-lg bg-primary-600">

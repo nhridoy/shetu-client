@@ -50,7 +50,7 @@ export function DroppableGroupCard({
           ? "opacity-50"
           : isDropTarget
             ? "bg-primary-600/20 ring-2 ring-primary-500"
-            : "bg-dark-800/50 hover:bg-dark-800"
+            : "bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10"
       }`}
     >
       <div className="flex items-center gap-2">
