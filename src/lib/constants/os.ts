@@ -1,46 +1,54 @@
-import type { FC } from "react";
-import AppleIcon from "@/components/icons/os/AppleIcon";
-import ArchLinuxIcon from "@/components/icons/os/ArchLinuxIcon";
-import CentosIcon from "@/components/icons/os/CentosIcon";
-import DebianIcon from "@/components/icons/os/DebianIcon";
-import FedoraIcon from "@/components/icons/os/FedoraIcon";
-import GentooIcon from "@/components/icons/os/GentooIcon";
-import LinuxMintIcon from "@/components/icons/os/LinuxMintIcon";
-import OpensuseIcon from "@/components/icons/os/OpensuseIcon";
+import type { FC, SVGProps } from "react";
+import {
+  Alpinejs as AlpinejsIcon,
+  Archlinux as ArchlinuxIcon,
+  Centos as CentosIcon,
+  Debian as DebianIcon,
+  Elementary as ElementaryIcon,
+  Fedora as FedoraIcon,
+  Freebsd as FreebsdIcon,
+  LinuxMint as LinuxMintIcon,
+  MacOS as MacOSIcon,
+  Manjaro as ManjaroIcon,
+  MicrosoftWindows as WindowsIcon,
+  Oracle as OracleIcon,
+  Redhat as RedhatIcon,
+  RockyLinux as RockyLinuxIcon,
+  Suse as SuseIcon,
+  Ubuntu as UbuntuIcon,
+  ZorinOs as ZorinOsIcon,
+} from "@dev.icons/react";
 import PlaceholderOsIcon from "@/components/icons/os/PlaceholderOsIcon";
-import RedHatIcon from "@/components/icons/os/RedHatIcon";
-import UbuntuIcon from "@/components/icons/os/UbuntuIcon";
-import WindowsIcon from "@/components/icons/os/WindowsIcon";
 
 export interface OsMeta {
   name: string;
-  Icon: FC<{ className?: string }>;
+  Icon: FC<SVGProps<SVGSVGElement>>;
 }
 
 export const OS_META: Record<string, OsMeta> = {
   ubuntu: { name: "Ubuntu", Icon: UbuntuIcon },
   debian: { name: "Debian", Icon: DebianIcon },
   fedora: { name: "Fedora", Icon: FedoraIcon },
-  arch: { name: "Arch Linux", Icon: ArchLinuxIcon },
-  manjaro: { name: "Manjaro", Icon: PlaceholderOsIcon },
+  arch: { name: "Arch Linux", Icon: ArchlinuxIcon },
+  manjaro: { name: "Manjaro", Icon: ManjaroIcon },
   linuxmint: { name: "Linux Mint", Icon: LinuxMintIcon },
   pop: { name: "Pop!_OS", Icon: PlaceholderOsIcon },
   kali: { name: "Kali Linux", Icon: PlaceholderOsIcon },
-  alpine: { name: "Alpine Linux", Icon: PlaceholderOsIcon },
+  alpine: { name: "Alpine Linux", Icon: AlpinejsIcon },
   centos: { name: "CentOS", Icon: CentosIcon },
-  rocky: { name: "Rocky Linux", Icon: PlaceholderOsIcon },
-  rhel: { name: "Red Hat Enterprise Linux", Icon: RedHatIcon },
+  rocky: { name: "Rocky Linux", Icon: RockyLinuxIcon },
+  rhel: { name: "Red Hat Enterprise Linux", Icon: RedhatIcon },
   amazon: { name: "Amazon Linux", Icon: PlaceholderOsIcon },
-  opensuse: { name: "openSUSE", Icon: OpensuseIcon },
-  sles: { name: "SUSE Linux Enterprise", Icon: PlaceholderOsIcon },
+  opensuse: { name: "openSUSE", Icon: PlaceholderOsIcon },
+  sles: { name: "SUSE Linux Enterprise", Icon: SuseIcon },
   nixos: { name: "NixOS", Icon: PlaceholderOsIcon },
-  gentoo: { name: "Gentoo", Icon: GentooIcon },
-  zorin: { name: "Zorin OS", Icon: PlaceholderOsIcon },
-  elementary: { name: "elementary OS", Icon: PlaceholderOsIcon },
-  oracle: { name: "Oracle Linux", Icon: PlaceholderOsIcon },
-  darwin: { name: "macOS", Icon: AppleIcon },
+  gentoo: { name: "Gentoo", Icon: PlaceholderOsIcon },
+  zorin: { name: "Zorin OS", Icon: ZorinOsIcon },
+  elementary: { name: "elementary OS", Icon: ElementaryIcon },
+  oracle: { name: "Oracle Linux", Icon: OracleIcon },
+  darwin: { name: "macOS", Icon: MacOSIcon },
   windows: { name: "Windows", Icon: WindowsIcon },
-  bsd: { name: "BSD", Icon: PlaceholderOsIcon },
+  bsd: { name: "BSD", Icon: FreebsdIcon },
   solaris: { name: "Solaris", Icon: PlaceholderOsIcon },
   linux: { name: "Linux", Icon: PlaceholderOsIcon },
 };
