@@ -1,4 +1,5 @@
-import { useDraggable, useDroppable } from "@dnd-kit/react";
+import { closestCenter } from "@dnd-kit/collision";
+import { useSortable } from "@dnd-kit/react/sortable";
 import {
   CircleNotchIcon,
   PencilSimpleIcon,
@@ -18,32 +19,23 @@ import type { Host } from "@/stores/hosts/hostStore";
 
 export function DraggableHostCard({
   host,
-  isDropTarget,
+  index,
   onConnect,
   onEdit,
   onDelete,
-  onReorder,
 }: {
   host: Host;
-  isDropTarget?: boolean;
+  index: number;
   onConnect: (host: Host) => void;
   onEdit: (host: Host) => void;
   onDelete: (id: string) => void;
-  onReorder?: (sourceId: string, targetId: string) => void;
 }) {
-  const { ref: draggableRef, isDragging } = useDraggable({
+  const { ref, isDragging, isOver } = useSortable({
     id: `host:${host.id}`,
-    data: { type: "host-source", hostId: host.id },
+    index,
+    data: { type: "host", hostId: host.id },
+    collisionDetector: closestCenter,
   });
-  const { ref: droppableRef, isOver } = useDroppable({
-    id: `host-drop:${host.id}`,
-    data: { type: "host-target", hostId: host.id },
-  });
-
-  const setRefs = (el: HTMLDivElement | null) => {
-    draggableRef(el);
-    droppableRef(el);
-  };
 
   const pingState = useHostPingStore((s) => s.pings[host.id]);
   const ping = useHostPingStore((s) => s.ping);
@@ -56,7 +48,7 @@ export function DraggableHostCard({
   return (
     // biome-ignore lint/a11y/useSemanticElements: contains nested <button> elements
     <div
-      ref={setRefs}
+      ref={ref}
       role="button"
       tabIndex={0}
       onClick={() => onConnect(host)}
