@@ -111,7 +111,7 @@ async function connectViaTauri(session: Session) {
         password: null,
         privateKey: null,
         passphrase: null,
-        detectOs: true,
+        detectOs: false,
       };
       await invoke("connect", { sessionId: params.paneId, config });
     }
