@@ -230,7 +230,7 @@ export default function Layout() {
                 </div>
               );
             }
-            if (source.data?.type === "host-source") {
+            if (source.data?.type === "host") {
               const host = hosts.find((h) => h.id === source.data.hostId);
               if (!host) return null;
               return (
