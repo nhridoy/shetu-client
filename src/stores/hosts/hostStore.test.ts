@@ -371,6 +371,68 @@ describe("hostStore", () => {
   });
 });
 
+describe("reorderHost", () => {
+  it("swaps sort_order between two hosts", async () => {
+    useHostStore.setState({
+      hosts: [
+        {
+          id: "h1",
+          name: "a",
+          address: "1.1.1.1",
+          port: 22,
+          tags: [],
+          sortOrder: 0,
+          createdAt: "",
+          updatedAt: "",
+          vaultId: "v1",
+          data: "enc1",
+          authType: "password",
+          username: "root",
+        },
+        {
+          id: "h2",
+          name: "b",
+          address: "2.2.2.2",
+          port: 22,
+          tags: [],
+          sortOrder: 5,
+          createdAt: "",
+          updatedAt: "",
+          vaultId: "v1",
+          data: "enc2",
+          authType: "password",
+          username: "root",
+        },
+      ],
+    });
+    mockGet.mockImplementation(async (_table: string, id: string) => ({
+      id,
+      revision: 1,
+      vault_id: "v1",
+      created_at: 1,
+      updated_at: 1,
+      deleted_at: null,
+      name: id === "h1" ? "a" : "b",
+      sort_order: id === "h1" ? 0 : 5,
+      data: id === "h1" ? "enc1" : "enc2",
+    }));
+    mockDecrypt.mockImplementation(async (data: string) => ({
+      address: data === "enc1" ? "1.1.1.1" : "2.2.2.2",
+      port: 22,
+      username: "root",
+      password: "pw",
+    }));
+    mockUpsert.mockImplementation(async (_table: string, record: any) => ({
+      ...record,
+      revision: 2,
+      updated_at: 2,
+    }));
+    await useHostStore.getState().reorderHost("h1", "h2");
+    expect(useHostStore.getState().hosts[0]?.sortOrder).toBe(5);
+    expect(useHostStore.getState().hosts[1]?.sortOrder).toBe(0);
+  });
+});
+
 describe("post-save os probe", () => {
   it("createHost fires a background probe and persists the detected os", async () => {
     mockUpsert.mockResolvedValue({
