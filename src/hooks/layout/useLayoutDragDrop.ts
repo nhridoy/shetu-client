@@ -14,7 +14,8 @@ export function useLayoutDragDrop({
 }: {
   setActiveView: (view: string) => void;
 }) {
-  const { hosts, groups, updateHost, updateGroup } = useHostStore();
+  const { hosts, groups, updateHost, updateGroup, reorderHosts } =
+    useHostStore();
   const { tabs, movePane, mergeTabIntoPane } = useTerminalStore();
   const setDropPane = useDragStore((s) => s.setDropPane);
   const setSourcePane = useDragStore((s) => s.setSourcePane);
@@ -90,11 +91,7 @@ export function useLayoutDragDrop({
       source.initialIndex !== source.index
     ) {
       const reordered = move(hosts, event);
-      for (const [i, h] of reordered.entries()) {
-        if (h.sortOrder !== i) {
-          void updateHost(h.id, { sortOrder: i });
-        }
-      }
+      void reorderHosts(reordered.map((h) => h.id));
       setDropPane(null);
       setSourcePane(null);
       return;

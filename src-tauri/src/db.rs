@@ -742,6 +742,30 @@ pub struct SyncRow {
     pub data: String,
 }
 
+/// Batch-update sort_order for multiple rows in a single transaction.
+pub fn update_sort_orders(
+    db: &LocalDb,
+    table: Table,
+    updates: &[(String, i64)],
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let t = table.as_str();
+    let now = now_ms();
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    for (id, order) in updates {
+        conn.execute(
+            &format!("UPDATE {t} SET sort_order = ?1, updated_at = ?2 WHERE id = ?3"),
+            rusqlite::params![order, now, id],
+        )
+        .map_err(|e| {
+            let _ = conn.execute_batch("ROLLBACK");
+            format!("update_sort_orders: {e}")
+        })?;
+    }
+    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

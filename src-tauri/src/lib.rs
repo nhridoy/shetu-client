@@ -93,6 +93,23 @@ fn db_outbox(db: tauri::State<'_, db::LocalDb>) -> Result<Vec<db::OutboxEntry>, 
     db::outbox_pending(&db)
 }
 
+#[derive(serde::Deserialize)]
+struct SortOrderUpdate {
+    id: String,
+    sort_order: i64,
+}
+
+#[tauri::command]
+fn db_update_sort_orders(
+    db: tauri::State<'_, db::LocalDb>,
+    table: String,
+    updates: Vec<SortOrderUpdate>,
+) -> Result<(), String> {
+    let table = db::Table::parse(&table)?;
+    let pairs: Vec<(String, i64)> = updates.into_iter().map(|u| (u.id, u.sort_order)).collect();
+    db::update_sort_orders(&db, table, &pairs)
+}
+
 #[tauri::command]
 fn write_file(path: String, contents: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
@@ -918,6 +935,7 @@ pub fn run() {
             db_list,
             db_delete,
             db_outbox,
+            db_update_sort_orders,
             write_file,
             detect_shells,
             is_same_volume,

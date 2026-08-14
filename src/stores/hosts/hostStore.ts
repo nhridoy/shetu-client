@@ -54,6 +54,7 @@ interface HostState {
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
   updateHostOs: (hostId: string, os: string) => Promise<void>;
   reorderHost: (sourceId: string, targetId: string) => Promise<void>;
+  reorderHosts: (orderedIds: string[]) => Promise<void>;
   getCredentialsForHost: (
     hostId: string,
   ) => Promise<{ password: string; privateKey: string; passphrase: string }>;
@@ -339,6 +340,20 @@ export const useHostStore = create<HostState>((set, get) => ({
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
     }
+  },
+
+  reorderHosts: async (orderedIds) => {
+    const updates = orderedIds.map((id, i) => ({ id, sort_order: i }));
+    await invoke("db_update_sort_orders", {
+      table: "hosts",
+      updates,
+    });
+    set((s) => ({
+      hosts: s.hosts.map((h) => ({
+        ...h,
+        sortOrder: orderedIds.indexOf(h.id),
+      })),
+    }));
   },
 
   selectHost: (host) => set({ selectedHost: host }),
