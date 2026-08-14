@@ -766,6 +766,22 @@ pub fn update_sort_orders(
     Ok(())
 }
 
+/// Update a single host's group_id without decrypt/encrypt — no plaintext involved.
+pub fn update_host_group(
+    db: &LocalDb,
+    host_id: &str,
+    group_id: &str,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let now = now_ms();
+    conn.execute(
+        "UPDATE hosts SET group_id = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![group_id, now, host_id],
+    )
+    .map_err(|e| format!("update_host_group: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

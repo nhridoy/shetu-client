@@ -54,6 +54,7 @@ interface HostState {
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
   updateHostOs: (hostId: string, os: string) => Promise<void>;
+  updateHostGroup: (hostId: string, groupId: string) => Promise<void>;
   reorderHosts: (orderedIds: string[]) => Promise<void>;
   getCredentialsForHost: (
     hostId: string,
@@ -385,6 +386,17 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({
       hosts: get().hosts.map((h) => (h.id === hostId ? { ...h, os } : h)),
     });
+  },
+
+  updateHostGroup: async (hostId, groupId) => {
+    try {
+      await invoke("db_update_host_group", { hostId, groupId });
+    } catch (err) {
+      console.error("[updateHostGroup] IPC failed:", err);
+    }
+    set((s) => ({
+      hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, groupId } : h)),
+    }));
   },
 
   getCredentialsForHost: async (hostId) => {

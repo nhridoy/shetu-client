@@ -111,6 +111,15 @@ fn db_update_sort_orders(
 }
 
 #[tauri::command]
+fn db_update_host_group(
+    db: tauri::State<'_, db::LocalDb>,
+    host_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    db::update_host_group(&db, &host_id, &group_id)
+}
+
+#[tauri::command]
 fn write_file(path: String, contents: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     if let Some(parent) = p.parent() {
@@ -936,6 +945,7 @@ pub fn run() {
             db_delete,
             db_outbox,
             db_update_sort_orders,
+            db_update_host_group,
             write_file,
             detect_shells,
             is_same_volume,
