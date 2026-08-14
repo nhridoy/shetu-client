@@ -124,7 +124,7 @@ export function DraggableHostCard({
         </div>
       )}
 
-      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-20 group-hover:opacity-30 transition-opacity">
+      <div className="absolute -bottom-3 -right-3 pointer-events-none opacity-30 group-hover:opacity-40 transition-opacity">
         <OsIcon os={host.os} className="w-20 h-20 text-dark-400" />
       </div>
 
