@@ -1,4 +1,3 @@
-import { closestCenter } from "@dnd-kit/collision";
 import { useSortable } from "@dnd-kit/react/sortable";
 import {
   CircleNotchIcon,
@@ -30,11 +29,10 @@ export function DraggableHostCard({
   onEdit: (host: Host) => void;
   onDelete: (id: string) => void;
 }) {
-  const { ref, isDragging, isDropTarget } = useSortable({
-    id: `host:${host.id}`,
+  const { ref } = useSortable({
+    id: host.id,
     index,
     data: { type: "host", hostId: host.id },
-    collisionDetector: closestCenter,
   });
 
   const pingState = useHostPingStore((s) => s.pings[host.id]);
@@ -53,7 +51,7 @@ export function DraggableHostCard({
       tabIndex={0}
       onClick={() => onConnect(host)}
       onKeyDown={accessibleClickHandler(() => onConnect(host))}
-      className={`relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border group ${isDragging ? "opacity-50" : ""} ${isDropTarget ? "border-primary-500 ring-2 ring-primary-500" : "border-primary-500/10"}`}
+      className="relative overflow-hidden p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group"
     >
       <div
         className="absolute top-0 left-0 w-56 h-56 -translate-x-8 -translate-y-8 rounded-full pointer-events-none"
