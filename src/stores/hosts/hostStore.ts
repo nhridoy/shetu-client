@@ -463,30 +463,9 @@ export const useHostStore = create<HostState>((set, get) => ({
     const target = all.find((h) => h.id === targetId);
     if (!source || !target) return;
 
-    // Move source to target's group if different
-    if (source.groupId !== target.groupId) {
-      await updateHost(sourceId, { groupId: target.groupId ?? null });
-    }
-
-    // Re-fetch after potential group change
-    const updated = get().hosts;
-    const groupId = target.groupId ?? null;
-    const ordered = updated
-      .filter((h) => (h.groupId ?? null) === groupId)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-
-    // Remove source, find target index, insert before target
-    const srcIdx = ordered.findIndex((h) => h.id === sourceId);
-    const [moved] = ordered.splice(srcIdx, 1);
-    const tgtIdx = ordered.findIndex((h) => h.id === targetId);
-    ordered.splice(tgtIdx, 0, moved);
-
-    // Reassign sequential sort_order
-    for (const [i, h] of ordered.entries()) {
-      if (h.sortOrder !== i) {
-        await updateHost(h.id, { sortOrder: i });
-      }
-    }
+    const tmpOrder = source.sortOrder;
+    await updateHost(sourceId, { sortOrder: target.sortOrder });
+    await updateHost(targetId, { sortOrder: tmpOrder });
   },
 
   clearError: () => set({ error: null }),
