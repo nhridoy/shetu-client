@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyActionState } from "@/components/ui/EmptyActionState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { getAncestors, getChildren } from "@/lib/hosts/helpers";
+import { useDragPreviewStore } from "@/stores/dragPreviewStore";
 import { type Group, type Host, useHostStore } from "@/stores/hosts/hostStore";
 
 interface HostsPanelProps {
@@ -36,6 +37,7 @@ export default function HostsPanel({
   onDeleteHost,
 }: HostsPanelProps) {
   const { hosts, groups } = useHostStore();
+  const { previewHosts, isDragging } = useDragPreviewStore();
 
   const selectedGroup = selectedGroupId
     ? groups.find((g) => g.id === selectedGroupId)
@@ -43,9 +45,14 @@ export default function HostsPanel({
   const displayGroups = selectedGroupId
     ? getChildren(groups, selectedGroupId)
     : groups.filter((g) => !g.parentId);
-  const displayHosts = selectedGroupId
-    ? hosts.filter((h) => h.groupId === selectedGroupId)
-    : hosts;
+  const displayHosts =
+    isDragging && previewHosts
+      ? selectedGroupId
+        ? previewHosts.filter((h) => h.groupId === selectedGroupId)
+        : previewHosts
+      : selectedGroupId
+        ? hosts.filter((h) => h.groupId === selectedGroupId)
+        : hosts;
 
   return (
     <div className="flex-1 p-4 space-y-6 overflow-y-auto">
@@ -151,10 +158,11 @@ export default function HostsPanel({
           />
         ) : (
           <div className="grid grid-cols-3 gap-2">
-            {displayHosts.map((host) => (
+            {displayHosts.map((host, index) => (
               <DraggableHostCard
                 key={host.id}
                 host={host}
+                index={index}
                 onConnect={onConnect}
                 onEdit={onEditHost}
                 onDelete={onDeleteHost}
