@@ -231,7 +231,25 @@ export default function Layout() {
               );
             }
             if (source.data?.type === "host") {
-              return null;
+              const host = hosts.find((h) => h.id === source.data.hostId);
+              if (!host) return null;
+              return (
+                <div className="w-60 p-3 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: host.color || "#64748b" }}
+                    />
+                    <span className="text-sm font-medium text-white truncate">
+                      {host.name}
+                    </span>
+                  </div>
+                  <p className="text-dark-400 text-xs mt-1 ml-4.5 truncate">
+                    {host.username ? `${host.username}@` : ""}
+                    {host.address}:{host.port}
+                  </p>
+                </div>
+              );
             }
             if (source.data?.type === "group-source") {
               const group = groups.find((g) => g.id === source.data.groupId);
