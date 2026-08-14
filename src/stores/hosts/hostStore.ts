@@ -285,16 +285,20 @@ export const useHostStore = create<HostState>((set, get) => ({
           name: patch.name ?? row.name,
           os: patch.os !== undefined ? patch.os : (row.os ?? null),
           auth_type:
-            patch.authType !== undefined ? patch.authType : (row.auth_type ?? "password"),
+            patch.authType !== undefined
+              ? patch.authType
+              : (row.auth_type ?? "password"),
           tags:
             patch.tags !== undefined
               ? JSON.stringify(patch.tags)
               : (row.tags ?? "[]"),
-          color:
-            patch.color !== undefined ? patch.color : (row.color ?? null),
+          color: patch.color !== undefined ? patch.color : (row.color ?? null),
           group_id:
-            patch.groupId !== undefined ? patch.groupId : (row.group_id ?? null),
-          key_id: patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
+            patch.groupId !== undefined
+              ? patch.groupId
+              : (row.group_id ?? null),
+          key_id:
+            patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
           sort_order: patch.sortOrder ?? row.sort_order,
         },
         {
@@ -303,7 +307,9 @@ export const useHostStore = create<HostState>((set, get) => ({
         },
       );
       set({
-        hosts: get().hosts.map((h) => (h.id === id ? { ...h, ...patch, data: saved.data } : h)),
+        hosts: get().hosts.map((h) =>
+          h.id === id ? { ...h, ...patch, data: saved.data } : h,
+        ),
         isLoading: false,
       });
       void probeHostOs(id);
@@ -371,9 +377,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     const payload = ((await decryptRowData(data)) ??
       {}) as Partial<HostPayload>;
     if (authType === "key" && keyId) {
-      const keyCreds = await useKeyStore
-        .getState()
-        .getCredentialsForKey(keyId);
+      const keyCreds = await useKeyStore.getState().getCredentialsForKey(keyId);
       return { password: "", privateKey: keyCreds, passphrase: "" };
     }
     return { password: payload.password ?? "", privateKey: "", passphrase: "" };
@@ -464,8 +468,9 @@ export const useHostStore = create<HostState>((set, get) => ({
     if (!source || !target) return;
 
     const tmpOrder = source.sortOrder;
-    await updateHost(sourceId, { sortOrder: target.sortOrder });
-    await updateHost(targetId, { sortOrder: tmpOrder });
+    const store = get();
+    await store.updateHost(sourceId, { sortOrder: target.sortOrder });
+    await store.updateHost(targetId, { sortOrder: tmpOrder });
   },
 
   clearError: () => set({ error: null }),

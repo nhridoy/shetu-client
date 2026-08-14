@@ -108,7 +108,8 @@ export function useLayoutDragDrop({
     if (
       source.data?.type === "host" &&
       target?.data?.type === "host" &&
-      source.data.hostId !== target.data.hostId
+      source.data.hostId !== target.data.hostId &&
+      isSortable(source)
     ) {
       const { initialIndex, index } = source;
       if (initialIndex !== index) {
