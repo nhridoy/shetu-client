@@ -4,13 +4,11 @@ import {
   DragDropProvider,
   type DragEndEvent,
   type DragOverEvent,
-  DragOverlay,
   type DragStartEvent,
   KeyboardSensor,
   useDragDropManager,
 } from "@dnd-kit/react";
 import { isSortable } from "@dnd-kit/react/sortable";
-import { FileTextIcon } from "@phosphor-icons/react";
 import { useEffect } from "react";
 import QuickOpen from "@/components/editor/panels/QuickOpen";
 import EditorPane from "@/components/editor/views/EditorPane";
@@ -213,38 +211,6 @@ export default function EditorLayout() {
       </div>
 
       {quickOpenOpen && <QuickOpen />}
-
-      <DragOverlay dropAnimation={null}>
-        {(source) => {
-          if (source.data?.type === "editor-file-source") {
-            return (
-              <div className="flex items-center gap-2 px-3 py-2 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
-                <FileTextIcon
-                  className="w-4 h-4 text-primary-400"
-                  weight="fill"
-                />
-                <span className="text-sm text-white">
-                  {String(source.data.name)}
-                </span>
-              </div>
-            );
-          }
-          if (source.data?.type === "editor-tab-source") {
-            return (
-              <div className="flex items-center gap-2 px-3 py-2 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
-                <FileTextIcon
-                  className="w-4 h-4 text-primary-400"
-                  weight="fill"
-                />
-                <span className="text-sm text-white">
-                  {String(source.data.name)}
-                </span>
-              </div>
-            );
-          }
-          return null;
-        }}
-      </DragOverlay>
     </DragDropProvider>
   );
 }

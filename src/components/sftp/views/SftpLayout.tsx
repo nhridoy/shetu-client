@@ -3,12 +3,11 @@ import {
   DragDropProvider,
   type DragEndEvent,
   type DragOverEvent,
-  DragOverlay,
   type DragStartEvent,
   KeyboardSensor,
   useDragDropManager,
 } from "@dnd-kit/react";
-import { DownloadSimpleIcon, FolderIcon } from "@phosphor-icons/react";
+
 import { useEffect, useState } from "react";
 import FileTransfer from "@/components/sftp/transfer/FileTransfer";
 import SftpPaneTree from "@/components/sftp/views/SftpPaneTree";
@@ -208,45 +207,6 @@ export default function SftpLayout() {
       </div>
 
       <FileTransfer />
-
-      <DragOverlay>
-        {(source) => {
-          if (source.data?.type === "sftp-pane-source") {
-            return (
-              <div className="w-60 p-3 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
-                <div className="flex items-center gap-2">
-                  <FolderIcon
-                    className="w-4 h-4 text-primary-400"
-                    weight="bold"
-                  />
-                  <span className="text-sm font-medium text-white">
-                    SFTP Pane
-                  </span>
-                </div>
-              </div>
-            );
-          }
-          if (source.data?.type === "file-drag") {
-            const files = source.data.files as FileDragState["files"];
-            return (
-              <div className="w-60 p-3 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-primary-500/50">
-                <div className="flex items-center gap-2">
-                  <DownloadSimpleIcon
-                    className="w-4 h-4 text-primary-400"
-                    weight="bold"
-                  />
-                  <span className="text-sm font-medium text-white">
-                    {files.length > 1
-                      ? `${files.length} files`
-                      : files[0]?.name || "file"}
-                  </span>
-                </div>
-              </div>
-            );
-          }
-          return null;
-        }}
-      </DragOverlay>
     </DragDropProvider>
   );
 }

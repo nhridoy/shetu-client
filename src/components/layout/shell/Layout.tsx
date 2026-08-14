@@ -1,19 +1,17 @@
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
-import { DragDropProvider, DragOverlay, KeyboardSensor } from "@dnd-kit/react";
-import { FolderIcon, TerminalIcon } from "@phosphor-icons/react";
+import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
 import Header from "@/components/layout/shell/Header";
-import { TabPreview } from "@/components/layout/tabs/SortableTab";
+
 import SettingsModal from "@/components/settings/modal/SettingsModal";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
-import { getStatusColor } from "@/lib/common/connectionStatus";
+
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
-  findLeaf,
   serializeWorkspaceLayout,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
@@ -73,8 +71,9 @@ export default function Layout() {
     fetchGroups(currentVaultId || undefined);
   }, [currentVaultId, fetchHosts, fetchGroups]);
 
-  const { groups, tabs, handleDragStart, handleDragOver, handleDragEnd } =
-    useLayoutDragDrop({ setActiveView });
+  const { handleDragStart, handleDragOver, handleDragEnd } = useLayoutDragDrop({
+    setActiveView,
+  });
 
   const handlePresetFormSubmit = async (name: string) => {
     if (presetTargetTabId) {
@@ -201,51 +200,6 @@ export default function Layout() {
         {settingsModal.open && (
           <SettingsModal onClose={() => settingsModal.hide()} />
         )}
-
-        <DragOverlay>
-          {(source) => {
-            if (source.data?.type === "pane-source") {
-              const tab = tabs.find((t) => t.id === source.data.tabId);
-              const pane = tab ? findLeaf(tab.root, source.data.paneId) : null;
-              const statusClass = getStatusColor(
-                pane?.connectionStatus ?? "idle",
-              );
-              return (
-                <div className="w-60 p-3 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={`w-2 h-2 rounded-full shrink-0 ${statusClass}`}
-                    />
-                    <TerminalIcon className="w-4 h-4 text-primary-400 shrink-0" />
-                    <span className="text-sm font-medium text-white truncate">
-                      {pane?.hostName || "Empty pane"}
-                    </span>
-                  </div>
-                </div>
-              );
-            }
-            if (source.data?.type === "host") {
-              return null;
-            }
-            if (source.data?.type === "group-source") {
-              const group = groups.find((g) => g.id === source.data.groupId);
-              if (!group) return null;
-              return (
-                <div className="w-60 p-3 bg-dark-800 rounded-lg shadow-xl opacity-90 border border-dark-600">
-                  <div className="flex items-center gap-2">
-                    <FolderIcon className="w-4 h-4 text-primary-400 shrink-0" />
-                    <span className="text-sm font-medium text-white truncate">
-                      {group.name}
-                    </span>
-                  </div>
-                </div>
-              );
-            }
-            const tab = tabs.find((t) => t.id === source.id);
-            if (!tab) return null;
-            return <TabPreview tab={tab} />;
-          }}
-        </DragOverlay>
       </div>
     </DragDropProvider>
   );
