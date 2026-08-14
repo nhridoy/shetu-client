@@ -5,8 +5,6 @@ import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
 import { type Group, type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
-import Testy from "./Testy";
-
 export default function HostsPage() {
   const { deleteHost, deleteGroup } = useHostStore();
   const { addTab } = useTerminalStore();
@@ -109,12 +107,6 @@ export default function HostsPage() {
           }}
         />
       )}
-
-      <ul className="grid grid-cols-4 gap-4 mt-4">
-      {[1, 2, 3, 4].map((id, index) =>
-        <Testy key={id} id={id} index={index} />
-      )}
-    </ul>
     </div>
   );
 }
