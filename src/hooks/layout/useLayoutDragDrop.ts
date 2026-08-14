@@ -5,6 +5,7 @@ import type {
   DragStartEvent,
 } from "@dnd-kit/react";
 import { isSortable } from "@dnd-kit/react/sortable";
+import { useDragPreviewStore } from "@/stores/dragPreviewStore";
 import { type DropSide, useDragStore } from "@/stores/dragStore";
 import { type Group, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
@@ -14,13 +15,7 @@ export function useLayoutDragDrop({
 }: {
   setActiveView: (view: string) => void;
 }) {
-  const {
-    hosts,
-    groups,
-    updateHost,
-    updateGroup,
-    reorderHost,
-  } = useHostStore();
+  const { hosts, groups, updateHost, updateGroup } = useHostStore();
   const { tabs, movePane, mergeTabIntoPane } = useTerminalStore();
   const setDropPane = useDragStore((s) => s.setDropPane);
   const setSourcePane = useDragStore((s) => s.setSourcePane);
@@ -47,6 +42,9 @@ export function useLayoutDragDrop({
         tabId: String(source.data.tabId),
       });
     }
+    if (source?.data?.type === "host") {
+      useDragPreviewStore.getState().setPreview(hosts);
+    }
     setDropPane(null);
   };
 
@@ -54,12 +52,26 @@ export function useLayoutDragDrop({
     const { source, target } = event.operation;
     const sourceType = source?.data?.type;
 
-    if (sourceType === "host-source" && target?.data?.type === "group-target")
+    if (sourceType === "host" && target?.data?.type === "group-target") return;
+    if (sourceType === "host" && target?.data?.type === "root-target") return;
+    if (
+      sourceType === "host" &&
+      target?.data?.type === "host" &&
+      source.data.hostId !== target.data.hostId
+    ) {
+      const sourceHost = hosts.find((h) => h.id === source.data.hostId);
+      const targetHost = hosts.find((h) => h.id === target.data.hostId);
+      if (
+        sourceHost &&
+        targetHost &&
+        sourceHost.groupId === targetHost.groupId
+      ) {
+        const preview = useDragPreviewStore.getState().previewHosts ?? hosts;
+        const reordered = move(preview, event);
+        useDragPreviewStore.getState().setPreview(reordered);
+      }
       return;
-    if (sourceType === "host-source" && target?.data?.type === "root-target")
-      return;
-    if (sourceType === "host-source" && target?.data?.type === "host-target")
-      return;
+    }
     if (sourceType === "group-source" && target?.data?.type === "group-target")
       return;
     if (sourceType === "group-source" && target?.data?.type === "root-target")
@@ -87,29 +99,35 @@ export function useLayoutDragDrop({
   const handleDragEnd = (event: DragEndEvent) => {
     const { source, target } = event.operation;
     if (event.canceled || !source) {
+      useDragPreviewStore.getState().clearPreview();
       setDropPane(null);
       setSourcePane(null);
       return;
     }
 
     if (
-      source.data?.type === "host-source" &&
-      target?.data?.type === "host-target" &&
+      source.data?.type === "host" &&
+      target?.data?.type === "host" &&
       source.data.hostId !== target.data.hostId
     ) {
-      void reorderHost(
-        String(source.data.hostId),
-        String(target.data.hostId),
-      );
+      const { initialIndex, index } = source;
+      if (initialIndex !== index) {
+        const preview = useDragPreviewStore.getState().previewHosts ?? hosts;
+        const reordered = move(preview, event);
+        for (const [i, h] of reordered.entries()) {
+          if (h.sortOrder !== i) {
+            void updateHost(h.id, { sortOrder: i });
+          }
+        }
+      }
+      useDragPreviewStore.getState().clearPreview();
       setDropPane(null);
       setSourcePane(null);
       return;
     }
 
-    if (
-      source.data?.type === "host-source" &&
-      target?.data?.type === "group-target"
-    ) {
+    if (source.data?.type === "host" && target?.data?.type === "group-target") {
+      useDragPreviewStore.getState().clearPreview();
       updateHost(String(source.data.hostId), {
         groupId: String(target.data.groupId),
       });
@@ -118,10 +136,8 @@ export function useLayoutDragDrop({
       return;
     }
 
-    if (
-      source.data?.type === "host-source" &&
-      target?.data?.type === "root-target"
-    ) {
+    if (source.data?.type === "host" && target?.data?.type === "root-target") {
+      useDragPreviewStore.getState().clearPreview();
       updateHost(String(source.data.hostId), { groupId: "" });
       setDropPane(null);
       setSourcePane(null);
@@ -198,6 +214,7 @@ export function useLayoutDragDrop({
       setDropPane(null);
       setSourcePane(null);
     } else {
+      useDragPreviewStore.getState().clearPreview();
       setDropPane(null);
       setSourcePane(null);
     }
