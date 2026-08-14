@@ -371,8 +371,8 @@ describe("hostStore", () => {
   });
 });
 
-describe("reorderHost", () => {
-  it("swaps sort_order between two hosts", async () => {
+describe("reorderHosts", () => {
+  it("updates sort_order for all hosts from ordered ids", async () => {
     useHostStore.setState({
       hosts: [
         {
@@ -405,30 +405,8 @@ describe("reorderHost", () => {
         },
       ],
     });
-    mockGet.mockImplementation(async (_table: string, id: string) => ({
-      id,
-      revision: 1,
-      vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
-      deleted_at: null,
-      name: id === "h1" ? "a" : "b",
-      sort_order: id === "h1" ? 0 : 5,
-      data: id === "h1" ? "enc1" : "enc2",
-    }));
-    mockDecrypt.mockImplementation(async (data: string) => ({
-      address: data === "enc1" ? "1.1.1.1" : "2.2.2.2",
-      port: 22,
-      username: "root",
-      password: "pw",
-    }));
-    mockUpsert.mockImplementation(async (_table: string, record: any) => ({
-      ...record,
-      revision: 2,
-      updated_at: 2,
-    }));
-    await useHostStore.getState().reorderHost("h1", "h2");
-    expect(useHostStore.getState().hosts[0]?.sortOrder).toBe(5);
+    await useHostStore.getState().reorderHosts(["h2", "h1"]);
+    expect(useHostStore.getState().hosts[0]?.sortOrder).toBe(1);
     expect(useHostStore.getState().hosts[1]?.sortOrder).toBe(0);
   });
 });
@@ -455,11 +433,18 @@ describe("post-save os probe", () => {
       os: "ubuntu",
     });
     useVaultStore.setState({ currentVaultId: "v1" });
-    await useHostStore
-      .getState()
-      .createHost({ name: "x", address: "1.2.3.4", port: 22, username: "root", password: "pw" });
+    await useHostStore.getState().createHost({
+      name: "x",
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+      password: "pw",
+    });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h1", detectOs: true });
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", {
+        hostId: "h1",
+        detectOs: true,
+      });
     });
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("ubuntu");
@@ -526,9 +511,19 @@ describe("post-save os probe", () => {
     });
     mockDecrypt.mockImplementation(async (data: string) => {
       if (data === "old-enc") {
-        return { address: "1.2.3.4", port: 22, username: "root", password: "old-pw" };
+        return {
+          address: "1.2.3.4",
+          port: 22,
+          username: "root",
+          password: "old-pw",
+        };
       }
-      return { address: "10.0.0.5", port: 22, username: "root", password: "new-pw" };
+      return {
+        address: "10.0.0.5",
+        port: 22,
+        username: "root",
+        password: "new-pw",
+      };
     });
     mockUpsert.mockResolvedValue({
       id: "h3",
@@ -553,7 +548,10 @@ describe("post-save os probe", () => {
       .getState()
       .updateHost("h3", { address: "10.0.0.5", password: "new-pw" });
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("ping_host_saved", { hostId: "h3", detectOs: true });
+      expect(invoke).toHaveBeenCalledWith("ping_host_saved", {
+        hostId: "h3",
+        detectOs: true,
+      });
     });
     await vi.waitFor(() => {
       expect(useHostStore.getState().hosts[0]?.os).toBe("debian");

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
@@ -53,7 +54,6 @@ interface HostState {
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
   updateHostOs: (hostId: string, os: string) => Promise<void>;
-  reorderHost: (sourceId: string, targetId: string) => Promise<void>;
   reorderHosts: (orderedIds: string[]) => Promise<void>;
   getCredentialsForHost: (
     hostId: string,
@@ -344,10 +344,14 @@ export const useHostStore = create<HostState>((set, get) => ({
 
   reorderHosts: async (orderedIds) => {
     const updates = orderedIds.map((id, i) => ({ id, sort_order: i }));
-    await invoke("db_update_sort_orders", {
-      table: "hosts",
-      updates,
-    });
+    try {
+      await invoke("db_update_sort_orders", {
+        table: "hosts",
+        updates,
+      });
+    } catch (err) {
+      console.error("[reorderHosts] IPC failed:", err);
+    }
     set((s) => ({
       hosts: s.hosts.map((h) => ({
         ...h,
@@ -483,18 +487,6 @@ export const useHostStore = create<HostState>((set, get) => ({
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
     }
-  },
-
-  reorderHost: async (sourceId, targetId) => {
-    const all = get().hosts;
-    const source = all.find((h) => h.id === sourceId);
-    const target = all.find((h) => h.id === targetId);
-    if (!source || !target) return;
-
-    const tmpOrder = source.sortOrder;
-    const store = get();
-    await store.updateHost(sourceId, { sortOrder: target.sortOrder });
-    await store.updateHost(targetId, { sortOrder: tmpOrder });
   },
 
   clearError: () => set({ error: null }),
