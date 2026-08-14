@@ -411,6 +411,12 @@ async fn connect_authenticated(
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
 
+    // No credentials — just connect (auth_type = "none")
+    if config.private_key.is_none() && config.password.is_none() {
+        return Ok(session);
+    }
+
+    // Try public key first if available
     if let Some(pem) = config.private_key.as_deref() {
         let key = russh::keys::decode_secret_key(pem, config.passphrase.as_deref())
             .map_err(|e| format!("decode private key: {e}"))?;
@@ -422,22 +428,25 @@ async fn connect_authenticated(
             .authenticate_publickey(config.username.clone(), key_with_alg)
             .await
             .map_err(|e| format!("publickey auth: {e}"))?;
-        if !auth.success() {
-            return Err("public key authentication rejected".to_string());
+        if auth.success() {
+            return Ok(session);
         }
-    } else {
+        // Public key rejected — fall back to password if available
+    }
+
+    // Password auth (fallback or primary)
+    if let Some(ref password) = config.password {
         let auth = session
-            .authenticate_password(
-                config.username.clone(),
-                config.password.clone().unwrap_or_default(),
-            )
+            .authenticate_password(config.username.clone(), password.clone())
             .await
             .map_err(|e| format!("password auth: {e}"))?;
         if !auth.success() {
-            return Err("password authentication rejected".to_string());
+            return Err("authentication rejected".to_string());
         }
+        return Ok(session);
     }
-    Ok(session)
+
+    Err("no authentication method succeeded".to_string())
 }
 
 async fn probe_os(
@@ -856,12 +865,18 @@ fn load_host_config(
         host: payload["address"].as_str().unwrap_or_default().to_string(),
         port: payload["port"].as_u64().unwrap_or(22) as u16,
         username: payload["username"].as_str().unwrap_or("root").to_string(),
-        password: payload["password"].as_str().map(String::from),
+        password: None,
         private_key: None,
         passphrase: None,
         detect_os: false,
     };
-    if row.auth_type.as_deref() == Some("key") {
+    let auth_type = row.auth_type.as_deref().unwrap_or("password");
+    // Load password when auth_type is "password" or "both"
+    if auth_type == "password" || auth_type == "both" {
+        config.password = payload["password"].as_str().map(String::from);
+    }
+    // Load key when auth_type is "key" or "both"
+    if auth_type == "key" || auth_type == "both" {
         if let Some(key_id) = row.key_id.as_deref() {
             let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
                 .ok_or_else(|| "key not found".to_string())?;

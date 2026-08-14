@@ -21,7 +21,7 @@ export interface Host {
   createdAt: string;
   updatedAt: string;
   vaultId?: string;
-  authType?: "password" | "key";
+  authType?: "password" | "key" | "both" | "none";
   password?: string;
   privateKey?: string;
   passphrase?: string;
@@ -99,7 +99,8 @@ function hostFromRow(row: SyncRow): Host {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     vaultId: row.vault_id,
-    authType: (row.auth_type as "password" | "key") ?? "password",
+    authType:
+      (row.auth_type as "password" | "key" | "both" | "none") ?? "password",
     password: undefined,
     keyId: row.key_id ?? undefined,
     data: row.data ?? "",
@@ -410,7 +411,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         return { password: "", privateKey: "", passphrase: "" };
       }
       data = row.data;
-      authType = (row.auth_type as "password" | "key") ?? "password";
+      authType =
+        (row.auth_type as "password" | "key" | "both" | "none") ?? "password";
       keyId = row.key_id ?? undefined;
     }
     const payload = ((await decryptRowData(data)) ??
@@ -418,6 +420,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     if (authType === "key" && keyId) {
       const keyCreds = await useKeyStore.getState().getCredentialsForKey(keyId);
       return { password: "", privateKey: keyCreds, passphrase: "" };
+    }
+    if (authType === "both" && keyId) {
+      const keyCreds = await useKeyStore.getState().getCredentialsForKey(keyId);
+      return {
+        password: payload.password ?? "",
+        privateKey: keyCreds,
+        passphrase: "",
+      };
     }
     return { password: payload.password ?? "", privateKey: "", passphrase: "" };
   },

@@ -21,7 +21,7 @@ export interface HostData {
   address: string;
   port: number;
   username: string;
-  authType: "password" | "key";
+  authType: "password" | "key" | "both" | "none";
   keyId?: string;
   color?: string;
   groupId?: string;
@@ -90,8 +90,14 @@ export default function HostForm({
       port: data.port,
       username: data.username,
       authType: data.authType,
-      keyId: data.authType === "key" ? data.keyId : undefined,
-      password: data.authType === "password" ? data.password : undefined,
+      keyId:
+        data.authType === "key" || data.authType === "both"
+          ? data.keyId
+          : undefined,
+      password:
+        data.authType === "password" || data.authType === "both"
+          ? data.password
+          : undefined,
       color: data.color,
       groupId: data.groupId || undefined,
       vaultId: currentVaultId || undefined,
@@ -177,30 +183,31 @@ export default function HostForm({
             <div
               role="group"
               aria-labelledby="auth-type-label"
-              className="flex gap-2"
+              className="grid grid-cols-4 gap-2"
             >
-              <Button
-                type="button"
-                onClick={() => field.onChange("password")}
-                variant={field.value === "password" ? "default" : "secondary"}
-                className="flex-1"
-              >
-                Password
-              </Button>
-              <Button
-                type="button"
-                onClick={() => field.onChange("key")}
-                variant={field.value === "key" ? "default" : "secondary"}
-                className="flex-1"
-              >
-                SSH Key
-              </Button>
+              {(["password", "key", "both", "none"] as const).map((type) => (
+                <Button
+                  key={type}
+                  type="button"
+                  onClick={() => field.onChange(type)}
+                  variant={field.value === type ? "default" : "secondary"}
+                  className="flex-1"
+                >
+                  {type === "password"
+                    ? "Password"
+                    : type === "key"
+                      ? "SSH Key"
+                      : type === "both"
+                        ? "Both"
+                        : "None"}
+                </Button>
+              ))}
             </div>
           )}
         />
       </div>
 
-      {authType === "password" ? (
+      {(authType === "password" || authType === "both") && (
         <FormInput
           name="password"
           label="Password"
@@ -209,7 +216,9 @@ export default function HostForm({
           placeholder="Enter password"
           required
         />
-      ) : (
+      )}
+
+      {(authType === "key" || authType === "both") && (
         <FormSelect
           name="keyId"
           label="SSH Key"

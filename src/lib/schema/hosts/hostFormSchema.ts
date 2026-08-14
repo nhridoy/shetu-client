@@ -22,7 +22,7 @@ export const hostFormSchema = z
       .trim()
       .min(1, { error: "Username is required" })
       .max(255, { error: "Username must be at most 255 characters" }),
-    authType: z.enum(["password", "key"]),
+    authType: z.enum(["password", "key", "both", "none"]),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
     color: z.string().optional(),
@@ -31,14 +31,19 @@ export const hostFormSchema = z
   })
   .refine(
     (data) => {
-      if (data.authType === "password" && !data.password) return false;
+      if (
+        (data.authType === "password" || data.authType === "both") &&
+        !data.password
+      )
+        return false;
       return true;
     },
     { error: "Password is required", path: ["password"] },
   )
   .refine(
     (data) => {
-      if (data.authType === "key" && !data.keyId) return false;
+      if ((data.authType === "key" || data.authType === "both") && !data.keyId)
+        return false;
       return true;
     },
     { error: "Please select an SSH key", path: ["keyId"] },
