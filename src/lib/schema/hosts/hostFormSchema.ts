@@ -12,7 +12,7 @@ export const hostFormSchema = z
       .trim()
       .min(1, { error: "Address is required" })
       .max(255, { error: "Address must be at most 255 characters" }),
-    port: z
+    port: z.coerce
       .number()
       .int({ error: "Port must be an integer" })
       .min(1, { error: "Port must be at least 1" })
