@@ -411,8 +411,17 @@ async fn connect_authenticated(
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
 
-    // No credentials — just connect (auth_type = "none")
+    // No explicit credentials — send NONE auth request.
+    // Servers that allow passwordless login (e.g. telehack.com) accept this;
+    // others will reject it and we surface the error.
     if config.private_key.is_none() && config.password.is_none() {
+        let auth = session
+            .authenticate_none(config.username.clone())
+            .await
+            .map_err(|e| format!("none auth: {e}"))?;
+        if !auth.success() {
+            return Err("authentication required — add a password or SSH key".to_string());
+        }
         return Ok(session);
     }
 
