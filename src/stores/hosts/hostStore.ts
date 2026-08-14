@@ -128,7 +128,6 @@ function errorMessage(err: unknown): string {
 
 async function probeHostOs(hostId: string): Promise<void> {
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
     const { useHostPingStore } = await import("@/stores/hosts/hostPingStore");
     useHostPingStore.setState((s) => ({
       pings: { ...s.pings, [hostId]: { status: "pinging" } },
