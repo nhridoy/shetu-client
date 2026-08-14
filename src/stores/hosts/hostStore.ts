@@ -222,7 +222,16 @@ export const useHostStore = create<HostState>((set, get) => ({
           color: host.color ?? null,
           group_id: host.groupId ?? null,
           key_id: host.keyId ?? null,
-          sort_order: host.sortOrder ?? 0,
+          sort_order:
+            host.sortOrder ??
+            (() => {
+              const groupHosts = get().hosts.filter(
+                (h) => (h.groupId ?? null) === (host.groupId ?? null),
+              );
+              return groupHosts.length > 0
+                ? Math.max(...groupHosts.map((h) => h.sortOrder)) + 1
+                : 0;
+            })(),
         },
         {
           plaintext: JSON.stringify({
