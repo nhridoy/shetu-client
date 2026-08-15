@@ -13,6 +13,7 @@ export interface RemoteFileProvider {
   ): Promise<void>;
   moveFile(source: string, dest: string): Promise<void>;
   copyFile(source: string, dest: string): Promise<void>;
+  delete(path: string, recursive?: boolean): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
@@ -148,6 +149,15 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
   async copyFile(source: string, dest: string): Promise<void> {
     const data = await this.readFile(source);
     await this.writeFile(dest, data);
+  }
+
+  async delete(path: string, recursive = true): Promise<void> {
+    const invoke = await this.getInvoke();
+    await invoke("sftp_delete", {
+      sessionId: this.sessionId,
+      path,
+      recursive,
+    });
   }
 
   async exists(path: string): Promise<boolean> {
