@@ -155,6 +155,11 @@ export interface TransferItem {
   error?: string;
 }
 
+export interface SftpErrorState {
+  lastError: string | null;
+  errorType: "connection" | "operation" | "transfer" | null;
+}
+
 interface SftpState {
   root: SftpPaneNode | null;
   activePaneId: string | null;
@@ -170,6 +175,7 @@ interface SftpState {
   clipboardMode: "copy" | "cut" | null;
   refreshRequests: Record<string, number>;
   sftpConnection: SftpConnectionState;
+  errorState: SftpErrorState;
 
   addPane: (leaf: SftpLeafNode) => void;
   removePane: (paneId: string) => void;
@@ -205,6 +211,8 @@ interface SftpState {
   ) => void;
   clearClipboard: () => void;
   requestRefresh: (paneId: string) => void;
+  setError: (error: string | null, type: SftpErrorState["errorType"]) => void;
+  clearError: () => void;
   connectSftp: (hostId: string) => Promise<void>;
   connectSftpDirect: (config: SshConfig) => Promise<void>;
   disconnectSftp: () => Promise<void>;
@@ -224,6 +232,11 @@ function makeEmptySftpLeaf(): SftpLeafNode {
   };
 }
 
+const initialErrorState: SftpErrorState = {
+  lastError: null,
+  errorType: null,
+};
+
 export const useSftpStore = create<SftpState>((set, get) => ({
   root: null,
   activePaneId: null,
@@ -235,6 +248,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   clipboardMode: null,
   refreshRequests: {},
   sftpConnection: { ...initialConnectionState },
+  errorState: { ...initialErrorState },
 
   addPane: (leaf) => {
     const root = get().root;
@@ -414,6 +428,9 @@ export const useSftpStore = create<SftpState>((set, get) => ({
         [paneId]: (s.refreshRequests[paneId] ?? 0) + 1,
       },
     })),
+  setError: (error, type) =>
+    set({ errorState: { lastError: error, errorType: type } }),
+  clearError: () => set({ errorState: { ...initialErrorState } }),
 
   connectSftp: async (hostId: string) => {
     set({

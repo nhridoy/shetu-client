@@ -44,6 +44,11 @@ export function useFileOperations({
 
   const newFileModal = useModal();
   const newFolderModal = useModal();
+  const connectionErrorModal = useModal();
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const setError = useSftpStore((s) => s.setError);
+  const clearError = useSftpStore((s) => s.clearError);
 
   // ── SFTP Provider ──────────────────────────────────────────────────────
   const providerRef = useRef<RemoteFileProviderImpl | null>(null);
@@ -75,14 +80,30 @@ export function useFileOperations({
 
           const provider = new RemoteFileProviderImpl(hostId, paneId);
           providerRef.current = provider;
+          clearError();
           return provider;
+        } catch (err: unknown) {
+          const message = extractError(err, "Connection failed");
+          setConnectionError(message);
+          setError(message, "connection");
+          connectionErrorModal.show();
+          throw err;
         } finally {
           connectingRef.current = null;
         }
       })();
 
       return connectingRef.current;
-    }, [paneId, hostId, hostAddress, hostPort, hostUsername]);
+    }, [
+      paneId,
+      hostId,
+      hostAddress,
+      hostPort,
+      hostUsername,
+      setError,
+      clearError,
+      connectionErrorModal,
+    ]);
 
   useEffect(() => {
     return () => {
@@ -96,10 +117,11 @@ export function useFileOperations({
     try {
       const fresh = await provider.listFiles(currentPath);
       actions.setFiles(paneId, fresh);
+      clearError();
     } catch {
       // silent fail
     }
-  }, [currentPath, paneId]);
+  }, [currentPath, paneId, clearError]);
 
   // ── Rename ───────────────────────────────────────────────────────────────
   const startRename = useCallback(
@@ -129,9 +151,12 @@ export function useFileOperations({
         currentPath === "/" ? `/${trimmed}` : `${currentPath}/${trimmed}`;
       await provider.moveFile(renamingPath, newPath);
       toast.success(`Renamed to ${trimmed}`);
+      clearError();
       await refreshFiles();
     } catch (err: unknown) {
-      toast.error(`Failed to rename: ${extractError(err)}`);
+      const message = `Failed to rename: ${extractError(err)}`;
+      setError(message, "operation");
+      toast.error(message);
     } finally {
       renamingInProgress.current = false;
       actions.cancelRename(paneId);
@@ -144,6 +169,8 @@ export function useFileOperations({
     currentPath,
     ensureProvider,
     refreshFiles,
+    setError,
+    clearError,
   ]);
 
   // ── New file / folder ────────────────────────────────────────────────────
@@ -161,12 +188,15 @@ export function useFileOperations({
         const provider = await ensureProvider();
         await provider.mkdir(newPath);
         toast.success(`Created folder ${name}`);
+        clearError();
         await refreshFiles();
       } catch (err: unknown) {
-        toast.error(`Failed to create folder: ${extractError(err)}`);
+        const message = `Failed to create folder: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
       }
     },
-    [currentPath, ensureProvider, refreshFiles],
+    [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
   const confirmNewFile = useCallback(
@@ -177,12 +207,15 @@ export function useFileOperations({
         const provider = await ensureProvider();
         await provider.writeFile(newPath, new Uint8Array(0));
         toast.success(`Created file ${name}`);
+        clearError();
         await refreshFiles();
       } catch (err: unknown) {
-        toast.error(`Failed to create file: ${extractError(err)}`);
+        const message = `Failed to create file: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
       }
     },
-    [currentPath, ensureProvider, refreshFiles],
+    [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
   // ── Delete ───────────────────────────────────────────────────────────────
@@ -218,17 +251,22 @@ export function useFileOperations({
         }
       }
     } catch (err: unknown) {
-      toast.error(`Delete failed: ${extractError(err)}`);
+      const message = `Delete failed: ${extractError(err)}`;
+      setError(message, "operation");
+      toast.error(message);
       return;
     }
     if (deleted > 0) {
       toast.success(`Deleted ${deleted} item${deleted > 1 ? "s" : ""}`);
+      clearError();
       await refreshFiles();
     }
     if (failed > 0) {
-      toast.error(`Failed to delete ${failed} item${failed > 1 ? "s" : ""}`);
+      const message = `Failed to delete ${failed} item${failed > 1 ? "s" : ""}`;
+      setError(message, "operation");
+      toast.error(message);
     }
-  }, [deleteConfirm, ensureProvider, refreshFiles]);
+  }, [deleteConfirm, ensureProvider, refreshFiles, setError, clearError]);
 
   // ── Upload / Download ────────────────────────────────────────────────────
   const handleUpload = useCallback(
@@ -253,18 +291,21 @@ export function useFileOperations({
         }
         if (uploaded > 0) {
           toast.success(`Uploaded ${uploaded} file${uploaded > 1 ? "s" : ""}`);
+          clearError();
           await refreshFiles();
         }
         if (failed > 0) {
-          toast.error(
-            `Failed to upload ${failed} file${failed > 1 ? "s" : ""}`,
-          );
+          const message = `Failed to upload ${failed} file${failed > 1 ? "s" : ""}`;
+          setError(message, "transfer");
+          toast.error(message);
         }
       } catch (err: unknown) {
-        toast.error(`Upload failed: ${extractError(err)}`);
+        const message = `Upload failed: ${extractError(err)}`;
+        setError(message, "transfer");
+        toast.error(message);
       }
     },
-    [currentPath, ensureProvider, refreshFiles],
+    [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
   const handleDownload = useCallback(
@@ -279,11 +320,14 @@ export function useFileOperations({
         if (!localPath) return;
         await provider.download(file.path, localPath);
         toast.success(`Downloaded ${file.name}`);
+        clearError();
       } catch (err: unknown) {
-        toast.error(`Download failed: ${extractError(err)}`);
+        const message = `Download failed: ${extractError(err)}`;
+        setError(message, "transfer");
+        toast.error(message);
       }
     },
-    [ensureProvider],
+    [ensureProvider, setError, clearError],
   );
 
   // ── Clipboard ────────────────────────────────────────────────────────────
@@ -355,18 +399,21 @@ export function useFileOperations({
         toast.success(
           `${clipboardMode === "cut" ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
         );
+        clearError();
         await refreshFiles();
       }
       if (failed > 0) {
-        toast.error(
-          `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`,
-        );
+        const message = `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
+        setError(message, "operation");
+        toast.error(message);
       }
       useSftpStore.getState().clearClipboard();
     } catch (err: unknown) {
-      toast.error(`Paste failed: ${extractError(err)}`);
+      const message = `Paste failed: ${extractError(err)}`;
+      setError(message, "operation");
+      toast.error(message);
     }
-  }, [currentPath, ensureProvider, refreshFiles]);
+  }, [currentPath, ensureProvider, refreshFiles, setError, clearError]);
 
   // ── File drop ────────────────────────────────────────────────────────────
   const executeFileDrop = useCallback(
@@ -415,18 +462,21 @@ export function useFileOperations({
           toast.success(
             `${isSameHost ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
           );
+          clearError();
           await refreshFiles();
         }
         if (failed > 0) {
-          toast.error(
-            `Failed to ${isSameHost ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`,
-          );
+          const message = `Failed to ${isSameHost ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
+          setError(message, "operation");
+          toast.error(message);
         }
       } catch (err: unknown) {
-        toast.error(`File drop failed: ${extractError(err)}`);
+        const message = `File drop failed: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
       }
     },
-    [ensureProvider, refreshFiles],
+    [ensureProvider, refreshFiles, setError, clearError],
   );
 
   const executePaste = useCallback(
@@ -471,19 +521,22 @@ export function useFileOperations({
           toast.success(
             `${clipboardMode === "cut" ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
           );
+          clearError();
           await refreshFiles();
         }
         if (failed > 0) {
-          toast.error(
-            `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`,
-          );
+          const message = `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
+          setError(message, "operation");
+          toast.error(message);
         }
         useSftpStore.getState().clearClipboard();
       } catch (err: unknown) {
-        toast.error(`Paste failed: ${extractError(err)}`);
+        const message = `Paste failed: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
       }
     },
-    [currentPath, ensureProvider, refreshFiles],
+    [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
   return {
@@ -492,6 +545,8 @@ export function useFileOperations({
     renameValue,
     newFileModal,
     newFolderModal,
+    connectionErrorModal,
+    connectionError,
     startRename,
     commitRename,
     handleNewFile,
