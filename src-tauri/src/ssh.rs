@@ -310,6 +310,20 @@ pub struct SshHandler {
     auto_accept: bool,
 }
 
+impl SshHandler {
+    pub fn new(
+        host: String,
+        port: u16,
+        session_id: String,
+        app: tauri::AppHandle,
+        known_hosts: Arc<Mutex<KnownHosts>>,
+        pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        auto_accept: bool,
+    ) -> Self {
+        Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept }
+    }
+}
+
 impl russh::client::Handler for SshHandler {
     type Error = russh::Error;
 
@@ -858,7 +872,7 @@ pub async fn ping_host_saved(
 
 /// Build the SSH config entirely in Rust from the saved (encrypted) host +
 /// key rows. Sensitive material never crosses the IPC boundary.
-fn load_host_config(
+pub fn load_host_config(
     db: &crate::db::LocalDb,
     crypto: &crate::CryptoState,
     host_id: &str,
