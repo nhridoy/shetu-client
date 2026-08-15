@@ -979,6 +979,8 @@ pub fn run() {
             sftp::sftp_chown,
             sftp::sftp_symlink,
             sftp::sftp_readlink,
+            sftp::sftp_download,
+            sftp::sftp_upload,
             oauth::bind_oauth_listener,
             oauth::await_oauth_callback,
             oauth::cancel_oauth_listener,
