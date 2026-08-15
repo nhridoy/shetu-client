@@ -46,7 +46,7 @@ pub struct SftpSession {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub sftp: russh_sftp::client::SftpSession,
+    pub sftp: Arc<russh_sftp::client::SftpSession>,
     pub ssh_handle: Option<russh::client::Handle<crate::ssh::SshHandler>>,
     pub created_ourselves: bool,
 }
@@ -180,7 +180,7 @@ pub async fn sftp_connect(
         host: config.host,
         port: config.port,
         username: config.username,
-        sftp,
+        sftp: Arc::new(sftp),
         ssh_handle: Some(ssh),
         created_ourselves: true,
     };
@@ -288,7 +288,7 @@ pub async fn sftp_connect_saved(
         host: config.host,
         port: config.port,
         username: config.username,
-        sftp,
+        sftp: Arc::new(sftp),
         ssh_handle: Some(ssh),
         created_ourselves: true,
     };
@@ -315,4 +315,84 @@ pub async fn sftp_disconnect(
         }
     }
     Ok(())
+}
+
+fn attrs_to_entry(name: String, path: String, attrs: &russh_sftp::client::fs::Metadata) -> SftpEntry {
+    SftpEntry {
+        name,
+        path,
+        is_dir: attrs.is_dir(),
+        is_symlink: attrs.is_symlink(),
+        size: attrs.len(),
+        mode: attrs.permissions.unwrap_or(0),
+        uid: attrs.uid.unwrap_or(0),
+        gid: attrs.gid.unwrap_or(0),
+        mtime: attrs.mtime.unwrap_or(0) as i64,
+        atime: attrs.atime.unwrap_or(0) as i64,
+        symlink_target: None,
+    }
+}
+
+fn get_sftp(
+    sessions: &SftpSessions,
+    session_id: &str,
+) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
+    let map = sessions.sessions.lock().map_err(|e| e.to_string())?;
+    let session = map.get(session_id).ok_or("SFTP session not found")?;
+    Ok(Arc::clone(&session.sftp))
+}
+
+#[tauri::command]
+pub async fn sftp_list(
+    session_id: String,
+    path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<Vec<SftpEntry>, String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+    let read_dir = sftp.read_dir(&path).await.map_err(|e| format!("list: {e}"))?;
+
+    let entries = read_dir
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let full_path = entry.path();
+            let attrs = entry.metadata();
+            Some(attrs_to_entry(name, full_path, &attrs))
+        })
+        .collect();
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn sftp_stat(
+    session_id: String,
+    path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<SftpEntry, String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+    let attrs = sftp.metadata(&path).await.map_err(|e| format!("stat: {e}"))?;
+    let name = path.split('/').last().unwrap_or("").to_string();
+
+    Ok(attrs_to_entry(name, path, &attrs))
+}
+
+#[tauri::command]
+pub async fn sftp_read(
+    session_id: String,
+    path: String,
+    offset: u64,
+    len: u32,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<Vec<u8>, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+    let mut file = sftp.open(&path).await.map_err(|e| format!("open: {e}"))?;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(|e| format!("seek: {e}"))?;
+
+    let mut buf = vec![0u8; len as usize];
+    let n = file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
+    buf.truncate(n);
+    Ok(buf)
 }
