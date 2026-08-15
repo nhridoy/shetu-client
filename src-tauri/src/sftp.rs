@@ -51,6 +51,7 @@ pub struct SftpSession {
     pub created_ourselves: bool,
 }
 
+#[derive(Clone)]
 pub struct SftpSessions {
     pub sessions: Arc<Mutex<HashMap<String, SftpSession>>>,
 }
@@ -395,4 +396,121 @@ pub async fn sftp_read(
     let n = file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
     buf.truncate(n);
     Ok(buf)
+}
+
+#[tauri::command]
+pub async fn sftp_write(
+    session_id: String,
+    path: String,
+    data: Vec<u8>,
+    offset: u64,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    let mut file = sftp
+        .open_with_flags(
+            &path,
+            russh_sftp::protocol::OpenFlags::CREATE
+                | russh_sftp::protocol::OpenFlags::WRITE
+                | russh_sftp::protocol::OpenFlags::TRUNCATE,
+        )
+        .await
+        .map_err(|e| format!("open: {e}"))?;
+
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(|e| format!("seek: {e}"))?;
+    file.write_all(&data)
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    file.sync_all()
+        .await
+        .map_err(|e| format!("fsync: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(
+    session_id: String,
+    path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    sftp.create_dir(&path)
+        .await
+        .map_err(|e| format!("mkdir: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_rename(
+    session_id: String,
+    old_path: String,
+    new_path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    sftp.rename(&old_path, &new_path)
+        .await
+        .map_err(|e| format!("rename: {e}"))
+}
+
+async fn sftp_delete_recursive(
+    sftp: &russh_sftp::client::SftpSession,
+    path: &str,
+) -> Result<(), String> {
+    let metadata = sftp
+        .metadata(path)
+        .await
+        .map_err(|e| format!("stat: {e}"))?;
+    if metadata.is_dir() {
+        let read_dir = sftp
+            .read_dir(path)
+            .await
+            .map_err(|e| format!("readdir: {e}"))?;
+        for entry in read_dir {
+            let entry_path = format!("{}/{}", path.trim_end_matches('/'), entry.file_name());
+            Box::pin(sftp_delete_recursive(sftp, &entry_path)).await?;
+        }
+        sftp.remove_dir(path)
+            .await
+            .map_err(|e| format!("rmdir: {e}"))
+    } else {
+        sftp.remove_file(path)
+            .await
+            .map_err(|e| format!("rm: {e}"))
+    }
+}
+
+#[tauri::command]
+pub async fn sftp_delete(
+    session_id: String,
+    path: String,
+    recursive: bool,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    if recursive {
+        return sftp_delete_recursive(&sftp, &path).await;
+    }
+
+    let metadata = sftp
+        .metadata(&path)
+        .await
+        .map_err(|e| format!("stat: {e}"))?;
+    if metadata.is_dir() {
+        sftp.remove_dir(&path)
+            .await
+            .map_err(|e| format!("rmdir: {e}"))
+    } else {
+        sftp.remove_file(&path)
+            .await
+            .map_err(|e| format!("rm: {e}"))
+    }
 }
