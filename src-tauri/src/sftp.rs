@@ -698,3 +698,62 @@ pub async fn sftp_upload(
     remote_file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn sftp_search(
+    session_id: String,
+    path: String,
+    query: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<Vec<SftpEntry>, String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+    let mut results = Vec::new();
+    let query_lower = query.to_lowercase();
+
+    search_recursive(&sftp, &path, &query_lower, &mut results, 1000).await?;
+    Ok(results)
+}
+
+fn search_recursive<'a>(
+    sftp: &'a russh_sftp::client::SftpSession,
+    current_path: &'a str,
+    query: &'a str,
+    results: &'a mut Vec<SftpEntry>,
+    max_results: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        if results.len() >= max_results {
+            return Ok(());
+        }
+
+        let read_dir = sftp
+            .read_dir(current_path)
+            .await
+            .map_err(|e| format!("readdir: {e}"))?;
+
+        let entries: Vec<_> = read_dir
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let entry_path =
+                    format!("{}/{}", current_path.trim_end_matches('/'), name);
+                let attrs = entry.metadata();
+                Some((name, entry_path, attrs))
+            })
+            .collect();
+
+        for (name, entry_path, attrs) in entries {
+            if results.len() >= max_results {
+                break;
+            }
+
+            if name.to_lowercase().contains(query) {
+                results.push(attrs_to_entry(name, entry_path.clone(), &attrs));
+            }
+
+            if attrs.is_dir() {
+                search_recursive(sftp, &entry_path, query, results, max_results).await?;
+            }
+        }
+        Ok(())
+    })
+}
