@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
   type DropSide,
@@ -10,6 +11,91 @@ import {
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
 import type { FileItem } from "@/types/sftp/sftpTypes";
+
+export interface SftpConnectionState {
+  sessionId: string | null;
+  hostId: string | null;
+  host: string;
+  port: number;
+  username: string;
+  connected: boolean;
+  connecting: boolean;
+  error: string | null;
+}
+
+interface SftpConnectResult {
+  session_id: string;
+  host: string;
+  port: number;
+  username: string;
+  reused: boolean;
+  host_id?: string;
+}
+
+interface SshConfig {
+  host: string;
+  port: number;
+  username: string;
+  private_key?: string;
+  passphrase?: string;
+}
+
+interface SftpTransferProgress {
+  session_id: string;
+  transfer_id: string;
+  transfer_type: string;
+  path: string;
+  bytes_transferred: number;
+  total_bytes: number;
+  speed: number;
+}
+
+const initialConnectionState: SftpConnectionState = {
+  sessionId: null,
+  hostId: null,
+  host: "",
+  port: 22,
+  username: "",
+  connected: false,
+  connecting: false,
+  error: null,
+};
+
+let progressUnlisten: (() => void) | null = null;
+
+async function ensureProgressListener(
+  get: () => SftpState,
+  set: (partial: Partial<SftpState>) => void,
+) {
+  if (progressUnlisten) return;
+
+  progressUnlisten = await listen<SftpTransferProgress>(
+    "sftp-transfer-progress",
+    (event) => {
+      const { transfer_id, bytes_transferred, total_bytes, speed } =
+        event.payload;
+      const state = get();
+      const transfer = state.transfers.find((t) => t.id === transfer_id);
+      if (!transfer) return;
+
+      const completed = bytes_transferred >= total_bytes;
+      set({
+        transfers: state.transfers.map((t) =>
+          t.id === transfer_id
+            ? {
+                ...t,
+                transferred: bytes_transferred,
+                size: total_bytes,
+                progress: total_bytes > 0 ? bytes_transferred / total_bytes : 0,
+                speed,
+                status: completed ? "complete" : "active",
+              }
+            : t,
+        ),
+      });
+    },
+  );
+}
 
 export interface SftpLeafNode {
   type: "leaf";
@@ -83,6 +169,7 @@ interface SftpState {
   } | null;
   clipboardMode: "copy" | "cut" | null;
   refreshRequests: Record<string, number>;
+  sftpConnection: SftpConnectionState;
 
   addPane: (leaf: SftpLeafNode) => void;
   removePane: (paneId: string) => void;
@@ -118,6 +205,9 @@ interface SftpState {
   ) => void;
   clearClipboard: () => void;
   requestRefresh: (paneId: string) => void;
+  connectSftp: (hostId: string) => Promise<void>;
+  connectSftpDirect: (config: SshConfig) => Promise<void>;
+  disconnectSftp: () => Promise<void>;
 }
 
 let sftpPaneCounter = 0;
@@ -144,6 +234,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   clipboard: null,
   clipboardMode: null,
   refreshRequests: {},
+  sftpConnection: { ...initialConnectionState },
 
   addPane: (leaf) => {
     const root = get().root;
@@ -323,4 +414,99 @@ export const useSftpStore = create<SftpState>((set, get) => ({
         [paneId]: (s.refreshRequests[paneId] ?? 0) + 1,
       },
     })),
+
+  connectSftp: async (hostId: string) => {
+    set({
+      sftpConnection: {
+        ...get().sftpConnection,
+        connecting: true,
+        error: null,
+      },
+    });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const sessionId = `sftp-${hostId}-${Date.now()}`;
+      const result = await invoke<SftpConnectResult>("sftp_connect_saved", {
+        sessionId,
+        hostId,
+      });
+      set({
+        sftpConnection: {
+          sessionId: result.session_id,
+          hostId,
+          host: result.host,
+          port: result.port,
+          username: result.username,
+          connected: true,
+          connecting: false,
+          error: null,
+        },
+      });
+      await ensureProgressListener(get, set);
+    } catch (err) {
+      set({
+        sftpConnection: {
+          ...get().sftpConnection,
+          connecting: false,
+          error: String(err),
+        },
+      });
+    }
+  },
+
+  connectSftpDirect: async (config: SshConfig) => {
+    set({
+      sftpConnection: {
+        ...get().sftpConnection,
+        connecting: true,
+        error: null,
+      },
+    });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const sessionId = `sftp-direct-${Date.now()}`;
+      const result = await invoke<SftpConnectResult>("sftp_connect", {
+        sessionId,
+        config,
+      });
+      set({
+        sftpConnection: {
+          sessionId: result.session_id,
+          hostId: null,
+          host: result.host,
+          port: result.port,
+          username: result.username,
+          connected: true,
+          connecting: false,
+          error: null,
+        },
+      });
+      await ensureProgressListener(get, set);
+    } catch (err) {
+      set({
+        sftpConnection: {
+          ...get().sftpConnection,
+          connecting: false,
+          error: String(err),
+        },
+      });
+    }
+  },
+
+  disconnectSftp: async () => {
+    const { sessionId } = get().sftpConnection;
+    if (sessionId) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("sftp_disconnect", { sessionId });
+      } catch {
+        // best-effort disconnect
+      }
+    }
+    if (progressUnlisten) {
+      progressUnlisten();
+      progressUnlisten = null;
+    }
+    set({ sftpConnection: { ...initialConnectionState } });
+  },
 }));
