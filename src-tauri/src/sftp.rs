@@ -514,3 +514,66 @@ pub async fn sftp_delete(
             .map_err(|e| format!("rm: {e}"))
     }
 }
+
+#[tauri::command]
+pub async fn sftp_chmod(
+    session_id: String,
+    path: String,
+    mode: u32,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    let mut attrs = russh_sftp::protocol::FileAttributes::default();
+    attrs.permissions = Some(mode);
+
+    sftp.set_metadata(&path, attrs)
+        .await
+        .map_err(|e| format!("chmod: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_chown(
+    session_id: String,
+    path: String,
+    uid: u32,
+    gid: u32,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    let mut attrs = russh_sftp::protocol::FileAttributes::default();
+    attrs.uid = Some(uid);
+    attrs.gid = Some(gid);
+
+    sftp.set_metadata(&path, attrs)
+        .await
+        .map_err(|e| format!("chown: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_symlink(
+    session_id: String,
+    target: String,
+    link_path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    sftp.symlink(&target, &link_path)
+        .await
+        .map_err(|e| format!("symlink: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_readlink(
+    session_id: String,
+    path: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<String, String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+
+    sftp.read_link(&path)
+        .await
+        .map_err(|e| format!("readlink: {e}"))
+}
