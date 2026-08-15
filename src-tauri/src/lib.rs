@@ -6,6 +6,7 @@ mod db;
 mod http;
 mod oauth;
 mod ssh;
+mod sftp;
 
 use std::collections::{HashMap, BTreeMap};
 use std::ffi::OsString;
@@ -933,6 +934,7 @@ pub fn run() {
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("termvault"),
         ))
+        .manage(sftp::SftpSessions::new())
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
             get_device_id,

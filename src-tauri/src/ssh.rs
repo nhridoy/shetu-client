@@ -300,7 +300,7 @@ impl SshSessions {
     }
 }
 
-struct SshHandler {
+pub struct SshHandler {
     host: String,
     port: u16,
     session_id: String,
