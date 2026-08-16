@@ -48,13 +48,30 @@ interface SftpEntry {
   symlink_target: string | null;
 }
 
+function modeToPermissions(mode: number): string {
+  const bits = mode & 0o7777;
+  const rwx = (bit: number, has: number, upper: string) =>
+    bit & has ? upper.toLowerCase() : "-";
+  return [
+    rwx(bits, 0o400, "R"),
+    rwx(bits, 0o200, "W"),
+    rwx(bits, 0o100, "X"),
+    rwx(bits, 0o040, "R"),
+    rwx(bits, 0o020, "W"),
+    rwx(bits, 0o010, "X"),
+    rwx(bits, 0o004, "R"),
+    rwx(bits, 0o002, "W"),
+    rwx(bits, 0o001, "X"),
+  ].join("");
+}
+
 function sftpEntryToFileItem(e: SftpEntry): FileItem {
   return {
     name: e.name,
     path: e.path,
     type: e.is_dir ? "directory" : e.is_symlink ? "symlink" : "file",
     size: e.size,
-    permissions: `0${(e.mode & 0o777).toString(8)}`,
+    permissions: modeToPermissions(e.mode),
     owner: String(e.uid),
     group: String(e.gid),
     modifiedAt: new Date(e.mtime * 1000).toISOString(),
