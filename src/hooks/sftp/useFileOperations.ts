@@ -115,6 +115,7 @@ export function useFileOperations({
     providerRef.current = null;
     await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
     actions.resetPane(paneId);
+    useSftpStore.getState().disconnectPane(paneId);
   }, [paneId]);
 
   const refreshFiles = useCallback(async () => {

@@ -198,6 +198,7 @@ interface SftpState {
     hostPort?: number,
     hostUsername?: string,
   ) => void;
+  disconnectPane: (paneId: string) => void;
   setPaneSizes: (splitId: string, sizes: number[]) => void;
   addTransfer: (transfer: TransferItem) => void;
   updateTransfer: (id: string, data: Partial<TransferItem>) => void;
@@ -383,6 +384,25 @@ export const useSftpStore = create<SftpState>((set, get) => ({
         hostAddress,
         hostPort,
         hostUsername,
+      }),
+    });
+  },
+
+  disconnectPane: (paneId) => {
+    const root = get().root;
+    if (!root) return;
+    const leaf = findLeafUtil(root, paneId);
+    if (!leaf) return;
+    set({
+      root: replaceNode(root, paneId, {
+        ...leaf,
+        connectionType: null,
+        hostId: undefined,
+        hostName: undefined,
+        hostAddress: undefined,
+        hostPort: undefined,
+        hostUsername: undefined,
+        localPath: undefined,
       }),
     });
   },

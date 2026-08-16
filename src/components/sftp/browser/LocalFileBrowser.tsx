@@ -752,6 +752,10 @@ export default function LocalFileBrowser({
         onShowHiddenChange={(s) => actions.setShowHidden(paneId, s)}
         onViewModeChange={(m) => actions.setViewMode(paneId, m)}
         showBackForward
+        onDisconnect={() => {
+          actions.resetPane(paneId);
+          useSftpStore.getState().disconnectPane(paneId);
+        }}
       />
 
       <ErrorBar error={error} setError={() => actions.clearError(paneId)} />
