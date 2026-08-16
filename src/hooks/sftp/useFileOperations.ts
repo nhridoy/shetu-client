@@ -111,6 +111,12 @@ export function useFileOperations({
     };
   }, [paneId]);
 
+  const disconnect = useCallback(async () => {
+    providerRef.current = null;
+    await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
+    actions.resetPane(paneId);
+  }, [paneId]);
+
   const refreshFiles = useCallback(async () => {
     const provider = providerRef.current;
     if (!provider) return;
@@ -650,5 +656,6 @@ export function useFileOperations({
     confirmPermissions,
     ensureProvider,
     handleServerSearch,
+    disconnect,
   };
 }

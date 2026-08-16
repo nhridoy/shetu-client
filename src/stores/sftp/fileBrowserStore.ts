@@ -317,6 +317,25 @@ export const fileBrowserActions = {
     update(paneId, { sortedFiles: sorted });
   },
 
+  resetPane(paneId: string) {
+    const p = pane(paneId);
+    if (!p) return;
+    update(paneId, {
+      files: [],
+      selectedFiles: new Set<string>(),
+      error: null,
+      isLoading: false,
+      searchQuery: "",
+      renamingPath: null,
+      pasteConflicts: null,
+      pendingDrop: null,
+      initialized: false,
+      sortedFiles: [],
+      history: [p.currentPath],
+      historyIndex: 0,
+    });
+  },
+
   setActivePane(paneId: string) {
     useFileBrowserStore.getState().setActivePane(paneId);
   },

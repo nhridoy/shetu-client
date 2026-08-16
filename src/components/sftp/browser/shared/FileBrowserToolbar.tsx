@@ -7,6 +7,7 @@ import {
   HouseIcon,
   ListDashesIcon,
   MagnifyingGlassIcon,
+  SignOutIcon,
 } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
@@ -38,6 +39,7 @@ export interface FileBrowserToolbarProps {
   onPathInputBlur?: () => void;
   recursiveSearch?: boolean;
   onRecursiveSearchChange?: (checked: boolean) => void;
+  onDisconnect?: () => void;
 }
 
 export default function FileBrowserToolbar({
@@ -66,6 +68,7 @@ export default function FileBrowserToolbar({
   onPathInputBlur,
   recursiveSearch = false,
   onRecursiveSearchChange,
+  onDisconnect,
 }: FileBrowserToolbarProps) {
   const [internalPathInput, setInternalPathInput] = useState(currentPath);
   const [isEditingPath, setIsEditingPath] = useState(false);
@@ -235,6 +238,17 @@ export default function FileBrowserToolbar({
             <GridFourIcon className="w-4 h-4" weight="bold" />
           </Button>
         </div>
+        {onDisconnect && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onDisconnect}
+            title="Disconnect"
+            className="ml-auto text-dark-400 hover:text-red-400"
+          >
+            <SignOutIcon className="w-4 h-4" weight="bold" />
+          </Button>
+        )}
       </div>
     </div>
   );

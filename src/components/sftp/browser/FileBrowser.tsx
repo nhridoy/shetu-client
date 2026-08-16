@@ -349,6 +349,7 @@ export default function FileBrowser({
             />
           </label>
         }
+        onDisconnect={ops.disconnect}
       />
 
       <ErrorBar error={error} setError={() => actions.clearError(paneId)} />
