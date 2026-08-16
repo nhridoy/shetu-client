@@ -68,19 +68,8 @@ export default function FileBrowser({
   const fileDragState = useSftpStore((s) => s.fileDragState);
   const pendingFileDrop = useSftpStore((s) => s.pendingFileDrop);
   const setPendingFileDrop = useSftpStore((s) => s.setPendingFileDrop);
-  const connectSftp = useSftpStore((s) => s.connectSftp);
-  const disconnectSftp = useSftpStore((s) => s.disconnectSftp);
 
   const actions = fileBrowserActions;
-
-  // ── Connect SFTP on mount ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!hostId) return;
-    connectSftp(hostId);
-    return () => {
-      disconnectSftp();
-    };
-  }, [hostId, connectSftp, disconnectSftp]);
 
   // ── Operations (stub until SSH provider is built) ────────────────────────
   const ops = useFileOperations({
