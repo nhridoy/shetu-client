@@ -96,9 +96,11 @@ export default function FileBrowser({
   const containerRef = useRef<HTMLDivElement>(null);
 
   // ── Load files on mount and when path changes ──────────────────────────
+  const loadRemoteFilesRef = useRef(ops.loadRemoteFiles);
+  loadRemoteFilesRef.current = ops.loadRemoteFiles;
   useEffect(() => {
-    ops.loadRemoteFiles(currentPath);
-  }, [currentPath, ops.loadRemoteFiles]);
+    loadRemoteFilesRef.current(currentPath);
+  }, [currentPath]);
   const tauriDragDrop = useTauriDragDrop({
     paneId,
     currentPath,
