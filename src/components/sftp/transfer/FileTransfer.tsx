@@ -8,6 +8,20 @@ import {
 import { Button } from "@/components/ui/Button";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 
+function formatSpeed(bytesPerSecond: number): string {
+  if (bytesPerSecond <= 0) return "";
+  if (bytesPerSecond < 1024) return `${Math.round(bytesPerSecond)} B/s`;
+  if (bytesPerSecond < 1024 * 1024)
+    return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function FileTransfer() {
   const transfers = useSftpStore((s) => s.transfers);
   const removeTransfer = useSftpStore((s) => s.removeTransfer);
@@ -65,6 +79,11 @@ export default function FileTransfer() {
 
             {/* Filename */}
             <span className="text-white truncate flex-1">{t.fileName}</span>
+            {t.status === "active" && t.size > 0 && (
+              <span className="text-dark-500 text-[10px] shrink-0">
+                {formatBytes(t.transferred)} / {formatBytes(t.size)}
+              </span>
+            )}
 
             {/* Status */}
             {t.status === "active" && (
@@ -78,6 +97,11 @@ export default function FileTransfer() {
                 <span className="text-dark-400 w-8 text-right">
                   {t.progress}%
                 </span>
+                {t.speed ? (
+                  <span className="text-dark-500 w-20 text-right">
+                    {formatSpeed(t.speed)}
+                  </span>
+                ) : null}
               </div>
             )}
             {t.status === "pending" && (
