@@ -1,5 +1,6 @@
 import { pointerIntersection } from "@dnd-kit/collision";
 import { useDragDropMonitor, useDroppable } from "@dnd-kit/react";
+import { FileIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import FileBrowserList from "@/components/sftp/browser/FileBrowserList";
 import {
@@ -17,6 +18,9 @@ import { useFileOperations } from "@/hooks/sftp/useFileOperations";
 import { useMarqueeSelection } from "@/hooks/sftp/useMarqueeSelection";
 import { useSortedFiles } from "@/hooks/sftp/useSortedFiles";
 import { useTauriDragDrop } from "@/hooks/sftp/useTauriDragDrop";
+import { extractError } from "@/lib/common/extractError";
+import { classifyFilePath } from "@/lib/sftp/fileKind";
+import type { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
 import {
   fileBrowserActions,
   useFileBrowserStore,
@@ -206,6 +210,9 @@ export default function FileBrowser({
     [paneId],
   );
 
+  // ── File preview ───────────────────────────────────────────────────────
+  const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useFileKeyboardShortcuts({
     activePaneId,
@@ -263,6 +270,7 @@ export default function FileBrowser({
     handleNewFile: ops.handleNewFile,
     handleDownload: ops.handleDownload,
     onPermissions: ops.handlePermissions,
+    onPreview: (file: FileItem) => setPreviewFile(file),
   };
 
   return (
@@ -463,6 +471,21 @@ export default function FileBrowser({
           />
         </Modal>
       )}
+
+      {previewFile && (
+        <Modal
+          open
+          onClose={() => setPreviewFile(null)}
+          title={previewFile.name}
+          maxWidth="max-w-4xl"
+        >
+          <FilePreviewModal
+            file={previewFile}
+            ensureProvider={ops.ensureProvider}
+            onClose={() => setPreviewFile(null)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -592,4 +615,107 @@ function PermissionsDialog({
       </div>
     </div>
   );
+}
+
+function FilePreviewModal({
+  file,
+  ensureProvider,
+  onClose,
+}: {
+  file: FileItem;
+  ensureProvider: () => Promise<RemoteFileProviderImpl>;
+  onClose: () => void;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const kind = classifyFilePath(file.path);
+
+        if (kind === "image") {
+          const provider = await ensureProvider();
+          const data = await provider.readFile(file.path);
+          if (!cancelled) {
+            const blob = new Blob([data]);
+            setImageUrl(URL.createObjectURL(blob));
+            setLoading(false);
+          }
+        } else if (kind === "code" || kind === "markdown") {
+          const provider = await ensureProvider();
+          const data = await provider.readFile(file.path);
+          if (!cancelled) {
+            const text = new TextDecoder().decode(data);
+            setContent(text);
+            setLoading(false);
+          }
+        } else {
+          if (!cancelled) {
+            setError("Preview not available for this file type");
+            setLoading(false);
+          }
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setError(extractError(err));
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+    };
+  }, [file.path, ensureProvider, imageUrl]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-dark-400">
+        Loading preview...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-2">
+        <FileIcon className="w-12 h-12 text-dark-500" />
+        <p className="text-dark-400">{error}</p>
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    );
+  }
+
+  if (imageUrl) {
+    return (
+      <div className="flex items-center justify-center p-4 bg-dark-950 rounded">
+        <img
+          src={imageUrl}
+          alt={file.name}
+          className="max-w-full max-h-[60vh] object-contain"
+        />
+      </div>
+    );
+  }
+
+  if (content !== null) {
+    return (
+      <div className="h-[60vh] overflow-auto bg-dark-950 rounded p-4">
+        <pre className="text-sm text-dark-200 font-mono whitespace-pre-wrap break-words">
+          {content}
+        </pre>
+      </div>
+    );
+  }
+
+  return null;
 }

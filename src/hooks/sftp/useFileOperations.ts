@@ -613,5 +613,6 @@ export function useFileOperations({
     setPermissionsFile,
     handlePermissions,
     confirmPermissions,
+    ensureProvider,
   };
 }
