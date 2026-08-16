@@ -30,6 +30,7 @@ interface FileBrowserPane {
   sortField: FileSortField;
   sortDirection: FileSortDirection;
   searchQuery: string;
+  recursiveSearch: boolean;
   renamingPath: string | null;
   renameValue: string;
   lastSelectedIndex: number | null;
@@ -54,6 +55,7 @@ function createPaneState(paneId: string, initialPath: string): FileBrowserPane {
     sortField: "name",
     sortDirection: "asc",
     searchQuery: "",
+    recursiveSearch: false,
     renamingPath: null,
     renameValue: "",
     lastSelectedIndex: null,
@@ -255,6 +257,10 @@ export const fileBrowserActions = {
 
   setSearchQuery(paneId: string, query: string) {
     update(paneId, { searchQuery: query });
+  },
+
+  setRecursiveSearch(paneId: string, recursive: boolean) {
+    update(paneId, { recursiveSearch: recursive });
   },
 
   setShowHidden(paneId: string, show: boolean) {

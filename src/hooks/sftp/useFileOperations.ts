@@ -581,6 +581,28 @@ export function useFileOperations({
     [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
+  // ── Server-side recursive search ─────────────────────────────────────────
+  const handleServerSearch = useCallback(
+    async (query: string): Promise<FileItem[]> => {
+      if (!query.trim()) {
+        await loadRemoteFiles();
+        return [];
+      }
+      try {
+        const provider = await ensureProvider();
+        const results = await provider.search(currentPath, query);
+        actions.setFiles(paneId, results);
+        return results;
+      } catch (err: unknown) {
+        const message = `Search failed: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
+        return [];
+      }
+    },
+    [currentPath, paneId, ensureProvider, setError, loadRemoteFiles],
+  );
+
   return {
     renameInputRef,
     renamingPath,
@@ -614,5 +636,6 @@ export function useFileOperations({
     handlePermissions,
     confirmPermissions,
     ensureProvider,
+    handleServerSearch,
   };
 }

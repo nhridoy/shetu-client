@@ -67,6 +67,7 @@ export default function FileBrowser({
   const sortField = paneState?.sortField ?? "name";
   const sortDirection = paneState?.sortDirection ?? "asc";
   const searchQuery = paneState?.searchQuery ?? "";
+  const recursiveSearch = paneState?.recursiveSearch ?? false;
   const pasteConflicts = paneState?.pasteConflicts ?? null;
   const pendingDrop = paneState?.pendingDrop ?? null;
   const history = paneState?.history ?? ["/"];
@@ -316,9 +317,21 @@ export default function FileBrowser({
         onNavigateUp={() => actions.navigateUp(paneId)}
         onRefresh={() => ops.refreshFiles()}
         onNewFolder={ops.handleNewFolder}
-        onSearchChange={(q) => actions.setSearchQuery(paneId, q)}
+        onSearchChange={(q) => {
+          actions.setSearchQuery(paneId, q);
+          if (recursiveSearch && q.trim()) {
+            ops.handleServerSearch(q);
+          }
+        }}
         onShowHiddenChange={(v) => actions.setShowHidden(paneId, v)}
         onViewModeChange={(m) => actions.setViewMode(paneId, m)}
+        recursiveSearch={recursiveSearch}
+        onRecursiveSearchChange={(v) => {
+          actions.setRecursiveSearch(paneId, v);
+          if (!v) {
+            ops.refreshFiles();
+          }
+        }}
         showBackForward
         canNavigateBack={historyIndex > 0}
         canNavigateForward={historyIndex < history.length - 1}

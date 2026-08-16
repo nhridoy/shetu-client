@@ -36,6 +36,8 @@ export interface FileBrowserToolbarProps {
   onPathInputChange?: (value: string) => void;
   onPathInputKeyDown?: (e: React.KeyboardEvent) => void;
   onPathInputBlur?: () => void;
+  recursiveSearch?: boolean;
+  onRecursiveSearchChange?: (checked: boolean) => void;
 }
 
 export default function FileBrowserToolbar({
@@ -62,6 +64,8 @@ export default function FileBrowserToolbar({
   onPathInputChange,
   onPathInputKeyDown,
   onPathInputBlur,
+  recursiveSearch = false,
+  onRecursiveSearchChange,
 }: FileBrowserToolbarProps) {
   const [internalPathInput, setInternalPathInput] = useState(currentPath);
   const [isEditingPath, setIsEditingPath] = useState(false);
@@ -198,6 +202,17 @@ export default function FileBrowserToolbar({
           />
           Hidden
         </label>
+        {onRecursiveSearchChange && (
+          <label className="flex items-center gap-1.5 text-dark-400 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={recursiveSearch}
+              onChange={(e) => onRecursiveSearchChange(e.target.checked)}
+              className="rounded bg-dark-700 border-dark-600 text-primary-500 focus:ring-primary-500"
+            />
+            Recursive
+          </label>
+        )}
         <div className="flex bg-dark-700 rounded overflow-hidden">
           <Button
             variant="ghost"
