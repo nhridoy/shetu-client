@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useModal } from "@/hooks/useModal";
 import { extractError } from "@/lib/common/extractError";
@@ -104,12 +104,6 @@ export function useFileOperations({
       clearError,
       connectionErrorModal,
     ]);
-
-  useEffect(() => {
-    return () => {
-      invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
-    };
-  }, [paneId]);
 
   const disconnect = useCallback(async () => {
     providerRef.current = null;
