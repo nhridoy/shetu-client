@@ -106,11 +106,11 @@ export default function FileTransfer() {
                 <div className="w-16 bg-dark-700 rounded-full h-1">
                   <div
                     className="bg-primary-500 h-1 rounded-full transition-all"
-                    style={{ width: `${t.progress}%` }}
+                    style={{ width: `${Math.round(t.progress * 100)}%` }}
                   />
                 </div>
                 <span className="text-dark-400 w-8 text-right">
-                  {t.progress}%
+                  {Math.round(t.progress * 100)}%
                 </span>
                 {t.speed ? (
                   <span className="text-dark-500 w-20 text-right">
