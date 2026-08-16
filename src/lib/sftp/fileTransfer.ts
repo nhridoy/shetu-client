@@ -24,6 +24,18 @@ export interface FileProvider {
   copyFile(source: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
+  upload?(
+    localPath: string,
+    remotePath: string,
+    onProgress?: ProgressCallback,
+    transferId?: string,
+  ): Promise<void>;
+  download?(
+    remotePath: string,
+    localPath: string,
+    onProgress?: ProgressCallback,
+    transferId?: string,
+  ): Promise<void>;
 }
 
 export class LocalFileProvider implements FileProvider {
@@ -219,6 +231,28 @@ export async function transferFiles(
         dest.type === "local"
       ) {
         await dest.copyFile(file.path, destFilePath);
+        const result: TransferFileResult = { file, action: "copied" };
+        results.push(result);
+        onFileComplete?.(file, i, result);
+      } else if (
+        source.type === "local" &&
+        dest.type === "remote" &&
+        dest.upload
+      ) {
+        // Stream local→remote via Rust upload (no full-file read)
+        const transferId = crypto.randomUUID();
+        await dest.upload(file.path, destFilePath, undefined, transferId);
+        const result: TransferFileResult = { file, action: "copied" };
+        results.push(result);
+        onFileComplete?.(file, i, result);
+      } else if (
+        source.type === "remote" &&
+        dest.type === "local" &&
+        source.download
+      ) {
+        // Stream remote→local via Rust download (no full-file read)
+        const transferId = crypto.randomUUID();
+        await source.download(file.path, destFilePath, undefined, transferId);
         const result: TransferFileResult = { file, action: "copied" };
         results.push(result);
         onFileComplete?.(file, i, result);
