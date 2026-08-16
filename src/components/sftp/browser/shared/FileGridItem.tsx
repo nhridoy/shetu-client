@@ -1,6 +1,6 @@
 import { useFileItemDnD } from "@/hooks/sftp/useFileItemDnD";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
-import { formatSize, getFileIcon } from "@/lib/sftp/fileHelpers";
+import { formatDate, formatSize, getFileIcon } from "@/lib/sftp/fileHelpers";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface FileItemProps {
@@ -115,6 +115,11 @@ export default function FileGridItem({
               {file.type === "directory" ? "Folder" : formatSize(file.size)}
             </span>
           </div>
+          {file.modifiedAt && (
+            <div className="text-dark-500 text-[10px] mt-1">
+              {formatDate(file.modifiedAt)}
+            </div>
+          )}
         </div>
       )}
     </div>
