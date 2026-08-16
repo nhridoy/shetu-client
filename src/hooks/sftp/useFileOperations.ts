@@ -292,44 +292,52 @@ export function useFileOperations({
   }, [deleteConfirm, ensureProvider, refreshFiles, setError, clearError]);
 
   // ── Upload / Download ────────────────────────────────────────────────────
-  const handleUpload = useCallback(
-    async (fileList: FileList) => {
-      if (fileList.length === 0) return;
-      try {
-        const provider = await ensureProvider();
-        let uploaded = 0;
-        let failed = 0;
-        for (const file of Array.from(fileList)) {
-          try {
-            const data = new Uint8Array(await file.arrayBuffer());
-            const remotePath =
-              currentPath === "/"
-                ? `/${file.name}`
-                : `${currentPath}/${file.name}`;
-            await provider.writeFile(remotePath, data);
-            uploaded++;
-          } catch {
-            failed++;
-          }
+  const handleUpload = useCallback(async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const paths = await open({
+        multiple: true,
+        title: "Select files to upload",
+      });
+      if (!paths || (Array.isArray(paths) && paths.length === 0)) return;
+
+      const filePaths = Array.isArray(paths) ? paths : [paths];
+      const provider = await ensureProvider();
+
+      for (const filePath of filePaths) {
+        const fileName = filePath.split(/[/\\]/).pop() || filePath;
+        const remotePath =
+          currentPath === "/" ? `/${fileName}` : `${currentPath}/${fileName}`;
+        const transferId = crypto.randomUUID();
+
+        useSftpStore.getState().addTransfer({
+          id: transferId,
+          fileName,
+          localPath: filePath,
+          remotePath,
+          direction: "upload",
+          status: "pending",
+          progress: 0,
+          size: 0,
+          transferred: 0,
+          sessionId: paneId,
+        });
+
+        try {
+          await provider.upload(filePath, remotePath, undefined, transferId);
+        } catch {
+          // Error handled by progress listener marking transfer as error
         }
-        if (uploaded > 0) {
-          toast.success(`Uploaded ${uploaded} file${uploaded > 1 ? "s" : ""}`);
-          clearError();
-          await refreshFiles();
-        }
-        if (failed > 0) {
-          const message = `Failed to upload ${failed} file${failed > 1 ? "s" : ""}`;
-          setError(message, "transfer");
-          toast.error(message);
-        }
-      } catch (err: unknown) {
-        const message = `Upload failed: ${extractError(err)}`;
-        setError(message, "transfer");
-        toast.error(message);
       }
-    },
-    [currentPath, ensureProvider, refreshFiles, setError, clearError],
-  );
+
+      clearError();
+      await refreshFiles();
+    } catch (err: unknown) {
+      const message = `Upload failed: ${extractError(err)}`;
+      setError(message, "transfer");
+      toast.error(message);
+    }
+  }, [currentPath, paneId, ensureProvider, refreshFiles, setError, clearError]);
 
   // ── Permissions ─────────────────────────────────────────────────────────
   const [permissionsFile, setPermissionsFile] = useState<FileItem | null>(null);

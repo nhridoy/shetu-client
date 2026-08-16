@@ -337,17 +337,9 @@ export default function FileBrowser({
         canNavigateBack={historyIndex > 0}
         canNavigateForward={historyIndex < history.length - 1}
         beforeActions={
-          <label className="bg-primary-600 hover:bg-primary-700 text-white px-3 py-1 rounded text-sm cursor-pointer transition-colors">
+          <Button size="sm" onClick={() => ops.handleUpload()}>
             Upload
-            <input
-              type="file"
-              className="hidden"
-              multiple
-              onChange={(e) =>
-                e.target.files && ops.handleUpload(e.target.files)
-              }
-            />
-          </label>
+          </Button>
         }
         onDisconnect={ops.disconnect}
       />
