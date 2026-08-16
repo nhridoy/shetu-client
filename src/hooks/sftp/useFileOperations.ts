@@ -367,8 +367,22 @@ export function useFileOperations({
           title: "Save File",
         });
         if (!localPath) return;
-        await provider.download(file.path, localPath);
-        toast.success(`Downloaded ${file.name}`);
+
+        const transferId = crypto.randomUUID();
+        useSftpStore.getState().addTransfer({
+          id: transferId,
+          fileName: file.name,
+          remotePath: file.path,
+          localPath,
+          direction: "download",
+          status: "pending",
+          progress: 0,
+          size: file.size,
+          transferred: 0,
+          sessionId: paneId,
+        });
+
+        await provider.download(file.path, localPath, undefined, transferId);
         clearError();
       } catch (err: unknown) {
         const message = `Download failed: ${extractError(err)}`;
@@ -376,7 +390,7 @@ export function useFileOperations({
         toast.error(message);
       }
     },
-    [ensureProvider, setError, clearError],
+    [paneId, ensureProvider, clearError, setError],
   );
 
   // ── Clipboard ────────────────────────────────────────────────────────────
