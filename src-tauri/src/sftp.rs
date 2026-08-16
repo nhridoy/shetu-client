@@ -748,6 +748,79 @@ pub async fn sftp_upload(
 }
 
 #[tauri::command]
+pub async fn sftp_server_copy(
+    src_session_id: String,
+    src_path: String,
+    dest_session_id: String,
+    dest_path: String,
+    total_bytes: u64,
+    transfer_id: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let (src_sftp, dest_sftp) = {
+        let map = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
+        let src_session = map.get(&src_session_id).ok_or("Source SFTP session not found")?;
+        let dest_session = map.get(&dest_session_id).ok_or("Dest SFTP session not found")?;
+        (Arc::clone(&src_session.sftp), Arc::clone(&dest_session.sftp))
+    };
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut remote_file = src_sftp.open(&src_path).await.map_err(|e| format!("open src: {e}"))?;
+    let mut dest_file = dest_sftp.create(&dest_path).await.map_err(|e| format!("create dest: {e}"))?;
+
+    let token = {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        let token = tokio_util::sync::CancellationToken::new();
+        tokens.insert(transfer_id.clone(), token.clone());
+        token
+    };
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut transferred = 0u64;
+    let start = std::time::Instant::now();
+
+    let result = loop {
+        if token.is_cancelled() {
+            break Err("Transfer cancelled".to_string());
+        }
+        let n = remote_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break Ok(());
+        }
+        dest_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
+        transferred += n as u64;
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.0 { transferred as f64 / elapsed } else { 0.0 };
+
+        let _ = app_handle.emit(
+            "sftp-transfer-progress",
+            SftpTransferProgress {
+                session_id: dest_session_id.clone(),
+                transfer_id: transfer_id.clone(),
+                transfer_type: "upload".to_string(),
+                path: dest_path.clone(),
+                bytes_transferred: transferred,
+                total_bytes,
+                speed,
+            },
+        );
+    };
+
+    {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        tokens.remove(&transfer_id);
+    }
+
+    result?;
+
+    dest_file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn sftp_search(
     session_id: String,
     path: String,

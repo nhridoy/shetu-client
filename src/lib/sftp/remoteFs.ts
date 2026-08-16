@@ -90,6 +90,10 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
     private sessionId: string,
   ) {}
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   private async getInvoke() {
     if (!this.invoke) {
       const mod = await import("@tauri-apps/api/core");
@@ -266,6 +270,26 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
       sessionId: this.sessionId,
       localPath,
       remotePath,
+      transferId: id,
+    });
+  }
+
+  async serverCopy(
+    destSessionId: string,
+    srcPath: string,
+    destPath: string,
+    totalBytes: number,
+    transferId?: string,
+  ): Promise<void> {
+    const invoke = await this.getInvoke();
+    const id = transferId ?? crypto.randomUUID();
+
+    await invoke("sftp_server_copy", {
+      srcSessionId: this.sessionId,
+      srcPath,
+      destSessionId,
+      destPath,
+      totalBytes,
       transferId: id,
     });
   }

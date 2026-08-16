@@ -517,43 +517,56 @@ export function useFileOperations({
     const { clipboard, clipboardMode } = useSftpStore.getState();
     if (!clipboard || !clipboardMode) return;
     try {
+      const { transferFiles, LocalFileProvider } = await import(
+        "@/lib/sftp/fileTransfer"
+      );
       const provider = await ensureProvider();
-      let processed = 0;
-      let failed = 0;
-      for (const srcPath of clipboard.paths) {
-        try {
-          const fileName = srcPath.split(/[/\\]/).pop() || srcPath;
-          const destPath =
-            currentPath === "/" ? `/${fileName}` : `${currentPath}/${fileName}`;
-          if (clipboardMode === "cut") {
-            await provider.moveFile(srcPath, destPath);
-          } else {
-            await provider.copyFile(srcPath, destPath);
-          }
-          processed++;
-        } catch {
-          failed++;
-        }
+
+      // Build source files from clipboard
+      const sourceFiles: FileItem[] = clipboard.paths.map((srcPath) => {
+        const name = srcPath.split(/[/\\]/).pop() || srcPath;
+        return {
+          name,
+          path: srcPath,
+          type: "file" as const,
+          size: 0,
+          permissions: "",
+          owner: "",
+          group: "",
+          modifiedAt: new Date().toISOString(),
+          isHidden: name.startsWith("."),
+        };
+      });
+
+      // Determine source provider
+      const isLocalSource = clipboard.hostId === "local";
+      let sourceProvider: FileProvider;
+      if (isLocalSource) {
+        sourceProvider = new LocalFileProvider("local");
+      } else {
+        // Remote source - get from registry or use current provider
+        const sourceFromRegistry = getProvider(clipboard.hostId);
+        sourceProvider = sourceFromRegistry ?? provider;
       }
-      if (processed > 0) {
-        toast.success(
-          `${clipboardMode === "cut" ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
-        );
-        clearError();
-        await refreshFiles();
-      }
-      if (failed > 0) {
-        const message = `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
-        setError(message, "operation");
-        toast.error(message);
-      }
+
+      await transferFiles({
+        source: sourceProvider,
+        dest: provider,
+        files: sourceFiles,
+        destPath: currentPath,
+        mode: clipboardMode === "cut" ? "move" : "copy",
+        sessionId: paneId,
+      });
+
+      clearError();
+      await refreshFiles();
       useSftpStore.getState().clearClipboard();
     } catch (err: unknown) {
       const message = `Paste failed: ${extractError(err)}`;
       setError(message, "operation");
       toast.error(message);
     }
-  }, [currentPath, ensureProvider, refreshFiles, setError, clearError]);
+  }, [currentPath, paneId, ensureProvider, refreshFiles, setError, clearError]);
 
   // ── File drop ────────────────────────────────────────────────────────────
   const executeFileDrop = useCallback(

@@ -38,6 +38,13 @@ export interface FileProvider {
     onProgress?: ProgressCallback,
     transferId?: string,
   ): Promise<void>;
+  serverCopy?(
+    srcSessionId: string,
+    srcPath: string,
+    destPath: string,
+    totalBytes: number,
+    transferId?: string,
+  ): Promise<void>;
 }
 
 export class LocalFileProvider implements FileProvider {
@@ -239,35 +246,26 @@ async function transferSingleFile(
     }
 
     if (source.type === "remote" && dest.type === "remote") {
-      // Remote→Remote: download to temp, then upload from temp
-      const { tempdir } = await import("@tauri-apps/api/path");
-      const tempDir = await tempdir();
-      const tempPath = `${tempDir}/sftp-transfer-${transferId}-${file.name}`;
-
-      try {
-        // Phase 1: Download to temp (shows as download progress)
-        useSftpStore.getState().updateTransfer(transferId, {
-          remotePath: file.path,
-          direction: "download",
-        });
-        await source.download(file.path, tempPath, undefined, transferId);
-
-        // Phase 2: Upload from temp (shows as upload progress)
-        useSftpStore.getState().updateTransfer(transferId, {
-          localPath: tempPath,
-          remotePath: destFilePath,
-          direction: "upload",
-          progress: 0,
-          transferred: 0,
-        });
-        await dest.upload(tempPath, destFilePath, undefined, transferId);
-
+      // Remote→Remote: direct server-side streaming (no temp file, no JS memory)
+      if (
+        "serverCopy" in source &&
+        typeof source.serverCopy === "function" &&
+        "getSessionId" in dest
+      ) {
+        const destWithSession = dest as { getSessionId: () => string };
+        await source.serverCopy(
+          destWithSession.getSessionId(),
+          file.path,
+          destFilePath,
+          file.size,
+          transferId,
+        );
         return { file, action: "copied" };
-      } finally {
-        // Cleanup temp file
-        const { removeFile } = await import("@tauri-apps/plugin-fs");
-        await removeFile(tempPath).catch(() => {});
       }
+      // Fallback shouldn't happen with valid providers
+      throw new Error(
+        "Server-to-server copy not supported between these providers",
+      );
     }
 
     // Fallback: shouldn't reach here with valid providers
