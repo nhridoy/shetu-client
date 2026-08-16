@@ -5,6 +5,8 @@ import {
   UploadSimpleIcon,
   XIcon,
 } from "@phosphor-icons/react";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback } from "react";
 import { Button } from "@/components/ui/Button";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 
@@ -26,6 +28,19 @@ export default function FileTransfer() {
   const transfers = useSftpStore((s) => s.transfers);
   const removeTransfer = useSftpStore((s) => s.removeTransfer);
   const clearCompleted = useSftpStore((s) => s.clearCompletedTransfers);
+
+  const handleCancel = useCallback(
+    async (transferId: string, sessionId?: string) => {
+      if (sessionId) {
+        await invoke("sftp_cancel_transfer", {
+          sessionId,
+          transferId,
+        }).catch(() => {});
+      }
+      removeTransfer(transferId);
+    },
+    [removeTransfer],
+  );
 
   const activeTransfers = transfers.filter(
     (t) => t.status === "active" || t.status === "pending",
@@ -120,13 +135,24 @@ export default function FileTransfer() {
             )}
 
             {/* Remove */}
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => removeTransfer(t.id)}
-            >
-              <XIcon className="w-3 h-3" weight="bold" />
-            </Button>
+            {t.status === "active" || t.status === "pending" ? (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => handleCancel(t.id, t.sessionId)}
+                title="Cancel transfer"
+              >
+                <XIcon className="w-3 h-3 text-red-400" weight="bold" />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => removeTransfer(t.id)}
+              >
+                <XIcon className="w-3 h-3" weight="bold" />
+              </Button>
+            )}
           </div>
         ))}
       </div>

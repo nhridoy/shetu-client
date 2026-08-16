@@ -153,6 +153,7 @@ export interface TransferItem {
   transferred: number;
   speed?: number;
   error?: string;
+  sessionId?: string;
 }
 
 export interface SftpErrorState {
