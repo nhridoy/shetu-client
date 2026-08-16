@@ -64,6 +64,7 @@ export default function FileBrowserToolbar({
   onPathInputBlur,
 }: FileBrowserToolbarProps) {
   const [internalPathInput, setInternalPathInput] = useState(currentPath);
+  const [isEditingPath, setIsEditingPath] = useState(false);
   const pathInput = pathInputProp ?? internalPathInput;
   const setPathInput = onPathInputChange ?? setInternalPathInput;
 
@@ -74,10 +75,14 @@ export default function FileBrowserToolbar({
     }
     if (e.key === "Enter") {
       onNavigateTo(pathInput);
+      setIsEditingPath(false);
     } else if (e.key === "Escape") {
       setPathInput(currentPath);
+      setIsEditingPath(false);
     }
   };
+
+  const pathSegments = currentPath.split("/").filter(Boolean);
 
   return (
     <div className="p-3 border-b border-dark-700">
@@ -121,14 +126,51 @@ export default function FileBrowserToolbar({
             weight="bold"
           />
         </Button>
-        <input
-          aria-label={pathLabel}
-          value={pathInput}
-          onChange={(e) => setPathInput(e.target.value)}
-          onKeyDown={handlePathKeyDown}
-          onBlur={onPathInputBlur ?? (() => setPathInput(currentPath))}
-          className="flex-1 bg-dark-800 border border-dark-600 rounded px-2 py-1 text-sm text-white font-mono focus:border-primary-500 focus:outline-none"
-        />
+        {isEditingPath ? (
+          <input
+            ref={(el) => el?.focus()}
+            aria-label={pathLabel}
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            onKeyDown={handlePathKeyDown}
+            onBlur={() => {
+              onPathInputBlur?.();
+              setIsEditingPath(false);
+            }}
+            className="flex-1 bg-dark-800 border border-dark-600 rounded px-2 py-1 text-sm text-white font-mono focus:border-primary-500 focus:outline-none"
+          />
+        ) : (
+          <nav
+            className="flex-1 flex items-center gap-0.5 bg-dark-800 border border-dark-600 rounded px-2 py-1 text-sm font-mono overflow-x-auto"
+            onDoubleClick={() => setIsEditingPath(true)}
+          >
+            <button
+              type="button"
+              onClick={() => onNavigateTo("/")}
+              className="text-dark-300 hover:text-white shrink-0 px-1"
+            >
+              /
+            </button>
+            {pathSegments.map((segment, i) => {
+              const segPath = `/${pathSegments.slice(0, i + 1).join("/")}`;
+              const isLast = i === pathSegments.length - 1;
+              return (
+                <span key={segPath} className="flex items-center shrink-0">
+                  <span className="text-dark-500">/</span>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateTo(segPath)}
+                    className={`px-1 rounded hover:bg-dark-700 ${
+                      isLast ? "text-white" : "text-dark-300 hover:text-white"
+                    }`}
+                  >
+                    {segment}
+                  </button>
+                </span>
+              );
+            })}
+          </nav>
+        )}
       </div>
       <div className="flex items-center gap-2">
         {beforeActions}
