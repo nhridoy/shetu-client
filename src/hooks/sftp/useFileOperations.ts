@@ -334,6 +334,69 @@ export function useFileOperations({
     }
   }, [currentPath, paneId, ensureProvider, refreshFiles, setError, clearError]);
 
+  const handleDesktopDrop = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      try {
+        const { writeBinaryFile, BaseDirectory } = await import(
+          "@tauri-apps/plugin-fs"
+        );
+        const provider = await ensureProvider();
+        const tempDir = await import("@tauri-apps/api/path").then((m) =>
+          m.tempdir(),
+        );
+
+        for (const file of files) {
+          const tempPath = `${tempDir}/sftp-upload-${crypto.randomUUID()}-${file.name}`;
+          const data = new Uint8Array(await file.arrayBuffer());
+          await writeBinaryFile(tempPath, data, {
+            baseDir: BaseDirectory.Temp,
+          });
+
+          const remotePath =
+            currentPath === "/"
+              ? `/${file.name}`
+              : `${currentPath}/${file.name}`;
+          const transferId = crypto.randomUUID();
+
+          useSftpStore.getState().addTransfer({
+            id: transferId,
+            fileName: file.name,
+            localPath: tempPath,
+            remotePath,
+            direction: "upload",
+            status: "pending",
+            progress: 0,
+            size: file.size,
+            transferred: 0,
+            sessionId: paneId,
+          });
+
+          try {
+            await provider.upload(tempPath, remotePath, undefined, transferId);
+          } catch {
+            // Error handled by progress listener
+          }
+
+          // Clean up temp file
+          await import("@tauri-apps/plugin-fs").then((m) =>
+            m
+              .removeFile(tempPath, { baseDir: BaseDirectory.Temp })
+              .catch(() => {}),
+          );
+        }
+
+        clearError();
+        await refreshFiles();
+      } catch (err: unknown) {
+        const message = `Upload failed: ${extractError(err)}`;
+        setError(message, "transfer");
+        toast.error(message);
+      }
+    },
+    [currentPath, paneId, ensureProvider, refreshFiles, setError, clearError],
+  );
+
   // ── Permissions ─────────────────────────────────────────────────────────
   const [permissionsFile, setPermissionsFile] = useState<FileItem | null>(null);
 
@@ -660,6 +723,7 @@ export function useFileOperations({
     deleteConfirm,
     setDeleteConfirm,
     handleUpload,
+    handleDesktopDrop,
     handleDownload,
     handleCopy,
     handleCut,

@@ -143,9 +143,9 @@ export default function FileBrowser({
       e.preventDefault();
       setIsDragOver(false);
       if (e.dataTransfer.files.length > 0)
-        ops.handleUpload(e.dataTransfer.files);
+        ops.handleDesktopDrop(Array.from(e.dataTransfer.files));
     },
-    [ops.handleUpload],
+    [ops.handleDesktopDrop],
   );
 
   const droppable = useDroppable({
