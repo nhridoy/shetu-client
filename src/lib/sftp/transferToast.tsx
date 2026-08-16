@@ -2,12 +2,19 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
+const transferStartTimes = new Map<string | number, number>();
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${Number.parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`;
+}
+
+function formatSpeed(bytesPerSecond: number): string {
+  if (bytesPerSecond === 0) return "";
+  return `${formatBytes(bytesPerSecond)}/s`;
 }
 
 function ProgressBar({ percent }: { percent: number }) {
@@ -33,6 +40,7 @@ function TransferToast({
   loaded,
   total,
   isSingle,
+  startedAt,
   onCancel,
 }: {
   label: string;
@@ -40,9 +48,12 @@ function TransferToast({
   loaded: number;
   total: number;
   isSingle: boolean;
+  startedAt: number;
   onCancel?: () => void;
 }) {
   const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+  const elapsed = (Date.now() - startedAt) / 1000;
+  const speed = elapsed > 0 ? loaded / elapsed : 0;
 
   return (
     <div className="text-sm w-full overflow-hidden">
@@ -74,6 +85,7 @@ function TransferToast({
         style={{ color: "var(--color-primary-300)" }}
       >
         {label} {formatBytes(loaded)} / {formatBytes(total)} ({percent}%)
+        {speed > 0 && ` · ${formatSpeed(speed)}`}
       </div>
       <ProgressBar percent={percent} />
     </div>
@@ -88,17 +100,21 @@ export function showTransferStart(
   const count = files.length;
   const verb = mode === "move" ? "Moving" : "Copying";
   const name = count === 1 ? files[0].name : `${count} files`;
-  return toast.loading(
+  const startTime = Date.now();
+  const toastId = toast.loading(
     <TransferToast
       label={`${verb} ${count === 1 ? "" : `${count} `}`}
       fileNames={files.map((f) => f.name)}
       loaded={0}
       total={files.reduce((s, f) => s + f.size, 0) || 1}
       isSingle={count === 1}
+      startedAt={startTime}
       onCancel={onCancel}
     />,
     { description: name },
   );
+  transferStartTimes.set(toastId, startTime);
+  return toastId;
 }
 
 export function showTransferProgress(
@@ -111,6 +127,7 @@ export function showTransferProgress(
 ): void {
   const count = files.length;
   const verb = mode === "move" ? "Moving" : "Copying";
+  const startedAt = transferStartTimes.get(toastId) ?? Date.now();
   toast.loading(
     <TransferToast
       label={`${verb} ${count === 1 ? "" : `${count} `}`}
@@ -118,6 +135,7 @@ export function showTransferProgress(
       loaded={loaded}
       total={total}
       isSingle={count === 1}
+      startedAt={startedAt}
       onCancel={onCancel}
     />,
     { id: toastId },
@@ -129,6 +147,7 @@ export function showTransferCancelled(
   files: FileItem[],
   mode: "move" | "copy",
 ): void {
+  transferStartTimes.delete(toastId);
   const count = files.length;
   const verb = mode === "move" ? "Moved" : "Copied";
   const name = count === 1 ? files[0].name : `${count} files`;
@@ -140,6 +159,7 @@ export function showTransferSuccess(
   files: FileItem[],
   mode: "move" | "copy",
 ): void {
+  transferStartTimes.delete(toastId);
   const count = files.length;
   const verb = mode === "move" ? "Moved" : "Copied";
   const name = count === 1 ? files[0].name : `${count} files`;
@@ -152,6 +172,7 @@ export function showTransferError(
   mode: "move" | "copy",
   error: string,
 ): void {
+  transferStartTimes.delete(toastId);
   const count = files.length;
   const verb = mode === "move" ? "Move" : "Copy";
   toast.error(
