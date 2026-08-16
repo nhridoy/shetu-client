@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { useFileKeyboardShortcuts } from "@/hooks/sftp/useFileKeyboardShortcuts";
 import { useFileOperations } from "@/hooks/sftp/useFileOperations";
+import { useMarqueeSelection } from "@/hooks/sftp/useMarqueeSelection";
 import { useSortedFiles } from "@/hooks/sftp/useSortedFiles";
 import { useTauriDragDrop } from "@/hooks/sftp/useTauriDragDrop";
 import {
@@ -64,6 +65,8 @@ export default function FileBrowser({
   const searchQuery = paneState?.searchQuery ?? "";
   const pasteConflicts = paneState?.pasteConflicts ?? null;
   const pendingDrop = paneState?.pendingDrop ?? null;
+  const history = paneState?.history ?? ["/"];
+  const historyIndex = paneState?.historyIndex ?? 0;
 
   const fileDragState = useSftpStore((s) => s.fileDragState);
   const pendingFileDrop = useSftpStore((s) => s.pendingFileDrop);
@@ -94,6 +97,17 @@ export default function FileBrowser({
   const [isDragOver, setIsDragOver] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // ── Marquee selection ────────────────────────────────────────────────────
+  const marquee = useMarqueeSelection({
+    paneId,
+    containerRef,
+    selectedFiles,
+    onClearSelection: useCallback(
+      () => actions.clearSelection(paneId),
+      [paneId],
+    ),
+  });
 
   // ── Load files on mount and when path changes ──────────────────────────
   const loadRemoteFilesRef = useRef(ops.loadRemoteFiles);
@@ -182,6 +196,16 @@ export default function FileBrowser({
     setPendingFileDrop(null);
   }, [pendingFileDrop, paneId, ops.executeFileDrop, setPendingFileDrop]);
 
+  // ── Navigation ───────────────────────────────────────────────────────────
+  const navigateBack = useCallback(
+    () => actions.navigateBack(paneId),
+    [paneId],
+  );
+  const navigateForward = useCallback(
+    () => actions.navigateForward(paneId),
+    [paneId],
+  );
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useFileKeyboardShortcuts({
     activePaneId,
@@ -238,6 +262,7 @@ export default function FileBrowser({
     handleNewFolder: ops.handleNewFolder,
     handleNewFile: ops.handleNewFile,
     handleDownload: ops.handleDownload,
+    onPermissions: ops.handlePermissions,
   };
 
   return (
@@ -253,6 +278,9 @@ export default function FileBrowser({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onMouseDown={marquee.handleMouseDown}
+      onMouseMove={marquee.handleMouseMove}
+      onMouseUp={marquee.handleMouseUp}
     >
       <DragOverOverlay
         isDragOver={tauriDragDrop.isDragOver || isDragOver}
@@ -275,12 +303,17 @@ export default function FileBrowser({
           actions.navigateTo(paneId, normalized);
         }}
         onNavigateRoot={() => actions.navigateTo(paneId, "/")}
+        onNavigateBack={navigateBack}
+        onNavigateForward={navigateForward}
         onNavigateUp={() => actions.navigateUp(paneId)}
         onRefresh={() => ops.refreshFiles()}
         onNewFolder={ops.handleNewFolder}
         onSearchChange={(q) => actions.setSearchQuery(paneId, q)}
         onShowHiddenChange={(v) => actions.setShowHidden(paneId, v)}
         onViewModeChange={(m) => actions.setViewMode(paneId, m)}
+        showBackForward
+        canNavigateBack={historyIndex > 0}
+        canNavigateForward={historyIndex < history.length - 1}
         beforeActions={
           <label className="bg-primary-600 hover:bg-primary-700 text-white px-3 py-1 rounded text-sm cursor-pointer transition-colors">
             Upload
@@ -331,6 +364,19 @@ export default function FileBrowser({
         totalCount={sortedFiles.length}
         selectedCount={selectedFiles.size}
       />
+
+      {marquee.isDragging && marquee.start && marquee.current && (
+        <div
+          data-marquee
+          className="fixed z-50 border border-primary-500 bg-primary-500/10 pointer-events-none"
+          style={{
+            left: Math.min(marquee.start.x, marquee.current.x),
+            top: Math.min(marquee.start.y, marquee.current.y),
+            width: Math.abs(marquee.current.x - marquee.start.x),
+            height: Math.abs(marquee.current.y - marquee.start.y),
+          }}
+        />
+      )}
 
       {pasteConflicts && (
         <PasteConflictDialog
@@ -402,6 +448,148 @@ export default function FileBrowser({
           </div>
         </Modal>
       )}
+
+      {ops.permissionsFile && (
+        <Modal
+          open
+          onClose={() => ops.setPermissionsFile(null)}
+          title="Change Permissions"
+          maxWidth="max-w-sm"
+        >
+          <PermissionsDialog
+            file={ops.permissionsFile}
+            onConfirm={ops.confirmPermissions}
+            onCancel={() => ops.setPermissionsFile(null)}
+          />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function PermissionsDialog({
+  file,
+  onConfirm,
+  onCancel,
+}: {
+  file: FileItem;
+  onConfirm: (mode: number) => void;
+  onCancel: () => void;
+}) {
+  const currentMode = Number.parseInt(
+    file.permissions?.replace(/[^0-7]/g, "") || "644",
+    8,
+  );
+  const [modeStr, setModeStr] = useState(
+    currentMode.toString(8).padStart(3, "0"),
+  );
+
+  const parsed = Number.parseInt(modeStr, 8);
+  const isValid = !Number.isNaN(parsed) && parsed >= 0 && parsed <= 0o7777;
+
+  const ownerBits = isValid ? (parsed >> 6) & 7 : 0;
+  const groupBits = isValid ? (parsed >> 3) & 7 : 0;
+  const otherBits = isValid ? parsed & 7 : 0;
+
+  const bitLabel = (bit: number, type: "r" | "w" | "x") => {
+    const labels = { r: "Read", w: "Write", x: "Execute" };
+    return `${labels[type]} (${bit ? "on" : "off"})`;
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <p className="text-sm text-dark-300 mb-1">
+          File: <span className="text-white font-medium">{file.name}</span>
+        </p>
+      </div>
+
+      <div>
+        <label
+          htmlFor="perm-octal"
+          className="block text-sm text-dark-300 mb-1"
+        >
+          Octal permissions
+        </label>
+        <input
+          id="perm-octal"
+          type="text"
+          value={modeStr}
+          onChange={(e) => setModeStr(e.target.value)}
+          className="w-full bg-dark-800 border border-dark-600 rounded px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-primary-500"
+          maxLength={4}
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 text-xs">
+        <div>
+          <div className="text-dark-400 mb-1">
+            Owner ({isValid ? ownerBits : "-"})
+          </div>
+          <div className="space-y-0.5">
+            <div className={ownerBits & 4 ? "text-green-400" : "text-dark-500"}>
+              {bitLabel(ownerBits & 4, "r")}
+            </div>
+            <div
+              className={ownerBits & 2 ? "text-yellow-400" : "text-dark-500"}
+            >
+              {bitLabel(ownerBits & 2, "w")}
+            </div>
+            <div className={ownerBits & 1 ? "text-red-400" : "text-dark-500"}>
+              {bitLabel(ownerBits & 1, "x")}
+            </div>
+          </div>
+        </div>
+        <div>
+          <div className="text-dark-400 mb-1">
+            Group ({isValid ? groupBits : "-"})
+          </div>
+          <div className="space-y-0.5">
+            <div className={groupBits & 4 ? "text-green-400" : "text-dark-500"}>
+              {bitLabel(groupBits & 4, "r")}
+            </div>
+            <div
+              className={groupBits & 2 ? "text-yellow-400" : "text-dark-500"}
+            >
+              {bitLabel(groupBits & 2, "w")}
+            </div>
+            <div className={groupBits & 1 ? "text-red-400" : "text-dark-500"}>
+              {bitLabel(groupBits & 1, "x")}
+            </div>
+          </div>
+        </div>
+        <div>
+          <div className="text-dark-400 mb-1">
+            Other ({isValid ? otherBits : "-"})
+          </div>
+          <div className="space-y-0.5">
+            <div className={otherBits & 4 ? "text-green-400" : "text-dark-500"}>
+              {bitLabel(otherBits & 4, "r")}
+            </div>
+            <div
+              className={otherBits & 2 ? "text-yellow-400" : "text-dark-500"}
+            >
+              {bitLabel(otherBits & 2, "w")}
+            </div>
+            <div className={otherBits & 1 ? "text-red-400" : "text-dark-500"}>
+              {bitLabel(otherBits & 1, "x")}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <Button variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!isValid}
+          onClick={() => isValid && onConfirm(parsed)}
+        >
+          Apply
+        </Button>
+      </div>
     </div>
   );
 }

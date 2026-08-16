@@ -324,6 +324,32 @@ export function useFileOperations({
     [currentPath, ensureProvider, refreshFiles, setError, clearError],
   );
 
+  // ── Permissions ─────────────────────────────────────────────────────────
+  const [permissionsFile, setPermissionsFile] = useState<FileItem | null>(null);
+
+  const handlePermissions = useCallback((file: FileItem) => {
+    setPermissionsFile(file);
+  }, []);
+
+  const confirmPermissions = useCallback(
+    async (mode: number) => {
+      if (!permissionsFile) return;
+      try {
+        const provider = await ensureProvider();
+        await provider.chmod(permissionsFile.path, mode);
+        toast.success(`Updated permissions for ${permissionsFile.name}`);
+        clearError();
+        setPermissionsFile(null);
+        await refreshFiles();
+      } catch (err: unknown) {
+        const message = `Failed to change permissions: ${extractError(err)}`;
+        setError(message, "operation");
+        toast.error(message);
+      }
+    },
+    [permissionsFile, ensureProvider, refreshFiles, setError, clearError],
+  );
+
   const handleDownload = useCallback(
     async (file: FileItem) => {
       try {
@@ -583,5 +609,9 @@ export function useFileOperations({
     executePaste,
     loadRemoteFiles,
     refreshFiles,
+    permissionsFile,
+    setPermissionsFile,
+    handlePermissions,
+    confirmPermissions,
   };
 }

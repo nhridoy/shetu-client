@@ -39,6 +39,7 @@ export interface FileBrowserActions {
   handleNewFolder: () => void;
   handleNewFile: () => void;
   handleDownload: (file: FileItem) => void;
+  onPermissions?: (file: FileItem) => void;
 }
 
 interface FileBrowserListProps {
@@ -127,6 +128,7 @@ export default function FileBrowserList({
         onDelete: actions.handleDelete,
         onNewFile: actions.handleNewFile,
         onNewFolder: actions.handleNewFolder,
+        onPermissions: actions.onPermissions,
       },
       (path, name) => {
         setRenamingPath(path);
@@ -195,6 +197,7 @@ export default function FileBrowserList({
         renameValue={renameValue}
         renameInputRef={renameInputRef}
         columnWidths={columnWidths}
+        showPermissions
         onSelect={actions.handleSelect}
         onDoubleClick={() => actions.handleDoubleClick(file)}
         onContextMenu={handleContextMenu}

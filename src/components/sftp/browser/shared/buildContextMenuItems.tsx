@@ -1,4 +1,9 @@
-import { ArrowDownIcon, CopyIcon, FolderOpenIcon } from "@phosphor-icons/react";
+import {
+  ArrowDownIcon,
+  CopyIcon,
+  FolderOpenIcon,
+  LockIcon,
+} from "@phosphor-icons/react";
 import { toast } from "sonner";
 import {
   type BaseContextMenuActions,
@@ -10,6 +15,7 @@ import type { FileItem } from "@/types/sftp/sftpTypes";
 interface FileBrowserActions extends BaseContextMenuActions {
   handleDoubleClick: (file: FileItem) => void;
   handleDownload: (file: FileItem) => void;
+  onPermissions?: (file: FileItem) => void;
 }
 
 export function buildContextMenuItems(
@@ -47,6 +53,14 @@ export function buildContextMenuItems(
         toast.info("Path copied");
       },
     });
+
+    if (actions.onPermissions) {
+      afterItems.push({
+        label: "Permissions",
+        icon: <LockIcon className="w-4 h-4" />,
+        onClick: () => actions.onPermissions?.(menuFile),
+      });
+    }
   }
 
   return buildBaseContextMenuItems({
