@@ -80,6 +80,7 @@ export function useFileOperations({
 
           const provider = new RemoteFileProviderImpl(hostId, paneId);
           providerRef.current = provider;
+          await useSftpStore.getState().ensureTransferListener();
           clearError();
           return provider;
         } catch (err: unknown) {

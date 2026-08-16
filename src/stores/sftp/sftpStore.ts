@@ -215,6 +215,7 @@ interface SftpState {
   requestRefresh: (paneId: string) => void;
   setError: (error: string | null, type: SftpErrorState["errorType"]) => void;
   clearError: () => void;
+  ensureTransferListener: () => Promise<void>;
   connectSftp: (hostId: string) => Promise<void>;
   connectSftpDirect: (config: SshConfig) => Promise<void>;
   disconnectSftp: () => Promise<void>;
@@ -452,6 +453,9 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   setError: (error, type) =>
     set({ errorState: { lastError: error, errorType: type } }),
   clearError: () => set({ errorState: { ...initialErrorState } }),
+  ensureTransferListener: async () => {
+    await ensureProgressListener(get, set);
+  },
 
   connectSftp: async (hostId: string) => {
     set({
