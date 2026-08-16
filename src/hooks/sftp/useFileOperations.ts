@@ -4,6 +4,11 @@ import { toast } from "sonner";
 import { useModal } from "@/hooks/useModal";
 import { extractError } from "@/lib/common/extractError";
 import { nameFormSchema } from "@/lib/schema/common/nameFormSchema";
+import {
+  getProvider,
+  registerProvider,
+  unregisterProvider,
+} from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
 import {
   fileBrowserActions,
@@ -80,6 +85,7 @@ export function useFileOperations({
 
           const provider = new RemoteFileProviderImpl(hostId, paneId);
           providerRef.current = provider;
+          registerProvider(paneId, provider);
           await useSftpStore.getState().ensureTransferListener();
           clearError();
           return provider;
@@ -108,6 +114,7 @@ export function useFileOperations({
 
   const disconnect = useCallback(async () => {
     providerRef.current = null;
+    unregisterProvider(paneId);
     await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
     actions.resetPane(paneId);
     useSftpStore.getState().disconnectPane(paneId);
@@ -556,7 +563,7 @@ export function useFileOperations({
         { action: "replace" | "rename" | "auto" | "skip"; newName?: string }
       >,
       sourceDirect?: { host?: string; port?: number; username?: string },
-      _sourcePaneId?: string,
+      sourcePaneId?: string,
     ) => {
       try {
         const isCrossProvider =
@@ -566,7 +573,14 @@ export function useFileOperations({
           const { transferFiles, LocalFileProvider } = await import(
             "@/lib/sftp/fileTransfer"
           );
-          const sourceProvider = new LocalFileProvider(sourceHostId);
+
+          // Get source provider from registry or create LocalFileProvider
+          let sourceProvider = sourcePaneId
+            ? getProvider(sourcePaneId)
+            : undefined;
+          if (!sourceProvider) {
+            sourceProvider = new LocalFileProvider(sourceHostId);
+          }
           const destProvider = await ensureProvider();
 
           await transferFiles({
