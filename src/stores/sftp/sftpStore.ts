@@ -146,7 +146,7 @@ export interface TransferItem {
   fileName: string;
   localPath?: string;
   remotePath?: string;
-  direction: "upload" | "download";
+  direction: "upload" | "download" | "copy";
   status: "pending" | "active" | "complete" | "error";
   progress: number;
   size: number;

@@ -40,12 +40,6 @@ import {
 import { isSameVolume, listLocalFiles } from "@/lib/sftp/localFs";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
 import {
-  showTransferError,
-  showTransferProgress,
-  showTransferStart,
-  showTransferSuccess,
-} from "@/lib/sftp/transferToast";
-import {
   fileBrowserActions,
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
@@ -138,36 +132,16 @@ export default function LocalFileBrowser({
       sourceProvider?: FileProvider,
     ) => {
       const src = sourceProvider ?? localProvider;
-      const toastId = showTransferStart(dragFiles, mode);
-      const totalSize = dragFiles.reduce((s, f) => s + f.size, 0);
-      let loaded = 0;
 
-      const results = await transferFiles({
+      await transferFiles({
         source: src,
         dest: localProvider,
         files: dragFiles,
         destPath: destDirPath,
         mode: sourceProvider ? "copy" : mode,
+        sessionId: paneId,
         overrides,
-        onFileProgress: (_file, _index, fileLoaded) => {
-          loaded += fileLoaded;
-          showTransferProgress(toastId, dragFiles, loaded, totalSize, mode);
-        },
       });
-
-      const errors = results.filter((r) => r.error);
-      if (errors.length === 0) {
-        showTransferSuccess(toastId, dragFiles, mode);
-      } else if (errors.length === dragFiles.length) {
-        showTransferError(
-          toastId,
-          dragFiles,
-          mode,
-          errors[0].error || "Unknown error",
-        );
-      } else {
-        showTransferSuccess(toastId, dragFiles, mode);
-      }
 
       try {
         const fresh = await listLocalFiles(currentPath);
@@ -364,7 +338,6 @@ export default function LocalFileBrowser({
     const {
       files: dragFiles,
       sourceHostId,
-      destHostId,
       destDirPath,
       sourcePaneId,
     } = pendingFileDrop;

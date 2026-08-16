@@ -1,12 +1,6 @@
 import { type RefObject, useCallback } from "react";
-import { joinPath } from "@/lib/sftp/fileTransfer";
+import { LocalFileProvider, transferFiles } from "@/lib/sftp/fileTransfer";
 import { listLocalFiles, writeLocalFileBytes } from "@/lib/sftp/localFs";
-import {
-  showTransferError,
-  showTransferProgress,
-  showTransferStart,
-  showTransferSuccess,
-} from "@/lib/sftp/transferToast";
 import { fileBrowserActions } from "@/stores/sftp/fileBrowserStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -26,7 +20,6 @@ export function useDesktopFileDrop({
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Only set state if not already handled by useDragDropMonitor
   }, []);
 
   const handleDragLeave = useCallback(
@@ -64,39 +57,38 @@ export function useDesktopFileDrop({
         });
       }
 
-      const toastId = showTransferStart(fileItems, "copy");
-      let totalLoaded = 0;
-      const totalSize = fileItems.reduce((s, f) => s + f.size, 0);
-      let successCount = 0;
-      let failCount = 0;
+      // Write files to temp directory, then use unified transferFiles
+      const { tempdir } = await import("@tauri-apps/api/path");
+      const tempDir = await tempdir();
 
+      const tempFiles: FileItem[] = [];
       for (let i = 0; i < droppedFiles.length; i++) {
         const f = droppedFiles[i];
-        const destPath = joinPath(currentPath, f.name);
-        try {
-          const arrayBuffer = await f.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuffer);
-          await writeLocalFileBytes(destPath, bytes);
-          totalLoaded += f.size;
-          showTransferProgress(
-            toastId,
-            fileItems,
-            totalLoaded,
-            totalSize,
-            "copy",
-          );
-          successCount++;
-        } catch {
-          failCount++;
-        }
+        const tempPath = `${tempDir}/sftp-drop-${crypto.randomUUID()}-${f.name}`;
+        const arrayBuffer = await f.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        await writeLocalFileBytes(tempPath, bytes);
+        tempFiles.push({
+          ...fileItems[i],
+          path: tempPath,
+        });
       }
 
-      if (failCount === 0) {
-        showTransferSuccess(toastId, fileItems, "copy");
-      } else if (successCount === 0) {
-        showTransferError(toastId, fileItems, "copy", "All files failed");
-      } else {
-        showTransferSuccess(toastId, fileItems, "copy");
+      const localProvider = new LocalFileProvider("local");
+
+      await transferFiles({
+        source: localProvider,
+        dest: localProvider,
+        files: tempFiles,
+        destPath: currentPath,
+        mode: "copy",
+        sessionId: paneId,
+      });
+
+      // Cleanup temp files
+      const { removeFile } = await import("@tauri-apps/plugin-fs");
+      for (const tf of tempFiles) {
+        await removeFile(tf.path).catch(() => {});
       }
 
       actions.loadFiles(paneId, currentPath, listLocalFiles);

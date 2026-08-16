@@ -1,5 +1,6 @@
 import {
   CheckIcon,
+  CopySimpleIcon,
   DownloadSimpleIcon,
   LightningIcon,
   UploadSimpleIcon,
@@ -85,9 +86,14 @@ export default function FileTransfer() {
                 className="w-3.5 h-3.5 text-green-400 shrink-0"
                 weight="bold"
               />
-            ) : (
+            ) : t.direction === "download" ? (
               <DownloadSimpleIcon
                 className="w-3.5 h-3.5 text-blue-400 shrink-0"
+                weight="bold"
+              />
+            ) : (
+              <CopySimpleIcon
+                className="w-3.5 h-3.5 text-yellow-400 shrink-0"
                 weight="bold"
               />
             )}

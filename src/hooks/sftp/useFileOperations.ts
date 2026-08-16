@@ -297,6 +297,9 @@ export function useFileOperations({
   const handleUpload = useCallback(async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
+      const { transferFiles, LocalFileProvider } = await import(
+        "@/lib/sftp/fileTransfer"
+      );
       const paths = await open({
         multiple: true,
         title: "Select files to upload",
@@ -306,31 +309,29 @@ export function useFileOperations({
       const filePaths = Array.isArray(paths) ? paths : [paths];
       const provider = await ensureProvider();
 
-      for (const filePath of filePaths) {
+      const uploadFiles: FileItem[] = filePaths.map((filePath) => {
         const fileName = filePath.split(/[/\\]/).pop() || filePath;
-        const remotePath =
-          currentPath === "/" ? `/${fileName}` : `${currentPath}/${fileName}`;
-        const transferId = crypto.randomUUID();
-
-        useSftpStore.getState().addTransfer({
-          id: transferId,
-          fileName,
-          localPath: filePath,
-          remotePath,
-          direction: "upload",
-          status: "pending",
-          progress: 0,
+        return {
+          name: fileName,
+          path: filePath,
+          type: "file" as const,
           size: 0,
-          transferred: 0,
-          sessionId: paneId,
-        });
+          permissions: "",
+          owner: "",
+          group: "",
+          modifiedAt: new Date().toISOString(),
+          isHidden: fileName.startsWith("."),
+        };
+      });
 
-        try {
-          await provider.upload(filePath, remotePath, undefined, transferId);
-        } catch {
-          // Error handled by progress listener marking transfer as error
-        }
-      }
+      await transferFiles({
+        source: new LocalFileProvider("local"),
+        dest: provider,
+        files: uploadFiles,
+        destPath: currentPath,
+        mode: "copy",
+        sessionId: paneId,
+      });
 
       clearError();
       await refreshFiles();
@@ -348,10 +349,16 @@ export function useFileOperations({
         const { writeBinaryFile, BaseDirectory } = await import(
           "@tauri-apps/plugin-fs"
         );
+        const { transferFiles, LocalFileProvider } = await import(
+          "@/lib/sftp/fileTransfer"
+        );
         const provider = await ensureProvider();
         const tempDir = await import("@tauri-apps/api/path").then((m) =>
           m.tempdir(),
         );
+
+        const uploadFiles: FileItem[] = [];
+        const tempPaths = new Map<string, string>();
 
         for (const file of files) {
           const tempPath = `${tempDir}/sftp-upload-${crypto.randomUUID()}-${file.name}`;
@@ -359,37 +366,33 @@ export function useFileOperations({
           await writeBinaryFile(tempPath, data, {
             baseDir: BaseDirectory.Temp,
           });
-
-          const remotePath =
-            currentPath === "/"
-              ? `/${file.name}`
-              : `${currentPath}/${file.name}`;
-          const transferId = crypto.randomUUID();
-
-          useSftpStore.getState().addTransfer({
-            id: transferId,
-            fileName: file.name,
-            localPath: tempPath,
-            remotePath,
-            direction: "upload",
-            status: "pending",
-            progress: 0,
+          tempPaths.set(file.name, tempPath);
+          uploadFiles.push({
+            name: file.name,
+            path: tempPath,
+            type: "file",
             size: file.size,
-            transferred: 0,
-            sessionId: paneId,
+            permissions: "",
+            owner: "",
+            group: "",
+            modifiedAt: new Date(file.lastModified).toISOString(),
+            isHidden: file.name.startsWith("."),
           });
+        }
 
-          try {
-            await provider.upload(tempPath, remotePath, undefined, transferId);
-          } catch {
-            // Error handled by progress listener
-          }
+        await transferFiles({
+          source: new LocalFileProvider("local"),
+          dest: provider,
+          files: uploadFiles,
+          destPath: currentPath,
+          mode: "copy",
+          sessionId: paneId,
+        });
 
-          // Clean up temp file
+        // Cleanup temp files
+        for (const tempPath of tempPaths.values()) {
           await import("@tauri-apps/plugin-fs").then((m) =>
-            m
-              .removeFile(tempPath, { baseDir: BaseDirectory.Temp })
-              .catch(() => {}),
+            m.removeFile(tempPath).catch(() => {}),
           );
         }
 
@@ -435,27 +438,28 @@ export function useFileOperations({
       try {
         const provider = await ensureProvider();
         const { save } = await import("@tauri-apps/plugin-dialog");
+        const { transferFiles, LocalFileProvider } = await import(
+          "@/lib/sftp/fileTransfer"
+        );
         const localPath = await save({
           defaultPath: file.name,
           title: "Save File",
         });
         if (!localPath) return;
 
-        const transferId = crypto.randomUUID();
-        useSftpStore.getState().addTransfer({
-          id: transferId,
-          fileName: file.name,
-          remotePath: file.path,
-          localPath,
-          direction: "download",
-          status: "pending",
-          progress: 0,
-          size: file.size,
-          transferred: 0,
+        // Use the actual filename from the save dialog path
+        const localFileName = localPath.split(/[/\\]/).pop() || file.name;
+        const localDir = localPath.split(/[/\\]/).slice(0, -1).join("/") || "/";
+        const fileWithName = { ...file, name: localFileName };
+
+        await transferFiles({
+          source: provider,
+          dest: new LocalFileProvider("local"),
+          files: [fileWithName],
+          destPath: localDir,
+          mode: "copy",
           sessionId: paneId,
         });
-
-        await provider.download(file.path, localPath, undefined, transferId);
         clearError();
       } catch (err: unknown) {
         const message = `Download failed: ${extractError(err)}`;
@@ -589,41 +593,22 @@ export function useFileOperations({
             files: dragFiles,
             destPath: destDirPath,
             mode: "copy",
+            sessionId: paneId,
             overrides,
           });
         } else {
+          const { transferFiles } = await import("@/lib/sftp/fileTransfer");
           const provider = await ensureProvider();
-          let processed = 0;
-          let failed = 0;
-          for (const file of dragFiles) {
-            const override = overrides?.get(file.path);
-            if (override?.action === "skip") continue;
-            try {
-              const destName =
-                override?.action === "auto"
-                  ? `${file.name} (copy)`
-                  : override?.action === "rename" && override.newName
-                    ? override.newName
-                    : file.name;
-              const destPath =
-                destDirPath === "/"
-                  ? `/${destName}`
-                  : `${destDirPath}/${destName}`;
-              await provider.moveFile(file.path, destPath);
-              processed++;
-            } catch {
-              failed++;
-            }
-          }
-          if (processed > 0) {
-            toast.success(`Moved ${processed} item${processed > 1 ? "s" : ""}`);
-            clearError();
-          }
-          if (failed > 0) {
-            const message = `Failed to move ${failed} item${failed > 1 ? "s" : ""}`;
-            setError(message, "operation");
-            toast.error(message);
-          }
+
+          await transferFiles({
+            source: provider,
+            dest: provider,
+            files: dragFiles,
+            destPath: destDirPath,
+            mode: "move",
+            sessionId: paneId,
+            overrides,
+          });
         }
         await refreshFiles();
       } catch (err: unknown) {
@@ -632,7 +617,7 @@ export function useFileOperations({
         toast.error(message);
       }
     },
-    [ensureProvider, refreshFiles, setError, clearError],
+    [ensureProvider, refreshFiles, setError, paneId],
   );
 
   const executePaste = useCallback(
