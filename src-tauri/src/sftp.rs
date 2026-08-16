@@ -55,12 +55,14 @@ pub struct SftpSession {
 #[derive(Clone)]
 pub struct SftpSessions {
     pub sessions: Arc<Mutex<HashMap<String, SftpSession>>>,
+    pub cancel_tokens: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
 }
 
 impl Default for SftpSessions {
     fn default() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -315,6 +317,18 @@ pub async fn sftp_disconnect(
         if session.created_ourselves {
             drop(session.ssh_handle);
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_cancel_transfer(
+    transfer_id: String,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+    if let Some(token) = tokens.get(&transfer_id) {
+        token.cancel();
     }
     Ok(())
 }
@@ -604,14 +618,24 @@ pub async fn sftp_download(
         .await
         .map_err(|e| format!("create local: {e}"))?;
 
+    let token = {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        let token = tokio_util::sync::CancellationToken::new();
+        tokens.insert(transfer_id.clone(), token.clone());
+        token
+    };
+
     let mut buf = vec![0u8; 64 * 1024];
     let mut transferred = 0u64;
     let start = std::time::Instant::now();
 
-    loop {
+    let result = loop {
+        if token.is_cancelled() {
+            break Err("Transfer cancelled".to_string());
+        }
         let n = remote_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
         if n == 0 {
-            break;
+            break Ok(());
         }
         local_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
         transferred += n as u64;
@@ -631,9 +655,15 @@ pub async fn sftp_download(
                 speed,
             },
         );
+    };
+
+    // Cleanup: remove token from map
+    {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        tokens.remove(&transfer_id);
     }
 
-    Ok(())
+    result
 }
 
 #[tauri::command]
@@ -666,14 +696,24 @@ pub async fn sftp_upload(
         .await
         .map_err(|e| format!("create remote: {e}"))?;
 
+    let token = {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        let token = tokio_util::sync::CancellationToken::new();
+        tokens.insert(transfer_id.clone(), token.clone());
+        token
+    };
+
     let mut buf = vec![0u8; 64 * 1024];
     let mut transferred = 0u64;
     let start = std::time::Instant::now();
 
-    loop {
+    let result = loop {
+        if token.is_cancelled() {
+            break Err("Transfer cancelled".to_string());
+        }
         let n = local_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
         if n == 0 {
-            break;
+            break Ok(());
         }
         remote_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
         transferred += n as u64;
@@ -693,7 +733,15 @@ pub async fn sftp_upload(
                 speed,
             },
         );
+    };
+
+    // Cleanup: remove token from map
+    {
+        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
+        tokens.remove(&transfer_id);
     }
+
+    result?;
 
     remote_file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
     Ok(())

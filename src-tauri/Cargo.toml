@@ -41,6 +41,7 @@ tauri-plugin-keyring-store = "0.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 russh = { version = "0.62", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "2.4"
+tokio-util = "0.7"
 
 [features]
 default = ["custom-protocol"]
