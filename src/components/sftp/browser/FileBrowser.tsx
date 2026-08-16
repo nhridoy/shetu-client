@@ -2,6 +2,7 @@ import { pointerIntersection } from "@dnd-kit/collision";
 import { useDragDropMonitor, useDroppable } from "@dnd-kit/react";
 import { FileIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import FileBrowserList from "@/components/sftp/browser/FileBrowserList";
 import {
   DragOverOverlay,
@@ -121,10 +122,52 @@ export default function FileBrowser({
   useEffect(() => {
     loadRemoteFilesRef.current(currentPath);
   }, [currentPath]);
+
+  const handleTauriDrop = useCallback(
+    async (paths: string[], destDir: string) => {
+      if (paths.length === 0) return;
+      try {
+        const provider = await ops.ensureProvider();
+        for (const filePath of paths) {
+          const fileName = filePath.split(/[/\\]/).pop() || filePath;
+          const remotePath =
+            destDir === "/" ? `/${fileName}` : `${destDir}/${fileName}`;
+          const transferId = crypto.randomUUID();
+
+          useSftpStore.getState().addTransfer({
+            id: transferId,
+            fileName,
+            localPath: filePath,
+            remotePath,
+            direction: "upload",
+            status: "pending",
+            progress: 0,
+            size: 0,
+            transferred: 0,
+            sessionId: paneId,
+          });
+
+          try {
+            await provider.upload(filePath, remotePath, undefined, transferId);
+          } catch {
+            // Error handled by progress listener
+          }
+        }
+        await ops.refreshFiles();
+      } catch (err) {
+        toast.error(
+          `Upload failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    [paneId, ops],
+  );
+
   const tauriDragDrop = useTauriDragDrop({
     paneId,
     currentPath,
     hostId,
+    onDrop: handleTauriDrop,
   });
 
   // ── Drag & drop ──────────────────────────────────────────────────────────
