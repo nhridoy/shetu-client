@@ -26,11 +26,13 @@ export interface RemoteFileProvider {
     remotePath: string,
     localPath: string,
     onProgress?: ProgressCallback,
+    transferId?: string,
   ): Promise<void>;
   upload(
     localPath: string,
     remotePath: string,
     onProgress?: ProgressCallback,
+    transferId?: string,
   ): Promise<void>;
 }
 
@@ -238,15 +240,16 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
     remotePath: string,
     localPath: string,
     _onProgress?: ProgressCallback,
+    transferId?: string,
   ): Promise<void> {
     const invoke = await this.getInvoke();
-    const transferId = crypto.randomUUID();
+    const id = transferId ?? crypto.randomUUID();
 
     await invoke("sftp_download", {
       sessionId: this.sessionId,
       remotePath,
       localPath,
-      transferId,
+      transferId: id,
     });
   }
 
@@ -254,15 +257,16 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
     localPath: string,
     remotePath: string,
     _onProgress?: ProgressCallback,
+    transferId?: string,
   ): Promise<void> {
     const invoke = await this.getInvoke();
-    const transferId = crypto.randomUUID();
+    const id = transferId ?? crypto.randomUUID();
 
     await invoke("sftp_upload", {
       sessionId: this.sessionId,
       localPath,
       remotePath,
-      transferId,
+      transferId: id,
     });
   }
 }
