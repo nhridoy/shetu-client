@@ -95,7 +95,10 @@ export default function FileBrowser({
   const [isDropTarget, setIsDropTarget] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // ── Tauri OS drag-drop ───────────────────────────────────────────────────
+  // ── Load files on mount and when path changes ──────────────────────────
+  useEffect(() => {
+    ops.loadRemoteFiles(currentPath);
+  }, [currentPath, ops.loadRemoteFiles]);
   const tauriDragDrop = useTauriDragDrop({
     paneId,
     currentPath,
@@ -188,7 +191,7 @@ export default function FileBrowser({
     onPaste: ops.handlePaste,
     onDelete: ops.handleDeleteSelected,
     onRename: ops.startRename,
-    onRefresh: () => actions.loadFiles(paneId, currentPath, async () => []),
+    onRefresh: () => ops.refreshFiles(),
     onNavigateUp: () => actions.navigateUp(paneId),
     onClearSelection: () => actions.clearSelection(paneId),
     onNewFile: ops.handleNewFile,
@@ -271,7 +274,7 @@ export default function FileBrowser({
         }}
         onNavigateRoot={() => actions.navigateTo(paneId, "/")}
         onNavigateUp={() => actions.navigateUp(paneId)}
-        onRefresh={() => actions.loadFiles(paneId, currentPath, async () => [])}
+        onRefresh={() => ops.refreshFiles()}
         onNewFolder={ops.handleNewFolder}
         onSearchChange={(q) => actions.setSearchQuery(paneId, q)}
         onShowHiddenChange={(v) => actions.setShowHidden(paneId, v)}

@@ -123,6 +123,22 @@ export function useFileOperations({
     }
   }, [currentPath, paneId, clearError]);
 
+  // Load files for current path — initializes provider if needed
+  const loadRemoteFiles = useCallback(
+    async (path?: string) => {
+      const targetPath = path ?? currentPath;
+      try {
+        const provider = await ensureProvider();
+        const fresh = await provider.listFiles(targetPath);
+        actions.setFiles(paneId, fresh);
+        clearError();
+      } catch {
+        // error already handled by ensureProvider
+      }
+    },
+    [currentPath, paneId, ensureProvider, clearError],
+  );
+
   // ── Rename ───────────────────────────────────────────────────────────────
   const startRename = useCallback(
     (file: FileItem) => actions.startRename(paneId, file.path, file.name),
@@ -565,5 +581,7 @@ export function useFileOperations({
     handlePaste,
     executeFileDrop,
     executePaste,
+    loadRemoteFiles,
+    refreshFiles,
   };
 }
