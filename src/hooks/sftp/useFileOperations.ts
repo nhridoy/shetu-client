@@ -472,46 +472,59 @@ export function useFileOperations({
       _sourcePaneId?: string,
     ) => {
       try {
-        const provider = await ensureProvider();
-        const isSameHost = sourceHostId === destHostId;
-        let processed = 0;
-        let failed = 0;
-        for (const file of dragFiles) {
-          const override = overrides?.get(file.path);
-          if (override?.action === "skip") continue;
-          try {
-            const destName =
-              override?.action === "auto"
-                ? `${file.name} (copy)`
-                : override?.action === "rename" && override.newName
-                  ? override.newName
-                  : file.name;
-            const destPath =
-              destDirPath === "/"
-                ? `/${destName}`
-                : `${destDirPath}/${destName}`;
-            if (isSameHost && !sourceDirect) {
+        const isCrossProvider =
+          sourceHostId !== destHostId || sourceDirect?.host;
+
+        if (isCrossProvider) {
+          const { transferFiles, LocalFileProvider } = await import(
+            "@/lib/sftp/fileTransfer"
+          );
+          const sourceProvider = new LocalFileProvider(sourceHostId);
+          const destProvider = await ensureProvider();
+
+          await transferFiles({
+            source: sourceProvider,
+            dest: destProvider,
+            files: dragFiles,
+            destPath: destDirPath,
+            mode: "copy",
+            overrides,
+          });
+        } else {
+          const provider = await ensureProvider();
+          let processed = 0;
+          let failed = 0;
+          for (const file of dragFiles) {
+            const override = overrides?.get(file.path);
+            if (override?.action === "skip") continue;
+            try {
+              const destName =
+                override?.action === "auto"
+                  ? `${file.name} (copy)`
+                  : override?.action === "rename" && override.newName
+                    ? override.newName
+                    : file.name;
+              const destPath =
+                destDirPath === "/"
+                  ? `/${destName}`
+                  : `${destDirPath}/${destName}`;
               await provider.moveFile(file.path, destPath);
-            } else {
-              await provider.copyFile(file.path, destPath);
+              processed++;
+            } catch {
+              failed++;
             }
-            processed++;
-          } catch {
-            failed++;
+          }
+          if (processed > 0) {
+            toast.success(`Moved ${processed} item${processed > 1 ? "s" : ""}`);
+            clearError();
+          }
+          if (failed > 0) {
+            const message = `Failed to move ${failed} item${failed > 1 ? "s" : ""}`;
+            setError(message, "operation");
+            toast.error(message);
           }
         }
-        if (processed > 0) {
-          toast.success(
-            `${isSameHost ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
-          );
-          clearError();
-          await refreshFiles();
-        }
-        if (failed > 0) {
-          const message = `Failed to ${isSameHost ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
-          setError(message, "operation");
-          toast.error(message);
-        }
+        await refreshFiles();
       } catch (err: unknown) {
         const message = `File drop failed: ${extractError(err)}`;
         setError(message, "operation");

@@ -32,11 +32,13 @@ import { useTauriDragDrop } from "@/hooks/sftp/useTauriDragDrop";
 import { extractError } from "@/lib/common/extractError";
 import { isTauriAvailable } from "@/lib/common/utils";
 import {
+  type FileProvider,
   joinPath,
   LocalFileProvider,
   transferFiles,
 } from "@/lib/sftp/fileTransfer";
 import { isSameVolume, listLocalFiles } from "@/lib/sftp/localFs";
+import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
 import {
   showTransferError,
   showTransferProgress,
@@ -133,17 +135,19 @@ export default function LocalFileBrowser({
         string,
         { action: "replace" | "rename" | "auto" | "skip"; newName?: string }
       >,
+      sourceProvider?: FileProvider,
     ) => {
+      const src = sourceProvider ?? localProvider;
       const toastId = showTransferStart(dragFiles, mode);
       const totalSize = dragFiles.reduce((s, f) => s + f.size, 0);
       let loaded = 0;
 
       const results = await transferFiles({
-        source: localProvider,
+        source: src,
         dest: localProvider,
         files: dragFiles,
         destPath: destDirPath,
-        mode,
+        mode: sourceProvider ? "copy" : mode,
         overrides,
         onFileProgress: (_file, _index, fileLoaded) => {
           loaded += fileLoaded;
@@ -370,13 +374,6 @@ export default function LocalFileBrowser({
       return;
     }
 
-    const isLocalToLocal = sourceHostId === "local" && destHostId === "local";
-    if (!isLocalToLocal) {
-      toast.error("Cross-provider transfer not yet supported");
-      setPendingFileDrop(null);
-      return;
-    }
-
     const isSamePane = sourcePaneId === paneId;
     const sep = destDirPath.includes("\\") ? "\\" : "/";
     const isSameDir =
@@ -398,6 +395,11 @@ export default function LocalFileBrowser({
       } catch {
         mode = isSamePane ? "move" : "copy";
       }
+
+      const isCrossProviderRemote = sourceHostId && sourceHostId !== "local";
+      const sourceProvider = isCrossProviderRemote
+        ? new RemoteFileProviderImpl(sourceHostId, sourcePaneId ?? sourceHostId)
+        : undefined;
 
       let destFiles: FileItem[];
       try {
@@ -423,7 +425,13 @@ export default function LocalFileBrowser({
           mode,
         });
       } else {
-        await executeTransfer(dragFiles, destDirPath, mode);
+        await executeTransfer(
+          dragFiles,
+          destDirPath,
+          mode,
+          undefined,
+          sourceProvider,
+        );
       }
     })();
 
