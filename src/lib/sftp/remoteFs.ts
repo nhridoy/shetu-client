@@ -5,6 +5,8 @@ export interface RemoteFileProvider {
   type: "remote";
   id: string;
   listFiles(path: string): Promise<FileItem[]>;
+  listFilesRecursive(path: string, basePath?: string): Promise<FileItem[]>;
+  isDirectory(path: string): Promise<boolean>;
   readFile(path: string): Promise<Uint8Array>;
   writeFile(
     path: string,
@@ -109,6 +111,35 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
       path,
     });
     return entries.map(sftpEntryToFileItem);
+  }
+
+  async listFilesRecursive(
+    path: string,
+    basePath?: string,
+  ): Promise<FileItem[]> {
+    const base = basePath ?? path;
+    const entries = await this.listFiles(path);
+    const items: FileItem[] = [];
+
+    for (const entry of entries) {
+      items.push(entry);
+
+      if (entry.type === "directory") {
+        const subItems = await this.listFilesRecursive(entry.path, base);
+        items.push(...subItems);
+      }
+    }
+
+    return items;
+  }
+
+  async isDirectory(path: string): Promise<boolean> {
+    try {
+      const item = await this.stat(path);
+      return item.type === "directory";
+    } catch {
+      return false;
+    }
   }
 
   async readFile(path: string): Promise<Uint8Array> {

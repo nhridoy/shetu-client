@@ -302,30 +302,34 @@ export function useFileOperations({
       );
       const paths = await open({
         multiple: true,
-        title: "Select files to upload",
+        title: "Select files or folders to upload",
       });
       if (!paths || (Array.isArray(paths) && paths.length === 0)) return;
 
       const filePaths = Array.isArray(paths) ? paths : [paths];
       const provider = await ensureProvider();
+      const localProvider = new LocalFileProvider("local");
 
-      const uploadFiles: FileItem[] = filePaths.map((filePath) => {
+      // Detect if paths are files or directories
+      const uploadFiles: FileItem[] = [];
+      for (const filePath of filePaths) {
         const fileName = filePath.split(/[/\\]/).pop() || filePath;
-        return {
+        const isDir = await localProvider.isDirectory(filePath);
+        uploadFiles.push({
           name: fileName,
           path: filePath,
-          type: "file" as const,
+          type: isDir ? "directory" : "file",
           size: 0,
           permissions: "",
           owner: "",
           group: "",
           modifiedAt: new Date().toISOString(),
           isHidden: fileName.startsWith("."),
-        };
-      });
+        });
+      }
 
       await transferFiles({
-        source: new LocalFileProvider("local"),
+        source: localProvider,
         dest: provider,
         files: uploadFiles,
         destPath: currentPath,
@@ -522,22 +526,6 @@ export function useFileOperations({
       );
       const provider = await ensureProvider();
 
-      // Build source files from clipboard
-      const sourceFiles: FileItem[] = clipboard.paths.map((srcPath) => {
-        const name = srcPath.split(/[/\\]/).pop() || srcPath;
-        return {
-          name,
-          path: srcPath,
-          type: "file" as const,
-          size: 0,
-          permissions: "",
-          owner: "",
-          group: "",
-          modifiedAt: new Date().toISOString(),
-          isHidden: name.startsWith("."),
-        };
-      });
-
       // Determine source provider
       const isLocalSource = clipboard.hostId === "local";
       let sourceProvider: FileProvider;
@@ -547,6 +535,26 @@ export function useFileOperations({
         // Remote source - get from registry or use current provider
         const sourceFromRegistry = getProvider(clipboard.hostId);
         sourceProvider = sourceFromRegistry ?? provider;
+      }
+
+      // Build source files from clipboard, detecting if they're directories
+      const sourceFiles: FileItem[] = [];
+      for (const srcPath of clipboard.paths) {
+        const name = srcPath.split(/[/\\]/).pop() || srcPath;
+        const isDir = await sourceProvider
+          .isDirectory(srcPath)
+          .catch(() => false);
+        sourceFiles.push({
+          name,
+          path: srcPath,
+          type: isDir ? "directory" : "file",
+          size: 0,
+          permissions: "",
+          owner: "",
+          group: "",
+          modifiedAt: new Date().toISOString(),
+          isHidden: name.startsWith("."),
+        });
       }
 
       await transferFiles({

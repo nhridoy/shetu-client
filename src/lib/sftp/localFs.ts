@@ -48,6 +48,60 @@ export async function listLocalFiles(dirPath: string): Promise<FileItem[]> {
   return items;
 }
 
+export async function listLocalFilesRecursive(
+  dirPath: string,
+  basePath?: string,
+): Promise<FileItem[]> {
+  const base = basePath ?? dirPath;
+  const entries = await readDir(dirPath);
+  const items: FileItem[] = [];
+
+  for (const entry of entries) {
+    const fullPath = dirPath.endsWith("/")
+      ? `${dirPath}${entry.name}`
+      : `${dirPath}/${entry.name}`;
+
+    let fileStat: Awaited<ReturnType<typeof stat>> | null = null;
+    try {
+      fileStat = await stat(fullPath);
+    } catch {
+      // stat can fail on broken symlinks
+    }
+
+    items.push({
+      name: entry.name,
+      path: fullPath,
+      type: entry.isDirectory
+        ? "directory"
+        : entry.isSymlink
+          ? "symlink"
+          : "file",
+      size: fileStat?.size ?? 0,
+      permissions: "",
+      owner: "",
+      group: "",
+      modifiedAt: fileStat?.mtime?.toISOString() ?? new Date().toISOString(),
+      isHidden: entry.name.startsWith("."),
+    });
+
+    if (entry.isDirectory) {
+      const subItems = await listLocalFilesRecursive(fullPath, base);
+      items.push(...subItems);
+    }
+  }
+
+  return items;
+}
+
+export async function isLocalDirectory(path: string): Promise<boolean> {
+  try {
+    const s = await stat(path);
+    return s.isDirectory;
+  } catch {
+    return false;
+  }
+}
+
 export async function readLocalFile(filePath: string): Promise<string> {
   const content = await readFile(filePath);
   return new TextDecoder().decode(content);

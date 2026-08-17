@@ -1,16 +1,8 @@
-import { type Event, listen } from "@tauri-apps/api/event";
+import { type Event } from "@tauri-apps/api/event";
 import type { DragDropEvent } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { joinPath } from "@/lib/sftp/fileTransfer";
 import { listLocalFiles } from "@/lib/sftp/localFs";
-import {
-  showTransferCancelled,
-  showTransferError,
-  showTransferProgress,
-  showTransferStart,
-  showTransferSuccess,
-} from "@/lib/sftp/transferToast";
 import { fileBrowserActions } from "@/stores/sftp/fileBrowserStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -103,91 +95,46 @@ export function useTauriDragDrop({
         return;
       }
 
+      // Detect if paths are files or directories
       const { invoke } = await import("@tauri-apps/api/core");
+      const fileItems: FileItem[] = [];
 
-      // Get real file sizes before showing the toast
-      const sizes = await Promise.all(
-        paths.map((p) =>
-          invoke<number>("get_file_size", { path: p }).catch(() => 0),
-        ),
-      );
-
-      const fileItems: FileItem[] = paths.map((p, i) => {
+      for (const p of paths) {
         const name = p.split(/[/\\]/).pop() || p;
-        return {
+        // Check if path is a directory
+        const isDir = await invoke<boolean>("is_directory", { path: p }).catch(
+          () => false,
+        );
+        const size = isDir
+          ? 0
+          : await invoke<number>("get_file_size", { path: p }).catch(() => 0);
+        fileItems.push({
           name,
           path: p,
-          type: "file" as const,
-          size: sizes[i] || 0,
+          type: isDir ? "directory" : "file",
+          size,
           permissions: "",
           owner: "",
           group: "",
           modifiedAt: new Date().toISOString(),
           isHidden: name.startsWith("."),
-        };
-      });
-
-      const operationId = crypto.randomUUID();
-
-      const onCancel = () => {
-        invoke("cancel_copy", { operationId });
-      };
-
-      const toastId = showTransferStart(fileItems, "copy", onCancel);
-      const totalBytes = fileItems.reduce((s, f) => s + f.size, 0);
-
-      // Listen for progress events from Rust — filter by operationId
-      const unlisten = await listen<{
-        operationId: string;
-        source: string;
-        copied: number;
-        total: number;
-        percent: number;
-      }>("copy-progress", (event) => {
-        if (event.payload.operationId !== operationId) return;
-        showTransferProgress(
-          toastId,
-          fileItems,
-          event.payload.copied,
-          totalBytes,
-          "copy",
-          onCancel,
-        );
-      });
-
-      try {
-        const files = paths.map((srcPath) => {
-          const name = srcPath.split(/[/\\]/).pop() || srcPath;
-          return { source: srcPath, destination: joinPath(destDir, name) };
         });
-
-        const errors: string[] = await invoke("copy_files_with_progress", {
-          files,
-          operationId,
-        });
-
-        if (errors.length === 0) {
-          showTransferSuccess(toastId, fileItems, "copy");
-        } else if (errors.length === paths.length) {
-          const msg = errors[0] || "All files failed";
-          if (msg === "Cancelled") {
-            showTransferCancelled(toastId, fileItems, "copy");
-          } else {
-            showTransferError(toastId, fileItems, "copy", msg);
-          }
-        } else {
-          showTransferSuccess(toastId, fileItems, "copy");
-        }
-      } catch (err) {
-        showTransferError(
-          toastId,
-          fileItems,
-          "copy",
-          err instanceof Error ? err.message : String(err),
-        );
-      } finally {
-        unlisten();
       }
+
+      // Use unified transferFiles for directory support
+      const { transferFiles, LocalFileProvider } = await import(
+        "@/lib/sftp/fileTransfer"
+      );
+      const localProvider = new LocalFileProvider("local");
+
+      await transferFiles({
+        source: localProvider,
+        dest: localProvider,
+        files: fileItems,
+        destPath: destDir,
+        mode: "copy",
+        sessionId: paneId,
+      });
 
       setTimeout(() => {
         actions.loadFiles(paneId, currentPathRef.current, listLocalFiles);

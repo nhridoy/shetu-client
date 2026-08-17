@@ -50,22 +50,6 @@ export function useClipboard({
     if (!clipboard || !clipboardMode) return;
 
     try {
-      // Build source files from clipboard
-      const sourceFiles: FileItem[] = clipboard.paths.map((srcPath) => {
-        const name = srcPath.split(/[/\\]/).pop() || srcPath;
-        return {
-          name,
-          path: srcPath,
-          type: "file" as const,
-          size: 0,
-          permissions: "",
-          owner: "",
-          group: "",
-          modifiedAt: new Date().toISOString(),
-          isHidden: name.startsWith("."),
-        };
-      });
-
       // Determine source provider
       const isLocalSource = clipboard.hostId === "local";
       let sourceProvider: FileProvider;
@@ -79,6 +63,26 @@ export function useClipboard({
           return;
         }
         sourceProvider = sourceFromRegistry;
+      }
+
+      // Build source files from clipboard, detecting if they're directories
+      const sourceFiles: FileItem[] = [];
+      for (const srcPath of clipboard.paths) {
+        const name = srcPath.split(/[/\\]/).pop() || srcPath;
+        const isDir = await sourceProvider
+          .isDirectory(srcPath)
+          .catch(() => false);
+        sourceFiles.push({
+          name,
+          path: srcPath,
+          type: isDir ? "directory" : "file",
+          size: 0,
+          permissions: "",
+          owner: "",
+          group: "",
+          modifiedAt: new Date().toISOString(),
+          isHidden: name.startsWith("."),
+        });
       }
 
       const localProvider = new LocalFileProvider("local");

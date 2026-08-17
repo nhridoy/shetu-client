@@ -401,6 +401,18 @@ async fn get_file_size(path: String) -> Result<u64, String> {
 }
 
 #[tauri::command]
+async fn is_directory(path: String) -> Result<bool, String> {
+    let p = std::path::PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        p.metadata()
+            .map(|m| m.is_dir())
+            .map_err(|e| format!("{path}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
 fn cancel_copy(
     state: tauri::State<'_, CancelTokens>,
     operation_id: String,
@@ -952,6 +964,7 @@ pub fn run() {
             detect_shells,
             is_same_volume,
             get_file_size,
+            is_directory,
             copy_files_with_progress,
             cancel_copy,
             connect_local,

@@ -2,7 +2,9 @@ import { toast } from "sonner";
 import {
   copyLocalFile,
   createLocalDir,
+  isLocalDirectory,
   listLocalFiles,
+  listLocalFilesRecursive,
   moveLocalFile,
   readLocalFileBytes,
   writeLocalFileBytes,
@@ -16,6 +18,8 @@ export interface FileProvider {
   type: "local" | "remote";
   id: string;
   listFiles(path: string): Promise<FileItem[]>;
+  listFilesRecursive(path: string, basePath?: string): Promise<FileItem[]>;
+  isDirectory(path: string): Promise<boolean>;
   readFile(path: string): Promise<Uint8Array>;
   writeFile(
     path: string,
@@ -57,6 +61,17 @@ export class LocalFileProvider implements FileProvider {
 
   async listFiles(path: string): Promise<FileItem[]> {
     return listLocalFiles(path);
+  }
+
+  async listFilesRecursive(
+    path: string,
+    basePath?: string,
+  ): Promise<FileItem[]> {
+    return listLocalFilesRecursive(path, basePath);
+  }
+
+  async isDirectory(path: string): Promise<boolean> {
+    return isLocalDirectory(path);
   }
 
   async readFile(path: string): Promise<Uint8Array> {
@@ -309,6 +324,54 @@ export async function transferFiles(
     (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
   );
 
+  // Expand directories recursively and collect all files
+  const expandedFiles: { file: FileItem; relativePath: string }[] = [];
+  for (const file of files) {
+    const isDir = file.type === "directory";
+    if (isDir) {
+      // Recursively list all files in the directory
+      const allFiles = await source.listFilesRecursive(file.path, file.path);
+      for (const subFile of allFiles) {
+        // Skip the root directory itself
+        if (subFile.path === file.path) continue;
+        // Calculate relative path from the source directory root
+        const relativePath = subFile.path
+          .slice(file.path.length)
+          .replace(/^[/\\]/, "");
+        expandedFiles.push({ file: subFile, relativePath });
+      }
+      // Also add the directory itself (for mkdir on dest)
+      expandedFiles.push({ file, relativePath: "" });
+    } else {
+      expandedFiles.push({ file, relativePath: file.name });
+    }
+  }
+
+  // Create directory structure on destination first
+  const dirsToCreate = new Set<string>();
+  for (const { file, relativePath } of expandedFiles) {
+    if (file.type === "directory") {
+      const destDir = relativePath ? joinPath(destPath, file.name) : destPath;
+      dirsToCreate.add(destDir);
+    } else if (relativePath.includes("/") || relativePath.includes("\\")) {
+      // File is inside a subdirectory - ensure parent dirs exist
+      const parts = relativePath.split(/[/\\]/);
+      parts.pop(); // Remove filename
+      let dir = destPath;
+      for (const part of parts) {
+        dir = joinPath(dir, part);
+        dirsToCreate.add(dir);
+      }
+    }
+  }
+
+  for (const dir of dirsToCreate) {
+    const exists = await dest.exists(dir).catch(() => false);
+    if (!exists) {
+      await dest.mkdir(dir);
+    }
+  }
+
   // Resolve dest names and filter skips
   const transfers: {
     file: FileItem;
@@ -317,7 +380,10 @@ export async function transferFiles(
     skip: boolean;
   }[] = [];
 
-  for (const file of files) {
+  for (const { file, relativePath } of expandedFiles) {
+    // Skip directories - they're already created
+    if (file.type === "directory") continue;
+
     const override = overrides?.get(file.path);
     if (override?.action === "skip") {
       results.push({ file, action: "skipped" });
@@ -328,15 +394,25 @@ export async function transferFiles(
       continue;
     }
 
-    const destName =
-      override?.action === "auto"
-        ? generateAutoName(file.name, existingNames)
-        : override?.action === "rename" && override.newName
-          ? override.newName
-          : file.name;
+    // Calculate destination path
+    let destFilePath: string;
+    let destName: string;
 
-    const destFilePath = joinPath(destPath, destName);
-    existingNames.add(destName);
+    if (relativePath.includes("/") || relativePath.includes("\\")) {
+      // File is in a subdirectory
+      destFilePath = joinPath(destPath, relativePath);
+      destName = file.name;
+    } else {
+      // File is at root level
+      destName =
+        override?.action === "auto"
+          ? generateAutoName(file.name, existingNames)
+          : override?.action === "rename" && override.newName
+            ? override.newName
+            : file.name;
+      destFilePath = joinPath(destPath, destName);
+      existingNames.add(destName);
+    }
 
     transfers.push({ file, destName, destFilePath, skip: false });
   }
