@@ -3,7 +3,6 @@ import { FolderIcon } from "@phosphor-icons/react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import EmptyState from "@/components/common/EmptyState";
 import {
   DragOverOverlay,
   DropTargetOverlay,
@@ -762,10 +761,10 @@ export default function LocalFileBrowser({
       )}
 
       {!isLoading && computedSortedFiles.length === 0 && (
-        <EmptyState
-          icon={<FolderIcon className="w-12 h-12" weight="bold" />}
-          title={searchQuery ? "No matching files" : "Empty directory"}
-        />
+        <div className="flex-1 flex flex-col items-center justify-center text-dark-400">
+          <FolderIcon className="w-16 h-16 mb-3 text-dark-600" weight="bold" />
+          <p>{searchQuery ? "No matching files" : "Empty directory"}</p>
+        </div>
       )}
 
       {!isLoading && computedSortedFiles.length > 0 && (

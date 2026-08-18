@@ -3,7 +3,6 @@ import { DesktopTowerIcon, FolderIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { DropZone } from "@/components/common/DropZone";
-import EmptyState from "@/components/common/EmptyState";
 import FileBrowser from "@/components/sftp/browser/FileBrowser";
 import LocalFileBrowser from "@/components/sftp/browser/LocalFileBrowser";
 import SftpHostPicker from "@/components/sftp/picker/SftpHostPicker";
@@ -100,11 +99,13 @@ export default function SftpPane({
         ) : pane.connectionType === "local" ? (
           <LocalFileBrowser paneId={pane.id} rootPath={pane.localPath || "/"} />
         ) : (
-          <EmptyState
-            icon={<FolderIcon className="w-12 h-12" weight="bold" />}
-            title="Connect to a host or local filesystem to browse files"
-            action={
-              <>
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <FolderIcon className="w-12 h-12 mx-auto mb-3 text-dark-600" />
+              <p className="text-sm text-dark-400 mb-3">
+                Connect to a host or local filesystem to browse files
+              </p>
+              <div className="flex items-center justify-center gap-2">
                 <Button
                   size="sm"
                   onClick={(e) => {
@@ -133,9 +134,9 @@ export default function SftpPane({
                   <FolderIcon className="w-3.5 h-3.5" />
                   Connect Local
                 </Button>
-              </>
-            }
-          />
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Drop zones */}

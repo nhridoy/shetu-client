@@ -97,9 +97,9 @@ export function previewStyle(side: DropSide): React.CSSProperties {
   const base: React.CSSProperties = {
     position: "absolute",
     pointerEvents: "none",
-    backgroundColor: "rgba(14, 165, 233, 0.10)",
-    boxShadow: "inset 0 0 0 2px rgb(14, 165, 233)",
-    borderRadius: 6,
+    backgroundColor: "rgba(14, 165, 233, 0.25)",
+    border: "2px solid rgb(14, 165, 233)",
+    borderRadius: 4,
     zIndex: 30,
   };
   switch (side) {
