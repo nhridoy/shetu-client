@@ -66,7 +66,7 @@ export default function LocalFileBrowser({
 }: LocalFileBrowserProps) {
   // ── Store ────────────────────────────────────────────────────────────────
   const paneState = useFileBrowserStore((s) => s.panes[paneId]);
-  const activePaneId = useFileBrowserStore((s) => s.activePaneId);
+  const activePaneId = useSftpStore((s) => s.activePaneId);
   const getOrCreatePane = useFileBrowserStore((s) => s.getOrCreatePane);
 
   // Initialize pane on first render
@@ -94,6 +94,12 @@ export default function LocalFileBrowser({
   const fileDragState = useSftpStore((s) => s.fileDragState);
   const pendingFileDrop = useSftpStore((s) => s.pendingFileDrop);
   const setPendingFileDrop = useSftpStore((s) => s.setPendingFileDrop);
+  const activeTransfers = useSftpStore(
+    (s) =>
+      s.transfers.filter((t) => t.status === "pending" || t.status === "active")
+        .length,
+  );
+  const scanning = useSftpStore((s) => s.transferScanning);
 
   const actions = fileBrowserActions;
 
@@ -537,12 +543,14 @@ export default function LocalFileBrowser({
     ? contextMenu.file
       ? buildBaseContextMenuItems({
           menuFile: contextMenu.file,
+          selectedFiles,
           hasClipboard: !!useSftpStore.getState().clipboard,
           actions: {
             onCopy: clipboard.handleCopy,
             onCut: clipboard.handleCut,
             onPaste: clipboard.handlePaste,
             onDelete: fileOps.handleDelete,
+            onDeleteSelected: fileOps.handleDeleteSelected,
             onNewFile: fileOps.handleNewFile,
             onNewFolder: fileOps.handleNewFolder,
           },
@@ -602,6 +610,7 @@ export default function LocalFileBrowser({
     (e: React.MouseEvent, file: FileItem) => {
       e.preventDefault();
       e.stopPropagation();
+      useSftpStore.getState().setActivePane(paneId);
       if (!selectedFiles.has(file.name)) {
         useFileBrowserStore.getState().updatePane(paneId, {
           selectedFiles: new Set([file.name]),
@@ -615,6 +624,7 @@ export default function LocalFileBrowser({
   const handleBackgroundContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
+      useSftpStore.getState().setActivePane(paneId);
       actions.clearSelection(paneId);
       setContextMenu({ x: e.clientX, y: e.clientY });
     },
@@ -820,6 +830,8 @@ export default function LocalFileBrowser({
       <FileBrowserStatusBar
         totalCount={computedSortedFiles.length}
         selectedCount={selectedFiles.size}
+        activeTransfers={activeTransfers}
+        scanning={scanning}
       />
 
       {marquee.isDragging && marquee.start && marquee.current && (

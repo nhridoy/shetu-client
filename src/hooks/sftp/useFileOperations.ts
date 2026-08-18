@@ -45,6 +45,8 @@ export function useFileOperations({
   const [deleteConfirm, setDeleteConfirm] = useState<{
     files: FileItem[];
     selectedNames: Set<string> | null;
+    isDeleting?: boolean;
+    deletingIndex?: number;
   } | null>(null);
 
   const newFileModal = useModal();
@@ -262,14 +264,17 @@ export function useFileOperations({
   const confirmDeleteAction = useCallback(async () => {
     if (!deleteConfirm) return;
     const { files: toDelete } = deleteConfirm;
-    setDeleteConfirm(null);
+    setDeleteConfirm({ ...deleteConfirm, isDeleting: true, deletingIndex: 0 });
     let deleted = 0;
     let failed = 0;
     try {
       const provider = await ensureProvider();
-      for (const file of toDelete) {
+      for (let i = 0; i < toDelete.length; i++) {
+        setDeleteConfirm((prev) =>
+          prev ? { ...prev, deletingIndex: i } : null,
+        );
         try {
-          await provider.delete(file.path, true);
+          await provider.delete(toDelete[i].path, true);
           deleted++;
         } catch {
           failed++;
@@ -279,8 +284,10 @@ export function useFileOperations({
       const message = `Delete failed: ${extractError(err)}`;
       setError(message, "operation");
       toast.error(message);
+      setDeleteConfirm(null);
       return;
     }
+    setDeleteConfirm(null);
     if (deleted > 0) {
       toast.success(`Deleted ${deleted} item${deleted > 1 ? "s" : ""}`);
       clearError();

@@ -168,6 +168,7 @@ interface SftpState {
   fileDragState: FileDragState | null;
   pendingFileDrop: PendingFileDrop | null;
   transfers: TransferItem[];
+  transferScanning: boolean;
   clipboard: {
     paths: string[];
     hostId: string;
@@ -202,6 +203,7 @@ interface SftpState {
   disconnectPane: (paneId: string) => void;
   setPaneSizes: (splitId: string, sizes: number[]) => void;
   addTransfer: (transfer: TransferItem) => void;
+  setTransferScanning: (scanning: boolean) => void;
   updateTransfer: (id: string, data: Partial<TransferItem>) => void;
   removeTransfer: (id: string) => void;
   clearCompletedTransfers: () => void;
@@ -247,6 +249,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   fileDragState: null,
   pendingFileDrop: null,
   transfers: [],
+  transferScanning: false,
   clipboard: null,
   clipboardMode: null,
   refreshRequests: {},
@@ -430,6 +433,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
 
   addTransfer: (transfer) =>
     set((s) => ({ transfers: [...s.transfers, transfer] })),
+  setTransferScanning: (scanning) => set({ transferScanning: scanning }),
   updateTransfer: (id, data) =>
     set((s) => ({
       transfers: s.transfers.map((t) => (t.id === id ? { ...t, ...data } : t)),

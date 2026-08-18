@@ -462,6 +462,40 @@ pub async fn sftp_mkdir(
 }
 
 #[tauri::command]
+pub async fn sftp_mkdir_all(
+    session_id: String,
+    paths: Vec<String>,
+    sftp_sessions: tauri::State<'_, SftpSessions>,
+) -> Result<(), String> {
+    let sftp = get_sftp(&sftp_sessions, &session_id)?;
+    for path in paths {
+        if path.is_empty() {
+            continue;
+        }
+        let mut acc = String::new();
+        if path.starts_with('/') {
+            acc.push('/');
+        }
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            if acc.is_empty() || acc == "/" {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            match sftp.create_dir(&acc).await {
+                Ok(_) => {}
+                Err(e) => match sftp.metadata(&acc).await {
+                    Ok(m) if m.is_dir() => {}
+                    _ => return Err(format!("mkdir: {}: {}", acc, e)),
+                },
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn sftp_rename(
     session_id: String,
     old_path: String,

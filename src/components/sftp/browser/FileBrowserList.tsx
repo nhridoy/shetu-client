@@ -9,6 +9,7 @@ import {
   type ColumnDef,
   useResizableColumns,
 } from "@/hooks/sftp/useResizableColumns";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type {
   FileItem,
   FileSortDirection,
@@ -36,6 +37,7 @@ export interface FileBrowserActions {
   handleCut: () => void;
   handlePaste: () => void;
   handleDelete: (file: FileItem) => void;
+  handleDeleteSelected?: () => void;
   handleNewFolder: () => void;
   handleNewFile: () => void;
   handleDownload: (file: FileItem) => void;
@@ -104,6 +106,7 @@ export default function FileBrowserList({
     (e: React.MouseEvent, file: FileItem | null = null) => {
       e.preventDefault();
       e.stopPropagation();
+      useSftpStore.getState().setActivePane(paneId);
       if (file) {
         if (!selectedFiles.has(file.name)) {
           actions.handleSelect(file.name, false);
@@ -111,7 +114,7 @@ export default function FileBrowserList({
       }
       setContextMenu({ x: e.clientX, y: e.clientY, file });
     },
-    [selectedFiles, actions],
+    [selectedFiles, actions, paneId],
   );
 
   const contextMenuItems = useMemo(() => {
@@ -126,6 +129,7 @@ export default function FileBrowserList({
         onCut: actions.handleCut,
         onPaste: actions.handlePaste,
         onDelete: actions.handleDelete,
+        onDeleteSelected: actions.handleDeleteSelected,
         onNewFile: actions.handleNewFile,
         onNewFolder: actions.handleNewFolder,
         onPermissions: actions.onPermissions,
@@ -134,8 +138,16 @@ export default function FileBrowserList({
         setRenamingPath(path);
         setRenameValue(name);
       },
+      selectedFiles,
     );
-  }, [contextMenu, clipboard, actions, setRenamingPath, setRenameValue]);
+  }, [
+    contextMenu,
+    clipboard,
+    actions,
+    setRenamingPath,
+    setRenameValue,
+    selectedFiles,
+  ]);
 
   if (isLoading) {
     return (

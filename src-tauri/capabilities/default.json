@@ -29,21 +29,11 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        {
-          "path": "$HOME/**/*"
-        },
-        {
-          "path": "$HOME/*"
-        },
-        {
-          "path": "C:/**/*"
-        },
-        {
-          "path": "D:/**/*"
-        },
-        {
-          "path": "/**"
-        }
+        { "path": "$HOME/**" },
+        { "path": "$HOME/*" },
+        { "path": "/**" },
+        { "path": "C:/**" },
+        { "path": "D:/**" }
       ]
     },
     "opener:default",
@@ -51,18 +41,10 @@
     {
       "identifier": "opener:allow-open-path",
       "allow": [
-        {
-          "path": "$HOME/**/*"
-        },
-        {
-          "path": "C:/**/*"
-        },
-        {
-          "path": "D:/**/*"
-        },
-        {
-          "path": "/**"
-        }
+        { "path": "$HOME/**" },
+        { "path": "/**" },
+        { "path": "C:/**" },
+        { "path": "D:/**" }
       ]
     },
     "keyring-store:default"

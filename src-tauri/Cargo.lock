@@ -5818,6 +5818,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-store",
  "tokio",
+ "tokio-util",
  "uuid",
  "x25519-dalek",
  "zeroize",

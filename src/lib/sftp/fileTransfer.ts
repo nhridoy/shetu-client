@@ -10,6 +10,7 @@ import {
   writeLocalFileBytes,
 } from "@/lib/sftp/localFs";
 import type { TransferItem } from "@/stores/sftp/sftpStore";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export type ProgressCallback = (loaded: number, total: number) => void;
@@ -30,6 +31,7 @@ export interface FileProvider {
   copyFile(source: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
+  mkdirAll(paths: string[]): Promise<void>;
   upload?(
     localPath: string,
     remotePath: string,
@@ -103,6 +105,12 @@ export class LocalFileProvider implements FileProvider {
   async mkdir(path: string): Promise<void> {
     await createLocalDir(path);
   }
+
+  async mkdirAll(paths: string[]): Promise<void> {
+    for (const p of paths) {
+      await createLocalDir(p).catch(() => {});
+    }
+  }
 }
 
 export function getSeparator(path: string): string {
@@ -112,11 +120,19 @@ export function getSeparator(path: string): string {
 export function joinPath(...parts: string[]): string {
   if (parts.length === 0) return "";
   const sep = getSeparator(parts.find((p) => p.includes("\\")) ?? parts[0]);
+  const other = sep === "\\" ? "/" : "\\";
   return parts
     .map((p, i) => {
-      if (i === 0) return p.replace(/[\\/]+$/, "");
-      if (i === parts.length - 1) return p.replace(/^[\\/]+/, "");
-      return p.replace(/^[\\/]+/, "").replace(/[\\/]+$/, "");
+      let s = p.split(other).join(sep);
+      if (i === 0) {
+        while (s.endsWith(sep)) s = s.slice(0, -1);
+      } else if (i === parts.length - 1) {
+        while (s.startsWith(sep)) s = s.slice(1);
+      } else {
+        while (s.startsWith(sep)) s = s.slice(1);
+        while (s.endsWith(sep)) s = s.slice(0, -1);
+      }
+      return s;
     })
     .filter(Boolean)
     .join(sep);
@@ -319,173 +335,199 @@ export async function transferFiles(
 
   const results: TransferFileResult[] = [];
   const isSameProvider = source.id === dest.id;
+  useSftpStore.getState().setTransferScanning(true);
+  try {
+    const existingNames = new Set(
+      (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
+    );
 
-  const existingNames = new Set(
-    (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
-  );
-
-  // Expand directories recursively and collect all files
-  const expandedFiles: { file: FileItem; relativePath: string }[] = [];
-  for (const file of files) {
-    const isDir = file.type === "directory";
-    if (isDir) {
-      // Recursively list all files in the directory
-      const allFiles = await source.listFilesRecursive(file.path, file.path);
-      for (const subFile of allFiles) {
-        // Skip the root directory itself
-        if (subFile.path === file.path) continue;
-        // Calculate relative path from the source directory root
-        const relativePath = subFile.path
-          .slice(file.path.length)
-          .replace(/^[/\\]/, "");
-        expandedFiles.push({ file: subFile, relativePath });
-      }
-      // Also add the directory itself (for mkdir on dest)
-      expandedFiles.push({ file, relativePath: "" });
-    } else {
-      expandedFiles.push({ file, relativePath: file.name });
-    }
-  }
-
-  // Create directory structure on destination first
-  const dirsToCreate = new Set<string>();
-  for (const { file, relativePath } of expandedFiles) {
-    if (file.type === "directory") {
-      const destDir = relativePath ? joinPath(destPath, file.name) : destPath;
-      dirsToCreate.add(destDir);
-    } else if (relativePath.includes("/") || relativePath.includes("\\")) {
-      // File is inside a subdirectory - ensure parent dirs exist
-      const parts = relativePath.split(/[/\\]/);
-      parts.pop(); // Remove filename
-      let dir = destPath;
-      for (const part of parts) {
-        dir = joinPath(dir, part);
-        dirsToCreate.add(dir);
-      }
-    }
-  }
-
-  for (const dir of dirsToCreate) {
-    const exists = await dest.exists(dir).catch(() => false);
-    if (!exists) {
-      await dest.mkdir(dir);
-    }
-  }
-
-  // Resolve dest names and filter skips
-  const transfers: {
-    file: FileItem;
-    destName: string;
-    destFilePath: string;
-    skip: boolean;
-  }[] = [];
-
-  for (const { file, relativePath } of expandedFiles) {
-    // Skip directories - they're already created
-    if (file.type === "directory") continue;
-
-    const override = overrides?.get(file.path);
-    if (override?.action === "skip") {
-      results.push({ file, action: "skipped" });
-      onFileComplete?.(file, results.length - 1, {
-        file,
-        action: "skipped",
-      });
-      continue;
-    }
-
-    // Calculate destination path
-    let destFilePath: string;
-    let destName: string;
-
-    if (relativePath.includes("/") || relativePath.includes("\\")) {
-      // File is in a subdirectory
-      destFilePath = joinPath(destPath, relativePath);
-      destName = file.name;
-    } else {
-      // File is at root level
-      destName =
-        override?.action === "auto"
-          ? generateAutoName(file.name, existingNames)
-          : override?.action === "rename" && override.newName
-            ? override.newName
-            : file.name;
-      destFilePath = joinPath(destPath, destName);
-      existingNames.add(destName);
-    }
-
-    transfers.push({ file, destName, destFilePath, skip: false });
-  }
-
-  // Process transfers in parallel batches
-  for (let i = 0; i < transfers.length; i += MAX_CONCURRENT) {
-    const batch = transfers.slice(i, i + MAX_CONCURRENT);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (t, batchIdx) => {
-        const globalIdx = i + batchIdx;
-        onFileStart?.(t.file, globalIdx);
-
-        // Same-provider local move: no TransferItem, instant
-        if (
-          isSameProvider &&
-          source.type === "local" &&
-          dest.type === "local" &&
-          mode === "move"
-        ) {
-          await source.moveFile(t.file.path, t.destFilePath);
-          return { file: t.file, action: "moved" as const };
+    // Expand directories recursively and collect all files
+    const expandedFiles: { file: FileItem; relativePath: string }[] = [];
+    for (const file of files) {
+      const isDir = file.type === "directory";
+      if (isDir) {
+        // Recursively list all files in the directory
+        const allFiles = await source.listFilesRecursive(file.path, file.path);
+        for (const subFile of allFiles) {
+          // Skip the root directory itself
+          if (subFile.path === file.path) continue;
+          // Relative path from the source dir root, normalized to POSIX
+          // (forward slashes) so joinPath(destPath, relativePath) uses the
+          // destination provider's own separator on the whole path.
+          const subRel = subFile.path
+            .slice(file.path.length)
+            .replace(/^[/\\]+/, "")
+            .split(/[\\/]+/)
+            .filter(Boolean)
+            .join("/");
+          const relativePath = [file.name, subRel].filter(Boolean).join("/");
+          expandedFiles.push({ file: subFile, relativePath });
         }
-
-        return transferSingleFile(
-          source,
-          dest,
-          t.file,
-          t.destFilePath,
-          sessionId,
-        );
-      }),
-    );
-
-    for (let j = 0; j < batchResults.length; j++) {
-      const r = batchResults[j];
-      const globalIdx = i + j;
-      if (r.status === "fulfilled") {
-        results.push(r.value);
-        onFileComplete?.(batch[j].file, globalIdx, r.value);
+        // Also add the directory itself (for mkdir on dest)
+        expandedFiles.push({ file, relativePath: file.name });
       } else {
-        const result: TransferFileResult = {
-          file: batch[j].file,
-          action: "copied",
-          error:
-            r.reason instanceof Error ? r.reason.message : String(r.reason),
-        };
-        results.push(result);
-        onFileComplete?.(batch[j].file, globalIdx, result);
+        expandedFiles.push({ file, relativePath: file.name });
       }
     }
-  }
 
-  // Show summary toast
-  const errors = results.filter((r) => r.error);
-  const successes = results.filter((r) => !r.error && r.action !== "skipped");
-  const skipped = results.filter((r) => r.action === "skipped");
+    // Create directory structure on destination first
+    const dirsToCreate = new Set<string>();
+    for (const { file, relativePath } of expandedFiles) {
+      if (file.type === "directory") {
+        dirsToCreate.add(joinPath(destPath, relativePath));
+      } else if (relativePath.includes("/") || relativePath.includes("\\")) {
+        // File is inside a subdirectory - ensure parent dirs exist
+        const parts = relativePath.split(/[/\\]/);
+        parts.pop(); // Remove filename
+        let dir = destPath;
+        for (const part of parts) {
+          dir = joinPath(dir, part);
+          dirsToCreate.add(dir);
+        }
+      }
+    }
 
-  if (errors.length === 0 && successes.length > 0) {
-    const count = successes.length;
-    const verb = mode === "move" ? "Moved" : "Copied";
-    const name = count === 1 ? successes[0].file.name : `${count} files`;
-    toast.success(`${verb} ${name}`);
-  } else if (errors.length > 0 && successes.length === 0) {
-    toast.error(`Failed to transfer: ${errors[0].error || "Unknown error"}`);
-  } else if (errors.length > 0) {
-    toast.warning(
-      `Transferred ${successes.length} files, ${errors.length} failed`,
+    // Sort by depth so parents are created before children
+    const sortedDirs = [...dirsToCreate].sort(
+      (a, b) => a.split(/[/\\]/).length - b.split(/[/\\]/).length,
     );
-  }
+    if (sortedDirs.length > 0) {
+      await dest.mkdirAll(sortedDirs);
+    }
 
-  if (skipped.length > 0 && successes.length === 0 && errors.length === 0) {
-    // All skipped — no toast
-  }
+    // Resolve dest names and filter skips
+    const transfers: {
+      file: FileItem;
+      destName: string;
+      destFilePath: string;
+      skip: boolean;
+    }[] = [];
 
-  return results;
+    for (const item of expandedFiles) {
+      const file = item.file;
+      let relativePath = item.relativePath;
+      // Skip directories - they're already created
+      if (file.type === "directory") continue;
+
+      const override = overrides?.get(file.path);
+      if (override?.action === "skip") {
+        results.push({ file, action: "skipped" });
+        onFileComplete?.(file, results.length - 1, {
+          file,
+          action: "skipped",
+        });
+        continue;
+      }
+
+      // Calculate destination path
+      let destFilePath: string;
+      let destName: string;
+
+      if (relativePath.includes("/") || relativePath.includes("\\")) {
+        // File is in a subdirectory
+        destFilePath = joinPath(destPath, relativePath);
+        // Paste into the same folder: auto-rename the leaf to avoid a
+        // self-copy / "file in use" (os error 32) failure
+        if (mode === "copy" && destFilePath === file.path) {
+          const segs = relativePath.split(/[/\\]/);
+          const leaf = segs.pop() ?? file.name;
+          segs.push(generateAutoName(leaf, existingNames));
+          relativePath = segs.join("/");
+          destFilePath = joinPath(destPath, relativePath);
+        }
+        destName = file.name;
+      } else {
+        // File is at root level
+        if (override?.action === "auto") {
+          destName = generateAutoName(file.name, existingNames);
+        } else if (override?.action === "rename" && override.newName) {
+          destName = override.newName;
+        } else if (mode === "copy" && existingNames.has(file.name)) {
+          // Copying onto an existing file (incl. paste into same folder):
+          // auto-rename like a file manager instead of overwriting/failing.
+          destName = generateAutoName(file.name, existingNames);
+        } else {
+          destName = file.name;
+        }
+        destFilePath = joinPath(destPath, destName);
+        existingNames.add(destName);
+      }
+
+      transfers.push({ file, destName, destFilePath, skip: false });
+    }
+
+    // Process transfers in parallel batches
+    for (let i = 0; i < transfers.length; i += MAX_CONCURRENT) {
+      const batch = transfers.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.allSettled(
+        batch.map(async (t, batchIdx) => {
+          const globalIdx = i + batchIdx;
+          onFileStart?.(t.file, globalIdx);
+
+          // Same-provider local move: no TransferItem, instant
+          if (
+            isSameProvider &&
+            source.type === "local" &&
+            dest.type === "local" &&
+            mode === "move"
+          ) {
+            await source.moveFile(t.file.path, t.destFilePath);
+            return { file: t.file, action: "moved" as const };
+          }
+
+          return transferSingleFile(
+            source,
+            dest,
+            t.file,
+            t.destFilePath,
+            sessionId,
+          );
+        }),
+      );
+
+      for (let j = 0; j < batchResults.length; j++) {
+        const r = batchResults[j];
+        const globalIdx = i + j;
+        if (r.status === "fulfilled") {
+          results.push(r.value);
+          onFileComplete?.(batch[j].file, globalIdx, r.value);
+        } else {
+          const result: TransferFileResult = {
+            file: batch[j].file,
+            action: "copied",
+            error:
+              r.reason instanceof Error ? r.reason.message : String(r.reason),
+          };
+          results.push(result);
+          onFileComplete?.(batch[j].file, globalIdx, result);
+        }
+      }
+    }
+
+    // Show summary toast
+    const errors = results.filter((r) => r.error);
+    const successes = results.filter((r) => !r.error && r.action !== "skipped");
+    const skipped = results.filter((r) => r.action === "skipped");
+
+    if (errors.length === 0 && successes.length > 0) {
+      const count = successes.length;
+      const verb = mode === "move" ? "Moved" : "Copied";
+      const name = count === 1 ? successes[0].file.name : `${count} files`;
+      toast.success(`${verb} ${name}`);
+    } else if (errors.length > 0 && successes.length === 0) {
+      toast.error(`Failed to transfer: ${errors[0].error || "Unknown error"}`);
+    } else if (errors.length > 0) {
+      toast.warning(
+        `Transferred ${successes.length} files, ${errors.length} failed`,
+      );
+    }
+
+    if (skipped.length > 0 && successes.length === 0 && errors.length === 0) {
+      // All skipped — no toast
+    }
+
+    return results;
+  } finally {
+    useSftpStore.getState().setTransferScanning(false);
+  }
 }

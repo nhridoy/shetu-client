@@ -23,6 +23,7 @@ export function buildContextMenuItems(
   clipboard: { paths: string[] } | null,
   actions: FileBrowserActions,
   onRenameStart: (path: string, name: string) => void,
+  selectedFiles?: Set<string>,
 ): ContextMenuItem[] {
   const beforeItems: ContextMenuItem[] = [];
   const afterItems: ContextMenuItem[] = [];
@@ -65,12 +66,14 @@ export function buildContextMenuItems(
 
   return buildBaseContextMenuItems({
     menuFile,
+    selectedFiles,
     hasClipboard: !!clipboard && clipboard.paths.length > 0,
     actions: {
       onCopy: actions.onCopy,
       onCut: actions.onCut,
       onPaste: actions.onPaste,
       onDelete: actions.onDelete,
+      onDeleteSelected: actions.onDeleteSelected,
       onNewFile: actions.onNewFile,
       onNewFolder: actions.onNewFolder,
     },

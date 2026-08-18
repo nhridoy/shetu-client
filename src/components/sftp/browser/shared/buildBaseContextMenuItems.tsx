@@ -15,12 +15,14 @@ export interface BaseContextMenuActions {
   onCut: () => void;
   onPaste: () => void;
   onDelete: (file: FileItem) => void;
+  onDeleteSelected?: () => void;
   onNewFile: () => void;
   onNewFolder: () => void;
 }
 
 export interface BaseContextMenuOptions {
   menuFile: FileItem | null;
+  selectedFiles?: Set<string>;
   hasClipboard: boolean;
   actions: BaseContextMenuActions;
   onRename: (file: FileItem) => void;
@@ -35,6 +37,7 @@ export interface BaseContextMenuOptions {
  */
 export function buildBaseContextMenuItems({
   menuFile,
+  selectedFiles,
   hasClipboard,
   actions,
   onRename,
@@ -98,7 +101,19 @@ export function buildBaseContextMenuItems({
       icon: <TrashIcon className="w-4 h-4" />,
       shortcut: "Del",
       danger: true,
-      onClick: () => actions.onDelete(menuFile),
+      onClick: () => {
+        // If right-clicked file is part of a multi-selection, delete all selected
+        if (
+          selectedFiles &&
+          selectedFiles.size > 1 &&
+          selectedFiles.has(menuFile.name) &&
+          actions.onDeleteSelected
+        ) {
+          actions.onDeleteSelected();
+        } else {
+          actions.onDelete(menuFile);
+        }
+      },
     });
   }
 

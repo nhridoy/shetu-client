@@ -1,5 +1,9 @@
 import { type RefObject, useCallback } from "react";
-import { LocalFileProvider, transferFiles } from "@/lib/sftp/fileTransfer";
+import {
+  joinPath,
+  LocalFileProvider,
+  transferFiles,
+} from "@/lib/sftp/fileTransfer";
 import { listLocalFiles, writeLocalFileBytes } from "@/lib/sftp/localFs";
 import { fileBrowserActions } from "@/stores/sftp/fileBrowserStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
@@ -64,7 +68,10 @@ export function useDesktopFileDrop({
       const tempFiles: FileItem[] = [];
       for (let i = 0; i < droppedFiles.length; i++) {
         const f = droppedFiles[i];
-        const tempPath = `${tempDir}/sftp-drop-${crypto.randomUUID()}-${f.name}`;
+        const tempPath = joinPath(
+          tempDir,
+          `sftp-drop-${crypto.randomUUID()}-${f.name}`,
+        );
         const arrayBuffer = await f.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
         await writeLocalFileBytes(tempPath, bytes);

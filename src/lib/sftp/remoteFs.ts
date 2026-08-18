@@ -179,6 +179,19 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
     const chunkSize = 64 * 1024;
     const total = data.length;
 
+    if (total === 0) {
+      // Empty file: the chunk loop below never runs, so write once to
+      // actually create the file on the remote.
+      await invoke("sftp_write", {
+        sessionId: this.sessionId,
+        path,
+        data: [],
+        offset: 0,
+      });
+      onProgress?.(0, 0);
+      return;
+    }
+
     for (let offset = 0; offset < total; offset += chunkSize) {
       const chunk = data.slice(offset, offset + chunkSize);
       await invoke("sftp_write", {
@@ -226,6 +239,16 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
   async mkdir(path: string): Promise<void> {
     const invoke = await this.getInvoke();
     await invoke("sftp_mkdir", { sessionId: this.sessionId, path });
+  }
+
+  async mkdirAll(paths: string[]): Promise<void> {
+    const invoke = await this.getInvoke();
+    const cleaned = paths.filter((p) => p && p.length > 0);
+    if (cleaned.length === 0) return;
+    await invoke("sftp_mkdir_all", {
+      sessionId: this.sessionId,
+      paths: cleaned,
+    });
   }
 
   async chmod(path: string, mode: number): Promise<void> {

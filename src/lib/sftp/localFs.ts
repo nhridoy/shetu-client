@@ -1,11 +1,8 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  exists,
   copyFile as fsCopyFile,
-  mkdir,
   readDir,
   readFile,
-  remove,
   rename,
   stat,
   writeFile,
@@ -55,19 +52,16 @@ export async function listLocalFilesRecursive(
   const base = basePath ?? dirPath;
   const entries = await readDir(dirPath);
   const items: FileItem[] = [];
+  const sep = dirPath.includes("\\") ? "\\" : "/";
 
   for (const entry of entries) {
-    const fullPath = dirPath.endsWith("/")
+    const fullPath = dirPath.endsWith(sep)
       ? `${dirPath}${entry.name}`
-      : `${dirPath}/${entry.name}`;
+      : `${dirPath}${sep}${entry.name}`;
 
-    let fileStat: Awaited<ReturnType<typeof stat>> | null = null;
-    try {
-      fileStat = await stat(fullPath);
-    } catch {
-      // stat can fail on broken symlinks
-    }
-
+    // No stat here: readDir already gives isDirectory/isSymlink and the
+    // recursive lister is only used for transfer expansion (size/mtime
+    // aren't needed). This avoids one extra IPC call per file.
     items.push({
       name: entry.name,
       path: fullPath,
@@ -76,11 +70,11 @@ export async function listLocalFilesRecursive(
         : entry.isSymlink
           ? "symlink"
           : "file",
-      size: fileStat?.size ?? 0,
+      size: 0,
       permissions: "",
       owner: "",
       group: "",
-      modifiedAt: fileStat?.mtime?.toISOString() ?? new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
       isHidden: entry.name.startsWith("."),
     });
 
@@ -128,11 +122,13 @@ export async function writeLocalFileBytes(
 }
 
 export async function createLocalDir(dirPath: string): Promise<void> {
-  await mkdir(dirPath, { recursive: true });
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_mkdir", { path: dirPath });
 }
 
 export async function removeLocalFile(filePath: string): Promise<void> {
-  await remove(filePath, { recursive: true });
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_remove", { path: filePath, recursive: true });
 }
 
 export async function renameLocalFile(
@@ -157,7 +153,8 @@ export async function moveLocalFile(
 }
 
 export async function localFileExists(filePath: string): Promise<boolean> {
-  return exists(filePath);
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("fs_exists", { path: filePath });
 }
 
 export async function getLocalFileStat(filePath: string) {

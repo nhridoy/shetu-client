@@ -18,11 +18,22 @@ const PERM_BITS = [
 
 const GROUPS = ["Owner", "Group", "Other"] as const;
 
-function parseOctal(permissions?: string): number {
-  if (!permissions) return 0o644;
-  const digits = permissions.replace(/[^0-7]/g, "");
-  if (digits.length === 0) return 0o644;
-  return Number.parseInt(digits, 8);
+function permissionsToMode(permissions: string): number {
+  if (!permissions || permissions.length < 9) return 0o644;
+  let mode = 0;
+  // Owner
+  if (permissions[0] === "r") mode |= 0o400;
+  if (permissions[1] === "w") mode |= 0o200;
+  if (permissions[2] === "x" || permissions[2] === "s") mode |= 0o100;
+  // Group
+  if (permissions[3] === "r") mode |= 0o040;
+  if (permissions[4] === "w") mode |= 0o020;
+  if (permissions[5] === "x" || permissions[5] === "s") mode |= 0o010;
+  // Other
+  if (permissions[6] === "r") mode |= 0o004;
+  if (permissions[7] === "w") mode |= 0o002;
+  if (permissions[8] === "x" || permissions[8] === "t") mode |= 0o001;
+  return mode;
 }
 
 function bitToBool(bit: number, mask: number): boolean {
@@ -39,7 +50,7 @@ export default function PermissionsDialog({
   onConfirm,
   onCancel,
 }: PermissionsDialogProps) {
-  const initial = parseOctal(file.permissions);
+  const initial = permissionsToMode(file.permissions);
   const [ownerBits, setOwnerBits] = useState((initial >> 6) & 7);
   const [groupBits, setGroupBits] = useState((initial >> 3) & 7);
   const [otherBits, setOtherBits] = useState(initial & 7);

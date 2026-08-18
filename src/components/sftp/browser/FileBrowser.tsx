@@ -15,6 +15,7 @@ import FileBrowserStatusBar from "@/components/sftp/browser/shared/FileBrowserSt
 import FileBrowserToolbar from "@/components/sftp/browser/shared/FileBrowserToolbar";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import PromptDialog from "@/components/ui/PromptDialog";
 import { useFileKeyboardShortcuts } from "@/hooks/sftp/useFileKeyboardShortcuts";
 import { useFileOperations } from "@/hooks/sftp/useFileOperations";
 import { useMarqueeSelection } from "@/hooks/sftp/useMarqueeSelection";
@@ -49,7 +50,7 @@ export default function FileBrowser({
 }: FileBrowserProps) {
   // ── Store ────────────────────────────────────────────────────────────────
   const paneState = useFileBrowserStore((s) => s.panes[paneId]);
-  const activePaneId = useFileBrowserStore((s) => s.activePaneId);
+  const activePaneId = useSftpStore((s) => s.activePaneId);
   const getOrCreatePane = useFileBrowserStore((s) => s.getOrCreatePane);
 
   // Initialize pane on first render
@@ -68,6 +69,12 @@ export default function FileBrowser({
   const showHidden = paneState?.showHidden ?? false;
   const sortField = paneState?.sortField ?? "name";
   const sortDirection = paneState?.sortDirection ?? "asc";
+  const activeTransfers = useSftpStore(
+    (s) =>
+      s.transfers.filter((t) => t.status === "pending" || t.status === "active")
+        .length,
+  );
+  const scanning = useSftpStore((s) => s.transferScanning);
   const searchQuery = paneState?.searchQuery ?? "";
   const recursiveSearch = paneState?.recursiveSearch ?? false;
   const pasteConflicts = paneState?.pasteConflicts ?? null;
@@ -311,6 +318,7 @@ export default function FileBrowser({
     handleCut: ops.handleCut,
     handlePaste: ops.handlePaste,
     handleDelete: ops.handleDelete,
+    handleDeleteSelected: ops.handleDeleteSelected,
     handleNewFolder: ops.handleNewFolder,
     handleNewFile: ops.handleNewFile,
     handleDownload: ops.handleDownload,
@@ -421,6 +429,8 @@ export default function FileBrowser({
       <FileBrowserStatusBar
         totalCount={sortedFiles.length}
         selectedCount={selectedFiles.size}
+        activeTransfers={activeTransfers}
+        scanning={scanning}
       />
 
       {marquee.isDragging && marquee.start && marquee.current && (
@@ -465,16 +475,51 @@ export default function FileBrowser({
         />
       )}
 
+      {ops.newFileModal.open && (
+        <PromptDialog
+          open={ops.newFileModal.open}
+          title="New File"
+          placeholder="filename.txt"
+          confirmLabel="Create"
+          onConfirm={ops.confirmNewFile}
+          onClose={ops.newFileModal.hide}
+        />
+      )}
+
+      {ops.newFolderModal.open && (
+        <PromptDialog
+          open={ops.newFolderModal.open}
+          title="New Folder"
+          placeholder="folder name"
+          confirmLabel="Create"
+          onConfirm={ops.confirmNewFolder}
+          onClose={ops.newFolderModal.hide}
+        />
+      )}
+
       {ops.deleteConfirm && (
         <Modal
           open
-          onClose={() => ops.setDeleteConfirm(null)}
+          onClose={
+            ops.deleteConfirm.isDeleting
+              ? () => {}
+              : () => ops.setDeleteConfirm(null)
+          }
           title="Confirm Delete"
           maxWidth="max-w-sm"
         >
           <div className="space-y-4">
             <p className="text-sm text-dark-300">
-              {ops.deleteConfirm.files.length === 1 ? (
+              {ops.deleteConfirm.isDeleting ? (
+                <>
+                  Deleting{" "}
+                  <span className="text-white font-medium">
+                    {(ops.deleteConfirm.deletingIndex ?? 0) + 1}/
+                    {ops.deleteConfirm.files.length}
+                  </span>{" "}
+                  items…
+                </>
+              ) : ops.deleteConfirm.files.length === 1 ? (
                 <>
                   Are you sure you want to delete{" "}
                   <span className="text-white font-medium">
@@ -492,15 +537,30 @@ export default function FileBrowser({
                 </>
               )}
             </p>
+            {ops.deleteConfirm.isDeleting && (
+              <div className="w-full bg-dark-700 rounded-full h-1.5">
+                <div
+                  className="bg-red-500 h-1.5 rounded-full transition-all duration-200"
+                  style={{
+                    width: `${(((ops.deleteConfirm.deletingIndex ?? 0) + 1) / ops.deleteConfirm.files.length) * 100}%`,
+                  }}
+                />
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button
                 variant="secondary"
+                disabled={ops.deleteConfirm.isDeleting}
                 onClick={() => ops.setDeleteConfirm(null)}
               >
                 Cancel
               </Button>
-              <Button variant="destructive" onClick={ops.confirmDeleteAction}>
-                Delete
+              <Button
+                variant="destructive"
+                disabled={ops.deleteConfirm.isDeleting}
+                onClick={ops.confirmDeleteAction}
+              >
+                {ops.deleteConfirm.isDeleting ? "Deleting…" : "Delete"}
               </Button>
             </div>
           </div>
