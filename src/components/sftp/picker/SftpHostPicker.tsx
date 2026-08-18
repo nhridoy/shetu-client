@@ -81,7 +81,7 @@ export default function SftpHostPicker({
   return (
     <div className="flex flex-col h-full bg-dark-900">
       {/* Search */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-dark-700">
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-dark-700">
         <MagnifyingGlassIcon className="w-5 h-5 text-dark-400" weight="bold" />
         <input
           ref={inputRef}
@@ -106,7 +106,7 @@ export default function SftpHostPicker({
           <Button
             variant="ghost"
             onClick={handleDirectConnect}
-            className="flex items-center w-full gap-3 px-4 py-3 text-left justify-start hover:bg-dark-800"
+            className="flex items-center w-full gap-3 px-4 py-2 text-left justify-start hover:bg-dark-800"
           >
             <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary-600">
               <LightningIcon className="w-4 h-4 text-white" weight="bold" />
@@ -121,7 +121,7 @@ export default function SftpHostPicker({
         {/* Hosts */}
         <div className="pb-2">
           {filteredHosts.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-dark-500">
+            <div className="px-4 py-2 text-sm text-dark-500">
               {query
                 ? "No hosts match your search"
                 : "No hosts available — add a host or type a connection string"}
@@ -135,7 +135,7 @@ export default function SftpHostPicker({
                   onConnect(host);
                   onClose();
                 }}
-                className={`w-full px-4 py-3 flex items-center gap-3 text-left justify-start ${
+                className={`w-full px-4 py-2 flex items-center gap-3 text-left justify-start ${
                   index === selectedIndex ? "bg-dark-800" : "hover:bg-dark-800"
                 }`}
               >
@@ -169,7 +169,7 @@ export default function SftpHostPicker({
 
         {/* No results */}
         {query && filteredHosts.length === 0 && noExactHost && (
-          <div className="px-4 py-3 text-sm text-dark-500">
+          <div className="px-4 py-2 text-sm text-dark-500">
             No matches for "{query}"
           </div>
         )}

@@ -3,6 +3,7 @@ import { useDragDropMonitor, useDroppable } from "@dnd-kit/react";
 import { FileIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import EmptyState from "@/components/common/EmptyState";
 import FileBrowserList from "@/components/sftp/browser/FileBrowserList";
 import {
   DragOverOverlay,
@@ -397,34 +398,56 @@ export default function FileBrowser({
 
       <ErrorBar error={error} setError={() => actions.clearError(paneId)} />
 
-      <FileBrowserList
-        isLoading={isLoading}
-        sortedFiles={sortedFiles}
-        viewMode={viewMode}
-        searchQuery={searchQuery}
-        sortField={sortField}
-        sortDirection={sortDirection}
-        setSortField={(f) => actions.setSortField(paneId, f)}
-        setSortDirection={(fn) => {
-          const next = typeof fn === "function" ? fn(sortDirection) : fn;
-          useFileBrowserStore.getState().updatePane(paneId, {
-            sortDirection: next,
-          });
-        }}
-        paneId={paneId}
-        hostId={hostId}
-        hostAddress={hostAddress}
-        hostUsername={hostUsername}
-        selectedFiles={selectedFiles}
-        clipboard={useSftpStore.getState().clipboard}
-        renamingPath={paneState?.renamingPath ?? null}
-        renameValue={paneState?.renameValue ?? ""}
-        renameInputRef={ops.renameInputRef}
-        commitRename={ops.commitRename}
-        setRenamingPath={(p) => actions.setRenamingPath(paneId, p)}
-        setRenameValue={(v) => actions.setRenameValue(paneId, v)}
-        actions={listActions}
-      />
+      {isLoading ? (
+        <div className="flex-1 p-3 space-y-1">
+          {Array.from({ length: 8 }, (_, i) => `sk-${i}`).map((key, i) => (
+            <div
+              key={key}
+              className="flex items-center gap-3 p-2 animate-pulse"
+            >
+              <div className="w-5 h-5 bg-dark-700 rounded" />
+              <div
+                className="h-3 bg-dark-700 rounded flex-1"
+                style={{ width: `${40 + (i % 5) * 10}%` }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : sortedFiles.length === 0 ? (
+        <EmptyState
+          icon={<FileIcon className="w-12 h-12" weight="bold" />}
+          title={searchQuery ? "No matching files" : "Empty directory"}
+        />
+      ) : (
+        <FileBrowserList
+          isLoading={isLoading}
+          sortedFiles={sortedFiles}
+          viewMode={viewMode}
+          searchQuery={searchQuery}
+          sortField={sortField}
+          sortDirection={sortDirection}
+          setSortField={(f) => actions.setSortField(paneId, f)}
+          setSortDirection={(fn) => {
+            const next = typeof fn === "function" ? fn(sortDirection) : fn;
+            useFileBrowserStore.getState().updatePane(paneId, {
+              sortDirection: next,
+            });
+          }}
+          paneId={paneId}
+          hostId={hostId}
+          hostAddress={hostAddress}
+          hostUsername={hostUsername}
+          selectedFiles={selectedFiles}
+          clipboard={useSftpStore.getState().clipboard}
+          renamingPath={paneState?.renamingPath ?? null}
+          renameValue={paneState?.renameValue ?? ""}
+          renameInputRef={ops.renameInputRef}
+          commitRename={ops.commitRename}
+          setRenamingPath={(p) => actions.setRenamingPath(paneId, p)}
+          setRenameValue={(v) => actions.setRenameValue(paneId, v)}
+          actions={listActions}
+        />
+      )}
 
       <FileBrowserStatusBar
         totalCount={sortedFiles.length}

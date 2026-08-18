@@ -17,13 +17,13 @@ export function DragOverOverlay({
     <div
       role="region"
       aria-label="Drop files to upload"
-      className="absolute inset-0 z-50 bg-primary-600/20 border-2 border-dashed border-primary-500 rounded-lg flex items-center justify-center"
+      className="absolute inset-0 z-50 bg-primary-600/10 ring-2 ring-inset ring-primary-500 rounded-lg flex items-center justify-center"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
       <div className="text-center">
-        <ArrowUpIcon className="w-12 h-12 mx-auto text-primary-400 mb-2" />
-        <p className="text-primary-300 text-lg font-medium">
+        <ArrowUpIcon className="w-8 h-8 mx-auto text-primary-400 mb-2" />
+        <p className="text-primary-300 text-sm font-medium">
           Drop files to upload
         </p>
       </div>
@@ -57,18 +57,18 @@ export function DropTargetOverlay({
     <div
       role="region"
       aria-label="Drop target"
-      className={`absolute inset-0 z-50 ${isCrossHost ? "bg-green-600/15 border-green-500" : "bg-primary-600/15 border-primary-500"} border-2 border-dashed rounded-lg flex items-center justify-center`}
+      className={`absolute inset-0 z-50 ring-2 ring-inset rounded-lg flex items-center justify-center ${isCrossHost ? "bg-green-600/10 ring-green-500" : "bg-primary-600/10 ring-primary-500"}`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
       <div className="text-center">
         {isCrossHost ? (
-          <ArrowsLeftRightIcon className="w-12 h-12 mx-auto mb-2 text-green-400" />
+          <ArrowsLeftRightIcon className="w-8 h-8 mx-auto mb-2 text-green-400" />
         ) : (
-          <ArrowUpIcon className="w-12 h-12 mx-auto mb-2 text-primary-400" />
+          <ArrowUpIcon className="w-8 h-8 mx-auto mb-2 text-primary-400" />
         )}
         <p
-          className={`text-lg font-medium ${isCrossHost ? "text-green-300" : "text-primary-300"}`}
+          className={`text-sm font-medium ${isCrossHost ? "text-green-300" : "text-primary-300"}`}
         >
           {isCrossHost ? "Drop to copy between servers" : "Drop to move"}
         </p>

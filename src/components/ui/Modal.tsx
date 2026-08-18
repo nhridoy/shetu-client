@@ -139,8 +139,8 @@ export default function Modal({
                 type="button"
                 onClick={() => onCloseRef.current()}
                 variant="ghost"
-                size="icon"
-                className="text-xl leading-none"
+                size="icon-sm"
+                className="text-lg leading-none"
               >
                 &times;
               </Button>
