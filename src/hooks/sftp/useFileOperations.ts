@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useModal } from "@/hooks/useModal";
 import { extractError } from "@/lib/common/extractError";
 import { nameFormSchema } from "@/lib/schema/common/nameFormSchema";
+import type { FileProvider } from "@/lib/sftp/fileTransfer";
 import {
   getProvider,
   registerProvider,
@@ -564,6 +565,29 @@ export function useFileOperations({
         });
       }
 
+      // Detect destination name conflicts and surface the dialog
+      let destFiles: FileItem[];
+      try {
+        destFiles = await provider.listFiles(currentPath);
+      } catch {
+        destFiles = [];
+      }
+      const destNames = new Set(destFiles.map((f) => f.name));
+      const conflicts = sourceFiles.filter((f) => destNames.has(f.name));
+
+      if (conflicts.length > 0) {
+        fileBrowserActions.setPasteConflicts(
+          paneId,
+          conflicts.map((f) => ({
+            srcPath: f.path,
+            dstPath:
+              currentPath === "/" ? `/${f.name}` : `${currentPath}/${f.name}`,
+            dstName: f.name,
+          })),
+        );
+        return;
+      }
+
       await transferFiles({
         source: sourceProvider,
         dest: provider,
@@ -658,46 +682,51 @@ export function useFileOperations({
       const { clipboard, clipboardMode } = useSftpStore.getState();
       if (!clipboard || !clipboardMode) return;
       try {
+        const { transferFiles, LocalFileProvider } = await import(
+          "@/lib/sftp/fileTransfer"
+        );
         const provider = await ensureProvider();
-        let processed = 0;
-        let failed = 0;
+
+        const isLocalSource = clipboard.hostId === "local";
+        let sourceProvider: FileProvider;
+        if (isLocalSource) {
+          sourceProvider = new LocalFileProvider("local");
+        } else {
+          const sourceFromRegistry = getProvider(clipboard.hostId);
+          sourceProvider = sourceFromRegistry ?? provider;
+        }
+
+        const sourceFiles: FileItem[] = [];
         for (const srcPath of clipboard.paths) {
-          const override = overrides?.get(srcPath);
-          if (override?.action === "skip") continue;
-          try {
-            const fileName = srcPath.split(/[/\\]/).pop() || srcPath;
-            const destName =
-              override?.action === "auto"
-                ? `${fileName} (copy)`
-                : override?.action === "rename" && override.newName
-                  ? override.newName
-                  : fileName;
-            const destPath =
-              currentPath === "/"
-                ? `/${destName}`
-                : `${currentPath}/${destName}`;
-            if (clipboardMode === "cut") {
-              await provider.moveFile(srcPath, destPath);
-            } else {
-              await provider.copyFile(srcPath, destPath);
-            }
-            processed++;
-          } catch {
-            failed++;
-          }
+          const name = srcPath.split(/[/\\]/).pop() || srcPath;
+          const isDir = await sourceProvider
+            .isDirectory(srcPath)
+            .catch(() => false);
+          sourceFiles.push({
+            name,
+            path: srcPath,
+            type: isDir ? "directory" : "file",
+            size: 0,
+            permissions: "",
+            owner: "",
+            group: "",
+            modifiedAt: new Date().toISOString(),
+            isHidden: name.startsWith("."),
+          });
         }
-        if (processed > 0) {
-          toast.success(
-            `${clipboardMode === "cut" ? "Moved" : "Copied"} ${processed} item${processed > 1 ? "s" : ""}`,
-          );
-          clearError();
-          await refreshFiles();
-        }
-        if (failed > 0) {
-          const message = `Failed to ${clipboardMode === "cut" ? "move" : "copy"} ${failed} item${failed > 1 ? "s" : ""}`;
-          setError(message, "operation");
-          toast.error(message);
-        }
+
+        await transferFiles({
+          source: sourceProvider,
+          dest: provider,
+          files: sourceFiles,
+          destPath: currentPath,
+          mode: clipboardMode === "cut" ? "move" : "copy",
+          sessionId: paneId,
+          overrides,
+        });
+
+        clearError();
+        await refreshFiles();
         useSftpStore.getState().clearClipboard();
       } catch (err: unknown) {
         const message = `Paste failed: ${extractError(err)}`;
@@ -705,7 +734,7 @@ export function useFileOperations({
         toast.error(message);
       }
     },
-    [currentPath, ensureProvider, refreshFiles, setError, clearError],
+    [currentPath, paneId, ensureProvider, refreshFiles, setError, clearError],
   );
 
   // ── Server-side recursive search ─────────────────────────────────────────

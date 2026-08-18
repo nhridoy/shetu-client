@@ -135,6 +135,48 @@ export default function FileBrowser({
       if (paths.length === 0) return;
       try {
         const provider = await ops.ensureProvider();
+
+        const dropFiles: FileItem[] = paths.map((filePath) => {
+          const name = filePath.split(/[/\\]/).pop() || filePath;
+          return {
+            name,
+            path: filePath,
+            type: "file",
+            size: 0,
+            permissions: "",
+            owner: "",
+            group: "",
+            modifiedAt: new Date().toISOString(),
+            isHidden: name.startsWith("."),
+          };
+        });
+
+        let destFiles: FileItem[];
+        try {
+          destFiles = await provider.listFiles(destDir);
+        } catch {
+          destFiles = [];
+        }
+        const destNames = new Set(destFiles.map((f) => f.name));
+        const conflicts = dropFiles.filter((f) => destNames.has(f.name));
+
+        if (conflicts.length > 0) {
+          actions.setPasteConflicts(
+            paneId,
+            conflicts.map((f) => ({
+              srcPath: f.path,
+              dstPath: destDir === "/" ? `/${f.name}` : `${destDir}/${f.name}`,
+              dstName: f.name,
+            })),
+          );
+          actions.setPendingDrop(paneId, {
+            files: dropFiles,
+            destDirPath: destDir,
+            mode: "copy",
+          });
+          return;
+        }
+
         for (const filePath of paths) {
           const fileName = filePath.split(/[/\\]/).pop() || filePath;
           const remotePath =
@@ -240,17 +282,69 @@ export default function FileBrowser({
   useEffect(() => {
     if (!pendingFileDrop) return;
     if (pendingFileDrop.destPaneId !== paneId) return;
-    ops.executeFileDrop(
-      pendingFileDrop.files,
-      pendingFileDrop.sourceHostId || "",
-      pendingFileDrop.destHostId || "",
-      pendingFileDrop.destDirPath || "/",
-      undefined,
-      pendingFileDrop.sourceDirect,
-      pendingFileDrop.sourcePaneId,
-    );
+
+    (async () => {
+      const {
+        files: dragFiles,
+        sourceHostId,
+        destDirPath,
+        sourcePaneId,
+      } = pendingFileDrop;
+
+      if (!dragFiles || !destDirPath) {
+        setPendingFileDrop(null);
+        return;
+      }
+
+      let destFiles: FileItem[];
+      try {
+        const provider = await ops.ensureProvider();
+        destFiles = await provider.listFiles(destDirPath);
+      } catch {
+        destFiles = [];
+      }
+      const destNames = new Set(destFiles.map((f) => f.name));
+      const conflicts = dragFiles.filter((f) => destNames.has(f.name));
+
+      if (conflicts.length > 0) {
+        actions.setPasteConflicts(
+          paneId,
+          conflicts.map((f) => ({
+            srcPath: f.path,
+            dstPath:
+              destDirPath === "/" ? `/${f.name}` : `${destDirPath}/${f.name}`,
+            dstName: f.name,
+          })),
+        );
+        actions.setPendingDrop(paneId, {
+          files: dragFiles,
+          destDirPath,
+          mode: "copy",
+          sourceHostId: sourceHostId || undefined,
+          sourcePaneId: sourcePaneId || undefined,
+          sourceDirect: pendingFileDrop.sourceDirect,
+        });
+      } else {
+        await ops.executeFileDrop(
+          dragFiles,
+          sourceHostId || "",
+          pendingFileDrop.destHostId || "",
+          destDirPath,
+          undefined,
+          pendingFileDrop.sourceDirect,
+          sourcePaneId,
+        );
+      }
+    })();
+
     setPendingFileDrop(null);
-  }, [pendingFileDrop, paneId, ops.executeFileDrop, setPendingFileDrop]);
+  }, [
+    pendingFileDrop,
+    paneId,
+    ops.executeFileDrop,
+    ops.ensureProvider,
+    setPendingFileDrop,
+  ]);
 
   // ── Navigation ───────────────────────────────────────────────────────────
   const navigateBack = useCallback(
@@ -454,12 +548,12 @@ export default function FileBrowser({
             if (pendingDrop) {
               ops.executeFileDrop(
                 pendingDrop.files as FileItem[],
-                "",
+                pendingDrop.sourceHostId ?? "",
                 hostId,
                 pendingDrop.destDirPath,
                 overrides,
-                undefined,
-                undefined,
+                pendingDrop.sourceDirect,
+                pendingDrop.sourcePaneId,
               );
               actions.setPendingDrop(paneId, null);
             } else {

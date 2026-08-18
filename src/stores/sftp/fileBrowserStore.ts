@@ -16,6 +16,9 @@ export interface PendingDrop {
   files: FileItem[];
   destDirPath: string;
   mode: "move" | "copy";
+  sourceHostId?: string;
+  sourcePaneId?: string;
+  sourceDirect?: { host?: string; port?: number; username?: string };
 }
 
 interface FileBrowserPane {
