@@ -57,6 +57,14 @@ export default function FileListItem({
   const isSelected = selectedFiles.has(file.name);
   const isDropTarget = droppable.isDropTarget;
 
+  const rowBg = isDropTarget
+    ? "bg-primary-600/20"
+    : isSelected
+      ? "bg-primary-600/15"
+      : "group-hover:bg-dark-700/60";
+
+  const accent = isSelected || isDropTarget;
+
   return (
     <tr
       ref={mergedRef}
@@ -77,18 +85,21 @@ export default function FileListItem({
         }
       }}
       onContextMenu={(e) => onContextMenu(e, file)}
-      className={`hover:bg-dark-600 cursor-pointer select-none rounded ${
-        isSelected ? "bg-primary-600/25" : ""
-      } ${isDropTarget ? "bg-primary-600/20 ring-1 ring-inset ring-primary-500/50" : ""}`}
+      className="group cursor-pointer select-none"
     >
       <td
-        className="p-2"
+        className={`relative p-2 rounded-l-lg ${rowBg}`}
         style={columnWidths ? { width: columnWidths.icon } : undefined}
       >
+        {accent && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded bg-primary-500" />
+        )}
         {getFileIcon(file)}
       </td>
       <td
-        className="p-2 text-white text-sm overflow-hidden"
+        className={`p-2 text-sm overflow-hidden ${rowBg} ${
+          isSelected ? "text-white" : "text-dark-100"
+        }`}
         title={file.name}
         style={columnWidths ? { width: columnWidths.name } : undefined}
       >
@@ -105,28 +116,28 @@ export default function FileListItem({
             }}
             onBlur={onCommitRename}
             onClick={(e) => e.stopPropagation()}
-            className="bg-dark-800 border border-primary-500 rounded px-1 py-0.5 text-sm text-white w-full focus:outline-none"
+            className="bg-dark-900 border border-primary-500 rounded px-1.5 py-0.5 text-sm text-white w-full focus:outline-none focus:ring-1 focus:ring-primary-500/40"
           />
         ) : (
-          <span className="block truncate">{file.name}</span>
+          <span className="block truncate font-medium">{file.name}</span>
         )}
       </td>
       <td
-        className="p-2 text-dark-300 text-sm"
+        className={`p-2 text-sm text-dark-300 tabular-nums ${rowBg}`}
         style={columnWidths ? { width: columnWidths.size } : undefined}
       >
-        {file.type === "directory" ? "-" : formatSize(file.size)}
+        {file.type === "directory" ? "—" : formatSize(file.size)}
       </td>
       {showPermissions && (
         <td
-          className="p-2 text-dark-300 font-mono text-xs"
+          className={`p-2 text-dark-400 font-mono text-xs ${rowBg}`}
           style={columnWidths ? { width: columnWidths.permissions } : undefined}
         >
           {file.permissions}
         </td>
       )}
       <td
-        className="p-2 text-dark-300 text-sm"
+        className={`p-2 text-sm text-dark-300 tabular-nums rounded-r-lg ${rowBg}`}
         style={columnWidths ? { width: columnWidths.modified } : undefined}
       >
         {formatDate(file.modifiedAt)}
