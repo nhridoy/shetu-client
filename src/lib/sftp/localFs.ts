@@ -25,6 +25,14 @@ export async function listLocalFiles(dirPath: string): Promise<FileItem[]> {
       // stat can fail on broken symlinks
     }
 
+    const atime = (fileStat as unknown as { atime?: number } | null)?.atime;
+    const accessedAt =
+      atime != null
+        ? new Date(atime).toISOString()
+        : fileStat?.mtime
+          ? new Date(fileStat.mtime).toISOString()
+          : new Date().toISOString();
+
     items.push({
       name: entry.name,
       path: fullPath,
@@ -37,7 +45,10 @@ export async function listLocalFiles(dirPath: string): Promise<FileItem[]> {
       permissions: "",
       owner: "",
       group: "",
-      modifiedAt: fileStat?.mtime?.toISOString() ?? new Date().toISOString(),
+      modifiedAt: fileStat?.mtime
+        ? new Date(fileStat.mtime).toISOString()
+        : new Date().toISOString(),
+      accessedAt,
       isHidden: entry.name.startsWith("."),
     });
   }
@@ -75,6 +86,7 @@ export async function listLocalFilesRecursive(
       owner: "",
       group: "",
       modifiedAt: new Date().toISOString(),
+      accessedAt: new Date().toISOString(),
       isHidden: entry.name.startsWith("."),
     });
 

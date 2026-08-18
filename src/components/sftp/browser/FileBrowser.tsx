@@ -576,6 +576,35 @@ export default function FileBrowser({
         />
       )}
 
+      {ops.connectionErrorModal.open && ops.connectionError && (
+        <Modal
+          open
+          onClose={ops.connectionErrorModal.hide}
+          title="Connection failed"
+          maxWidth="max-w-sm"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-dark-300">{ops.connectionError}</p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={ops.connectionErrorModal.hide}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  ops.connectionErrorModal.hide();
+                  ops.refreshFiles();
+                }}
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {previewFile && (
         <Modal
           open

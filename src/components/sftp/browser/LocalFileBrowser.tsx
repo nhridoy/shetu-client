@@ -54,10 +54,11 @@ interface LocalFileBrowserProps {
 const localProvider = new LocalFileProvider("local");
 
 const LOCAL_COLUMNS: ColumnDef[] = [
-  { key: "icon", label: "", defaultWidth: 36, minWidth: 36 },
+  { key: "type", label: "", defaultWidth: 36, minWidth: 36 },
   { key: "name", label: "Name", defaultWidth: 400, minWidth: 120 },
   { key: "size", label: "Size", defaultWidth: 80, minWidth: 60 },
-  { key: "modified", label: "Modified", defaultWidth: 140, minWidth: 80 },
+  { key: "modifiedAt", label: "Modified", defaultWidth: 140, minWidth: 80 },
+  { key: "accessedAt", label: "Accessed", defaultWidth: 140, minWidth: 80 },
 ];
 
 export default function LocalFileBrowser({
@@ -219,6 +220,7 @@ export default function LocalFileBrowser({
           owner: "",
           group: "",
           modifiedAt: new Date().toISOString(),
+          accessedAt: new Date().toISOString(),
           isHidden: name.startsWith("."),
         };
       });

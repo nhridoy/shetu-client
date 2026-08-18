@@ -7,6 +7,7 @@ export interface FileItem {
   owner: string;
   group: string;
   modifiedAt: string;
+  accessedAt?: string;
   isHidden: boolean;
 }
 
@@ -24,6 +25,12 @@ export interface TransferItem {
   error?: string;
 }
 
-export type FileSortField = "name" | "size" | "permissions" | "modifiedAt";
+export type FileSortField =
+  | "name"
+  | "size"
+  | "type"
+  | "permissions"
+  | "modifiedAt"
+  | "accessedAt";
 export type FileSortDirection = "asc" | "desc";
 export type FileViewMode = "list" | "grid";

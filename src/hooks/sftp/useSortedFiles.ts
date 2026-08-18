@@ -33,11 +33,19 @@ export function useSortedFiles({
         let cmp = 0;
         if (sortField === "name") cmp = a.name.localeCompare(b.name);
         else if (sortField === "size") cmp = a.size - b.size;
-        else if (sortField === "permissions")
+        else if (sortField === "type") {
+          const rank = (t: string) =>
+            t === "directory" ? 0 : t === "symlink" ? 1 : 2;
+          cmp = rank(a.type) - rank(b.type) || a.name.localeCompare(b.name);
+        } else if (sortField === "permissions")
           cmp = a.permissions.localeCompare(b.permissions);
         else if (sortField === "modifiedAt")
           cmp =
             new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
+        else if (sortField === "accessedAt")
+          cmp =
+            new Date(a.accessedAt ?? a.modifiedAt).getTime() -
+            new Date(b.accessedAt ?? b.modifiedAt).getTime();
         return sortDirection === "asc" ? cmp : -cmp;
       });
   }, [files, showHidden, searchQuery, sortField, sortDirection]);

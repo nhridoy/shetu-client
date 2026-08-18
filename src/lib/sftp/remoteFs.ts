@@ -79,6 +79,7 @@ function sftpEntryToFileItem(e: SftpEntry): FileItem {
     owner: String(e.uid),
     group: String(e.gid),
     modifiedAt: new Date(e.mtime * 1000).toISOString(),
+    accessedAt: new Date(e.atime * 1000).toISOString(),
     isHidden: e.name.startsWith("."),
   };
 }

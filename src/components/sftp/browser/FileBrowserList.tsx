@@ -1,5 +1,5 @@
 import { FolderIcon } from "@phosphor-icons/react";
-import { useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { buildContextMenuItems } from "@/components/sftp/browser/shared/buildContextMenuItems";
 import FileBrowserListShared from "@/components/sftp/browser/shared/FileBrowserList";
 import FileGridItem from "@/components/sftp/browser/shared/FileGridItem";
@@ -18,11 +18,12 @@ import type {
 } from "@/types/sftp/sftpTypes";
 
 const REMOTE_COLUMNS: ColumnDef[] = [
-  { key: "icon", label: "", defaultWidth: 36, minWidth: 36 },
+  { key: "type", label: "", defaultWidth: 36, minWidth: 36 },
   { key: "name", label: "Name", defaultWidth: 350, minWidth: 120 },
   { key: "size", label: "Size", defaultWidth: 80, minWidth: 60 },
   { key: "permissions", label: "Perms", defaultWidth: 80, minWidth: 60 },
-  { key: "modified", label: "Modified", defaultWidth: 140, minWidth: 80 },
+  { key: "modifiedAt", label: "Modified", defaultWidth: 140, minWidth: 80 },
+  { key: "accessedAt", label: "Accessed", defaultWidth: 140, minWidth: 80 },
 ];
 
 export interface FileBrowserActions {
@@ -149,8 +150,10 @@ export default function FileBrowserList({
     selectedFiles,
   ]);
 
+  let body: ReactNode;
+
   if (isLoading) {
-    return (
+    body = (
       <div className="flex-1 p-3 space-y-1">
         {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
           <div
@@ -167,10 +170,8 @@ export default function FileBrowserList({
         ))}
       </div>
     );
-  }
-
-  if (sortedFiles.length === 0) {
-    return (
+  } else if (sortedFiles.length === 0) {
+    body = (
       // biome-ignore lint/a11y/useSemanticElements: empty state click handler needs div
       <div
         role="button"
@@ -187,97 +188,102 @@ export default function FileBrowserList({
         <p>{searchQuery ? "No matching files" : "Empty directory"}</p>
       </div>
     );
+  } else {
+    const renderListItem = (file: FileItem) => {
+      const isDirect =
+        !!(hostAddress && hostUsername) &&
+        file.path?.includes(`${hostUsername}@${hostAddress}`);
+
+      return (
+        <FileListItem
+          key={file.path}
+          file={file}
+          paneId={paneId}
+          hostId={hostId}
+          sourceDirect={
+            isDirect ? { host: hostAddress, username: hostUsername } : undefined
+          }
+          selectedFiles={selectedFiles}
+          allFiles={sortedFiles}
+          renamingPath={renamingPath}
+          renameValue={renameValue}
+          renameInputRef={renameInputRef}
+          columnWidths={columnWidths}
+          showPermissions
+          onSelect={actions.handleSelect}
+          onDoubleClick={() => actions.handleDoubleClick(file)}
+          onContextMenu={handleContextMenu}
+          onRenameValueChange={setRenameValue}
+          onCommitRename={commitRename}
+          onSetRenamingPath={setRenamingPath}
+        />
+      );
+    };
+
+    const renderGridItem = (file: FileItem) => {
+      const isDirect =
+        !!(hostAddress && hostUsername) &&
+        file.path?.includes(`${hostUsername}@${hostAddress}`);
+
+      return (
+        <FileGridItem
+          key={file.path}
+          file={file}
+          paneId={paneId}
+          hostId={hostId}
+          sourceDirect={
+            isDirect ? { host: hostAddress, username: hostUsername } : undefined
+          }
+          selectedFiles={selectedFiles}
+          allFiles={sortedFiles}
+          renamingPath={renamingPath}
+          renameValue={renameValue}
+          renameInputRef={renameInputRef}
+          onSelect={actions.handleSelect}
+          onDoubleClick={() => actions.handleDoubleClick(file)}
+          onContextMenu={handleContextMenu}
+          onRenameValueChange={setRenameValue}
+          onCommitRename={commitRename}
+          onSetRenamingPath={setRenamingPath}
+        />
+      );
+    };
+
+    body = (
+      <>
+        {/* biome-ignore lint/a11y/useSemanticElements: file list click handler needs div */}
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex-1 overflow-y-auto"
+          onContextMenu={(e) => handleContextMenu(e)}
+          onKeyDown={(e) => {
+            if (e.key === "ContextMenu") {
+              handleContextMenu(e as unknown as React.MouseEvent);
+            }
+          }}
+        >
+          <FileBrowserListShared
+            files={sortedFiles}
+            viewMode={viewMode}
+            columns={REMOTE_COLUMNS}
+            columnWidths={columnWidths}
+            handleColumnMouseDown={handleMouseDown}
+            sortField={sortField}
+            sortDirection={sortDirection}
+            setSortField={setSortField}
+            setSortDirection={setSortDirection}
+            renderListItem={renderListItem}
+            renderGridItem={renderGridItem}
+          />
+        </div>
+      </>
+    );
   }
-
-  const renderListItem = (file: FileItem) => {
-    const isDirect =
-      !!(hostAddress && hostUsername) &&
-      file.path?.includes(`${hostUsername}@${hostAddress}`);
-
-    return (
-      <FileListItem
-        key={file.path}
-        file={file}
-        paneId={paneId}
-        hostId={hostId}
-        sourceDirect={
-          isDirect ? { host: hostAddress, username: hostUsername } : undefined
-        }
-        selectedFiles={selectedFiles}
-        allFiles={sortedFiles}
-        renamingPath={renamingPath}
-        renameValue={renameValue}
-        renameInputRef={renameInputRef}
-        columnWidths={columnWidths}
-        showPermissions
-        onSelect={actions.handleSelect}
-        onDoubleClick={() => actions.handleDoubleClick(file)}
-        onContextMenu={handleContextMenu}
-        onRenameValueChange={setRenameValue}
-        onCommitRename={commitRename}
-        onSetRenamingPath={setRenamingPath}
-      />
-    );
-  };
-
-  const renderGridItem = (file: FileItem) => {
-    const isDirect =
-      !!(hostAddress && hostUsername) &&
-      file.path?.includes(`${hostUsername}@${hostAddress}`);
-
-    return (
-      <FileGridItem
-        key={file.path}
-        file={file}
-        paneId={paneId}
-        hostId={hostId}
-        sourceDirect={
-          isDirect ? { host: hostAddress, username: hostUsername } : undefined
-        }
-        selectedFiles={selectedFiles}
-        allFiles={sortedFiles}
-        renamingPath={renamingPath}
-        renameValue={renameValue}
-        renameInputRef={renameInputRef}
-        onSelect={actions.handleSelect}
-        onDoubleClick={() => actions.handleDoubleClick(file)}
-        onContextMenu={handleContextMenu}
-        onRenameValueChange={setRenameValue}
-        onCommitRename={commitRename}
-        onSetRenamingPath={setRenamingPath}
-      />
-    );
-  };
 
   return (
     <>
-      {/* biome-ignore lint/a11y/useSemanticElements: file list click handler needs div */}
-      <div
-        role="button"
-        tabIndex={0}
-        className="flex-1 overflow-y-auto"
-        onContextMenu={(e) => handleContextMenu(e)}
-        onKeyDown={(e) => {
-          if (e.key === "ContextMenu") {
-            handleContextMenu(e as unknown as React.MouseEvent);
-          }
-        }}
-      >
-        <FileBrowserListShared
-          files={sortedFiles}
-          viewMode={viewMode}
-          columns={REMOTE_COLUMNS}
-          columnWidths={columnWidths}
-          handleColumnMouseDown={handleMouseDown}
-          sortField={sortField}
-          sortDirection={sortDirection}
-          setSortField={setSortField}
-          setSortDirection={setSortDirection}
-          renderListItem={renderListItem}
-          renderGridItem={renderGridItem}
-        />
-      </div>
-
+      {body}
       {contextMenu && (
         <ContextMenu
           items={contextMenuItems}

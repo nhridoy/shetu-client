@@ -307,11 +307,19 @@ export const fileBrowserActions = {
         let cmp = 0;
         if (p.sortField === "name") cmp = a.name.localeCompare(b.name);
         else if (p.sortField === "size") cmp = a.size - b.size;
-        else if (p.sortField === "permissions")
+        else if (p.sortField === "type") {
+          const rank = (t: string) =>
+            t === "directory" ? 0 : t === "symlink" ? 1 : 2;
+          cmp = rank(a.type) - rank(b.type) || a.name.localeCompare(b.name);
+        } else if (p.sortField === "permissions")
           cmp = a.permissions.localeCompare(b.permissions);
         else if (p.sortField === "modifiedAt")
           cmp =
             new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
+        else if (p.sortField === "accessedAt")
+          cmp =
+            new Date(a.accessedAt ?? a.modifiedAt).getTime() -
+            new Date(b.accessedAt ?? b.modifiedAt).getTime();
         return p.sortDirection === "asc" ? cmp : -cmp;
       });
     update(paneId, { sortedFiles: sorted });

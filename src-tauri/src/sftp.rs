@@ -333,6 +333,16 @@ pub async fn sftp_cancel_transfer(
     Ok(())
 }
 
+/// Join a parent directory path with a child name, normalizing a single
+/// trailing slash on the parent (e.g. `/var` + `log` => `/var/log`,
+/// `/var/` + `log` => `/var/log`, `` + `tmp` => `tmp`).
+fn join_sftp_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        return name.to_string();
+    }
+    format!("{}/{}", parent.trim_end_matches('/'), name)
+}
+
 fn attrs_to_entry(name: String, path: String, attrs: &russh_sftp::client::fs::Metadata) -> SftpEntry {
     SftpEntry {
         name,
@@ -523,7 +533,7 @@ async fn sftp_delete_recursive(
             .await
             .map_err(|e| format!("readdir: {e}"))?;
         for entry in read_dir {
-            let entry_path = format!("{}/{}", path.trim_end_matches('/'), entry.file_name());
+            let entry_path = join_sftp_path(path, &entry.file_name());
             Box::pin(sftp_delete_recursive(sftp, &entry_path)).await?;
         }
         sftp.remove_dir(path)
@@ -889,8 +899,7 @@ fn search_recursive<'a>(
         let entries: Vec<_> = read_dir
             .filter_map(|entry| {
                 let name = entry.file_name();
-                let entry_path =
-                    format!("{}/{}", current_path.trim_end_matches('/'), name);
+                let entry_path = join_sftp_path(current_path, &name);
                 let attrs = entry.metadata();
                 Some((name, entry_path, attrs))
             })
@@ -911,4 +920,29 @@ fn search_recursive<'a>(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_sftp_path_handles_trailing_slash() {
+        assert_eq!(join_sftp_path("/var", "log"), "/var/log");
+        assert_eq!(join_sftp_path("/var/", "log"), "/var/log");
+        assert_eq!(join_sftp_path("/var//", "log"), "/var/log");
+    }
+
+    #[test]
+    fn join_sftp_path_handles_root_and_empty_parent() {
+        assert_eq!(join_sftp_path("", "tmp"), "tmp");
+        assert_eq!(join_sftp_path("/", "tmp"), "/tmp");
+        assert_eq!(join_sftp_path("/home/user", ""), "/home/user/");
+    }
+
+    #[test]
+    fn join_sftp_path_handles_nested_names() {
+        assert_eq!(join_sftp_path("/a/b", "c/d"), "/a/b/c/d");
+        assert_eq!(join_sftp_path("relative", "file.txt"), "relative/file.txt");
+    }
 }

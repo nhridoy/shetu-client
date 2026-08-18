@@ -13,6 +13,7 @@ export interface FileListItemProps {
   renameInputRef: React.RefObject<HTMLInputElement | null>;
   sourceDirect?: { host?: string; port?: number; username?: string };
   showPermissions?: boolean;
+  showAccessed?: boolean;
   columnWidths?: Record<string, number>;
   onSelect: (
     fileName: string,
@@ -37,6 +38,7 @@ export default function FileListItem({
   renameInputRef,
   sourceDirect,
   showPermissions = false,
+  showAccessed = true,
   columnWidths,
   onSelect,
   onDoubleClick,
@@ -89,7 +91,7 @@ export default function FileListItem({
     >
       <td
         className={`relative p-2 rounded-l-lg ${rowBg}`}
-        style={columnWidths ? { width: columnWidths.icon } : undefined}
+        style={columnWidths ? { width: columnWidths.type } : undefined}
       >
         {accent && (
           <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded bg-primary-500" />
@@ -137,11 +139,19 @@ export default function FileListItem({
         </td>
       )}
       <td
-        className={`p-2 text-sm text-dark-300 tabular-nums rounded-r-lg ${rowBg}`}
-        style={columnWidths ? { width: columnWidths.modified } : undefined}
+        className={`p-2 text-sm text-dark-300 tabular-nums ${rowBg}`}
+        style={columnWidths ? { width: columnWidths.modifiedAt } : undefined}
       >
         {formatDate(file.modifiedAt)}
       </td>
+      {showAccessed && (
+        <td
+          className={`p-2 text-sm text-dark-300 tabular-nums rounded-r-lg ${rowBg}`}
+          style={columnWidths ? { width: columnWidths.accessedAt } : undefined}
+        >
+          {formatDate(file.accessedAt ?? file.modifiedAt)}
+        </td>
+      )}
     </tr>
   );
 }
