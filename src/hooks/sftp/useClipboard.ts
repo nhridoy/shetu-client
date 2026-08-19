@@ -4,6 +4,7 @@ import { extractError } from "@/lib/common/extractError";
 import { buildClipboardPaths } from "@/lib/sftp/buildClipboardPaths";
 import {
   type FileProvider,
+  joinPath,
   LocalFileProvider,
   transferFiles,
 } from "@/lib/sftp/fileTransfer";
@@ -83,6 +84,37 @@ export function useClipboard({
           modifiedAt: new Date().toISOString(),
           isHidden: name.startsWith("."),
         });
+      }
+
+      // Detect destination name conflicts and surface the dialog
+      let destFiles: FileItem[];
+      try {
+        destFiles = await listLocalFiles(currentPath);
+      } catch {
+        destFiles = [];
+      }
+      const destNames = new Set(destFiles.map((f) => f.name));
+      const conflicts = sourceFiles.filter((f) => destNames.has(f.name));
+
+      if (conflicts.length > 0) {
+        actions.setPasteConflicts(
+          paneId,
+          conflicts.map((f) => ({
+            srcPath: f.path,
+            dstPath: joinPath(currentPath, f.name),
+            dstName: f.name,
+          })),
+        );
+        actions.setPendingDrop(paneId, {
+          files: sourceFiles,
+          destDirPath: currentPath,
+          mode: clipboardMode === "cut" ? "move" : "copy",
+          sourceHostId: clipboard.sourceId,
+          sourcePaneId:
+            clipboard.sourceId === "local" ? undefined : clipboard.sourceId,
+          sourceKind: "clipboard",
+        });
+        return;
       }
 
       const localProvider = new LocalFileProvider("local");

@@ -19,7 +19,6 @@ import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import ContextMenu, { type ContextMenuItem } from "@/components/ui/ContextMenu";
 import PromptDialog from "@/components/ui/PromptDialog";
 import { useClipboard } from "@/hooks/sftp/useClipboard";
-import { useDesktopFileDrop } from "@/hooks/sftp/useDesktopFileDrop";
 import { useFileKeyboardShortcuts } from "@/hooks/sftp/useFileKeyboardShortcuts";
 import { useFileOperations } from "@/hooks/sftp/useLocalFileOperations";
 import { useMarqueeSelection } from "@/hooks/sftp/useMarqueeSelection";
@@ -116,7 +115,6 @@ export default function LocalFileBrowser({
     y: number;
     file?: FileItem;
   } | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [dropMode, setDropMode] = useState<"move" | "copy">("move");
   const lastVolumeCheck = useRef<{
@@ -192,38 +190,34 @@ export default function LocalFileBrowser({
       [paneId],
     ),
   });
-  const desktopDrop = useDesktopFileDrop({
-    paneId,
-    currentPath,
-    containerRef,
-  });
 
   // ── Tauri OS drag-drop (reliable cross-platform file drops) ─────────────
   const handleTauriDrop = useCallback(
     async (paths: string[], destDir: string) => {
       const { invoke } = await import("@tauri-apps/api/core");
 
-      const sizes = await Promise.all(
-        paths.map((p) =>
-          invoke<number>("get_file_size", { path: p }).catch(() => 0),
-        ),
-      );
-
-      const dropFiles: FileItem[] = paths.map((p, i) => {
+      const dropFiles: FileItem[] = [];
+      for (const p of paths) {
         const name = p.split(/[/\\]/).pop() || p;
-        return {
+        const isDir = await invoke<boolean>("is_directory", { path: p }).catch(
+          () => false,
+        );
+        const size = isDir
+          ? 0
+          : await invoke<number>("get_file_size", { path: p }).catch(() => 0);
+        dropFiles.push({
           name,
           path: p,
-          type: "file" as const,
-          size: sizes[i] || 0,
+          type: isDir ? "directory" : "file",
+          size,
           permissions: "",
           owner: "",
           group: "",
           modifiedAt: new Date().toISOString(),
           accessedAt: new Date().toISOString(),
           isHidden: name.startsWith("."),
-        };
-      });
+        });
+      }
 
       let destFiles: FileItem[];
       try {
@@ -247,6 +241,7 @@ export default function LocalFileBrowser({
           files: dropFiles,
           destDirPath: destDir,
           mode: "copy",
+          sourceHostId: "local",
         });
         return;
       }
@@ -435,6 +430,7 @@ export default function LocalFileBrowser({
         mode,
         sourceHostId,
         sourcePaneId,
+        sourceKind,
       } = pendingDrop;
       actions.setPasteConflicts(paneId, null);
       actions.setPendingDrop(paneId, null);
@@ -449,6 +445,9 @@ export default function LocalFileBrowser({
         overrides,
         sourceProvider,
       );
+      if (sourceKind === "clipboard") {
+        useSftpStore.getState().clearClipboard();
+      }
     },
     [pendingDrop, executeTransfer, paneId],
   );
@@ -456,7 +455,13 @@ export default function LocalFileBrowser({
   const handleConflictCancel = useCallback(() => {
     actions.setPasteConflicts(paneId, null);
     actions.setPendingDrop(paneId, null);
-  }, [paneId]);
+    if (
+      pendingDrop?.sourceKind === "clipboard" &&
+      useSftpStore.getState().clipboardMode === "cut"
+    ) {
+      useSftpStore.getState().clearClipboard();
+    }
+  }, [paneId, pendingDrop]);
 
   // ── @dnd-kit droppable ───────────────────────────────────────────────────
   const droppable = useDroppable({
@@ -651,30 +656,9 @@ export default function LocalFileBrowser({
     [paneId],
   );
 
-  // ── Desktop drag-and-drop (native OS) ────────────────────────────────────
-  const handleDesktopDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer.types.includes("Files")) {
-      setIsDragOver(true);
-    }
-  }, []);
-
-  const handleDesktopDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.currentTarget === containerRef.current) setIsDragOver(false);
-  }, []);
-
-  const handleDesktopDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragOver(false);
-      await desktopDrop.handleDrop(e);
-    },
-    [desktopDrop],
-  );
+  // ── Desktop drag-and-drop (native OS, via Tauri paths) ───────────────────
+  // No DOM handlers: OS drops arrive as real paths via useTauriDragDrop,
+  // which supports files AND folders (transferFiles handles recursion).
 
   // ── Path bar ─────────────────────────────────────────────────────────────
   const handlePathKeyDown = (e: React.KeyboardEvent) => {
@@ -710,9 +694,6 @@ export default function LocalFileBrowser({
       data-drop-target-path={currentPath}
       data-drop-target-pane={paneId}
       data-drop-target-host="local"
-      onDragOver={handleDesktopDragOver}
-      onDragLeave={handleDesktopDragLeave}
-      onDrop={handleDesktopDrop}
       onContextMenu={handleBackgroundContextMenu}
       onMouseDown={(e) => {
         actions.setActivePane(paneId);
@@ -722,7 +703,7 @@ export default function LocalFileBrowser({
       onMouseUp={marquee.handleMouseUp}
     >
       <DragOverOverlay
-        isDragOver={tauriDragDrop.isDragOver || isDragOver}
+        isDragOver={tauriDragDrop.isDragOver}
         fileDragState={fileDragState}
       />
       <DropTargetOverlay

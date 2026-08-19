@@ -180,6 +180,87 @@ function generateAutoName(
   return candidate;
 }
 
+export type TransferOverride = {
+  action: "replace" | "rename" | "auto" | "skip";
+  newName?: string;
+};
+
+export interface TransferPathEntry {
+  file: FileItem;
+  relativePath: string;
+  destFilePath: string;
+  skip: boolean;
+}
+
+/**
+ * Resolves destination names for expanded transfer items, honoring
+ * per-item overrides (replace/rename/auto/skip) for top-level files AND
+ * directories. Directory renames/skips propagate to all children, so
+ * callers must create directories only after resolution.
+ */
+export function resolveTransferPaths(
+  expandedFiles: { file: FileItem; relativePath: string }[],
+  destPath: string,
+  mode: "move" | "copy",
+  overrides?: Map<string, TransferOverride>,
+  existingNames?: Set<string>,
+): TransferPathEntry[] {
+  const names = existingNames ?? new Set<string>();
+
+  // Resolve the top-level name for each root item (file or directory).
+  const nameMap = new Map<string, string>();
+  const skippedRoots = new Set<string>();
+  for (const item of expandedFiles) {
+    const rootName = item.relativePath.split(/[/\\]/)[0];
+    if (nameMap.has(rootName) || skippedRoots.has(rootName)) continue;
+    const override = overrides?.get(item.file.path);
+    if (override?.action === "skip") {
+      skippedRoots.add(rootName);
+      continue;
+    }
+    let resolved = rootName;
+    if (override?.action === "replace") {
+      // Explicit overwrite — keep the name
+      resolved = rootName;
+    } else if (override?.action === "auto") {
+      resolved = generateAutoName(rootName, names);
+    } else if (override?.action === "rename" && override.newName) {
+      resolved = override.newName;
+    } else if (mode === "copy" && names.has(rootName)) {
+      // Copying onto an existing item (incl. paste into same folder):
+      // auto-rename like a file manager instead of overwriting/failing.
+      resolved = generateAutoName(rootName, names);
+    }
+    nameMap.set(rootName, resolved);
+    names.add(resolved);
+  }
+
+  return expandedFiles.map(({ file, relativePath }) => {
+    const rootName = relativePath.split(/[/\\]/)[0];
+    const skipped = skippedRoots.has(rootName);
+    const resolvedName = nameMap.get(rootName);
+    const remapped =
+      resolvedName && resolvedName !== rootName
+        ? resolvedName + relativePath.slice(rootName.length)
+        : relativePath;
+
+    let destFilePath = joinPath(destPath, remapped);
+
+    // Paste into the same folder: auto-rename the leaf to avoid a
+    // self-copy / "file in use" (os error 32) failure
+    if (mode === "copy" && destFilePath === file.path) {
+      const segs = remapped.split(/[/\\]/);
+      const leaf = segs.pop() ?? file.name;
+      segs.push(generateAutoName(leaf, names));
+      const renamed = segs.join("/");
+      destFilePath = joinPath(destPath, renamed);
+      return { file, relativePath: renamed, destFilePath, skip: false };
+    }
+
+    return { file, relativePath: remapped, destFilePath, skip: skipped };
+  });
+}
+
 function determineDirection(
   source: FileProvider,
   dest: FileProvider,
@@ -204,10 +285,7 @@ export interface TransferOptions {
   destPath: string;
   mode: "move" | "copy";
   sessionId?: string;
-  overrides?: Map<
-    string,
-    { action: "replace" | "rename" | "auto" | "skip"; newName?: string }
-  >;
+  overrides?: Map<string, TransferOverride>;
   onFileStart?: (file: FileItem, index: number) => void;
   onFileProgress?: (
     file: FileItem,
@@ -370,9 +448,20 @@ export async function transferFiles(
       }
     }
 
+    // Resolve destination names BEFORE creating directories so override
+    // renames/skips (incl. for folders) propagate to children and mkdir.
+    const resolvedEntries = resolveTransferPaths(
+      expandedFiles,
+      destPath,
+      mode,
+      overrides,
+      existingNames,
+    );
+
     // Create directory structure on destination first
     const dirsToCreate = new Set<string>();
-    for (const { file, relativePath } of expandedFiles) {
+    for (const { file, relativePath, skip } of resolvedEntries) {
+      if (skip) continue;
       if (file.type === "directory") {
         dirsToCreate.add(joinPath(destPath, relativePath));
       } else if (relativePath.includes("/") || relativePath.includes("\\")) {
@@ -395,19 +484,24 @@ export async function transferFiles(
       await dest.mkdirAll(sortedDirs);
     }
 
-    // Resolve dest names and filter skips
+    // Build the transfer list, filtering skips
     const transfers: {
       file: FileItem;
-      destName: string;
       destFilePath: string;
-      skip: boolean;
     }[] = [];
 
-    for (const item of expandedFiles) {
-      const file = item.file;
-      let relativePath = item.relativePath;
+    for (const { file, skip, destFilePath } of resolvedEntries) {
       // Skip directories - they're already created
       if (file.type === "directory") continue;
+
+      if (skip) {
+        results.push({ file, action: "skipped" });
+        onFileComplete?.(file, results.length - 1, {
+          file,
+          action: "skipped",
+        });
+        continue;
+      }
 
       const override = overrides?.get(file.path);
       if (override?.action === "skip") {
@@ -419,41 +513,7 @@ export async function transferFiles(
         continue;
       }
 
-      // Calculate destination path
-      let destFilePath: string;
-      let destName: string;
-
-      if (relativePath.includes("/") || relativePath.includes("\\")) {
-        // File is in a subdirectory
-        destFilePath = joinPath(destPath, relativePath);
-        // Paste into the same folder: auto-rename the leaf to avoid a
-        // self-copy / "file in use" (os error 32) failure
-        if (mode === "copy" && destFilePath === file.path) {
-          const segs = relativePath.split(/[/\\]/);
-          const leaf = segs.pop() ?? file.name;
-          segs.push(generateAutoName(leaf, existingNames));
-          relativePath = segs.join("/");
-          destFilePath = joinPath(destPath, relativePath);
-        }
-        destName = file.name;
-      } else {
-        // File is at root level
-        if (override?.action === "auto") {
-          destName = generateAutoName(file.name, existingNames);
-        } else if (override?.action === "rename" && override.newName) {
-          destName = override.newName;
-        } else if (mode === "copy" && existingNames.has(file.name)) {
-          // Copying onto an existing file (incl. paste into same folder):
-          // auto-rename like a file manager instead of overwriting/failing.
-          destName = generateAutoName(file.name, existingNames);
-        } else {
-          destName = file.name;
-        }
-        destFilePath = joinPath(destPath, destName);
-        existingNames.add(destName);
-      }
-
-      transfers.push({ file, destName, destFilePath, skip: false });
+      transfers.push({ file, destFilePath });
     }
 
     // Process transfers in parallel batches

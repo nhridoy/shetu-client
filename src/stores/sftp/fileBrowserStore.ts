@@ -19,6 +19,7 @@ export interface PendingDrop {
   sourceHostId?: string;
   sourcePaneId?: string;
   sourceDirect?: { host?: string; port?: number; username?: string };
+  sourceKind?: "drag" | "clipboard";
 }
 
 interface FileBrowserPane {

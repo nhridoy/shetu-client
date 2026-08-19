@@ -108,7 +108,6 @@ export default function FileBrowser({
   });
 
   // ── Component-only state ─────────────────────────────────────────────────
-  const [isDragOver, setIsDragOver] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -135,21 +134,31 @@ export default function FileBrowser({
       if (paths.length === 0) return;
       try {
         const provider = await ops.ensureProvider();
+        const { invoke } = await import("@tauri-apps/api/core");
 
-        const dropFiles: FileItem[] = paths.map((filePath) => {
+        const dropFiles: FileItem[] = [];
+        for (const filePath of paths) {
           const name = filePath.split(/[/\\]/).pop() || filePath;
-          return {
+          const isDir = await invoke<boolean>("is_directory", {
+            path: filePath,
+          }).catch(() => false);
+          const size = isDir
+            ? 0
+            : await invoke<number>("get_file_size", {
+                path: filePath,
+              }).catch(() => 0);
+          dropFiles.push({
             name,
             path: filePath,
-            type: "file",
-            size: 0,
+            type: isDir ? "directory" : "file",
+            size,
             permissions: "",
             owner: "",
             group: "",
             modifiedAt: new Date().toISOString(),
             isHidden: name.startsWith("."),
-          };
-        });
+          });
+        }
 
         let destFiles: FileItem[];
         try {
@@ -173,35 +182,22 @@ export default function FileBrowser({
             files: dropFiles,
             destDirPath: destDir,
             mode: "copy",
+            sourceHostId: "local",
           });
           return;
         }
 
-        for (const filePath of paths) {
-          const fileName = filePath.split(/[/\\]/).pop() || filePath;
-          const remotePath =
-            destDir === "/" ? `/${fileName}` : `${destDir}/${fileName}`;
-          const transferId = crypto.randomUUID();
-
-          useSftpStore.getState().addTransfer({
-            id: transferId,
-            fileName,
-            localPath: filePath,
-            remotePath,
-            direction: "upload",
-            status: "pending",
-            progress: 0,
-            size: 0,
-            transferred: 0,
-            sessionId: paneId,
-          });
-
-          try {
-            await provider.upload(filePath, remotePath, undefined, transferId);
-          } catch {
-            // Error handled by progress listener
-          }
-        }
+        const { transferFiles, LocalFileProvider } = await import(
+          "@/lib/sftp/fileTransfer"
+        );
+        await transferFiles({
+          source: new LocalFileProvider("local"),
+          dest: provider,
+          files: dropFiles,
+          destPath: destDir,
+          mode: "copy",
+          sessionId: paneId,
+        });
         await ops.refreshFiles();
       } catch (err) {
         toast.error(
@@ -219,27 +215,7 @@ export default function FileBrowser({
     onDrop: handleTauriDrop,
   });
 
-  // ── Drag & drop ──────────────────────────────────────────────────────────
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      if (e.dataTransfer.files.length > 0)
-        ops.handleDesktopDrop(Array.from(e.dataTransfer.files));
-    },
-    [ops.handleDesktopDrop],
-  );
-
+  // ── Drag & drop (OS drops arrive via useTauriDragDrop paths) ─────────────
   const droppable = useDroppable({
     id: `file-drop-${paneId}`,
     data: { type: "file-drop", paneId, hostId, path: currentPath },
@@ -430,15 +406,12 @@ export default function FileBrowser({
       data-drop-target-path={currentPath}
       data-drop-target-pane={paneId}
       data-drop-target-host={hostId}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
       onMouseDown={marquee.handleMouseDown}
       onMouseMove={marquee.handleMouseMove}
       onMouseUp={marquee.handleMouseUp}
     >
       <DragOverOverlay
-        isDragOver={tauriDragDrop.isDragOver || isDragOver}
+        isDragOver={tauriDragDrop.isDragOver}
         fileDragState={fileDragState}
       />
       <DropTargetOverlay
