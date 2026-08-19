@@ -358,26 +358,22 @@ export function useFileOperations({
     async (files: File[]) => {
       if (files.length === 0) return;
       try {
-        const { writeBinaryFile, BaseDirectory } = await import(
-          "@tauri-apps/plugin-fs"
-        );
+        const { writeFile, remove } = await import("@tauri-apps/plugin-fs");
         const { transferFiles, LocalFileProvider } = await import(
           "@/lib/sftp/fileTransfer"
         );
         const provider = await ensureProvider();
         const tempDir = await import("@tauri-apps/api/path").then((m) =>
-          m.tempdir(),
+          m.tempDir(),
         );
 
         const uploadFiles: FileItem[] = [];
         const tempPaths = new Map<string, string>();
 
         for (const file of files) {
-          const tempPath = `${tempDir}/sftp-upload-${crypto.randomUUID()}-${file.name}`;
+          const tempPath = `${tempDir}sftp-upload-${crypto.randomUUID()}-${file.name}`;
           const data = new Uint8Array(await file.arrayBuffer());
-          await writeBinaryFile(tempPath, data, {
-            baseDir: BaseDirectory.Temp,
-          });
+          await writeFile(tempPath, data);
           tempPaths.set(file.name, tempPath);
           uploadFiles.push({
             name: file.name,
@@ -403,9 +399,7 @@ export function useFileOperations({
 
         // Cleanup temp files
         for (const tempPath of tempPaths.values()) {
-          await import("@tauri-apps/plugin-fs").then((m) =>
-            m.removeFile(tempPath).catch(() => {}),
-          );
+          await remove(tempPath).catch(() => {});
         }
 
         clearError();

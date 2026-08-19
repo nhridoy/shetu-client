@@ -62,14 +62,14 @@ export function useDesktopFileDrop({
       }
 
       // Write files to temp directory, then use unified transferFiles
-      const { tempdir } = await import("@tauri-apps/api/path");
-      const tempDir = await tempdir();
+      const { tempDir } = await import("@tauri-apps/api/path");
+      const tempDirPath = await tempDir();
 
       const tempFiles: FileItem[] = [];
       for (let i = 0; i < droppedFiles.length; i++) {
         const f = droppedFiles[i];
         const tempPath = joinPath(
-          tempDir,
+          tempDirPath,
           `sftp-drop-${crypto.randomUUID()}-${f.name}`,
         );
         const arrayBuffer = await f.arrayBuffer();
@@ -93,9 +93,9 @@ export function useDesktopFileDrop({
       });
 
       // Cleanup temp files
-      const { removeFile } = await import("@tauri-apps/plugin-fs");
+      const { remove } = await import("@tauri-apps/plugin-fs");
       for (const tf of tempFiles) {
-        await removeFile(tf.path).catch(() => {});
+        await remove(tf.path).catch(() => {});
       }
 
       actions.loadFiles(paneId, currentPath, listLocalFiles);
