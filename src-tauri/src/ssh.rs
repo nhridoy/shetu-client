@@ -274,7 +274,6 @@ pub struct PingResult {
 pub enum SessionCmd {
     Input(Vec<u8>),
     Resize(u32, u32),
-    Close,
 }
 
 pub struct SessionSlot {
@@ -660,7 +659,6 @@ async fn run_connect_session(
                     SessionCmd::Resize(cols, rows) => {
                         let _ = write_half.window_change(cols, rows, 0, 0).await;
                     }
-                    SessionCmd::Close => break,
                 }
             }
             if let Some(tx) = close_tx.take() {

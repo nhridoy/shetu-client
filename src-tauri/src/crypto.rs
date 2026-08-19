@@ -4,7 +4,6 @@ use chacha20poly1305::{
     aead::{Aead, NewAead, Payload},
     XChaCha20Poly1305, XNonce,
 };
-use cipher::KeyInit;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
@@ -70,12 +69,6 @@ pub struct EncryptedPayload {
     pub ct: String,
     #[serde(default)]
     pub aad: String,
-}
-
-impl EncryptedPayload {
-    fn new(v: u8, alg: String, nonce: String, ct: String, aad: String) -> Self {
-        Self { v, alg, nonce, ct, aad }
-    }
 }
 
 pub fn derive_kek_bytes(password: &str, salt_cl: &[u8; SALT_CL_LEN]) -> Result<[u8; DEK_LEN], String> {
@@ -340,10 +333,10 @@ fn encrypt_bytes(key: &[u8; DEK_LEN], plaintext: &[u8], aad: &[u8]) -> Result<St
     let mut nonce_bytes = [0u8; NONCE_LEN];
     use rand::RngCore;
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce = XNonce::from(nonce_bytes);
 
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad })
+        .encrypt(&nonce, Payload { msg: plaintext, aad })
         .map_err(|e| format!("Encryption error: {e}"))?;
 
     let payload = EncryptedPayload {
@@ -368,13 +361,12 @@ fn decrypt_bytes(payload_b64: &str, key: &[u8; DEK_LEN]) -> Result<Vec<u8>, Stri
         return Err("Unsupported algorithm".to_string());
     }
 
-    let nonce_bytes = BASE64
+    let nonce_bytes: [u8; NONCE_LEN] = BASE64
         .decode(&payload.nonce)
-        .map_err(|e| format!("Invalid nonce base64: {e}"))?;
-    if nonce_bytes.len() != NONCE_LEN {
-        return Err("Invalid nonce length".to_string());
-    }
-    let nonce = XNonce::from_slice(&nonce_bytes);
+        .map_err(|e| format!("Invalid nonce base64: {e}"))?
+        .try_into()
+        .map_err(|_| "Invalid nonce length".to_string())?;
+    let nonce = XNonce::from(nonce_bytes);
 
     let ct = BASE64
         .decode(&payload.ct)
@@ -386,7 +378,7 @@ fn decrypt_bytes(payload_b64: &str, key: &[u8; DEK_LEN]) -> Result<Vec<u8>, Stri
 
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
-        .decrypt(nonce, Payload { msg: ct.as_ref(), aad: aad.as_ref() })
+        .decrypt(&nonce, Payload { msg: ct.as_ref(), aad: aad.as_ref() })
         .map_err(|e| format!("Decryption error: {e}"))
 }
 

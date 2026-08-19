@@ -8,7 +8,7 @@ mod oauth;
 mod ssh;
 mod sftp;
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -679,7 +679,6 @@ async fn connect_local(
     }
 
     // Emit connected event
-    let sid = session_id.clone();
     let sid2 = session_id.clone();
     let handle = app_handle.clone();
     let _ = handle.emit(

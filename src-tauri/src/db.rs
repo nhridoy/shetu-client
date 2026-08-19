@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use std::sync::Mutex;
 
 pub const DB_FILE_NAME: &str = "termvault.db";
@@ -231,172 +231,6 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UserProfile {
-    pub id: String,
-    pub email: String,
-    pub name: String,
-    pub auth_provider: String,
-    pub provider_sub: Option<String>,
-    pub salt_cl: Option<String>,
-    pub kdf_m: i64,
-    pub kdf_t: i64,
-    pub kdf_p: i64,
-    pub public_key: Option<String>,
-    pub initialized: bool,
-    pub last_login_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-pub fn upsert_user_profile(db: &LocalDb, profile: &UserProfile) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO user_profiles (id, email, name, auth_provider, provider_sub, salt_cl,
-         kdf_m, kdf_t, kdf_p, public_key, initialized, last_login_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-         ON CONFLICT(id) DO UPDATE SET
-            email=excluded.email, name=excluded.name, auth_provider=excluded.auth_provider,
-            provider_sub=excluded.provider_sub, salt_cl=excluded.salt_cl,
-            kdf_m=excluded.kdf_m, kdf_t=excluded.kdf_t, kdf_p=excluded.kdf_p,
-            public_key=excluded.public_key, initialized=excluded.initialized,
-            last_login_at=excluded.last_login_at, updated_at=excluded.updated_at",
-        params![
-            profile.id,
-            profile.email,
-            profile.name,
-            profile.auth_provider,
-            profile.provider_sub,
-            profile.salt_cl,
-            profile.kdf_m,
-            profile.kdf_t,
-            profile.kdf_p,
-            profile.public_key,
-            profile.initialized as i64,
-            profile.last_login_at,
-            profile.created_at,
-            profile.updated_at,
-        ],
-    )
-    .map_err(|e| format!("upsert_user_profile: {e}"))?;
-    Ok(())
-}
-
-pub fn get_user_profile(db: &LocalDb, user_id: &str) -> Result<Option<UserProfile>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, email, name, auth_provider, provider_sub, salt_cl,
-                    kdf_m, kdf_t, kdf_p, public_key, initialized, last_login_at,
-                    created_at, updated_at
-             FROM user_profiles WHERE id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let row = stmt
-        .query_row(params![user_id], |row| {
-            Ok(UserProfile {
-                id: row.get(0)?,
-                email: row.get(1)?,
-                name: row.get(2)?,
-                auth_provider: row.get(3)?,
-                provider_sub: row.get(4)?,
-                salt_cl: row.get(5)?,
-                kdf_m: row.get(6)?,
-                kdf_t: row.get(7)?,
-                kdf_p: row.get(8)?,
-                public_key: row.get(9)?,
-                initialized: row.get::<_, i64>(10)? != 0,
-                last_login_at: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })
-        .ok();
-
-    Ok(row)
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UserKeyRow {
-    pub id: i64,
-    pub user_id: String,
-    pub key_type: String,
-    pub payload: String,
-    pub created_at: String,
-}
-
-pub fn upsert_keyring(
-    db: &LocalDb,
-    user_id: &str,
-    key_type: &str,
-    payload: &str,
-) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let now = chrono_utc_now();
-    conn.execute(
-        "INSERT INTO user_keys (user_id, key_type, payload, created_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(user_id, key_type) DO UPDATE SET payload=excluded.payload",
-        params![user_id, key_type, payload, now],
-    )
-    .map_err(|e| format!("upsert_keyring: {e}"))?;
-    Ok(())
-}
-
-pub fn get_keyring(db: &LocalDb, user_id: &str) -> Result<Vec<UserKeyRow>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, user_id, key_type, payload, created_at
-             FROM user_keys WHERE user_id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map(params![user_id], |row| {
-            Ok(UserKeyRow {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                key_type: row.get(2)?,
-                payload: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(rows)
-}
-
-/// Vaults are sync rows like any other table (per-user instead of per-vault:
-/// `vault_id` is empty and `db_list` skips the vault filter for them). The
-/// envelope revision/outbox/tombstone machinery applies unchanged.
-pub fn upsert_vault(db: &LocalDb, vault: &SyncRow) -> Result<SyncRow, String> {
-    let mut row = vault.clone();
-    row.vault_id = String::new();
-    row.deleted_at = None;
-    upsert_sync_row(db, Table::Vaults, &row)
-}
-
-pub fn list_vaults(db: &LocalDb, include_deleted: bool) -> Result<Vec<SyncRow>, String> {
-    list_sync_rows(db, Table::Vaults, "", include_deleted)
-}
-
-pub fn delete_vault(db: &LocalDb, id: &str) -> Result<(), String> {
-    tombstone_sync_row(db, Table::Vaults, id)
-}
-
-fn chrono_utc_now() -> String {
-    // Avoid chrono dependency — use a simple ISO-8601 timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{now}")
 }
 
 const ENVELOPE_COLS: &str = "id, revision, vault_id, created_at, updated_at, deleted_at";
@@ -940,89 +774,6 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_user_profile_roundtrip() {
-        let db = test_db();
-        let profile = UserProfile {
-            id: "u1".to_string(),
-            email: "test@example.com".to_string(),
-            name: "Test User".to_string(),
-            auth_provider: "password".to_string(),
-            provider_sub: None,
-            salt_cl: Some("abc123".to_string()),
-            kdf_m: 67108864,
-            kdf_t: 3,
-            kdf_p: 1,
-            public_key: Some("pk_base64".to_string()),
-            initialized: true,
-            last_login_at: None,
-            created_at: "1700000000".to_string(),
-            updated_at: "1700000000".to_string(),
-        };
-        upsert_user_profile(&db, &profile).unwrap();
-
-        let loaded = get_user_profile(&db, "u1").unwrap().unwrap();
-        assert_eq!(loaded.email, "test@example.com");
-        assert_eq!(loaded.name, "Test User");
-        assert!(loaded.initialized);
-    }
-
-    #[test]
-    fn test_upsert_user_profile_updates() {
-        let db = test_db();
-        let mut profile = UserProfile {
-            id: "u1".to_string(),
-            email: "old@example.com".to_string(),
-            name: "Old Name".to_string(),
-            auth_provider: "password".to_string(),
-            provider_sub: None,
-            salt_cl: None,
-            kdf_m: 67108864,
-            kdf_t: 3,
-            kdf_p: 1,
-            public_key: None,
-            initialized: false,
-            last_login_at: None,
-            created_at: "1700000000".to_string(),
-            updated_at: "1700000000".to_string(),
-        };
-        upsert_user_profile(&db, &profile).unwrap();
-
-        profile.email = "new@example.com".to_string();
-        profile.name = "New Name".to_string();
-        profile.initialized = true;
-        upsert_user_profile(&db, &profile).unwrap();
-
-        let loaded = get_user_profile(&db, "u1").unwrap().unwrap();
-        assert_eq!(loaded.email, "new@example.com");
-        assert_eq!(loaded.name, "New Name");
-        assert!(loaded.initialized);
-    }
-
-    #[test]
-    fn test_upsert_keyring_roundtrip() {
-        let db = test_db();
-        upsert_keyring(&db, "u1", "dek_wrapped_by_kek", "encrypted_payload_1").unwrap();
-        upsert_keyring(&db, "u1", "dek_wrapped_by_recovery", "encrypted_payload_2").unwrap();
-
-        let keys = get_keyring(&db, "u1").unwrap();
-        assert_eq!(keys.len(), 2);
-
-        let dek_key = keys.iter().find(|k| k.key_type == "dek_wrapped_by_kek").unwrap();
-        assert_eq!(dek_key.payload, "encrypted_payload_1");
-    }
-
-    #[test]
-    fn test_upsert_keyring_updates() {
-        let db = test_db();
-        upsert_keyring(&db, "u1", "dek_wrapped_by_kek", "old_payload").unwrap();
-        upsert_keyring(&db, "u1", "dek_wrapped_by_kek", "new_payload").unwrap();
-
-        let keys = get_keyring(&db, "u1").unwrap();
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].payload, "new_payload");
-    }
-
-    #[test]
     fn test_tombstone_hides_row_and_bumps_outbox() {
         let db = test_db();
         let k = SyncRow { id: "k1".into(), revision: 1, vault_id: "v1".into(), created_at: 1,
@@ -1134,6 +885,13 @@ mod tests {
         assert_eq!(workspace.data, "enc");
     }
 
+    fn upsert_test_vault(db: &LocalDb, vault: &SyncRow) -> SyncRow {
+        let mut row = vault.clone();
+        row.vault_id = String::new();
+        row.deleted_at = None;
+        upsert_sync_row(db, Table::Vaults, &row).unwrap()
+    }
+
     #[test]
     fn test_upsert_vault_roundtrip() {
         let db = test_db();
@@ -1150,7 +908,7 @@ mod tests {
             sort_order: 0,
             ..Default::default()
         };
-        let saved = upsert_vault(&db, &vault).unwrap();
+        let saved = upsert_test_vault(&db, &vault);
         assert_eq!(saved.revision, 1);
         assert_eq!(saved.name.as_deref(), Some("Personal"));
         assert_eq!(saved.owner_id.as_deref(), Some("u1"));
@@ -1215,10 +973,10 @@ mod tests {
             sort_order: 0,
             ..Default::default()
         };
-        let saved = upsert_vault(&db, &vault).unwrap();
+        let saved = upsert_test_vault(&db, &vault);
         assert!(saved.created_at > 0);
 
-        let rows = list_vaults(&db, false).unwrap();
+        let rows = list_sync_rows(&db, Table::Vaults, "", false).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "v1");
         assert_eq!(rows[0].created_at, saved.created_at);
@@ -1245,11 +1003,11 @@ mod tests {
                 sort_order: 0,
                 ..Default::default()
             };
-            upsert_vault(&db, &vault).unwrap();
+            upsert_test_vault(&db, &vault);
         }
 
         // no vault_id filter for vaults: both rows come back
-        let rows = list_vaults(&db, false).unwrap();
+        let rows = list_sync_rows(&db, Table::Vaults, "", false).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|r| r.id == "v1" && r.kind.as_deref() == Some("personal")));
         assert!(rows.iter().any(|r| r.id == "v2" && r.kind.as_deref() == Some("team")));
@@ -1275,12 +1033,12 @@ mod tests {
             sort_order: 0,
             ..Default::default()
         };
-        upsert_vault(&db, &vault).unwrap();
-        delete_vault(&db, "v1").unwrap();
+        upsert_test_vault(&db, &vault);
+        tombstone_sync_row(&db, Table::Vaults, "v1").unwrap();
 
-        assert!(list_vaults(&db, false).unwrap().is_empty());
+        assert!(list_sync_rows(&db, Table::Vaults, "", false).unwrap().is_empty());
         // tombstone remains visible with include_deleted
-        let all = list_vaults(&db, true).unwrap();
+        let all = list_sync_rows(&db, Table::Vaults, "", true).unwrap();
         assert_eq!(all.len(), 1);
         assert!(all[0].deleted_at.is_some());
         // tombstone queued for sync like any delete
