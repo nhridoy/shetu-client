@@ -434,10 +434,18 @@ async fn fs_mkdir(path: String) -> Result<(), String> {
 async fn fs_remove(path: String, recursive: bool) -> Result<(), String> {
     let p = std::path::PathBuf::from(&path);
     tauri::async_runtime::spawn_blocking(move || {
-        if recursive {
+        // Inspect the link itself (no traversal): files and symlinks must be
+        // removed with remove_file — remove_dir_all fails on Windows with
+        // "The directory name is invalid" (os error 267) for anything that is
+        // not a real directory.
+        let meta = std::fs::symlink_metadata(&p)
+            .map_err(|e| format!("{path}: {e}"))?;
+        if meta.is_file() || meta.file_type().is_symlink() {
+            std::fs::remove_file(&p)
+        } else if recursive {
             std::fs::remove_dir_all(&p)
         } else {
-            std::fs::remove_file(&p)
+            std::fs::remove_dir(&p)
         }
         .map_err(|e| format!("{path}: {e}"))
     })
