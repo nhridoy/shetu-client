@@ -404,6 +404,8 @@ export default function LocalFileBrowser({
           files: dragFiles,
           destDirPath,
           mode,
+          sourceHostId,
+          sourcePaneId,
         });
       } else {
         await executeTransfer(
@@ -427,10 +429,26 @@ export default function LocalFileBrowser({
       >,
     ) => {
       if (!pendingDrop) return;
-      const { files: dragFiles, destDirPath, mode } = pendingDrop;
+      const {
+        files: dragFiles,
+        destDirPath,
+        mode,
+        sourceHostId,
+        sourcePaneId,
+      } = pendingDrop;
       actions.setPasteConflicts(paneId, null);
       actions.setPendingDrop(paneId, null);
-      await executeTransfer(dragFiles, destDirPath, mode, overrides);
+      const isCrossProviderRemote = sourceHostId && sourceHostId !== "local";
+      const sourceProvider = isCrossProviderRemote
+        ? new RemoteFileProviderImpl(sourceHostId, sourcePaneId ?? sourceHostId)
+        : undefined;
+      await executeTransfer(
+        dragFiles,
+        destDirPath,
+        mode,
+        overrides,
+        sourceProvider,
+      );
     },
     [pendingDrop, executeTransfer, paneId],
   );
