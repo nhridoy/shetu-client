@@ -12,13 +12,13 @@ export default function KeyboardSettings({ onClose }: KeyboardSettingsProps) {
   const [shortcuts, setShortcuts] = useState(defaultShortcuts);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const shortcutsByCategory = shortcuts.reduce(
-    (acc, s) => {
-      (acc[s.category] ??= []).push(s);
-      return acc;
-    },
-    {} as Record<string, typeof shortcuts>,
-  );
+  const shortcutsByCategory = shortcuts.reduce<
+    Record<string, typeof shortcuts>
+  >((acc, s) => {
+    if (!acc[s.category]) acc[s.category] = [];
+    acc[s.category].push(s);
+    return acc;
+  }, {});
 
   const handleReset = () => {
     setShortcuts(defaultShortcuts);

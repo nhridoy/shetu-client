@@ -54,7 +54,9 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
   const filteredSnippets = snippets.filter(
     (s) =>
       s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      s.tags.some((tag) =>
+        tag.toLowerCase().includes(searchQuery.toLowerCase()),
+      ) ||
       (s.description || "").toLowerCase().includes(searchQuery.toLowerCase()),
   );
 

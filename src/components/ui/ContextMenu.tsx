@@ -98,9 +98,11 @@ export default function ContextMenu({
     >
       {items.map((item, index) => {
         if ("type" in item) {
+          const next = items[index + 1];
+          const sepKey = next && "label" in next ? next.label : "end";
           return (
             <div
-              key={`sep-${index}`}
+              key={`sep-${sepKey}`}
               className="my-1 border-t border-dark-600"
             />
           );

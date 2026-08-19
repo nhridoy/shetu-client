@@ -69,9 +69,7 @@ describe("snippetStore", () => {
     mockDecrypt.mockResolvedValue({
       command: "pnpm build && pnpm deploy",
     });
-    const snippet = await useSnippetStore
-      .getState()
-      .getDecryptedSnippet("s1");
+    const snippet = await useSnippetStore.getState().getDecryptedSnippet("s1");
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockDecrypt).toHaveBeenCalledWith("enc");
     expect(snippet?.command).toBe("pnpm build && pnpm deploy");
@@ -83,9 +81,7 @@ describe("snippetStore", () => {
     mockDecrypt.mockResolvedValue({
       command: "pnpm build && pnpm deploy",
     });
-    const snippet = await useSnippetStore
-      .getState()
-      .getDecryptedSnippet("s1");
+    const snippet = await useSnippetStore.getState().getDecryptedSnippet("s1");
     expect(mockGet).toHaveBeenCalledWith("snippets", "s1");
     expect(snippet?.command).toBe("pnpm build && pnpm deploy");
   });
@@ -110,7 +106,11 @@ describe("snippetStore", () => {
     });
     expect(mockUpsert).toHaveBeenCalledWith(
       "snippets",
-      expect.objectContaining({ name: "deploy", vault_id: "v1", tags: '["ci"]' }),
+      expect.objectContaining({
+        name: "deploy",
+        vault_id: "v1",
+        tags: '["ci"]',
+      }),
       {
         plaintext: JSON.stringify({ command: "pnpm build" }),
         recordType: "snippets",

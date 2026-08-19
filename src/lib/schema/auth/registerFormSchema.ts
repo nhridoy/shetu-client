@@ -35,8 +35,10 @@ export const registerFormSchema = z
 export type RegisterFormSchema = z.infer<typeof registerFormSchema>;
 
 export const requiredFields = Object.entries(registerFormSchema.shape).reduce(
-  (acc, [key, schema]) =>
-    !schema.safeParse(undefined).success ? [...acc, key] : acc,
+  (acc, [key, schema]) => {
+    if (!schema.safeParse(undefined).success) acc.push(key);
+    return acc;
+  },
   [] as string[],
 );
 

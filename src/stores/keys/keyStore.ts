@@ -220,8 +220,7 @@ export const useKeyStore = create<KeyState>((set, get) => ({
       }
       data = row.data;
     }
-    const payload = ((await decryptRowData(data)) ??
-      {}) as Partial<KeyPayload>;
+    const payload = ((await decryptRowData(data)) ?? {}) as Partial<KeyPayload>;
     return payload.privateKey ?? "";
   },
 

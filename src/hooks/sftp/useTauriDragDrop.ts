@@ -1,4 +1,4 @@
-import { type Event } from "@tauri-apps/api/event";
+import type { Event } from "@tauri-apps/api/event";
 import type { DragDropEvent } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useRef, useState } from "react";

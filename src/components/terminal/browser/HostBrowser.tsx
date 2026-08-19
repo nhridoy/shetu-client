@@ -97,7 +97,8 @@ export default function HostBrowser({
   }, []);
 
   const noExactHost = !hosts.some(
-    (h) => h.name.toLowerCase() === q || h.tags.some((t) => t.toLowerCase() === q),
+    (h) =>
+      h.name.toLowerCase() === q || h.tags.some((t) => t.toLowerCase() === q),
   );
 
   // Build a flat list of all selectable items for keyboard navigation

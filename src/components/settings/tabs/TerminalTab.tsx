@@ -37,8 +37,12 @@ export default function TerminalTab({
             />
           </div>
           <div className="flex items-end">
-            <label className="flex items-center gap-2 cursor-pointer">
+            <label
+              htmlFor="cursor-blink"
+              className="flex items-center gap-2 cursor-pointer"
+            >
               <Checkbox
+                id="cursor-blink"
                 checked={cursorBlink}
                 onCheckedChange={setCursorBlink}
               />
