@@ -742,7 +742,7 @@ function FilePreviewModal({
           const provider = await ensureProvider();
           const data = await provider.readFile(file.path);
           if (!cancelled) {
-            const blob = new Blob([data]);
+            const blob = new Blob([new Uint8Array(data)]);
             setImageUrl(URL.createObjectURL(blob));
             setLoading(false);
           }

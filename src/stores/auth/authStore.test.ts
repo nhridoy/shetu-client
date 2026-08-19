@@ -490,9 +490,7 @@ describe("authStore email verification", () => {
       dek_wrapped_by_recovery: "wrapped-dek",
       private_key_wrapped_by_dek: "wrapped-priv",
     });
-    vi.mocked(authApi.recovery).mockResolvedValue({
-      recovery_emitted: true,
-    });
+    vi.mocked(authApi.recovery).mockResolvedValue(undefined);
 
     await useAuthStore.getState().recovery("rc-code", "new-password");
 
@@ -526,9 +524,7 @@ describe("authStore email verification", () => {
       isAuthenticated: true,
     });
     vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
-    vi.mocked(authApi.passwordChange).mockResolvedValue({
-      password_changed: true,
-    });
+    vi.mocked(authApi.passwordChange).mockResolvedValue(undefined);
 
     await useAuthStore.getState().changePassword("old-pw", "new-pw");
 

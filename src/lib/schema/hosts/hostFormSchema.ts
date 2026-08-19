@@ -50,6 +50,7 @@ export const hostFormSchema = z
   );
 
 export type HostFormSchema = z.infer<typeof hostFormSchema>;
+export type HostFormValues = z.input<typeof hostFormSchema>;
 
 export const hostFormDefaultValues: HostFormSchema = {
   name: "",

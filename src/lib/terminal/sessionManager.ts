@@ -19,7 +19,7 @@ export interface SessionParams {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "password" | "key";
+  authType?: "password" | "key" | "both" | "none";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;
@@ -123,8 +123,7 @@ async function connectViaTauri(session: Session) {
       oldFingerprint: string;
       newFingerprint: string;
     }>("ssh-host-key-changed", async (event) => {
-      const { host, port, sessionId, oldFingerprint, newFingerprint } =
-        event.payload;
+      const { host, port, oldFingerprint, newFingerprint } = event.payload;
 
       const confirmed = await confirm(
         `SSH Host Key Changed!\n\n` +

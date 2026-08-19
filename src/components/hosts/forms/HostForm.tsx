@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
 import {
-  type HostFormSchema,
+  type HostFormValues,
   hostFormDefaultValues,
   hostFormSchema,
 } from "@/lib/schema/hosts/hostFormSchema";
@@ -49,7 +49,7 @@ export default function HostForm({
     fetchKeys(currentVaultId ?? undefined);
   }, [fetchKeys, currentVaultId]);
 
-  const { control, handleSubmit, watch, reset } = useForm<HostFormSchema>({
+  const { control, handleSubmit, watch, reset } = useForm<HostFormValues>({
     resolver: zodResolver(hostFormSchema),
     defaultValues: {
       name: host?.name || hostFormDefaultValues.name,
@@ -83,11 +83,11 @@ export default function HostForm({
     return host ? "Save Changes" : "Add Host";
   };
 
-  const handleHostSubmit = async (data: HostFormSchema) => {
+  const handleHostSubmit = async (data: HostFormValues) => {
     const hostData = {
       name: data.name,
       address: data.address,
-      port: data.port,
+      port: Number(data.port),
       username: data.username,
       authType: data.authType,
       keyId:
@@ -118,7 +118,7 @@ export default function HostForm({
     onClose();
   };
 
-  const onSubmit = async (data: HostFormSchema) => {
+  const onSubmit = async (data: HostFormValues) => {
     startTransition(async () => {
       await handleHostSubmit(data);
     });
@@ -169,22 +169,15 @@ export default function HostForm({
         required
       />
 
-      <div>
-        <label
-          id="auth-type-label"
-          className="block text-dark-300 text-sm mb-2"
-        >
+      <fieldset>
+        <legend className="block text-dark-300 text-sm mb-2">
           Authentication <span className="text-red-400 ml-0.5">*</span>
-        </label>
+        </legend>
         <Controller
           name="authType"
           control={control}
           render={({ field }) => (
-            <div
-              role="group"
-              aria-labelledby="auth-type-label"
-              className="grid grid-cols-4 gap-2"
-            >
+            <div className="grid grid-cols-4 gap-2">
               {(["password", "key", "both", "none"] as const).map((type) => (
                 <Button
                   key={type}
@@ -205,7 +198,7 @@ export default function HostForm({
             </div>
           )}
         />
-      </div>
+      </fieldset>
 
       {(authType === "password" || authType === "both") && (
         <FormInput
@@ -231,19 +224,13 @@ export default function HostForm({
         />
       )}
 
-      <div>
-        <label id="color-label" className="block text-dark-300 text-sm mb-2">
-          Color
-        </label>
+      <fieldset>
+        <legend className="block text-dark-300 text-sm mb-2">Color</legend>
         <Controller
           name="color"
           control={control}
           render={({ field }) => (
-            <div
-              role="group"
-              aria-labelledby="color-label"
-              className="flex gap-2"
-            >
+            <div className="flex gap-2">
               {colors.map((c) => (
                 <button
                   key={c}
@@ -260,7 +247,7 @@ export default function HostForm({
             </div>
           )}
         />
-      </div>
+      </fieldset>
 
       <FormInput
         name="tags"
