@@ -492,7 +492,7 @@ export function useFileOperations({
     const srcDirect = hostId.startsWith("direct_")
       ? { host: hostAddress, port: hostPort, username: hostUsername }
       : undefined;
-    useSftpStore.getState().setClipboard(hostId, paths, "copy", srcDirect);
+    useSftpStore.getState().setClipboard(paneId, paths, "copy", srcDirect);
     toast.info(`Copied ${paths.length} item${paths.length > 1 ? "s" : ""}`);
   }, [
     selectedFiles,
@@ -502,6 +502,7 @@ export function useFileOperations({
     hostAddress,
     hostPort,
     hostUsername,
+    paneId,
   ]);
 
   const handleCut = useCallback(() => {
@@ -513,7 +514,7 @@ export function useFileOperations({
     const srcDirect = hostId.startsWith("direct_")
       ? { host: hostAddress, port: hostPort, username: hostUsername }
       : undefined;
-    useSftpStore.getState().setClipboard(hostId, paths, "cut", srcDirect);
+    useSftpStore.getState().setClipboard(paneId, paths, "cut", srcDirect);
     toast.info(`Cut ${paths.length} item${paths.length > 1 ? "s" : ""}`);
   }, [
     selectedFiles,
@@ -523,6 +524,7 @@ export function useFileOperations({
     hostAddress,
     hostPort,
     hostUsername,
+    paneId,
   ]);
 
   const handlePaste = useCallback(async () => {
@@ -535,13 +537,13 @@ export function useFileOperations({
       const provider = await ensureProvider();
 
       // Determine source provider
-      const isLocalSource = clipboard.hostId === "local";
+      const isLocalSource = clipboard.sourceId === "local";
       let sourceProvider: FileProvider;
       if (isLocalSource) {
         sourceProvider = new LocalFileProvider("local");
       } else {
         // Remote source - get from registry or use current provider
-        const sourceFromRegistry = getProvider(clipboard.hostId);
+        const sourceFromRegistry = getProvider(clipboard.sourceId);
         sourceProvider = sourceFromRegistry ?? provider;
       }
 
@@ -687,12 +689,12 @@ export function useFileOperations({
         );
         const provider = await ensureProvider();
 
-        const isLocalSource = clipboard.hostId === "local";
+        const isLocalSource = clipboard.sourceId === "local";
         let sourceProvider: FileProvider;
         if (isLocalSource) {
           sourceProvider = new LocalFileProvider("local");
         } else {
-          const sourceFromRegistry = getProvider(clipboard.hostId);
+          const sourceFromRegistry = getProvider(clipboard.sourceId);
           sourceProvider = sourceFromRegistry ?? provider;
         }
 

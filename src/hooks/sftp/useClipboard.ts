@@ -51,13 +51,13 @@ export function useClipboard({
 
     try {
       // Determine source provider
-      const isLocalSource = clipboard.hostId === "local";
+      const isLocalSource = clipboard.sourceId === "local";
       let sourceProvider: FileProvider;
       if (isLocalSource) {
         sourceProvider = new LocalFileProvider("local");
       } else {
         // Remote source - get from registry
-        const sourceFromRegistry = getProvider(clipboard.hostId);
+        const sourceFromRegistry = getProvider(clipboard.sourceId);
         if (!sourceFromRegistry) {
           toast.error("Source session not found. Please reconnect.");
           return;

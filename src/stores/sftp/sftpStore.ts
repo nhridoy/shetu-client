@@ -171,7 +171,7 @@ interface SftpState {
   transferScanning: boolean;
   clipboard: {
     paths: string[];
-    hostId: string;
+    sourceId: string;
     sourceDirect?: { host?: string; port?: number; username?: string };
   } | null;
   clipboardMode: "copy" | "cut" | null;
@@ -208,7 +208,7 @@ interface SftpState {
   removeTransfer: (id: string) => void;
   clearCompletedTransfers: () => void;
   setClipboard: (
-    hostId: string,
+    sourceId: string,
     paths: string[],
     mode: "copy" | "cut",
     sourceDirect?: { host?: string; port?: number; username?: string },
@@ -444,8 +444,8 @@ export const useSftpStore = create<SftpState>((set, get) => ({
     set((s) => ({
       transfers: s.transfers.filter((t) => t.status !== "complete"),
     })),
-  setClipboard: (hostId, paths, mode, sourceDirect) =>
-    set({ clipboard: { paths, hostId, sourceDirect }, clipboardMode: mode }),
+  setClipboard: (sourceId, paths, mode, sourceDirect) =>
+    set({ clipboard: { paths, sourceId, sourceDirect }, clipboardMode: mode }),
   clearClipboard: () => set({ clipboard: null, clipboardMode: null }),
   requestRefresh: (paneId) =>
     set((s) => ({
