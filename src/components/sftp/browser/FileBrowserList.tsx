@@ -43,6 +43,7 @@ export interface FileBrowserActions {
   handleNewFile: () => void;
   handleDownload: (file: FileItem) => void;
   onPermissions?: (file: FileItem) => void;
+  onOpenInEditor?: (file: FileItem | null) => void;
 }
 
 interface FileBrowserListProps {
@@ -134,6 +135,7 @@ export default function FileBrowserList({
         onNewFile: actions.handleNewFile,
         onNewFolder: actions.handleNewFolder,
         onPermissions: actions.onPermissions,
+        onOpenInEditor: actions.onOpenInEditor,
       },
       (path, name) => {
         setRenamingPath(path);

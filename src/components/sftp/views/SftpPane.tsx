@@ -1,6 +1,7 @@
 import { useDraggable } from "@dnd-kit/react";
 import { DesktopTowerIcon, FolderIcon } from "@phosphor-icons/react";
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { DropZone } from "@/components/common/DropZone";
 import FileBrowser from "@/components/sftp/browser/FileBrowser";
@@ -12,9 +13,14 @@ import PaneHeader from "@/components/ui/PaneHeader";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { extractError } from "@/lib/common/extractError";
 import { type DropSide, previewStyle } from "@/lib/common/paneLayout";
+import { ensureRemoteSession } from "@/lib/editor/editorProvider";
+import { parentPath } from "@/lib/sftp/fileTransfer";
 import { openDirectoryPicker } from "@/lib/sftp/localFs";
+import { useEditorStore } from "@/stores/editor/editorStore";
 import type { Host } from "@/stores/hosts/hostStore";
+import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { type SftpLeafNode, useSftpStore } from "@/stores/sftp/sftpStore";
+import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface SftpPaneProps {
   pane: SftpLeafNode;
@@ -44,6 +50,56 @@ export default function SftpPane({
   const setActivePane = useSftpStore((s) => s.setActivePane);
   const connectLocal = useSftpStore((s) => s.connectLocal);
   const [showHostPicker, setShowHostPicker] = useState(false);
+  const navigate = useNavigate();
+
+  const handleOpenInEditor = async (file: FileItem | null) => {
+    const currentPath =
+      useFileBrowserStore.getState().panes[pane.id]?.currentPath ?? "/";
+    let rootPath: string;
+    let fileToOpen: { path: string; name: string } | undefined;
+    if (file) {
+      if (file.type === "directory") {
+        rootPath = file.path;
+      } else {
+        rootPath = parentPath(file.path);
+        fileToOpen = { path: file.path, name: file.name };
+      }
+    } else {
+      rootPath = currentPath;
+    }
+    try {
+      if (pane.connectionType === "host" && pane.hostId) {
+        await ensureRemoteSession({
+          connectionType: "host",
+          hostId: pane.hostId,
+          hostAddress: pane.hostAddress,
+          hostPort: pane.hostPort,
+          hostUsername: pane.hostUsername,
+          sessionId: pane.id,
+        });
+        useEditorStore.getState().connectRemote({
+          hostId: pane.hostId,
+          hostName: pane.hostName,
+          hostAddress: pane.hostAddress,
+          hostPort: pane.hostPort,
+          hostUsername: pane.hostUsername,
+          sessionId: pane.id,
+          rootPath,
+          fileToOpen,
+        });
+      } else if (pane.connectionType === "local" && pane.localPath) {
+        useEditorStore
+          .getState()
+          .connectLocal(
+            rootPath.startsWith(pane.localPath) ? rootPath : pane.localPath,
+            fileToOpen,
+          );
+      }
+      navigate("/editor");
+    } catch (err) {
+      toast.error(extractError(err, "Failed to open in editor"));
+    }
+  };
 
   const { ref, isDragging } = useDraggable({
     id: `sftp-pane:${pane.id}`,
@@ -95,9 +151,14 @@ export default function SftpPane({
             hostPort={pane.hostPort}
             hostUsername={pane.hostUsername}
             onFileSelect={() => {}}
+            onOpenInEditor={handleOpenInEditor}
           />
         ) : pane.connectionType === "local" ? (
-          <LocalFileBrowser paneId={pane.id} rootPath={pane.localPath || "/"} />
+          <LocalFileBrowser
+            paneId={pane.id}
+            rootPath={pane.localPath || "/"}
+            onOpenInEditor={handleOpenInEditor}
+          />
         ) : (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">

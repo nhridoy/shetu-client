@@ -38,6 +38,7 @@ interface FileBrowserProps {
   hostPort?: number;
   hostUsername?: string;
   onFileSelect?: (file: FileItem) => void;
+  onOpenInEditor?: (file: FileItem | null) => void;
 }
 
 export default function FileBrowser({
@@ -47,6 +48,7 @@ export default function FileBrowser({
   hostPort,
   hostUsername,
   onFileSelect,
+  onOpenInEditor,
 }: FileBrowserProps) {
   // ── Store ────────────────────────────────────────────────────────────────
   const paneState = useFileBrowserStore((s) => s.panes[paneId]);
@@ -419,6 +421,7 @@ export default function FileBrowser({
     handleNewFile: ops.handleNewFile,
     handleDownload: ops.handleDownload,
     onPermissions: ops.handlePermissions,
+    onOpenInEditor,
     onPreview: (file: FileItem) => setPreviewFile(file),
   };
 

@@ -48,6 +48,7 @@ import type { FileItem } from "@/types/sftp/sftpTypes";
 interface LocalFileBrowserProps {
   paneId: string;
   rootPath: string;
+  onOpenInEditor?: (file: FileItem | null) => void;
 }
 
 const localProvider = new LocalFileProvider("local");
@@ -63,6 +64,7 @@ const LOCAL_COLUMNS: ColumnDef[] = [
 export default function LocalFileBrowser({
   paneId,
   rootPath,
+  onOpenInEditor,
 }: LocalFileBrowserProps) {
   // ── Store ────────────────────────────────────────────────────────────────
   const paneState = useFileBrowserStore((s) => s.panes[paneId]);
@@ -603,6 +605,14 @@ export default function LocalFileBrowser({
                 }
               },
             },
+            ...(onOpenInEditor
+              ? [
+                  {
+                    label: "Open in Editor",
+                    onClick: () => onOpenInEditor(contextMenu.file ?? null),
+                  },
+                ]
+              : []),
             {
               label: "Show in Explorer",
               onClick: async () => {
@@ -631,6 +641,14 @@ export default function LocalFileBrowser({
           },
           onRename: fileOps.startRename,
           afterItems: [
+            ...(onOpenInEditor
+              ? [
+                  {
+                    label: "Open in Editor",
+                    onClick: () => onOpenInEditor(null),
+                  },
+                ]
+              : []),
             { type: "separator" as const },
             {
               label: "Refresh",

@@ -100,7 +100,10 @@ interface EditorState {
   fileContent: Record<string, string>;
   fileDirty: Record<string, boolean>;
 
-  connectLocal: (localPath: string) => void;
+  connectLocal: (
+    localPath: string,
+    fileToOpen?: { path: string; name: string },
+  ) => void;
   connectRemote: (payload: {
     hostId: string;
     hostName?: string;
@@ -251,8 +254,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   statusVersion: 0,
   ...loadSidebarPrefs(),
 
-  connectLocal: (localPath) =>
-    set({ connectionType: "local", localPath, ...resetViews() }),
+  connectLocal: (localPath, fileToOpen) => {
+    set({ connectionType: "local", localPath, ...resetViews() });
+    if (fileToOpen) {
+      get().openFile(fileToOpen.path, fileToOpen.name, false);
+    }
+  },
 
   connectRemote: ({
     hostId,

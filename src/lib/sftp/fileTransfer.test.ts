@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FileItem } from "@/types/sftp/sftpTypes";
-import { resolveTransferPaths } from "./fileTransfer";
+import { parentPath, resolveTransferPaths } from "./fileTransfer";
 
 const mkdir = (name: string, path: string): FileItem => ({
   name,
@@ -218,5 +218,22 @@ describe("resolveTransferPaths", () => {
 
     expect(resolved[2].relativePath).toBe("docs");
     expect(resolved[0].destFilePath).toBe("/dest/docs/a.txt");
+  });
+});
+
+describe("parentPath", () => {
+  it("returns the parent directory for posix paths", () => {
+    expect(parentPath("/work/src/a.ts")).toBe("/work/src");
+    expect(parentPath("/work/a.ts")).toBe("/work");
+    expect(parentPath("/a.txt")).toBe("/");
+  });
+
+  it("returns the parent directory for windows paths", () => {
+    expect(parentPath("C:\\work\\src\\a.ts")).toBe("C:\\work\\src");
+    expect(parentPath("C:\\a.txt")).toBe("C:\\");
+  });
+
+  it("returns root for a bare root path", () => {
+    expect(parentPath("/")).toBe("/");
   });
 });

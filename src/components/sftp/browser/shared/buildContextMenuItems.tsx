@@ -1,5 +1,6 @@
 import {
   ArrowDownIcon,
+  CodeIcon,
   CopyIcon,
   FolderOpenIcon,
   LockIcon,
@@ -16,6 +17,7 @@ interface FileBrowserActions extends BaseContextMenuActions {
   handleDoubleClick: (file: FileItem) => void;
   handleDownload: (file: FileItem) => void;
   onPermissions?: (file: FileItem) => void;
+  onOpenInEditor?: (file: FileItem | null) => void;
 }
 
 export function buildContextMenuItems(
@@ -27,6 +29,19 @@ export function buildContextMenuItems(
 ): ContextMenuItem[] {
   const beforeItems: ContextMenuItem[] = [];
   const afterItems: ContextMenuItem[] = [];
+
+  if (actions.onOpenInEditor) {
+    const openInEditor: ContextMenuItem = {
+      label: "Open in Editor",
+      icon: <CodeIcon className="w-4 h-4" />,
+      onClick: () => actions.onOpenInEditor?.(menuFile),
+    };
+    if (menuFile) {
+      beforeItems.push(openInEditor);
+    } else {
+      afterItems.push(openInEditor);
+    }
+  }
 
   if (menuFile) {
     if (menuFile.type === "directory") {

@@ -124,6 +124,20 @@ export function getSeparator(path: string): string {
   return path.includes("\\") ? "\\" : "/";
 }
 
+export function parentPath(path: string): string {
+  const sep = getSeparator(path);
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const idx = trimmed.lastIndexOf(sep);
+  if (idx < 0) {
+    if (path.startsWith("/")) return "/";
+    const drive = trimmed.match(/^[A-Za-z]:$/);
+    return drive ? `${trimmed}${sep}` : "";
+  }
+  const parent = trimmed.slice(0, idx);
+  if (parent === "" || parent.endsWith(":")) return parent + sep;
+  return parent;
+}
+
 export function joinPath(...parts: string[]): string {
   if (parts.length === 0) return "";
   const sep = getSeparator(parts.find((p) => p.includes("\\")) ?? parts[0]);
