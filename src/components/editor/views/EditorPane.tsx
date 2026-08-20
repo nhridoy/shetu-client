@@ -1,20 +1,12 @@
-import {
-  CodeIcon,
-  DesktopTowerIcon,
-  FolderIcon,
-  MagnifyingGlassIcon,
-  SidebarSimpleIcon,
-} from "@phosphor-icons/react";
-import { useCallback, useRef, useState } from "react";
+import { CodeIcon, FolderIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
+import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import ActivityBar from "@/components/editor/panels/ActivityBar";
 import EditorExplorer from "@/components/editor/panels/EditorExplorer";
 import EditorSearch from "@/components/editor/panels/EditorSearch";
 import SourceControlPanel from "@/components/editor/panels/SourceControlPanel";
 import EditorViewTree from "@/components/editor/views/EditorViewTree";
-import SftpHostPicker from "@/components/sftp/picker/SftpHostPicker";
 import { Button } from "@/components/ui/Button";
-import Modal from "@/components/ui/Modal";
 import PaneHeader from "@/components/ui/PaneHeader";
 import { extractError } from "@/lib/common/extractError";
 import { openDirectoryPicker } from "@/lib/sftp/localFs";
@@ -23,7 +15,6 @@ import {
   type SidebarTool,
   useEditorStore,
 } from "@/stores/editor/editorStore";
-import type { Host } from "@/stores/hosts/hostStore";
 
 const COLLAPSE_THRESHOLD = 48;
 
@@ -108,15 +99,14 @@ export default function EditorPane() {
   const hostName = useEditorStore((s) => s.hostName);
   const hostAddress = useEditorStore((s) => s.hostAddress);
   const localPath = useEditorStore((s) => s.localPath);
+  const explorerRootPath = useEditorStore((s) => s.explorerRootPath);
   const connectLocal = useEditorStore((s) => s.connectLocal);
-  const connectHost = useEditorStore((s) => s.connectHost);
   const disconnect = useEditorStore((s) => s.disconnect);
   const sidebarWidth = useEditorStore((s) => s.sidebarWidth);
   const sidebarVisible = useEditorStore((s) => s.sidebarVisible);
   const sidebarTool = useEditorStore((s) => s.sidebarTool);
   const setSidebarVisible = useEditorStore((s) => s.setSidebarVisible);
   const setSidebarTool = useEditorStore((s) => s.setSidebarTool);
-  const [showHostPicker, setShowHostPicker] = useState(false);
 
   const isHost = connectionType === "host";
   const displayName = isHost
@@ -124,10 +114,6 @@ export default function EditorPane() {
     : connectionType === "local"
       ? localPath || "Local"
       : "Editor";
-
-  const handleConnectHost = (host: Host) => {
-    connectHost(host.id, host.name, host.address, host.port, host.username);
-  };
 
   const handleConnectLocal = async () => {
     try {
@@ -206,33 +192,20 @@ export default function EditorPane() {
           </div>
         ) : connectionType === "host" ? (
           <div className="flex h-full min-h-0 min-w-0">
-            <ActivityBar active={sidebarTool} onSelect={handleToolSelect} />
+            <ActivityBar
+              active={sidebarTool}
+              onSelect={handleToolSelect}
+              hiddenTools={["source-control"]}
+            />
             {sidebarVisible && (
               <div
                 style={{ width: sidebarWidth }}
                 className="h-full shrink-0 min-w-0"
               >
                 {sidebarTool === "search" ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-dark-900 border-r border-dark-800 px-4 text-center">
-                    <MagnifyingGlassIcon
-                      className="w-8 h-8 mb-2 text-dark-600"
-                      weight="bold"
-                    />
-                    <p className="text-xs text-dark-400">
-                      Search arrives with the SFTP transport phase
-                    </p>
-                  </div>
-                ) : sidebarTool === "source-control" ? (
-                  <SourceControlPanel />
+                  <EditorSearch />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-dark-900 border-r border-dark-800 px-4 text-center">
-                    <div>
-                      <DesktopTowerIcon className="w-8 h-8 mx-auto mb-2 text-dark-600" />
-                      <p className="text-xs text-dark-400">
-                        Remote explorer arrives with the SFTP transport phase
-                      </p>
-                    </div>
-                  </div>
+                  <EditorExplorer rootPath={explorerRootPath ?? ""} />
                 )}
               </div>
             )}
@@ -244,13 +217,9 @@ export default function EditorPane() {
             <div className="text-center">
               <CodeIcon className="w-12 h-12 mx-auto mb-3 text-dark-600" />
               <p className="text-sm text-dark-400 mb-3">
-                Connect to a host or local folder to start editing code
+                Open a local folder to start editing code
               </p>
               <div className="flex items-center justify-center gap-2">
-                <Button size="sm" onClick={() => setShowHostPicker(true)}>
-                  <DesktopTowerIcon className="w-3.5 h-3.5" />
-                  Connect Host
-                </Button>
                 <Button
                   variant="secondary"
                   size="sm"
@@ -264,18 +233,6 @@ export default function EditorPane() {
           </div>
         )}
       </div>
-
-      <Modal
-        open={showHostPicker}
-        onClose={() => setShowHostPicker(false)}
-        title="Connect Host"
-        maxWidth="max-w-lg"
-      >
-        <SftpHostPicker
-          onConnect={handleConnectHost}
-          onClose={() => setShowHostPicker(false)}
-        />
-      </Modal>
     </section>
   );
 }

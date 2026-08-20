@@ -111,13 +111,6 @@ interface EditorState {
     rootPath: string;
     fileToOpen?: { path: string; name: string };
   }) => void;
-  connectHost: (
-    hostId: string,
-    hostName: string,
-    hostAddress?: string,
-    hostPort?: number,
-    hostUsername?: string,
-  ) => void;
   disconnect: () => void;
   reconnect: () => Promise<boolean>;
 
@@ -286,17 +279,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       get().openFile(fileToOpen.path, fileToOpen.name, false);
     }
   },
-
-  connectHost: (hostId, hostName, hostAddress, hostPort, hostUsername) =>
-    set({
-      connectionType: "host",
-      hostId,
-      hostName,
-      hostAddress,
-      hostPort,
-      hostUsername,
-      ...resetViews(),
-    }),
 
   disconnect: () => set({ connectionType: null, ...resetViews() }),
 
