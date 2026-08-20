@@ -322,7 +322,7 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
   // Initialize root when the pane connects (kept in store so the tree
   // survives unmount when navigating between modules)
   useEffect(() => {
-    if (explorerRootPath === rootPath) return;
+    if (explorerRootPath === rootPath && dirs[rootPath] !== undefined) return;
     resetTree();
     patchDir(rootPath, { children: null, expanded: true, error: null });
     loadDir(rootPath);
@@ -330,6 +330,7 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
   }, [
     rootPath,
     explorerRootPath,
+    dirs,
     resetTree,
     patchDir,
     loadDir,
