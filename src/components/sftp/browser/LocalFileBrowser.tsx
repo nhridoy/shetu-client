@@ -72,6 +72,14 @@ export default function LocalFileBrowser({
   // Initialize pane on first render
   const initialized = useRef(false);
   if (!initialized.current) {
+    // A local connection always starts at its root. The pane state may be
+    // stale from a previous remote/local connection (disconnect keeps the
+    // old path), so reset it before effects read currentPath — otherwise a
+    // stale listing races the mount-time navigation to rootPath.
+    const existing = useFileBrowserStore.getState().panes[paneId];
+    if (existing) {
+      fileBrowserActions.resetPane(paneId, rootPath);
+    }
     getOrCreatePane(paneId, rootPath);
     initialized.current = true;
   }

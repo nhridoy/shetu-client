@@ -126,6 +126,10 @@ export const fileBrowserActions = {
     update(paneId, { isLoading: true, error: null });
     try {
       const files = await provider(path);
+      // Discard stale results: if the pane navigated to a different path
+      // while this listing was in flight, committing would clobber the
+      // newer location (e.g. mount-time navigation racing an old listing).
+      if (pane(paneId)?.currentPath !== path) return;
       update(paneId, {
         files,
         currentPath: path,
@@ -133,6 +137,7 @@ export const fileBrowserActions = {
         initialized: true,
       });
     } catch (err: unknown) {
+      if (pane(paneId)?.currentPath !== path) return;
       const message =
         err instanceof Error ? err.message : "Failed to load directory";
       update(paneId, {
