@@ -10,20 +10,15 @@ import {
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { buildExplorerMenuItems } from "@/components/editor/panels/explorerMenu";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import ContextMenu, { type ContextMenuItem } from "@/components/ui/ContextMenu";
 import PromptDialog from "@/components/ui/PromptDialog";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { extractError } from "@/lib/common/extractError";
 import { isTauriAvailable } from "@/lib/common/utils";
+import { getEditorProvider } from "@/lib/editor/editorProvider";
 import { getFileIcon } from "@/lib/sftp/fileHelpers";
-import {
-  createLocalDir,
-  listLocalFiles,
-  removeLocalFile,
-  renameLocalFile,
-  writeLocalFile,
-} from "@/lib/sftp/localFs";
 import {
   type EditorDirState,
   useActiveViewId,
@@ -272,6 +267,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
     (s) => s.setExplorerSelectedPath,
   );
   const setExplorerRootPath = useEditorStore((s) => s.setExplorerRootPath);
+  const connectionType = useEditorStore((s) => s.connectionType);
+  const isRemote = connectionType === "host";
 
   const [renaming, setRenaming] = useState<RenameState | null>(null);
   const [menu, setMenu] = useState<{
@@ -295,7 +292,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
     async (path: string) => {
       patchDir(path, { children: null, error: null });
       try {
-        const items = await listLocalFiles(path);
+        const provider = getEditorProvider(useEditorStore.getState());
+        const items = await provider.listFiles(path);
         const sorted = [...items].sort((a, b) => {
           if (a.type !== b.type) {
             return a.type === "directory" ? -1 : 1;
@@ -452,7 +450,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
       );
       const newPath = joinPath(parent, newName);
       try {
-        await renameLocalFile(oldPath, newPath);
+        const provider = getEditorProvider(useEditorStore.getState());
+        await provider.moveFile(oldPath, newPath);
         setRenaming(null);
         const wasActive =
           useEditorStore.getState().activeFile[activeViewId] === oldPath;
@@ -490,7 +489,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
         return;
       }
       try {
-        await writeLocalFile(path, "");
+        const provider = getEditorProvider(useEditorStore.getState());
+        await provider.writeFile(path, new Uint8Array(0));
         openFile(path, name, false);
         loadDir(parent);
       } catch (err) {
@@ -510,7 +510,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
         return;
       }
       try {
-        await createLocalDir(path);
+        const provider = getEditorProvider(useEditorStore.getState());
+        await provider.mkdir(path);
         loadDir(parent);
       } catch (err) {
         toast.error(extractError(err, "Failed to create folder"));
@@ -522,7 +523,8 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
   const confirmDelete = useCallback(async () => {
     if (!deletePath) return;
     try {
-      await removeLocalFile(deletePath);
+      const provider = getEditorProvider(useEditorStore.getState());
+      await provider.removeFile(deletePath);
       useEditorStore.getState().closeFileEverywhere(deletePath);
       if (selectedPath === deletePath) setExplorerSelectedPath(null);
       setDeletePath(null);
@@ -600,66 +602,28 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
         )
       : rootPath;
 
-    const items: ContextMenuItem[] = [];
-    if (file && !isDir) {
-      items.push(
-        {
-          label: "Open",
-          onClick: () => openFile(file.path, file.name, false),
-        },
-        {
-          label: "Open with Default App",
-          onClick: () => openInSystem(file.path),
-        },
-        { type: "separator" },
-      );
-    }
-    items.push(
-      {
-        label: "New File",
-        onClick: () => setNewFileParent(isDir && file ? file.path : parent),
+    return buildExplorerMenuItems({
+      file,
+      isDir,
+      parent,
+      rootPath,
+      isRemote,
+      handlers: {
+        openFile,
+        openInSystem,
+        setNewFileParent,
+        setNewFolderParent,
+        startRename,
+        setDeletePath,
+        revealInExplorer,
+        copyPath,
+        refreshDir,
       },
-      {
-        label: "New Folder",
-        onClick: () => setNewFolderParent(isDir && file ? file.path : parent),
-      },
-    );
-    if (file) {
-      items.push(
-        { type: "separator" },
-        {
-          label: "Rename",
-          shortcut: "F2",
-          onClick: () => startRename(file),
-        },
-        {
-          label: "Delete",
-          shortcut: "Del",
-          danger: true,
-          onClick: () => setDeletePath(file.path),
-        },
-        { type: "separator" },
-        {
-          label: "Reveal in Explorer",
-          onClick: () => revealInExplorer(file.path),
-        },
-        {
-          label: "Copy Path",
-          onClick: () => copyPath(file.path),
-        },
-      );
-    }
-    items.push(
-      { type: "separator" },
-      {
-        label: "Refresh",
-        onClick: () => refreshDir(file ? parent : rootPath),
-      },
-    );
-    return items;
+    });
   }, [
     menu,
     rootPath,
+    isRemote,
     openFile,
     startRename,
     revealInExplorer,
