@@ -9,6 +9,7 @@ import {
   sideToDirection,
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
+import { ensureRemoteSession } from "@/lib/editor/editorProvider";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export const ROOT_VIEW_ID = "editor-view-root";
@@ -88,6 +89,7 @@ interface EditorState {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
+  sessionId?: string;
   localPath?: string;
 
   viewTrees: EditorViewNode | null;
@@ -95,8 +97,20 @@ interface EditorState {
   openFiles: Record<string, EditorOpenFile[]>;
   activeFile: Record<string, string | null>;
   previewFile: Record<string, string | null>;
+  fileContent: Record<string, string>;
+  fileDirty: Record<string, boolean>;
 
   connectLocal: (localPath: string) => void;
+  connectRemote: (payload: {
+    hostId: string;
+    hostName?: string;
+    hostAddress?: string;
+    hostPort?: number;
+    hostUsername?: string;
+    sessionId: string;
+    rootPath: string;
+    fileToOpen?: { path: string; name: string };
+  }) => void;
   connectHost: (
     hostId: string,
     hostName: string,
@@ -105,6 +119,10 @@ interface EditorState {
     hostUsername?: string,
   ) => void;
   disconnect: () => void;
+  reconnect: () => Promise<boolean>;
+
+  setFileContent: (path: string, value: string) => void;
+  setFileDirty: (path: string, dirty: boolean) => void;
 
   openFile: (
     path: string,
@@ -203,6 +221,8 @@ function resetViews() {
     openFiles: {} as Record<string, EditorOpenFile[]>,
     activeFile: {} as Record<string, string | null>,
     previewFile: {} as Record<string, string | null>,
+    fileContent: {} as Record<string, string>,
+    fileDirty: {} as Record<string, boolean>,
     explorerDirs: {} as Record<string, EditorDirState>,
     explorerSelectedPath: null as string | null,
     explorerRootPath: null as string | null,
@@ -215,6 +235,12 @@ function resetViews() {
   };
 }
 
+export function hasDirtyFiles(state: {
+  fileDirty: Record<string, boolean>;
+}): boolean {
+  return Object.values(state.fileDirty).some(Boolean);
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   connectionType: null,
   viewTrees: null,
@@ -222,6 +248,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   openFiles: {},
   activeFile: {},
   previewFile: {},
+  fileContent: {},
+  fileDirty: {},
   explorerDirs: {},
   explorerSelectedPath: null,
   explorerRootPath: null,
@@ -232,6 +260,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   connectLocal: (localPath) =>
     set({ connectionType: "local", localPath, ...resetViews() }),
+
+  connectRemote: ({
+    hostId,
+    hostName,
+    hostAddress,
+    hostPort,
+    hostUsername,
+    sessionId,
+    rootPath,
+    fileToOpen,
+  }) => {
+    set({
+      connectionType: "host",
+      ...resetViews(),
+      hostId,
+      hostName,
+      hostAddress,
+      hostPort,
+      hostUsername,
+      sessionId,
+      explorerRootPath: rootPath,
+    });
+    if (fileToOpen) {
+      get().openFile(fileToOpen.path, fileToOpen.name, false);
+    }
+  },
 
   connectHost: (hostId, hostName, hostAddress, hostPort, hostUsername) =>
     set({
@@ -245,6 +299,25 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
 
   disconnect: () => set({ connectionType: null, ...resetViews() }),
+
+  reconnect: async () => {
+    const state = get();
+    if (state.connectionType !== "host" || !state.hostId || !state.sessionId) {
+      return false;
+    }
+    try {
+      await ensureRemoteSession(state);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  setFileContent: (path, value) =>
+    set({ fileContent: { ...get().fileContent, [path]: value } }),
+
+  setFileDirty: (path, dirty) =>
+    set({ fileDirty: { ...get().fileDirty, [path]: dirty } }),
 
   openFile: (path, name, isPreview = false, kind) => {
     const viewId = activeViewIdFor(get().viewTrees, get().activeView);
