@@ -32,13 +32,22 @@ type Override = {
 };
 
 describe("resolveTransferPaths", () => {
+  // Real expansion order in transferFiles: children are listed before the
+  // directory entry itself is pushed. Tests must mirror that (children first).
+  const folderWithChildren = (name: string, root: string) => [
+    {
+      file: mkfile("a.txt", `${root}/${name}/a.txt`),
+      relativePath: `${name}/a.txt`,
+    },
+    {
+      file: mkfile("b.txt", `${root}/${name}/b.txt`),
+      relativePath: `${name}/b.txt`,
+    },
+    { file: mkdir(name, `${root}/${name}`), relativePath: name },
+  ];
+
   it("auto-renames a conflicting folder and remaps all children", () => {
-    const docs = mkdir("docs", "/src/docs");
-    const items = [
-      { file: docs, relativePath: "docs" },
-      { file: mkfile("a.txt", "/src/docs/a.txt"), relativePath: "docs/a.txt" },
-      { file: mkfile("b.txt", "/src/docs/b.txt"), relativePath: "docs/b.txt" },
-    ];
+    const items = folderWithChildren("docs", "/src");
     const overrides = new Map<string, Override>([
       ["/src/docs", { action: "auto" }],
     ]);
@@ -52,9 +61,9 @@ describe("resolveTransferPaths", () => {
     );
 
     expect(resolved.map((r) => r.relativePath)).toEqual([
-      "docs (copy)",
       "docs (copy)/a.txt",
       "docs (copy)/b.txt",
+      "docs (copy)",
     ]);
     expect(
       resolved.find((r) => r.file.path === "/src/docs/a.txt")?.destFilePath,
@@ -62,10 +71,7 @@ describe("resolveTransferPaths", () => {
   });
 
   it("renames a folder to the user-provided name and remaps children", () => {
-    const items = [
-      { file: mkdir("docs", "/src/docs"), relativePath: "docs" },
-      { file: mkfile("a.txt", "/src/docs/a.txt"), relativePath: "docs/a.txt" },
-    ];
+    const items = folderWithChildren("docs", "/src");
     const overrides = new Map<string, Override>([
       ["/src/docs", { action: "rename", newName: "docs-v2" }],
     ]);
@@ -79,15 +85,36 @@ describe("resolveTransferPaths", () => {
     );
 
     expect(resolved.map((r) => r.relativePath)).toEqual([
-      "docs-v2",
       "docs-v2/a.txt",
+      "docs-v2/b.txt",
+      "docs-v2",
+    ]);
+  });
+
+  it("replaces (keeps name, merges) a conflicting folder", () => {
+    const items = folderWithChildren("docs", "/src");
+    const overrides = new Map<string, Override>([
+      ["/src/docs", { action: "replace" }],
+    ]);
+
+    const resolved = resolveTransferPaths(
+      items,
+      "/dest",
+      "copy",
+      overrides,
+      new Set(["docs"]),
+    );
+
+    expect(resolved.map((r) => r.relativePath)).toEqual([
+      "docs/a.txt",
+      "docs/b.txt",
+      "docs",
     ]);
   });
 
   it("skips a conflicting folder and all of its children", () => {
     const items = [
-      { file: mkdir("docs", "/src/docs"), relativePath: "docs" },
-      { file: mkfile("a.txt", "/src/docs/a.txt"), relativePath: "docs/a.txt" },
+      ...folderWithChildren("docs", "/src"),
       { file: mkfile("top.txt", "/src/top.txt"), relativePath: "top.txt" },
     ];
     const overrides = new Map<string, Override>([
@@ -104,8 +131,9 @@ describe("resolveTransferPaths", () => {
 
     expect(resolved[0].skip).toBe(true);
     expect(resolved[1].skip).toBe(true);
-    expect(resolved[2].skip).toBe(false);
-    expect(resolved[2].destFilePath).toBe("/dest/top.txt");
+    expect(resolved[2].skip).toBe(true);
+    expect(resolved[3].skip).toBe(false);
+    expect(resolved[3].destFilePath).toBe("/dest/top.txt");
   });
 
   it("auto-renames a conflicting root file on copy (no override)", () => {
@@ -163,10 +191,7 @@ describe("resolveTransferPaths", () => {
   });
 
   it("keeps folder name on move into existing folder (merge semantics)", () => {
-    const items = [
-      { file: mkdir("docs", "/src/docs"), relativePath: "docs" },
-      { file: mkfile("a.txt", "/src/docs/a.txt"), relativePath: "docs/a.txt" },
-    ];
+    const items = folderWithChildren("docs", "/src");
 
     const resolved = resolveTransferPaths(
       items,
@@ -176,15 +201,12 @@ describe("resolveTransferPaths", () => {
       new Set(["docs"]),
     );
 
-    expect(resolved[0].relativePath).toBe("docs");
-    expect(resolved[1].destFilePath).toBe("/dest/docs/a.txt");
+    expect(resolved[2].relativePath).toBe("docs");
+    expect(resolved[0].destFilePath).toBe("/dest/docs/a.txt");
   });
 
   it("leaves subdirectory files untouched when no root conflict exists", () => {
-    const items = [
-      { file: mkdir("docs", "/src/docs"), relativePath: "docs" },
-      { file: mkfile("a.txt", "/src/docs/a.txt"), relativePath: "docs/a.txt" },
-    ];
+    const items = folderWithChildren("docs", "/src");
 
     const resolved = resolveTransferPaths(
       items,
@@ -194,7 +216,7 @@ describe("resolveTransferPaths", () => {
       new Set(["unrelated.txt"]),
     );
 
-    expect(resolved[0].relativePath).toBe("docs");
-    expect(resolved[1].destFilePath).toBe("/dest/docs/a.txt");
+    expect(resolved[2].relativePath).toBe("docs");
+    expect(resolved[0].destFilePath).toBe("/dest/docs/a.txt");
   });
 });

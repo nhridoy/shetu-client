@@ -1,12 +1,5 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
-import {
-  copyFile as fsCopyFile,
-  readDir,
-  readFile,
-  rename,
-  stat,
-  writeFile,
-} from "@tauri-apps/plugin-fs";
+import { readDir, readFile, stat, writeFile } from "@tauri-apps/plugin-fs";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export async function listLocalFiles(dirPath: string): Promise<FileItem[]> {
@@ -147,21 +140,24 @@ export async function renameLocalFile(
   oldPath: string,
   newPath: string,
 ): Promise<void> {
-  await rename(oldPath, newPath);
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_rename", { source: oldPath, dest: newPath });
 }
 
 export async function copyLocalFile(
   source: string,
   destination: string,
 ): Promise<void> {
-  await fsCopyFile(source, destination);
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_copy", { source, dest: destination });
 }
 
 export async function moveLocalFile(
   source: string,
   destination: string,
 ): Promise<void> {
-  await rename(source, destination);
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_rename", { source, dest: destination });
 }
 
 export async function localFileExists(filePath: string): Promise<boolean> {

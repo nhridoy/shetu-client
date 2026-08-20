@@ -208,10 +208,15 @@ export function resolveTransferPaths(
   const names = existingNames ?? new Set<string>();
 
   // Resolve the top-level name for each root item (file or directory).
+  // Only the root item itself carries the override key: children are
+  // expanded BEFORE the directory entry, so they must not decide the root
+  // resolution (otherwise replace/rename/skip on a folder would fall
+  // through to the copy auto-rename).
   const nameMap = new Map<string, string>();
   const skippedRoots = new Set<string>();
   for (const item of expandedFiles) {
     const rootName = item.relativePath.split(/[/\\]/)[0];
+    if (item.relativePath !== rootName) continue;
     if (nameMap.has(rootName) || skippedRoots.has(rootName)) continue;
     const override = overrides?.get(item.file.path);
     if (override?.action === "skip") {
@@ -278,6 +283,18 @@ export interface TransferFileResult {
   error?: string;
 }
 
+// Force a transfer to "complete". Rust upload/download/serverCopy emit
+// progress events, but a 0-byte file produces no events, leaving the item
+// stuck at "pending"/"active" forever. Call this after the op returns.
+function finalizeTransfer(transferId: string, size: number): void {
+  useSftpStore.getState().updateTransfer(transferId, {
+    status: "complete",
+    progress: 1,
+    transferred: size,
+    size,
+  });
+}
+
 export interface TransferOptions {
   source: FileProvider;
   dest: FileProvider;
@@ -332,25 +349,21 @@ async function transferSingleFile(
     if (source.type === "local" && dest.type === "local") {
       // Local→Local: use native fs (instant, no progress events)
       await dest.copyFile(file.path, destFilePath);
-      // Mark complete immediately (no progress events for local ops)
-      useSftpStore.getState().updateTransfer(transferId, {
-        status: "complete",
-        progress: 1,
-        transferred: file.size,
-        size: file.size,
-      });
+      finalizeTransfer(transferId, file.size);
       return { file, action: "copied" };
     }
 
     if (source.type === "local" && dest.type === "remote" && dest.upload) {
       // Local→Remote: stream via Rust upload
       await dest.upload(file.path, destFilePath, undefined, transferId);
+      finalizeTransfer(transferId, file.size);
       return { file, action: "copied" };
     }
 
     if (source.type === "remote" && dest.type === "local" && source.download) {
       // Remote→Local: stream via Rust download
       await source.download(file.path, destFilePath, undefined, transferId);
+      finalizeTransfer(transferId, file.size);
       return { file, action: "copied" };
     }
 
@@ -369,6 +382,7 @@ async function transferSingleFile(
           file.size,
           transferId,
         );
+        finalizeTransfer(transferId, file.size);
         return { file, action: "copied" };
       }
       // Fallback shouldn't happen with valid providers
@@ -380,12 +394,7 @@ async function transferSingleFile(
     // Fallback: shouldn't reach here with valid providers
     const data = await source.readFile(file.path);
     await dest.writeFile(destFilePath, data);
-    useSftpStore.getState().updateTransfer(transferId, {
-      status: "complete",
-      progress: 1,
-      transferred: file.size,
-      size: file.size,
-    });
+    finalizeTransfer(transferId, file.size);
     return { file, action: "copied" };
   } catch (err) {
     useSftpStore.getState().updateTransfer(transferId, {

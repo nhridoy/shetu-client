@@ -454,6 +454,33 @@ async fn fs_remove(path: String, recursive: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn fs_copy(source: String, dest: String) -> Result<(), String> {
+    let src = std::path::PathBuf::from(&source);
+    let dst = std::path::PathBuf::from(&dest);
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{dest}: {e}"))?;
+        }
+        std::fs::copy(&src, &dst)
+            .map_err(|e| format!("{source} -> {dest}: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn fs_rename(source: String, dest: String) -> Result<(), String> {
+    let src = std::path::PathBuf::from(&source);
+    let dst = std::path::PathBuf::from(&dest);
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::rename(&src, &dst).map_err(|e| format!("{source} -> {dest}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
 fn cancel_copy(
     state: tauri::State<'_, CancelTokens>,
     operation_id: String,
@@ -1008,6 +1035,8 @@ pub fn run() {
             fs_exists,
             fs_mkdir,
             fs_remove,
+            fs_copy,
+            fs_rename,
             copy_files_with_progress,
             cancel_copy,
             connect_local,

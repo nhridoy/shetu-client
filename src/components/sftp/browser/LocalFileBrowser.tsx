@@ -499,7 +499,10 @@ export default function LocalFileBrowser({
         const isNoop =
           sourceHostId === destHostId &&
           normalize(srcDir) === normalize(destDirPath);
-        const shouldShow = !isNoop && destDirPath === currentPath;
+        const shouldShow =
+          !isNoop &&
+          destDirPath === currentPath &&
+          target.data.paneId === paneId;
         setIsDropTarget(shouldShow);
 
         if (shouldShow) {
@@ -737,7 +740,7 @@ export default function LocalFileBrowser({
         onViewModeChange={(m) => actions.setViewMode(paneId, m)}
         showBackForward
         onDisconnect={() => {
-          actions.resetPane(paneId);
+          actions.resetPane(paneId, rootPath);
           useSftpStore.getState().disconnectPane(paneId);
         }}
       />

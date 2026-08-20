@@ -245,7 +245,11 @@ export default function FileBrowser({
         const srcDir =
           dragFiles[0]?.path.split("/").slice(0, -1).join("/") || "/";
         const isNoop = sourceHostId === destHostId && srcDir === destDirPath;
-        setIsDropTarget(!isNoop && destDirPath === currentPath);
+        setIsDropTarget(
+          !isNoop &&
+            destDirPath === currentPath &&
+            target.data.paneId === paneId,
+        );
       } else {
         setIsDropTarget(false);
       }

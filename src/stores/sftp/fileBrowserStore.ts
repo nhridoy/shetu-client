@@ -329,11 +329,16 @@ export const fileBrowserActions = {
     update(paneId, { sortedFiles: sorted });
   },
 
-  resetPane(paneId: string) {
+  resetPane(paneId: string, rootPath?: string) {
     const p = pane(paneId);
     if (!p) return;
+    // The pane may be reconnected as a different kind (local <-> remote):
+    // reset currentPath/history to the given root so a stale path from the
+    // previous connection isn't loaded against the new provider.
+    const root = rootPath ?? p.currentPath;
     update(paneId, {
       files: [],
+      currentPath: root,
       selectedFiles: new Set<string>(),
       error: null,
       isLoading: false,
@@ -343,7 +348,7 @@ export const fileBrowserActions = {
       pendingDrop: null,
       initialized: false,
       sortedFiles: [],
-      history: [p.currentPath],
+      history: [root],
       historyIndex: 0,
     });
   },

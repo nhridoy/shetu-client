@@ -119,7 +119,7 @@ export function useFileOperations({
     providerRef.current = null;
     unregisterProvider(paneId);
     await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
-    actions.resetPane(paneId);
+    actions.resetPane(paneId, "/");
     useSftpStore.getState().disconnectPane(paneId);
   }, [paneId]);
 
