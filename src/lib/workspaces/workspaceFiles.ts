@@ -1,3 +1,4 @@
+import type { FileProvider } from "@/lib/sftp/fileTransfer";
 import { listLocalFiles } from "@/lib/sftp/localFs";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -20,6 +21,7 @@ const IGNORED_DIRS = new Set([
 
 export async function collectWorkspaceFiles(
   rootPath: string,
+  listDir: (path: string) => Promise<FileItem[]> = listLocalFiles,
 ): Promise<FileItem[]> {
   const out: FileItem[] = [];
 
@@ -29,7 +31,7 @@ export async function collectWorkspaceFiles(
     }
     let items: FileItem[];
     try {
-      items = await listLocalFiles(dir);
+      items = await listDir(dir);
     } catch {
       return;
     }
@@ -46,4 +48,11 @@ export async function collectWorkspaceFiles(
 
   await walk(rootPath, 0);
   return out;
+}
+
+export function collectProviderWorkspaceFiles(
+  provider: FileProvider,
+  rootPath: string,
+): Promise<FileItem[]> {
+  return collectWorkspaceFiles(rootPath, (path) => provider.listFiles(path));
 }

@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import { useRef, useState } from "react";
 import { extractError } from "@/lib/common/extractError";
+import { getEditorProvider } from "@/lib/editor/editorProvider";
 import { getFileIcon } from "@/lib/sftp/fileHelpers";
 import {
   type FileSearchResult,
@@ -206,7 +207,11 @@ function FileResultGroup({
 }
 
 export default function EditorSearch() {
+  const connectionType = useEditorStore((s) => s.connectionType);
   const localPath = useEditorStore((s) => s.localPath);
+  const explorerRootPath = useEditorStore((s) => s.explorerRootPath);
+  const rootPath =
+    connectionType === "local" ? (localPath ?? "") : (explorerRootPath ?? "");
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<FileSearchResult[] | null>(null);
@@ -229,14 +234,17 @@ export default function EditorSearch() {
     setOptions((o) => ({ ...o, [key]: !o[key] }));
 
   const runSearch = () => {
-    if (!localPath || !query.trim()) return;
+    if (!rootPath || !query.trim()) return;
     const id = ++requestIdRef.current;
     setSearching(true);
     setSearchError(null);
     setResults(null);
     setCollapsed(new Set());
+    const state = useEditorStore.getState();
+    const provider =
+      state.connectionType === "host" ? getEditorProvider(state) : null;
     searchWorkspace(
-      localPath,
+      rootPath,
       query,
       options,
       inFiles,
@@ -244,6 +252,8 @@ export default function EditorSearch() {
       (partial) => {
         if (id === requestIdRef.current) setResults(partial);
       },
+      provider ? (path) => provider.readFile(path) : undefined,
+      provider ? (path) => provider.listFiles(path) : undefined,
     )
       .then((full) => {
         if (id === requestIdRef.current) {
@@ -260,8 +270,6 @@ export default function EditorSearch() {
   };
 
   const totalMatches = results?.reduce((n, r) => n + r.matches.length, 0) ?? 0;
-
-  const rootPath = localPath ?? "";
 
   const handleOpen = (match: SearchMatch, result: FileSearchResult) => {
     useEditorStore

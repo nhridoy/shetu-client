@@ -1,4 +1,4 @@
-import { readLocalFileBytes } from "@/lib/sftp/localFs";
+import { listLocalFiles, readLocalFileBytes } from "@/lib/sftp/localFs";
 import { collectWorkspaceFiles } from "@/lib/workspaces/workspaceFiles";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -95,11 +95,12 @@ function isBinary(bytes: Uint8Array): boolean {
 async function matchesInFile(
   file: FileItem,
   regex: RegExp,
+  readBytes: (path: string) => Promise<Uint8Array>,
 ): Promise<SearchMatch[]> {
   if (file.size === 0 || file.size > SEARCH_MAX_FILE_BYTES) return [];
   let bytes: Uint8Array;
   try {
-    bytes = await readLocalFileBytes(file.path);
+    bytes = await readBytes(file.path);
   } catch {
     return [];
   }
@@ -132,13 +133,15 @@ export async function searchWorkspace(
   inFiles: string,
   excludeFiles: string,
   onProgress?: (results: FileSearchResult[], totalFiles: number) => void,
+  readBytes: (path: string) => Promise<Uint8Array> = readLocalFileBytes,
+  listDir: (path: string) => Promise<FileItem[]> = listLocalFiles,
 ): Promise<FileSearchResult[]> {
   const regex = compileQuery(query, options);
   if (!regex) return [];
 
   let cached = fileListCache.get(rootPath);
   if (!cached) {
-    cached = collectWorkspaceFiles(rootPath);
+    cached = collectWorkspaceFiles(rootPath, listDir);
     fileListCache.set(rootPath, cached);
   }
   const files = await cached;
@@ -187,7 +190,7 @@ export async function searchWorkspace(
       if (file.type !== "file" || !wanted(rel)) continue;
       let matches: SearchMatch[];
       try {
-        matches = await matchesInFile(file, regex);
+        matches = await matchesInFile(file, regex, readBytes);
       } catch {
         matches = [];
       }

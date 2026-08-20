@@ -1,6 +1,8 @@
 import { CircleNotchIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getEditorProvider } from "@/lib/editor/editorProvider";
 import { getFileIcon } from "@/lib/sftp/fileHelpers";
+import { listLocalFiles } from "@/lib/sftp/localFs";
 import {
   collectWorkspaceFiles,
   WORKSPACE_FILE_LIMIT,
@@ -40,6 +42,9 @@ function relPath(rootPath: string, item: FileItem): string {
 export default function QuickOpen() {
   const connectionType = useEditorStore((s) => s.connectionType);
   const localPath = useEditorStore((s) => s.localPath);
+  const explorerRootPath = useEditorStore((s) => s.explorerRootPath);
+  const rootPath =
+    connectionType === "local" ? (localPath ?? "") : (explorerRootPath ?? "");
   const close = useCallback(() => {
     useEditorStore.getState().setQuickOpenOpen(false);
   }, []);
@@ -58,12 +63,17 @@ export default function QuickOpen() {
   }, []);
 
   useEffect(() => {
-    if (connectionType !== "local" || !localPath) return;
+    if (!rootPath) return;
     let cancelled = false;
-    let cached = fileCache.get(localPath);
+    let cached = fileCache.get(rootPath);
     if (!cached) {
-      cached = collectWorkspaceFiles(localPath);
-      fileCache.set(localPath, cached);
+      cached = collectWorkspaceFiles(rootPath, (path) => {
+        const state = useEditorStore.getState();
+        return state.connectionType === "host"
+          ? getEditorProvider(state).listFiles(path)
+          : listLocalFiles(path);
+      });
+      fileCache.set(rootPath, cached);
     }
     cached
       .then((list) => {
@@ -78,7 +88,7 @@ export default function QuickOpen() {
     return () => {
       cancelled = true;
     };
-  }, [connectionType, localPath]);
+  }, [rootPath]);
 
   const results = useMemo(() => {
     if (!files) return [];
@@ -115,28 +125,6 @@ export default function QuickOpen() {
       if (file) openFile(file);
     }
   };
-
-  if (connectionType !== "local") {
-    return (
-      // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-catcher, Esc closes for keyboard users
-      <div
-        className="fixed inset-0 z-50"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) close();
-        }}
-      >
-        <div className="mx-auto mt-[12vh] w-[600px] max-w-[90vw] bg-dark-900 border border-dark-600 rounded-lg shadow-2xl overflow-hidden">
-          <div className="px-4 py-6 text-center text-xs text-dark-400">
-            <MagnifyingGlassIcon
-              className="w-6 h-6 mx-auto mb-2 text-dark-600"
-              weight="bold"
-            />
-            Quick open arrives with the SFTP transport phase
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-catcher, Esc closes for keyboard users
@@ -196,7 +184,7 @@ export default function QuickOpen() {
                     {file.name}
                   </span>
                   <span className="ml-auto text-[11px] text-dark-400 truncate max-w-40">
-                    {relPath(localPath ?? "", file)}
+                    {relPath(rootPath, file)}
                   </span>
                 </li>
               );
