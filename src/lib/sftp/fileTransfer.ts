@@ -3,6 +3,7 @@ import {
   copyLocalFile,
   createLocalDir,
   isLocalDirectory,
+  isSameVolume,
   listLocalFiles,
   listLocalFilesRecursive,
   moveLocalFile,
@@ -29,6 +30,7 @@ export interface FileProvider {
   ): Promise<void>;
   moveFile(source: string, dest: string): Promise<void>;
   copyFile(source: string, dest: string): Promise<void>;
+  removeFile(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   mkdirAll(paths: string[]): Promise<void>;
@@ -95,6 +97,11 @@ export class LocalFileProvider implements FileProvider {
 
   async copyFile(source: string, dest: string): Promise<void> {
     await copyLocalFile(source, dest);
+  }
+
+  async removeFile(path: string): Promise<void> {
+    const { removeLocalFile } = await import("@/lib/sftp/localFs");
+    await removeLocalFile(path);
   }
 
   async exists(path: string): Promise<boolean> {
@@ -428,6 +435,22 @@ export async function transferFiles(
       (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
     );
 
+    // A same-provider local move can only use rename() when both sides are on
+    // the same volume; otherwise it must copy each file then delete the source
+    // (std::fs::rename fails with "os error 17" across drives).
+    const localMove =
+      isSameProvider &&
+      source.type === "local" &&
+      dest.type === "local" &&
+      mode === "move";
+    let sameVolumeMove = true;
+    if (localMove) {
+      const sourceRoot = files[0]?.path ?? destPath;
+      sameVolumeMove = await isSameVolume(sourceRoot, destPath).catch(
+        () => false,
+      );
+    }
+
     // Expand directories recursively and collect all files
     const expandedFiles: { file: FileItem; relativePath: string }[] = [];
     for (const file of files) {
@@ -533,14 +556,15 @@ export async function transferFiles(
           const globalIdx = i + batchIdx;
           onFileStart?.(t.file, globalIdx);
 
-          // Same-provider local move: no TransferItem, instant
-          if (
-            isSameProvider &&
-            source.type === "local" &&
-            dest.type === "local" &&
-            mode === "move"
-          ) {
-            await source.moveFile(t.file.path, t.destFilePath);
+          // Same-provider local move: instant, no TransferItem. Cross-volume
+          // moves copy then delete the source instead of rename.
+          if (localMove) {
+            if (sameVolumeMove) {
+              await source.moveFile(t.file.path, t.destFilePath);
+            } else {
+              await source.copyFile(t.file.path, t.destFilePath);
+              await source.removeFile(t.file.path);
+            }
             return { file: t.file, action: "moved" as const };
           }
 
@@ -570,6 +594,24 @@ export async function transferFiles(
           results.push(result);
           onFileComplete?.(batch[j].file, globalIdx, result);
         }
+      }
+    }
+
+    // Same-provider local move: remove the now-empty source directories
+    // (files were moved/copied out). Deepest first so children empty before
+    // parents; non-recursive removal so a dir that still holds content (e.g.
+    // a file that failed to transfer) is left untouched.
+    if (localMove) {
+      const dirs = resolvedEntries
+        .filter((e) => e.file.type === "directory" && !e.skip)
+        .map((e) => e.file.path)
+        .sort((a, b) => {
+          const depth = (p: string) => p.split(/[/\\]/).length;
+          return depth(b) - depth(a);
+        });
+      const { removeEmptyLocalDir } = await import("@/lib/sftp/localFs");
+      for (const dir of dirs) {
+        await removeEmptyLocalDir(dir).catch(() => {});
       }
     }
 

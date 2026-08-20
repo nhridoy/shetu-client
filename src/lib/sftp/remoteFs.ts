@@ -228,6 +228,10 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
     });
   }
 
+  async removeFile(path: string): Promise<void> {
+    await this.delete(path, true);
+  }
+
   async exists(path: string): Promise<boolean> {
     try {
       await this.stat(path);

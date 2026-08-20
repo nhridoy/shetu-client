@@ -136,6 +136,11 @@ export async function removeLocalFile(filePath: string): Promise<void> {
   await invoke("fs_remove", { path: filePath, recursive: true });
 }
 
+export async function removeEmptyLocalDir(dirPath: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("fs_remove", { path: dirPath, recursive: false });
+}
+
 export async function renameLocalFile(
   oldPath: string,
   newPath: string,

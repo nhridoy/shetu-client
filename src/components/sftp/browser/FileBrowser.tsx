@@ -56,6 +56,28 @@ export default function FileBrowser({
   // Initialize pane on first render
   const initialized = useRef(false);
   if (!initialized.current) {
+    // A remote connection always starts at root. The pane state may be
+    // stale from a previous local connection or a different host (disconnect
+    // keeps the old path), so reset it before effects read currentPath.
+    const store = useFileBrowserStore.getState();
+    const existing = store.panes[paneId];
+    if (existing) {
+      store.updatePane(paneId, {
+        currentPath: "/",
+        files: [],
+        selectedFiles: new Set<string>(),
+        error: null,
+        isLoading: false,
+        searchQuery: "",
+        renamingPath: null,
+        pasteConflicts: null,
+        pendingDrop: null,
+        initialized: false,
+        sortedFiles: [],
+        history: ["/"],
+        historyIndex: 0,
+      });
+    }
     getOrCreatePane(paneId, "/");
     initialized.current = true;
   }
