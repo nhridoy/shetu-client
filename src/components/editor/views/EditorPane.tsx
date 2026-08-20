@@ -8,10 +8,12 @@ import SourceControlPanel from "@/components/editor/panels/SourceControlPanel";
 import EditorViewTree from "@/components/editor/views/EditorViewTree";
 import { Button } from "@/components/ui/Button";
 import PaneHeader from "@/components/ui/PaneHeader";
+import { useDirtyConfirm } from "@/hooks/editor/useDirtyConfirm";
 import { extractError } from "@/lib/common/extractError";
 import { openDirectoryPicker } from "@/lib/sftp/localFs";
 import {
   DEFAULT_SIDEBAR_WIDTH,
+  hasDirtyFiles,
   type SidebarTool,
   useEditorStore,
 } from "@/stores/editor/editorStore";
@@ -107,6 +109,7 @@ export default function EditorPane() {
   const sidebarTool = useEditorStore((s) => s.sidebarTool);
   const setSidebarVisible = useEditorStore((s) => s.setSidebarVisible);
   const setSidebarTool = useEditorStore((s) => s.setSidebarTool);
+  const { confirmIfDirty, dialog } = useDirtyConfirm();
 
   const isHost = connectionType === "host";
   const displayName = isHost
@@ -114,6 +117,16 @@ export default function EditorPane() {
     : connectionType === "local"
       ? localPath || "Local"
       : "Editor";
+
+  const handleDisconnect = async () => {
+    if (hasDirtyFiles(useEditorStore.getState())) {
+      const ok = await confirmIfDirty(
+        "Disconnect and discard all unsaved changes?",
+      );
+      if (!ok) return;
+    }
+    disconnect();
+  };
 
   const handleConnectLocal = async () => {
     try {
@@ -146,7 +159,7 @@ export default function EditorPane() {
           title={displayName}
           isActive
           closable
-          onClose={disconnect}
+          onClose={handleDisconnect}
           extra={
             <Button
               type="button"
@@ -233,6 +246,7 @@ export default function EditorPane() {
           </div>
         )}
       </div>
+      {dialog}
     </section>
   );
 }

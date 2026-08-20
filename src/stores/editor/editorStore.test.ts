@@ -75,6 +75,20 @@ describe("editorStore connection", () => {
     expect(s.fileDirty).toEqual({});
   });
 
+  it("connectLocal opens a target file when provided", () => {
+    useEditorStore.getState().connectLocal("/work", {
+      path: "/work/a.txt",
+      name: "a.txt",
+    });
+    const s = useEditorStore.getState();
+    expect(s.connectionType).toBe("local");
+    expect(s.localPath).toBe("/work");
+    expect(s.activeFile[ROOT_VIEW_ID]).toBe("/work/a.txt");
+    expect(s.openFiles[ROOT_VIEW_ID]).toEqual([
+      { path: "/work/a.txt", name: "a.txt", kind: "file" },
+    ]);
+  });
+
   it("disconnect clears the connection and all open files", () => {
     useEditorStore.getState().connectRemote({
       hostId: "h1",

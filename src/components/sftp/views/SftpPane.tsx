@@ -10,13 +10,14 @@ import SftpHostPicker from "@/components/sftp/picker/SftpHostPicker";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import PaneHeader from "@/components/ui/PaneHeader";
+import { useDirtyConfirm } from "@/hooks/editor/useDirtyConfirm";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { extractError } from "@/lib/common/extractError";
 import { type DropSide, previewStyle } from "@/lib/common/paneLayout";
 import { ensureRemoteSession } from "@/lib/editor/editorProvider";
 import { parentPath } from "@/lib/sftp/fileTransfer";
 import { openDirectoryPicker } from "@/lib/sftp/localFs";
-import { useEditorStore } from "@/stores/editor/editorStore";
+import { hasDirtyFiles, useEditorStore } from "@/stores/editor/editorStore";
 import type { Host } from "@/stores/hosts/hostStore";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { type SftpLeafNode, useSftpStore } from "@/stores/sftp/sftpStore";
@@ -51,6 +52,7 @@ export default function SftpPane({
   const connectLocal = useSftpStore((s) => s.connectLocal);
   const [showHostPicker, setShowHostPicker] = useState(false);
   const navigate = useNavigate();
+  const { confirmIfDirty, dialog } = useDirtyConfirm();
 
   const handleOpenInEditor = async (file: FileItem | null) => {
     const currentPath =
@@ -66,6 +68,12 @@ export default function SftpPane({
       }
     } else {
       rootPath = currentPath;
+    }
+    if (hasDirtyFiles(useEditorStore.getState())) {
+      const ok = await confirmIfDirty(
+        "Switch the editor connection and discard unsaved changes?",
+      );
+      if (!ok) return;
     }
     try {
       if (pane.connectionType === "host" && pane.hostId) {
@@ -227,6 +235,7 @@ export default function SftpPane({
           onClose={() => setShowHostPicker(false)}
         />
       </Modal>
+      {dialog}
     </section>
   );
 }

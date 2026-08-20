@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { DropZone } from "@/components/common/DropZone";
 import DiffEditor, { isDiffTab } from "@/components/editor/editors/DiffEditor";
 import MarkdownPreview from "@/components/editor/editors/MarkdownPreview";
+import { useDirtyConfirm } from "@/hooks/editor/useDirtyConfirm";
 import { extractError } from "@/lib/common/extractError";
 import { type DropSide, previewStyle } from "@/lib/common/paneLayout";
 import { countLeaves } from "@/lib/common/treeUtils";
@@ -77,6 +78,20 @@ export default function EditorView({
   const activeIsDiff = activePath !== null && isDiffTab(activePath);
   const content =
     activePath && !activeIsDiff ? (fileContent[activePath] ?? null) : null;
+  const { confirmIfDirty, dialog } = useDirtyConfirm();
+
+  const handleCloseFile = useCallback(
+    async (path: string) => {
+      if (useEditorStore.getState().fileDirty[path] === true) {
+        const ok = await confirmIfDirty(
+          `Close "${path}" and discard unsaved changes?`,
+        );
+        if (!ok) return;
+      }
+      closeFileInView(viewId, path);
+    },
+    [closeFileInView, viewId, confirmIfDirty],
+  );
 
   const reconnectToastOptions = useCallback((): {
     action?: { label: string; onClick: () => void };
@@ -308,7 +323,7 @@ export default function EditorView({
               setActiveFileInView(viewId, f.path);
             }}
             onMakePermanent={() => makeFilePermanentInView(viewId, f.path)}
-            onClose={() => closeFileInView(viewId, f.path)}
+            onClose={() => handleCloseFile(f.path)}
           />
         ))}
         <div className="flex items-center gap-0.5 ml-auto pl-2 shrink-0">
@@ -522,6 +537,7 @@ export default function EditorView({
         {/* Drop preview */}
         {dropSide && <div style={previewStyle(dropSide as DropSide)} />}
       </div>
+      {dialog}
     </div>
   );
 }
