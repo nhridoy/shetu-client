@@ -205,11 +205,7 @@ export default function EditorPane() {
           </div>
         ) : connectionType === "host" ? (
           <div className="flex h-full min-h-0 min-w-0">
-            <ActivityBar
-              active={sidebarTool}
-              onSelect={handleToolSelect}
-              hiddenTools={["source-control"]}
-            />
+            <ActivityBar active={sidebarTool} onSelect={handleToolSelect} />
             {sidebarVisible && (
               <div
                 style={{ width: sidebarWidth }}
