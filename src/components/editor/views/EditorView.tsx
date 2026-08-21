@@ -87,6 +87,8 @@ export default function EditorView({
           `Close "${path}" and discard unsaved changes?`,
         );
         if (!ok) return;
+        useEditorStore.getState().setFileContent(path, "");
+        useEditorStore.getState().setFileDirty(path, false);
       }
       closeFileInView(viewId, path);
     },
