@@ -226,7 +226,6 @@ export default function EditorView({
       const provider = getEditorProvider(useEditorStore.getState());
       await providerWriteText(provider, activePath, content);
       useEditorStore.getState().setFileDirty(activePath, false);
-      toast.success("File saved");
     } catch (err) {
       toast.error(
         extractError(err, "Failed to save file"),
