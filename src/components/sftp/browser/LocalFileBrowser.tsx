@@ -278,24 +278,19 @@ export default function LocalFileBrowser({
   });
 
   // ── Effects ──────────────────────────────────────────────────────────────
-  // On mount, silently refresh if files already exist (module-switch remount)
-  // like the remote pane does via setFiles (no isLoading flash). Only use
-  // loadFiles (which sets isLoading → skeleton) for fresh navigations.
+  // On mount with an existing pane (module-switch remount), skip loading
+  // entirely — the store already has files and currentPath. The stale
+  // `currentPath` from the render closure may differ from the real store
+  // value on the very first render (Zustand selector hasn't re-run yet
+  // after getOrCreatePane), so compare against the live snapshot instead.
   const mountInitRef = useRef(true);
   useEffect(() => {
     if (mountInitRef.current) {
       mountInitRef.current = false;
-      // Read directly from store — the Zustand selector may not have re-run
-      // after the init block created/updated the pane on this first render.
       const snap = useFileBrowserStore.getState().panes[paneId];
-      if (snap && snap.currentPath === currentPath && snap.files.length > 0) {
-        setPathInput(currentPath);
-        // Silent refresh in background — no loading skeleton
-        listLocalFiles(currentPath)
-          .then((fresh) => {
-            actions.setFiles(paneId, fresh);
-          })
-          .catch(() => {});
+      if (snap && snap.files.length > 0) {
+        // Already have data — just sync pathInput, no IPC call.
+        setPathInput(snap.currentPath);
         return;
       }
     }
