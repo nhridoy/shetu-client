@@ -278,21 +278,17 @@ export default function LocalFileBrowser({
   });
 
   // ── Effects ──────────────────────────────────────────────────────────────
-  // On mount with an existing pane (module-switch remount), skip loading
-  // entirely — the store already has files and currentPath. The stale
-  // `currentPath` from the render closure may differ from the real store
-  // value on the very first render (Zustand selector hasn't re-run yet
-  // after getOrCreatePane), so compare against the live snapshot instead.
-  const mountInitRef = useRef(true);
   useEffect(() => {
-    if (mountInitRef.current) {
-      mountInitRef.current = false;
-      const snap = useFileBrowserStore.getState().panes[paneId];
-      if (snap && snap.files.length > 0) {
-        // Already have data — just sync pathInput, no IPC call.
-        setPathInput(snap.currentPath);
-        return;
-      }
+    // If files already exist in the store (module-switch remount), skip the
+    // IPC call + loading skeleton entirely. Read live from the store because
+    // the Zustand selector may hold a stale snapshot on the first render
+    // (before getOrCreatePane ran). Must NOT use a mountRef guard because
+    // React.StrictMode double-fires effects, consuming the flag on the
+    // cancelled first fire.
+    const snap = useFileBrowserStore.getState().panes[paneId];
+    if (snap && snap.files.length > 0) {
+      setPathInput(snap.currentPath);
+      return;
     }
     actions.loadFiles(paneId, currentPath, listLocalFiles);
     setPathInput(currentPath);
