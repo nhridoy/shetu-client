@@ -278,7 +278,23 @@ export default function LocalFileBrowser({
   });
 
   // ── Effects ──────────────────────────────────────────────────────────────
+  // Skip the loading flash on fresh mount when the pane already has files
+  // for this path (module-switch remount). Only show loading when the user
+  // actually navigates to a new directory.
+  const mountInitRef = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only guard — intentionally reads snapshot once
   useEffect(() => {
+    if (mountInitRef.current) {
+      mountInitRef.current = false;
+      if (
+        paneState &&
+        paneState.currentPath === currentPath &&
+        paneState.files.length > 0
+      ) {
+        setPathInput(currentPath);
+        return;
+      }
+    }
     actions.loadFiles(paneId, currentPath, listLocalFiles);
     setPathInput(currentPath);
   }, [currentPath, paneId]);
