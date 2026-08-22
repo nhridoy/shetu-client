@@ -100,6 +100,8 @@ async function connectViaTauri(session: Session) {
         sessionId: params.paneId,
         hostId: params.hostId,
         detectOs: !savedHost.os,
+        cols,
+        rows,
       });
     } else {
       // Direct (QuickConnect) connections have no saved host row — plaintext
@@ -113,7 +115,7 @@ async function connectViaTauri(session: Session) {
         passphrase: null,
         detectOs: false,
       };
-      await invoke("connect", { sessionId: params.paneId, config });
+      await invoke("connect", { sessionId: params.paneId, config, cols, rows });
     }
 
     const unlistenHostKey = await listen<{
