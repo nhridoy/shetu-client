@@ -278,20 +278,24 @@ export default function LocalFileBrowser({
   });
 
   // ── Effects ──────────────────────────────────────────────────────────────
-  // Skip the loading flash on fresh mount when the pane already has files
-  // for this path (module-switch remount). Only show loading when the user
-  // actually navigates to a new directory.
+  // On mount, silently refresh if files already exist (module-switch remount)
+  // like the remote pane does via setFiles (no isLoading flash). Only use
+  // loadFiles (which sets isLoading → skeleton) for fresh navigations.
   const mountInitRef = useRef(true);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only guard — intentionally reads snapshot once
   useEffect(() => {
     if (mountInitRef.current) {
       mountInitRef.current = false;
-      if (
-        paneState &&
-        paneState.currentPath === currentPath &&
-        paneState.files.length > 0
-      ) {
+      // Read directly from store — the Zustand selector may not have re-run
+      // after the init block created/updated the pane on this first render.
+      const snap = useFileBrowserStore.getState().panes[paneId];
+      if (snap && snap.currentPath === currentPath && snap.files.length > 0) {
         setPathInput(currentPath);
+        // Silent refresh in background — no loading skeleton
+        listLocalFiles(currentPath)
+          .then((fresh) => {
+            actions.setFiles(paneId, fresh);
+          })
+          .catch(() => {});
         return;
       }
     }
