@@ -6,6 +6,7 @@ import PortForwarding from "@/components/portforwarding/panels/PortForwarding";
 import HostBrowser from "@/components/terminal/browser/HostBrowser";
 import Terminal from "@/components/terminal/shell/Terminal";
 import { Button } from "@/components/ui/Button";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import PaneHeader from "@/components/ui/PaneHeader";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { previewStyle } from "@/lib/common/paneLayout";
@@ -127,26 +128,45 @@ export default function Pane({
       {/* Pane body */}
       <div className="flex-1 min-h-0 relative">
         {pane.hostId ? (
-          <Terminal
-            hostId={pane.hostId}
-            hostName={pane.hostName}
-            tabId={tabId}
-            paneId={pane.id}
-            hostAddress={pane.hostAddress}
-            hostPort={pane.hostPort}
-            hostUsername={pane.hostUsername}
-            authType={pane.authType}
-            keyId={pane.keyId}
-            connectionType={pane.connectionType}
-            shell={pane.shell}
-            isActive={isActive}
-          />
+          <ErrorBoundary
+            onReset={() => {
+              const { hostId: hid, hostName: hname, ...rest } = pane;
+              if (!hid) return;
+              removePane(tabId, pane.id);
+              connectPane(tabId, pane.id, hid, hname, {
+                hostAddress: rest.hostAddress,
+                hostPort: rest.hostPort,
+                hostUsername: rest.hostUsername,
+                authType: rest.authType,
+                keyId: rest.keyId,
+                connectionType: rest.connectionType,
+                shell: rest.shell,
+              });
+            }}
+          >
+            <Terminal
+              hostId={pane.hostId}
+              hostName={pane.hostName}
+              tabId={tabId}
+              paneId={pane.id}
+              hostAddress={pane.hostAddress}
+              hostPort={pane.hostPort}
+              hostUsername={pane.hostUsername}
+              authType={pane.authType}
+              keyId={pane.keyId}
+              connectionType={pane.connectionType}
+              shell={pane.shell}
+              isActive={isActive}
+            />
+          </ErrorBoundary>
         ) : (
-          <HostBrowser
-            onConnect={handleConnect}
-            onConnectLocal={handleConnectLocal}
-            onRestorePreset={(preset) => onRestorePreset(preset, tabId)}
-          />
+          <ErrorBoundary onReset={() => {}}>
+            <HostBrowser
+              onConnect={handleConnect}
+              onConnectLocal={handleConnectLocal}
+              onRestorePreset={(preset) => onRestorePreset(preset, tabId)}
+            />
+          </ErrorBoundary>
         )}
         {isActiveTab &&
           sides.map((side) => (

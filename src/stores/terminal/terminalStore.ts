@@ -11,7 +11,13 @@ import {
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
 
-type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
+type ConnectionStatus =
+  | "connected"
+  | "connecting"
+  | "disconnected"
+  | "error"
+  | "reconnecting"
+  | "failed";
 
 export interface LeafNode {
   type: "leaf";
@@ -63,15 +69,30 @@ export interface TerminalTab {
 
 export const findLeaf = findLeafUtil;
 
-export function computeTabSnapshot(_root: PaneNode): string {
-  return "";
+export function computeTabSnapshot(root: PaneNode): string {
+  return JSON.stringify(root);
 }
 
-export function serializeWorkspaceLayout(_tabs: TerminalTab[]): {
+export function serializeWorkspaceLayout(tabs: TerminalTab[]): {
   tabs: Array<{ title: string; root: PaneNode }>;
   hostIds: string[];
 } {
-  return { tabs: [], hostIds: [] };
+  const hostIds = new Set<string>();
+  for (const tab of tabs) {
+    collectHostIds(tab.root, hostIds);
+  }
+  return {
+    tabs: tabs.map((t) => ({ title: t.title, root: t.root })),
+    hostIds: [...hostIds],
+  };
+}
+
+function collectHostIds(node: PaneNode, out: Set<string>) {
+  if (node.type === "leaf") {
+    if (node.hostId) out.add(node.hostId);
+  } else {
+    for (const child of node.children) collectHostIds(child, out);
+  }
 }
 
 interface ConnectOptions {
@@ -597,7 +618,19 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }));
   },
 
-  saveCurrentPreset: async () => {},
+  saveCurrentPreset: async (tabId) => {
+    const { tabs } = get();
+    const tab = findTab(tabs, tabId);
+    if (!tab) return;
+    const snapshot = computeTabSnapshot(tab.root);
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, savedPresetSnapshot: snapshot, presetDirty: false }
+          : t,
+      ),
+    }));
+  },
 
   setPresetForTab: (tabId, presetId, presetName) => {
     set((s) => ({
@@ -609,6 +642,21 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }));
   },
 
-  saveCurrentWorkspace: async () => {},
-  saveAsNewWorkspace: async () => {},
+  saveCurrentWorkspace: async () => {
+    const { tabs, activeWorkspaceId } = get();
+    if (!activeWorkspaceId) return;
+    const layout = serializeWorkspaceLayout(tabs);
+    const snapshot = JSON.stringify(layout);
+    set({ savedSnapshot: snapshot, isDirty: false });
+  },
+  saveAsNewWorkspace: async (name) => {
+    const { tabs } = get();
+    const layout = serializeWorkspaceLayout(tabs);
+    const snapshot = JSON.stringify(layout);
+    set({
+      savedSnapshot: snapshot,
+      isDirty: false,
+      activeWorkspaceName: name,
+    });
+  },
 }));

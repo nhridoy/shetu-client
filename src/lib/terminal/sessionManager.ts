@@ -35,6 +35,7 @@ export interface Session {
   resizeRaf: number;
   unlisten: (() => void) | null;
   unlistenHostKey: (() => void) | null;
+  cancelReconnect: (() => void) | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -69,6 +70,7 @@ function createSession(params: SessionParams): Session {
     resizeRaf: 0,
     unlisten: null,
     unlistenHostKey: null,
+    cancelReconnect: null,
   };
 
   return session;
@@ -90,7 +92,18 @@ async function connectViaTauri(session: Session) {
   const update = useTerminalStore.getState().updatePaneConnectionStatus;
   update(params.tabId, params.paneId, "connecting");
 
-  try {
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let destroyed = false;
+
+  session.cancelReconnect = () => {
+    destroyed = true;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const doConnect = async () => {
     const savedHost = params.hostId
       ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)
       : undefined;
@@ -104,8 +117,6 @@ async function connectViaTauri(session: Session) {
         rows,
       });
     } else {
-      // Direct (QuickConnect) connections have no saved host row — plaintext
-      // path stays, but these carry no stored credentials.
       const config = {
         host: params.hostAddress || "",
         port: params.hostPort || 22,
@@ -117,7 +128,33 @@ async function connectViaTauri(session: Session) {
       };
       await invoke("connect", { sessionId: params.paneId, config, cols, rows });
     }
+  };
 
+  const startReconnect = (attempt: number) => {
+    if (destroyed) return;
+    const maxAttempts = 5;
+    if (attempt >= maxAttempts) {
+      update(params.tabId, params.paneId, "failed");
+      return;
+    }
+
+    update(params.tabId, params.paneId, "reconnecting");
+    const delay = Math.min(1000 * 2 ** attempt, 30000);
+    xterm.writeln(
+      `\r\n\x1b[33mReconnecting in ${Math.round(delay / 1000)}s... (attempt ${attempt + 1}/${maxAttempts})\x1b[0m`,
+    );
+
+    retryTimer = setTimeout(async () => {
+      if (destroyed) return;
+      try {
+        await doConnect();
+      } catch {
+        startReconnect(attempt + 1);
+      }
+    }, delay);
+  };
+
+  try {
     const unlistenHostKey = await listen<{
       host: string;
       port: number;
@@ -152,6 +189,10 @@ async function connectViaTauri(session: Session) {
 
       switch (type) {
         case "connected":
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+          }
           update(params.tabId, params.paneId, "connected");
           if (event.payload.os && params.hostId) {
             void useHostStore
@@ -163,8 +204,7 @@ async function connectViaTauri(session: Session) {
           xterm.write(data);
           break;
         case "disconnected":
-          xterm.writeln(`\r\n\x1b[33mConnection closed\x1b[0m`);
-          update(params.tabId, params.paneId, "disconnected");
+          startReconnect(0);
           break;
         case "error":
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);
@@ -197,6 +237,8 @@ async function connectViaTauri(session: Session) {
         // Session may have been closed
       }
     });
+
+    await doConnect();
   } catch (err) {
     xterm.writeln(`\r\n\x1b[31mFailed to connect: ${err}\x1b[0m`);
     update(params.tabId, params.paneId, "error");
@@ -366,6 +408,7 @@ useThemeStore.subscribe((state, prev) => {
 export async function destroySession(paneId: string) {
   const session = sessions.get(paneId);
   if (!session) return;
+  session.cancelReconnect?.();
   session.resizeObserver?.disconnect();
   if (session.resizeRaf) cancelAnimationFrame(session.resizeRaf);
 

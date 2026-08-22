@@ -3,7 +3,9 @@ export type ConnectionStatus =
   | "connecting"
   | "error"
   | "disconnected"
-  | "idle";
+  | "idle"
+  | "reconnecting"
+  | "failed";
 
 const STATUS_COLOR: Record<ConnectionStatus, string> = {
   connected: "bg-green-500",
@@ -11,6 +13,8 @@ const STATUS_COLOR: Record<ConnectionStatus, string> = {
   error: "bg-red-500",
   disconnected: "bg-dark-500",
   idle: "bg-dark-500",
+  reconnecting: "bg-yellow-500 animate-pulse",
+  failed: "bg-red-500",
 };
 
 export function getStatusColor(status: string): string {
