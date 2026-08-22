@@ -521,9 +521,11 @@ pub async fn connect(
     app_handle: tauri::AppHandle,
     session_id: String,
     config: SshConfig,
+    cols: u32,
+    rows: u32,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    run_connect_session(app_handle, session_id, config, None, &state).await;
+    run_connect_session(app_handle, session_id, config, None, &state, cols, rows).await;
     Ok(())
 }
 
@@ -535,6 +537,8 @@ pub async fn connect_saved(
     session_id: String,
     host_id: String,
     detect_os: bool,
+    cols: u32,
+    rows: u32,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
@@ -563,7 +567,7 @@ pub async fn connect_saved(
     } else {
         None
     };
-    run_connect_session(app_handle, session_id, config, os, &state).await;
+    run_connect_session(app_handle, session_id, config, os, &state, cols, rows).await;
     Ok(())
 }
 
@@ -573,6 +577,8 @@ async fn run_connect_session(
     config: SshConfig,
     pre_detected_os: Option<String>,
     state: &SshSessions,
+    cols: u32,
+    rows: u32,
 ) {
     let known_hosts = Arc::clone(&state.known_hosts);
     let pending_keys = Arc::clone(&state.pending_keys);
@@ -632,7 +638,7 @@ async fn run_connect_session(
             }
         };
         if let Err(e) = channel
-            .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+            .request_pty(true, "xterm", cols, rows, 0, 0, &[])
             .await
         {
             emit(&app_handle, "error", &e.to_string());
@@ -654,10 +660,14 @@ async fn run_connect_session(
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     SessionCmd::Input(bytes) => {
-                        let _ = write_half.data_bytes(bytes).await;
+                        if let Err(_) = write_half.data_bytes(bytes).await {
+                            break;
+                        }
                     }
                     SessionCmd::Resize(cols, rows) => {
-                        let _ = write_half.window_change(cols, rows, 0, 0).await;
+                        if let Err(_) = write_half.window_change(cols, rows, 0, 0).await {
+                            break;
+                        }
                     }
                 }
             }

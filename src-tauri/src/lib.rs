@@ -626,12 +626,16 @@ async fn copy_files_with_progress(
     Ok(errors)
 }
 
+pub(crate) struct PtySession {
+    pair: PtyPair,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    reader: Arc<Mutex<Box<dyn Read + Send>>>,
+    child: Arc<Mutex<Box<dyn PtyChild + Send>>>,
+    killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+}
+
 pub struct LocalSessions {
-    pub ptys: Mutex<HashMap<String, Arc<Mutex<PtyPair>>>>,
-    pub writers: Mutex<HashMap<String, Arc<Mutex<Box<dyn Write + Send>>>>>,
-    pub readers: Mutex<HashMap<String, Arc<Mutex<Box<dyn Read + Send>>>>>,
-    pub killers: Mutex<HashMap<String, Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>>>,
-    pub children: Mutex<HashMap<String, Arc<Mutex<Box<dyn PtyChild + Send>>>>>,
+    pub(crate) sessions: Mutex<HashMap<String, PtySession>>,
 }
 
 #[tauri::command]
@@ -689,20 +693,14 @@ async fn connect_local(
     let child_killer = child.clone_killer();
 
     {
-        let mut ptys = state.ptys.lock().map_err(|_| "Lock failed")?;
-        ptys.insert(session_id.clone(), Arc::new(Mutex::new(pair)));
-
-        let mut writers = state.writers.lock().map_err(|_| "Lock failed")?;
-        writers.insert(session_id.clone(), Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)));
-
-        let mut readers = state.readers.lock().map_err(|_| "Lock failed")?;
-        readers.insert(session_id.clone(), Arc::new(Mutex::new(Box::new(reader) as Box<dyn Read + Send>)));
-
-        let mut killers = state.killers.lock().map_err(|_| "Lock failed")?;
-        killers.insert(session_id.clone(), Arc::new(Mutex::new(child_killer as Box<dyn ChildKiller + Send + Sync>)));
-
-        let mut children = state.children.lock().map_err(|_| "Lock failed")?;
-        children.insert(session_id.clone(), Arc::new(Mutex::new(child as Box<dyn PtyChild + Send>)));
+        let mut sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
+        sessions.insert(session_id.clone(), PtySession {
+            pair,
+            writer: Arc::new(Mutex::new(writer)),
+            reader: Arc::new(Mutex::new(reader)),
+            child: Arc::new(Mutex::new(child as Box<dyn PtyChild + Send>)),
+            killer: Arc::new(Mutex::new(child_killer as Box<dyn ChildKiller + Send + Sync>)),
+        });
     }
 
     // Emit connected event
@@ -718,8 +716,8 @@ async fn connect_local(
     let sid_read = session_id.clone();
     let handle_read = app_handle.clone();
     let reader_arc_clone = {
-        let readers = state.readers.lock().unwrap();
-        readers.get(&session_id).cloned()
+        let sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
+        sessions.get(&session_id).map(|s| Arc::clone(&s.reader))
     };
     let _ = thread::Builder::new()
         .name(format!("pty-read-{sid_read}"))
@@ -764,9 +762,9 @@ async fn send_input_local(
     data: String,
     state: tauri::State<'_, LocalSessions>,
 ) -> Result<(), String> {
-    let writers = state.writers.lock().map_err(|_| "Lock failed")?;
-    if let Some(writer_arc) = writers.get(&session_id) {
-        if let Ok(mut w) = writer_arc.lock() {
+    let sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
+    if let Some(pty) = sessions.get(&session_id) {
+        if let Ok(mut w) = pty.writer.lock() {
             w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
             w.flush().map_err(|e| e.to_string())?;
         }
@@ -781,16 +779,14 @@ async fn resize_local(
     rows: u16,
     state: tauri::State<'_, LocalSessions>,
 ) -> Result<(), String> {
-    let ptys = state.ptys.lock().map_err(|_| "Lock failed")?;
-    if let Some(pair_arc) = ptys.get(&session_id) {
-        if let Ok(pair) = pair_arc.lock() {
-            pair.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            }).map_err(|e| e.to_string())?;
-        }
+    let sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
+    if let Some(pty) = sessions.get(&session_id) {
+        pty.pair.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -800,32 +796,17 @@ async fn disconnect_local(
     session_id: String,
     state: tauri::State<'_, LocalSessions>,
 ) -> Result<(), String> {
-    // Remove killer and child first so we can consume them
-    let killer_opt = {
-        let mut killers = state.killers.lock().map_err(|_| "Lock failed")?;
-        killers.remove(&session_id)
+    let pty = {
+        let mut sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
+        sessions.remove(&session_id)
     };
-    let child_opt = {
-        let mut children = state.children.lock().map_err(|_| "Lock failed")?;
-        children.remove(&session_id)
-    };
-    if let Some(killer_arc) = killer_opt {
-        let mut killer = killer_arc.lock().unwrap();
-        let _ = killer.kill();
-    }
-    // Reap the child so the process + ConPTY are fully released (no leaks)
-    if let Some(child_arc) = child_opt {
-        let mut child = child_arc.lock().unwrap();
-        let _ = child.wait();
-    }
-    // Clean up all stored resources
-    {
-        let mut ptys = state.ptys.lock().map_err(|_| "Lock failed")?;
-        ptys.remove(&session_id);
-        let mut writers = state.writers.lock().map_err(|_| "Lock failed")?;
-        writers.remove(&session_id);
-        let mut readers = state.readers.lock().map_err(|_| "Lock failed")?;
-        readers.remove(&session_id);
+    if let Some(pty) = pty {
+        if let Ok(mut killer) = pty.killer.lock() {
+            let _ = killer.kill();
+        }
+        if let Ok(mut child) = pty.child.lock() {
+            let _ = child.wait();
+        }
     }
     Ok(())
 }
@@ -1002,11 +983,7 @@ pub fn run() {
         .manage(http::HttpState::new(http::DEFAULT_BASE_URL.to_string()))
         .manage(git::GitLock(std::sync::Arc::new(Mutex::new(()))))
         .manage(LocalSessions {
-            ptys: Mutex::new(HashMap::new()),
-            writers: Mutex::new(HashMap::new()),
-            readers: Mutex::new(HashMap::new()),
-            killers: Mutex::new(HashMap::new()),
-            children: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
         })
         .manage(ssh::SshSessions::new(
             dirs::data_local_dir()
