@@ -24,6 +24,10 @@ export interface PendingDrop {
 
 interface FileBrowserPane {
   paneId: string;
+  /** Identity of the active connection ("host:<hostId>" / "local:<rootPath>").
+   *  Used to distinguish a plain module-switch remount (keep state) from a
+   *  real reconnection to a different target (reset to root). */
+  connectionKey: string;
   files: FileItem[];
   currentPath: string;
   isLoading: boolean;
@@ -49,6 +53,7 @@ interface FileBrowserPane {
 function createPaneState(paneId: string, initialPath: string): FileBrowserPane {
   return {
     paneId,
+    connectionKey: "",
     files: [],
     currentPath: initialPath,
     isLoading: false,

@@ -74,15 +74,24 @@ export default function LocalFileBrowser({
   // Initialize pane on first render
   const initialized = useRef(false);
   if (!initialized.current) {
-    // A local connection always starts at its root. The pane state may be
-    // stale from a previous remote/local connection (disconnect keeps the
-    // old path), so reset it before effects read currentPath — otherwise a
-    // stale listing races the mount-time navigation to rootPath.
+    // Reset to the root only when the connection identity changed (fresh
+    // connect or a different local root). A plain remount after a module
+    // switch must keep the current path, files, and history.
     const existing = useFileBrowserStore.getState().panes[paneId];
+    const connKey = `local:${rootPath}`;
     if (existing) {
-      fileBrowserActions.resetPane(paneId, rootPath);
+      if (existing.connectionKey !== connKey) {
+        fileBrowserActions.resetPane(paneId, rootPath);
+        useFileBrowserStore
+          .getState()
+          .updatePane(paneId, { connectionKey: connKey });
+      }
+    } else {
+      getOrCreatePane(paneId, rootPath);
+      useFileBrowserStore
+        .getState()
+        .updatePane(paneId, { connectionKey: connKey });
     }
-    getOrCreatePane(paneId, rootPath);
     initialized.current = true;
   }
 
