@@ -278,18 +278,12 @@ export default function LocalFileBrowser({
   });
 
   // ── Effects ──────────────────────────────────────────────────────────────
+  // Tracks the path that was last loaded so we can skip redundant loads
+  // on remount (StrictMode-safe — no mountRef that gets consumed).
+  const lastLoadedPathRef = useRef<string | null>(null);
   useEffect(() => {
-    // If files already exist in the store (module-switch remount), skip the
-    // IPC call + loading skeleton entirely. Read live from the store because
-    // the Zustand selector may hold a stale snapshot on the first render
-    // (before getOrCreatePane ran). Must NOT use a mountRef guard because
-    // React.StrictMode double-fires effects, consuming the flag on the
-    // cancelled first fire.
-    const snap = useFileBrowserStore.getState().panes[paneId];
-    if (snap && snap.files.length > 0) {
-      setPathInput(snap.currentPath);
-      return;
-    }
+    if (lastLoadedPathRef.current === currentPath) return;
+    lastLoadedPathRef.current = currentPath;
     actions.loadFiles(paneId, currentPath, listLocalFiles);
     setPathInput(currentPath);
   }, [currentPath, paneId]);
