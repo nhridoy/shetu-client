@@ -283,11 +283,18 @@ export default function LocalFileBrowser({
     setPathInput(currentPath);
   }, [currentPath, paneId]);
 
-  // Navigate to the root only when the connection identity changed (fresh
-  // connect or a different local root). A plain remount after a module
-  // switch must NOT clobber the preserved currentPath.
+  // Navigate to the root only when rootPath changes while the component
+  // stays mounted (e.g. user reconnects the pane to a different folder).
+  // On fresh mount (including remount after module switch) the init block
+  // and loadFiles effect already handle the correct currentPath — we must
+  // NOT force-navigate to root here.
   const prevRootRef = useRef<string | null>(null);
   useEffect(() => {
+    if (prevRootRef.current === null) {
+      // First render after mount — record rootPath but don't navigate.
+      prevRootRef.current = rootPath;
+      return;
+    }
     if (prevRootRef.current !== rootPath) {
       prevRootRef.current = rootPath;
       actions.navigateTo(paneId, rootPath, true);
