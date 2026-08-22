@@ -283,9 +283,16 @@ export default function LocalFileBrowser({
     setPathInput(currentPath);
   }, [currentPath, paneId]);
 
+  // Navigate to the root only when the connection identity changed (fresh
+  // connect or a different local root). A plain remount after a module
+  // switch must NOT clobber the preserved currentPath.
+  const prevRootRef = useRef<string | null>(null);
   useEffect(() => {
-    actions.navigateTo(paneId, rootPath, true);
-    setPathInput(rootPath);
+    if (prevRootRef.current !== rootPath) {
+      prevRootRef.current = rootPath;
+      actions.navigateTo(paneId, rootPath, true);
+      setPathInput(rootPath);
+    }
   }, [rootPath, paneId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: ref focus effect
