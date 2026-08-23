@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
@@ -8,6 +9,7 @@ import { useTerminalStore } from "@/stores/terminal/terminalStore";
 export default function HostsPage() {
   const { deleteHost, deleteGroup } = useHostStore();
   const { addTab } = useTerminalStore();
+  const navigate = useNavigate();
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [editingHost, setEditingHost] = useState<Host | null>(null);
@@ -26,6 +28,7 @@ export default function HostsPage() {
       authType: host.authType,
       keyId: host.keyId,
     });
+    navigate("/terminal");
   };
 
   return (
