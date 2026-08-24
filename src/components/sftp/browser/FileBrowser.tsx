@@ -143,6 +143,31 @@ export default function FileBrowser({
   const [isDropTarget, setIsDropTarget] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // ── Connection steps animation ──────────────────────────────────────────
+  const [connStep, setConnStep] = useState<number | null>(null);
+  const stepsStarted = useRef(false);
+  useEffect(() => {
+    if (stepsStarted.current) return;
+    if (files.length > 0 || error) {
+      setConnStep(null);
+      return;
+    }
+    stepsStarted.current = true;
+    const step = (i: number, delay: number) =>
+      new Promise<void>((r) =>
+        setTimeout(() => {
+          setConnStep(i);
+          r();
+        }, delay),
+      );
+    (async () => {
+      await step(0, 200);
+      await step(1, 400);
+      await step(2, 350);
+      await step(3, 300);
+    })();
+  }, [files.length, error]);
+
   // ── Marquee selection ────────────────────────────────────────────────────
   const marquee = useMarqueeSelection({
     paneId,
@@ -456,6 +481,37 @@ export default function FileBrowser({
         fileDragState={fileDragState}
         hostId={hostId}
       />
+
+      {connStep !== null && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark-900/90 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            {[
+              "Establishing SSH connection...",
+              "Opening SFTP channel...",
+              "Authenticating...",
+              "Loading directory...",
+            ].map((text, i) => (
+              <div
+                key={text}
+                className={`flex items-center gap-2 text-sm transition-opacity duration-300 ${
+                  i <= connStep
+                    ? "opacity-100 text-dark-200"
+                    : "opacity-30 text-dark-500"
+                }`}
+              >
+                {i < connStep ? (
+                  <span className="text-green-400">✓</span>
+                ) : i === connStep ? (
+                  <span className="w-3 h-3 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <span className="w-3 h-3" />
+                )}
+                {text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <FileBrowserToolbar
         currentPath={currentPath}
