@@ -66,9 +66,11 @@ export default function Terminal({
   useEffect(() => {
     if (stepsStarted.current) return;
     stepsStarted.current = true;
+    let cancelled = false;
     const step = (i: number, delay: number) =>
       new Promise<void>((r) =>
         setTimeout(() => {
+          if (cancelled) return;
           setConnStep(i);
           r();
         }, delay),
@@ -91,6 +93,9 @@ export default function Terminal({
         await step(i, steps[i].delay);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [connectionType]);
 
   // Clear connection steps when connected
