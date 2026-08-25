@@ -9,7 +9,25 @@ import {
   type Session,
 } from "@/lib/terminal/sessionManager";
 import { useHostStore } from "@/stores/hosts/hostStore";
-import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import { findLeaf, useTerminalStore } from "@/stores/terminal/terminalStore";
+
+const SSH_PROGRESS_STEP: Record<string, number> = {
+  resolving: 0,
+  connecting: 1,
+  host_key: 2,
+  authenticating: 3,
+  starting_shell: 4,
+};
+
+const SSH_STEPS = [
+  "Resolving hostname...",
+  "Establishing SSH connection...",
+  "Verifying host key...",
+  "Authenticating...",
+  "Starting shell...",
+];
+
+const LOCAL_STEPS = ["Starting shell..."];
 
 interface TerminalProps {
   hostId: string;
@@ -44,15 +62,17 @@ export default function Terminal({
   const [reconnectStatus, setReconnectStatus] = useState<
     "idle" | "reconnecting" | "failed"
   >("idle");
-  const [connStep, setConnStep] = useState<number | null>(0);
-  const stepsStarted = useRef(false);
+  const [connStep, setConnStep] = useState<number | null>(() => {
+    const tab = useTerminalStore.getState().tabs.find((t) => t.id === tabId);
+    const leaf = tab ? findLeaf(tab.root, paneId) : null;
+    return leaf && leaf.connectionStatus === "connected" ? null : 0;
+  });
 
   useEffect(() => {
     const unsub = useTerminalStore.subscribe((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      const leaf = tab.root.type === "leaf" ? tab.root : null;
-      const paneLeaf = leaf?.id === paneId ? leaf : null;
+      const paneLeaf = findLeaf(tab.root, paneId);
       if (!paneLeaf) return;
       const s = paneLeaf.connectionStatus;
       if (s === "reconnecting") setReconnectStatus("reconnecting");
@@ -62,32 +82,44 @@ export default function Terminal({
     return unsub;
   }, [tabId, paneId]);
 
-  // Connection steps animation
+  // Advance connection steps from real backend progress events
   useEffect(() => {
-    if (stepsStarted.current) return;
-    stepsStarted.current = true;
-    const delays =
-      connectionType === "local" ? [200, 300, 200] : [300, 500, 400, 300];
-    let i = 0;
-    function next() {
-      if (i >= delays.length) return;
-      i++;
-      setConnStep(i);
-      if (i < delays.length) setTimeout(next, delays[i]);
-    }
-    setTimeout(next, delays[0]);
-  }, [connectionType]);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const off = await listen<{ sessionId: string; step: string }>(
+        "ssh-progress",
+        (e) => {
+          if (e.payload.sessionId !== paneId) return;
+          const idx = SSH_PROGRESS_STEP[e.payload.step];
+          if (idx !== undefined) setConnStep(idx);
+        },
+      );
+      if (disposed) off();
+      else unlisten = off;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [paneId]);
 
-  // Clear connection steps when connected
+  // Clear connection steps once the session reaches a final state
   useEffect(() => {
     if (connStep === null) return;
     const unsub = useTerminalStore.subscribe((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      const leaf = tab.root.type === "leaf" ? tab.root : null;
-      const paneLeaf = leaf?.id === paneId ? leaf : null;
+      const paneLeaf = findLeaf(tab.root, paneId);
       if (!paneLeaf) return;
-      if (paneLeaf.connectionStatus === "connected") {
+      const s = paneLeaf.connectionStatus;
+      if (
+        s === "connected" ||
+        s === "error" ||
+        s === "disconnected" ||
+        s === "failed"
+      ) {
         setConnStep(null);
       }
     });
@@ -168,15 +200,7 @@ export default function Terminal({
     shell,
   ]);
 
-  const steps =
-    connectionType === "local"
-      ? ["Detecting shell...", "Initializing PTY...", "Starting session..."]
-      : [
-          "Resolving hostname...",
-          "Establishing SSH connection...",
-          "Verifying host key...",
-          "Authenticating...",
-        ];
+  const steps = connectionType === "local" ? LOCAL_STEPS : SSH_STEPS;
 
   return (
     <div ref={containerRef} className="w-full h-full relative">

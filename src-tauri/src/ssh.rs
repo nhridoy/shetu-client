@@ -309,6 +309,13 @@ pub struct SshHandler {
     auto_accept: bool,
 }
 
+pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str) {
+    let _ = app.emit(
+        "ssh-progress",
+        serde_json::json!({ "sessionId": session_id, "step": step }),
+    );
+}
+
 impl SshHandler {
     pub fn new(
         host: String,
@@ -330,6 +337,7 @@ impl russh::client::Handler for SshHandler {
         &mut self,
         server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
+        emit_progress(&self.app, &self.session_id, "host_key");
         let fingerprint = fingerprint_of(server_public_key);
         let (host, port) = (self.host.clone(), self.port);
         let known = {
@@ -410,8 +418,15 @@ async fn resolve_addr(host: &str, port: u16) -> Result<std::net::SocketAddr, Str
 async fn connect_authenticated(
     handler: SshHandler,
     config: &SshConfig,
+    progress: Option<(&tauri::AppHandle, &str)>,
 ) -> Result<russh::client::Handle<SshHandler>, String> {
+    if let Some((app, sid)) = progress {
+        emit_progress(app, sid, "resolving");
+    }
     let addr = resolve_addr(&config.host, config.port).await?;
+    if let Some((app, sid)) = progress {
+        emit_progress(app, sid, "connecting");
+    }
     let socket = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         tokio::net::TcpStream::connect(addr),
@@ -423,6 +438,9 @@ async fn connect_authenticated(
     let mut session = russh::client::connect_stream(client_config, socket, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
+    if let Some((app, sid)) = progress {
+        emit_progress(app, sid, "authenticating");
+    }
 
     // No explicit credentials — send NONE auth request.
     // Servers that allow passwordless login (e.g. telehack.com) accept this;
@@ -488,7 +506,7 @@ async fn probe_os(
         auto_accept: true,
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let session = connect_authenticated(handler, config).await.ok()?;
+        let session = connect_authenticated(handler, config, None).await.ok()?;
         let mut channel = session.channel_open_session().await.ok()?;
         channel
             .exec(
@@ -620,7 +638,9 @@ async fn run_connect_session(
             auto_accept: false,
         };
 
-        let session = match connect_authenticated(handler, &config).await {
+        let session = match connect_authenticated(handler, &config, Some((&app_handle, &session_id)))
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 emit(&app_handle, "error", &e);
@@ -629,6 +649,7 @@ async fn run_connect_session(
             }
         };
 
+        emit_progress(&app_handle, &session_id, "starting_shell");
         let channel = match session.channel_open_session().await {
             Ok(c) => c,
             Err(e) => {

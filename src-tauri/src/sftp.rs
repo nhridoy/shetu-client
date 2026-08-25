@@ -125,6 +125,7 @@ pub async fn sftp_connect(
         false,
     );
     let client_config = Arc::new(russh::client::Config::default());
+    crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
     let mut ssh = russh::client::connect_stream(
         client_config,
         tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port))
@@ -143,6 +144,7 @@ pub async fn sftp_connect(
             Arc::new(key),
             Some(russh::keys::HashAlg::Sha256),
         );
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_publickey(config.username.clone(), key_with_alg)
             .await
@@ -151,6 +153,7 @@ pub async fn sftp_connect(
             return Err("public key authentication rejected".to_string());
         }
     } else if let Some(ref password) = config.password {
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_password(config.username.clone(), password.clone())
             .await
@@ -159,6 +162,7 @@ pub async fn sftp_connect(
             return Err("password authentication rejected".to_string());
         }
     } else {
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_none(config.username.clone())
             .await
@@ -168,6 +172,7 @@ pub async fn sftp_connect(
         }
     }
 
+    crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
     let sftp = open_sftp_from_handle(&ssh).await?;
 
     let result = SftpConnectResult {
@@ -233,6 +238,7 @@ pub async fn sftp_connect_saved(
         false,
     );
     let client_config = Arc::new(russh::client::Config::default());
+    crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
     let mut ssh = russh::client::connect_stream(
         client_config,
         tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port))
@@ -251,6 +257,7 @@ pub async fn sftp_connect_saved(
             Arc::new(key),
             Some(russh::keys::HashAlg::Sha256),
         );
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_publickey(config.username.clone(), key_with_alg)
             .await
@@ -259,6 +266,7 @@ pub async fn sftp_connect_saved(
             return Err("public key authentication rejected".to_string());
         }
     } else if let Some(ref password) = config.password {
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_password(config.username.clone(), password.clone())
             .await
@@ -267,6 +275,7 @@ pub async fn sftp_connect_saved(
             return Err("password authentication rejected".to_string());
         }
     } else {
+        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
         let auth = ssh
             .authenticate_none(config.username.clone())
             .await
@@ -276,6 +285,7 @@ pub async fn sftp_connect_saved(
         }
     }
 
+    crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
     let sftp = open_sftp_from_handle(&ssh).await?;
 
     let result = SftpConnectResult {

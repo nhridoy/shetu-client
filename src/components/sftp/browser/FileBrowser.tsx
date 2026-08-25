@@ -41,6 +41,21 @@ interface FileBrowserProps {
   onOpenInEditor?: (file: FileItem | null) => void;
 }
 
+const SFTP_PROGRESS_STEP: Record<string, number> = {
+  resolving: 0,
+  connecting: 0,
+  host_key: 1,
+  authenticating: 2,
+  sftp_channel: 3,
+};
+
+const SFTP_STEPS = [
+  "Establishing SSH connection...",
+  "Verifying host key...",
+  "Authenticating...",
+  "Opening SFTP channel...",
+];
+
 export default function FileBrowser({
   paneId = "standalone",
   hostId,
@@ -143,25 +158,39 @@ export default function FileBrowser({
   const [isDropTarget, setIsDropTarget] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // ── Connection steps animation ──────────────────────────────────────────
-  const [connStep, setConnStep] = useState<number | null>(null);
-  const stepsStarted = useRef(false);
+  // ── Connection steps animation (driven by real backend progress events) ──
+  const [connStep, setConnStep] = useState<number | null>(() =>
+    files.length > 0 || error ? null : 0,
+  );
   useEffect(() => {
-    if (stepsStarted.current || files.length > 0 || error) return;
-    stepsStarted.current = true;
-    const delays = [200, 400, 350, 300];
-    let i = 0;
-    function next() {
-      if (i >= delays.length) return;
-      i++;
-      setConnStep(i);
-      if (i < delays.length) setTimeout(next, delays[i]);
-    }
-    setTimeout(next, delays[0]);
-  }, [files.length, error]);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const off = await listen<{ sessionId: string; step: string }>(
+        "ssh-progress",
+        (e) => {
+          if (e.payload.sessionId !== paneId) return;
+          const idx = SFTP_PROGRESS_STEP[e.payload.step];
+          if (idx !== undefined) setConnStep(idx);
+        },
+      );
+      if (disposed) off();
+      else unlisten = off;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [paneId]);
   useEffect(() => {
     if (files.length > 0 || error) setConnStep(null);
   }, [files.length, error]);
+  const prevLoading = useRef(isLoading);
+  useEffect(() => {
+    if (prevLoading.current && !isLoading) setConnStep(null);
+    prevLoading.current = isLoading;
+  }, [isLoading]);
 
   // ── Marquee selection ────────────────────────────────────────────────────
   const marquee = useMarqueeSelection({
@@ -480,12 +509,7 @@ export default function FileBrowser({
       {connStep !== null && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark-900/90 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
-            {[
-              "Establishing SSH connection...",
-              "Opening SFTP channel...",
-              "Authenticating...",
-              "Loading directory...",
-            ].map((text, i) => (
+            {SFTP_STEPS.map((text, i) => (
               <div
                 key={text}
                 className={`flex items-center gap-2 text-sm transition-opacity duration-300 ${
