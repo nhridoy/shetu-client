@@ -85,17 +85,20 @@ async function connectViaTauri(session: Session) {
   const rows = xterm.rows;
 
   const update = useTerminalStore.getState().updatePaneConnectionStatus;
+  const updateReconnect = useTerminalStore.getState().updatePaneReconnectState;
   update(params.tabId, params.paneId, "connecting");
 
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectCleanup: (() => void) | null = null;
   let destroyed = false;
+
+  const clearReconnect = () => {
+    reconnectCleanup?.();
+    reconnectCleanup = null;
+  };
 
   session.cancelReconnect = () => {
     destroyed = true;
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
+    clearReconnect();
   };
 
   const doConnect = async () => {
@@ -125,28 +128,70 @@ async function connectViaTauri(session: Session) {
     }
   };
 
-  const startReconnect = (attempt: number) => {
+  const MAX_RECONNECT_ATTEMPTS = 2;
+  const RECONNECT_COUNTDOWN = 5;
+
+  const startReconnect = () => {
     if (destroyed) return;
-    const maxAttempts = 5;
-    if (attempt >= maxAttempts) {
-      update(params.tabId, params.paneId, "failed");
-      return;
-    }
+    let attempt = 1;
+    let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
-    update(params.tabId, params.paneId, "reconnecting");
-    const delay = Math.min(1000 * 2 ** attempt, 30000);
-    xterm.writeln(
-      `\r\n\x1b[33mReconnecting in ${Math.round(delay / 1000)}s... (attempt ${attempt + 1}/${maxAttempts})\x1b[0m`,
-    );
+    const cleanup = () => {
+      if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+    };
 
-    retryTimer = setTimeout(async () => {
+    reconnectCleanup = cleanup;
+
+    const doRetry = async () => {
+      cleanup();
       if (destroyed) return;
+
       try {
         await doConnect();
       } catch {
-        startReconnect(attempt + 1);
+        attempt++;
+        if (attempt > MAX_RECONNECT_ATTEMPTS || destroyed) {
+          update(params.tabId, params.paneId, "failed");
+          updateReconnect(params.tabId, params.paneId, null);
+          return;
+        }
+        startCountdown();
       }
-    }, delay);
+    };
+
+    const startCountdown = () => {
+      let remaining = RECONNECT_COUNTDOWN;
+
+      const emit = () => {
+        updateReconnect(params.tabId, params.paneId, {
+          attempt,
+          maxAttempts: MAX_RECONNECT_ATTEMPTS,
+          countdown: remaining,
+        });
+      };
+
+      update(params.tabId, params.paneId, "reconnecting");
+      emit();
+
+      countdownTimer = setInterval(() => {
+        if (destroyed) {
+          cleanup();
+          return;
+        }
+        remaining--;
+        if (remaining <= 0) {
+          cleanup();
+          doRetry();
+        } else {
+          emit();
+        }
+      }, 1000);
+    };
+
+    startCountdown();
   };
 
   try {
@@ -184,10 +229,8 @@ async function connectViaTauri(session: Session) {
 
       switch (type) {
         case "connected":
-          if (retryTimer) {
-            clearTimeout(retryTimer);
-            retryTimer = null;
-          }
+          clearReconnect();
+          updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
           if (event.payload.os && params.hostId) {
             void useHostStore
@@ -199,7 +242,7 @@ async function connectViaTauri(session: Session) {
           xterm.write(data);
           break;
         case "disconnected":
-          startReconnect(0);
+          startReconnect();
           break;
         case "error":
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);

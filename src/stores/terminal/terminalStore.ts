@@ -19,6 +19,12 @@ type ConnectionStatus =
   | "reconnecting"
   | "failed";
 
+export interface ReconnectState {
+  attempt: number;
+  maxAttempts: number;
+  countdown: number;
+}
+
 export interface LeafNode {
   type: "leaf";
   id: string;
@@ -33,6 +39,7 @@ export interface LeafNode {
   shell?: string;
   title: string;
   connectionStatus: ConnectionStatus;
+  reconnect: ReconnectState | null;
   lastConnected?: string;
   size: number;
 }
@@ -142,6 +149,11 @@ interface TerminalState {
     paneId: string,
     status: ConnectionStatus,
   ) => void;
+  updatePaneReconnectState: (
+    tabId: string,
+    paneId: string,
+    reconnect: ReconnectState | null,
+  ) => void;
   updatePaneTitle: (tabId: string, paneId: string, title: string) => void;
   setPaneSizes: (tabId: string, splitId: string, sizes: number[]) => void;
   removeTab: (id: string) => void;
@@ -195,6 +207,7 @@ function makeEmptyLeaf(): LeafNode {
     hostName: "",
     title: "Empty",
     connectionStatus: "disconnected",
+    reconnect: null,
     size: 100,
   };
 }
@@ -226,6 +239,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       shell: options?.shell,
       title: hostName,
       connectionStatus: "connecting",
+      reconnect: null,
       size: 100,
     };
     const tabId = nextTabId();
@@ -288,6 +302,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
           shell: options?.shell,
           title: hostName,
           connectionStatus: "connecting",
+          reconnect: null,
         };
         return {
           ...tab,
@@ -318,6 +333,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
           hostName: "",
           title: "Empty",
           connectionStatus: "disconnected",
+          reconnect: null,
           size: 50,
         };
         const existingLeaf: LeafNode = { ...leaf, size: 50 };
@@ -406,6 +422,23 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
           root: replaceNode(tab.root, paneId, {
             ...leaf,
             connectionStatus: status,
+          }),
+        };
+      }),
+    }));
+  },
+
+  updatePaneReconnectState: (tabId, paneId, reconnect) => {
+    set((s) => ({
+      tabs: s.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        const leaf = findLeafUtil(tab.root, paneId);
+        if (!leaf) return tab;
+        return {
+          ...tab,
+          root: replaceNode(tab.root, paneId, {
+            ...leaf,
+            reconnect,
           }),
         };
       }),

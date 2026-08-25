@@ -9,7 +9,11 @@ import {
   type Session,
 } from "@/lib/terminal/sessionManager";
 import { useHostStore } from "@/stores/hosts/hostStore";
-import { findLeaf, useTerminalStore } from "@/stores/terminal/terminalStore";
+import {
+  findLeaf,
+  type ReconnectState,
+  useTerminalStore,
+} from "@/stores/terminal/terminalStore";
 
 const SSH_PROGRESS_STEP: Record<string, number> = {
   resolving: 0,
@@ -59,9 +63,10 @@ export default function Terminal({
   isActive,
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [reconnectStatus, setReconnectStatus] = useState<
-    "idle" | "reconnecting" | "failed"
-  >("idle");
+  const [reconnectState, setReconnectState] = useState<ReconnectState | null>(
+    null,
+  );
+  const [connectionStatus, setConnectionStatus] = useState<string>("idle");
   const [connStep, setConnStep] = useState<number | null>(() => {
     const tab = useTerminalStore.getState().tabs.find((t) => t.id === tabId);
     const leaf = tab ? findLeaf(tab.root, paneId) : null;
@@ -72,12 +77,10 @@ export default function Terminal({
     const unsub = useTerminalStore.subscribe((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      const paneLeaf = findLeaf(tab.root, paneId);
-      if (!paneLeaf) return;
-      const s = paneLeaf.connectionStatus;
-      if (s === "reconnecting") setReconnectStatus("reconnecting");
-      else if (s === "failed") setReconnectStatus("failed");
-      else setReconnectStatus("idle");
+      const leaf = findLeaf(tab.root, paneId);
+      if (!leaf) return;
+      setReconnectState(leaf.reconnect);
+      setConnectionStatus(leaf.connectionStatus);
     });
     return unsub;
   }, [tabId, paneId]);
@@ -118,7 +121,8 @@ export default function Terminal({
         s === "connected" ||
         s === "error" ||
         s === "disconnected" ||
-        s === "failed"
+        s === "failed" ||
+        s === "reconnecting"
       ) {
         setConnStep(null);
       }
@@ -236,49 +240,54 @@ export default function Terminal({
           </div>
         </div>
       )}
-      {reconnectStatus !== "idle" && (
+      {reconnectState && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/80 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
-            {reconnectStatus === "reconnecting" ? (
-              <>
-                <ArrowClockwiseIcon
-                  className="w-6 h-6 text-primary-400 animate-spin"
-                  weight="bold"
-                />
-                <span className="text-sm text-dark-200">Reconnecting...</span>
-              </>
-            ) : (
-              <>
-                <WarningCircleIcon
-                  className="w-6 h-6 text-red-400"
-                  weight="bold"
-                />
-                <span className="text-sm text-dark-200">Connection failed</span>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const session = getOrCreateSession({
-                      paneId,
-                      tabId,
-                      hostId,
-                      hostName,
-                      hostAddress,
-                      hostPort,
-                      hostUsername,
-                      authType,
-                      keyId,
-                      connectionType,
-                      shell,
-                    });
-                    setReconnectStatus("idle");
-                    useTerminalStore
-                      .getState()
-                      .updatePaneConnectionStatus(tabId, paneId, "connecting");
-                    session.cancelReconnect?.();
-                    const { invoke } = await import("@tauri-apps/api/core");
-                    const savedHost = useHostStore
-                      .getState()
-                      .hosts.find((h) => h.id === hostId);
+            <ArrowClockwiseIcon
+              className="w-6 h-6 text-primary-400 animate-spin"
+              weight="bold"
+            />
+            <span className="text-sm text-dark-200">
+              Reconnecting in {reconnectState.countdown}s... (attempt{" "}
+              {reconnectState.attempt}/{reconnectState.maxAttempts})
+            </span>
+          </div>
+        </div>
+      )}
+      {!reconnectState && connectionStatus === "failed" && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <WarningCircleIcon className="w-6 h-6 text-red-400" weight="bold" />
+            <span className="text-sm text-dark-200">Connection lost</span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  const session = getOrCreateSession({
+                    paneId,
+                    tabId,
+                    hostId,
+                    hostName,
+                    hostAddress,
+                    hostPort,
+                    hostUsername,
+                    authType,
+                    keyId,
+                    connectionType,
+                    shell,
+                  });
+                  useTerminalStore
+                    .getState()
+                    .updatePaneReconnectState(tabId, paneId, null);
+                  useTerminalStore
+                    .getState()
+                    .updatePaneConnectionStatus(tabId, paneId, "connecting");
+                  session.cancelReconnect?.();
+                  const { invoke } = await import("@tauri-apps/api/core");
+                  const savedHost = useHostStore
+                    .getState()
+                    .hosts.find((h) => h.id === hostId);
+                  try {
                     if (savedHost) {
                       await invoke("connect_saved", {
                         sessionId: paneId,
@@ -303,13 +312,22 @@ export default function Terminal({
                         rows: session.xterm.rows,
                       });
                     }
-                  }}
-                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-500 transition-colors"
-                >
-                  Reconnect
-                </button>
-              </>
-            )}
+                  } catch {
+                    // Reconnect will be triggered by the disconnected event
+                  }
+                }}
+                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-500 transition-colors"
+              >
+                Reconnect
+              </button>
+              <button
+                type="button"
+                onClick={() => useTerminalStore.getState().removeTab(tabId)}
+                className="px-3 py-1.5 text-xs font-medium text-dark-200 bg-dark-700 rounded hover:bg-dark-600 transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
