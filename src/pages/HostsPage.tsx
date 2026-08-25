@@ -28,7 +28,7 @@ export default function HostsPage() {
       authType: host.authType,
       keyId: host.keyId,
     });
-    setTimeout(() => navigate("/terminal"), 0);
+    navigate("/terminal");
   };
 
   return (
