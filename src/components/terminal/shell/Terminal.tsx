@@ -66,54 +66,33 @@ export default function Terminal({
   useEffect(() => {
     if (stepsStarted.current) return;
     stepsStarted.current = true;
-    let cancelled = false;
-    const step = (i: number, delay: number) =>
-      new Promise<void>((r) =>
-        setTimeout(() => {
-          if (cancelled) return;
-          setConnStep(i);
-          r();
-        }, delay),
-      );
-    const isLocal = connectionType === "local";
-    const steps = isLocal
-      ? [
-          { text: "Detecting shell...", delay: 200 },
-          { text: "Initializing PTY...", delay: 300 },
-          { text: "Starting session...", delay: 200 },
-        ]
-      : [
-          { text: "Resolving hostname...", delay: 300 },
-          { text: "Establishing SSH connection...", delay: 500 },
-          { text: "Verifying host key...", delay: 400 },
-          { text: "Authenticating...", delay: 300 },
-        ];
-    (async () => {
-      for (let i = 0; i < steps.length; i++) {
-        await step(i, steps[i].delay);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const delays =
+      connectionType === "local" ? [200, 300, 200] : [300, 500, 400, 300];
+    let i = 0;
+    function next() {
+      if (i >= delays.length) return;
+      i++;
+      setConnStep(i);
+      if (i < delays.length) setTimeout(next, delays[i]);
+    }
+    setTimeout(next, delays[0]);
   }, [connectionType]);
 
   // Clear connection steps when connected
   useEffect(() => {
-    if (reconnectStatus === "idle" && connStep !== null) {
-      const unsub = useTerminalStore.subscribe((state) => {
-        const tab = state.tabs.find((t) => t.id === tabId);
-        if (!tab) return;
-        const leaf = tab.root.type === "leaf" ? tab.root : null;
-        const paneLeaf = leaf?.id === paneId ? leaf : null;
-        if (!paneLeaf) return;
-        if (paneLeaf.connectionStatus === "connected") {
-          setConnStep(null);
-        }
-      });
-      return unsub;
-    }
-  }, [reconnectStatus, connStep, tabId, paneId]);
+    if (connStep === null) return;
+    const unsub = useTerminalStore.subscribe((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+      const leaf = tab.root.type === "leaf" ? tab.root : null;
+      const paneLeaf = leaf?.id === paneId ? leaf : null;
+      if (!paneLeaf) return;
+      if (paneLeaf.connectionStatus === "connected") {
+        setConnStep(null);
+      }
+    });
+    return unsub;
+  }, [connStep, tabId, paneId]);
 
   useEffect(() => {
     const el = containerRef.current;

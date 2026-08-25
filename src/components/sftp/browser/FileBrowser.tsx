@@ -149,19 +149,15 @@ export default function FileBrowser({
   useEffect(() => {
     if (stepsStarted.current || files.length > 0 || error) return;
     stepsStarted.current = true;
-    const step = (i: number, delay: number) =>
-      new Promise<void>((r) =>
-        setTimeout(() => {
-          setConnStep(i);
-          r();
-        }, delay),
-      );
-    (async () => {
-      await step(0, 200);
-      await step(1, 400);
-      await step(2, 350);
-      await step(3, 300);
-    })();
+    const delays = [200, 400, 350, 300];
+    let i = 0;
+    function next() {
+      if (i >= delays.length) return;
+      i++;
+      setConnStep(i);
+      if (i < delays.length) setTimeout(next, delays[i]);
+    }
+    setTimeout(next, delays[0]);
   }, [files.length, error]);
   useEffect(() => {
     if (files.length > 0 || error) setConnStep(null);
