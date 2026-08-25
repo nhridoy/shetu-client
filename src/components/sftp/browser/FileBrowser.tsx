@@ -147,11 +147,7 @@ export default function FileBrowser({
   const [connStep, setConnStep] = useState<number | null>(null);
   const stepsStarted = useRef(false);
   useEffect(() => {
-    if (stepsStarted.current) return;
-    if (files.length > 0 || error) {
-      setConnStep(null);
-      return;
-    }
+    if (stepsStarted.current || files.length > 0 || error) return;
     stepsStarted.current = true;
     const step = (i: number, delay: number) =>
       new Promise<void>((r) =>
@@ -166,6 +162,9 @@ export default function FileBrowser({
       await step(2, 350);
       await step(3, 300);
     })();
+  }, [files.length, error]);
+  useEffect(() => {
+    if (files.length > 0 || error) setConnStep(null);
   }, [files.length, error]);
 
   // ── Marquee selection ────────────────────────────────────────────────────
