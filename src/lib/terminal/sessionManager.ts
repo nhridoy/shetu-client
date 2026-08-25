@@ -87,31 +87,6 @@ async function connectViaTauri(session: Session) {
   const update = useTerminalStore.getState().updatePaneConnectionStatus;
   update(params.tabId, params.paneId, "connecting");
 
-  const hostLabel = params.hostAddress
-    ? `${params.hostAddress}:${params.hostPort || 22}`
-    : params.hostName;
-
-  xterm.writeln("\x1b[1;36mTermVault\x1b[0m");
-  xterm.writeln("");
-  xterm.writeln(`\x1b[37mConnecting to \x1b[1;37m${hostLabel}\x1b[0m`);
-  xterm.writeln("");
-
-  const step = (text: string, delayMs: number) =>
-    new Promise<void>((r) => {
-      setTimeout(() => {
-        xterm.writeln(`  \x1b[32m✓\x1b[0m \x1b[2m${text}\x1b[0m`);
-        r();
-      }, delayMs);
-    });
-
-  await step("Resolving hostname...", 300);
-  await step("Establishing SSH connection...", 500);
-  await step("Verifying host key...", 400);
-  await step("Authenticating...", 300);
-  xterm.writeln("");
-  xterm.writeln("\x1b[2m─── Shell ready ───\x1b[0m");
-  xterm.writeln("");
-
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let destroyed = false;
 
@@ -275,27 +250,6 @@ async function connectLocal(session: Session) {
 
   const update = useTerminalStore.getState().updatePaneConnectionStatus;
   update(params.tabId, params.paneId, "connecting");
-
-  const shellName = params.shell || "default shell";
-  xterm.writeln("\x1b[1;36mTermVault\x1b[0m");
-  xterm.writeln("");
-  xterm.writeln(`\x1b[37mStarting \x1b[1;37m${shellName}\x1b[0m`);
-  xterm.writeln("");
-
-  const step = (text: string, delayMs: number) =>
-    new Promise<void>((r) => {
-      setTimeout(() => {
-        xterm.writeln(`  \x1b[32m✓\x1b[0m \x1b[2m${text}\x1b[0m`);
-        r();
-      }, delayMs);
-    });
-
-  await step("Detecting shell...", 200);
-  await step("Initializing PTY...", 300);
-  await step("Starting session...", 200);
-  xterm.writeln("");
-  xterm.writeln("\x1b[2m─── Shell ready ───\x1b[0m");
-  xterm.writeln("");
 
   try {
     await invoke("connect_local", {

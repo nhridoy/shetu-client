@@ -44,6 +44,8 @@ export default function Terminal({
   const [reconnectStatus, setReconnectStatus] = useState<
     "idle" | "reconnecting" | "failed"
   >("idle");
+  const [connStep, setConnStep] = useState<number | null>(0);
+  const stepsStarted = useRef(false);
 
   useEffect(() => {
     const unsub = useTerminalStore.subscribe((state) => {
@@ -59,6 +61,54 @@ export default function Terminal({
     });
     return unsub;
   }, [tabId, paneId]);
+
+  // Connection steps animation
+  useEffect(() => {
+    if (stepsStarted.current) return;
+    stepsStarted.current = true;
+    const step = (i: number, delay: number) =>
+      new Promise<void>((r) =>
+        setTimeout(() => {
+          setConnStep(i);
+          r();
+        }, delay),
+      );
+    const isLocal = connectionType === "local";
+    const steps = isLocal
+      ? [
+          { text: "Detecting shell...", delay: 200 },
+          { text: "Initializing PTY...", delay: 300 },
+          { text: "Starting session...", delay: 200 },
+        ]
+      : [
+          { text: "Resolving hostname...", delay: 300 },
+          { text: "Establishing SSH connection...", delay: 500 },
+          { text: "Verifying host key...", delay: 400 },
+          { text: "Authenticating...", delay: 300 },
+        ];
+    (async () => {
+      for (let i = 0; i < steps.length; i++) {
+        await step(i, steps[i].delay);
+      }
+    })();
+  }, [connectionType]);
+
+  // Clear connection steps when connected
+  useEffect(() => {
+    if (reconnectStatus === "idle" && connStep !== null) {
+      const unsub = useTerminalStore.subscribe((state) => {
+        const tab = state.tabs.find((t) => t.id === tabId);
+        if (!tab) return;
+        const leaf = tab.root.type === "leaf" ? tab.root : null;
+        const paneLeaf = leaf?.id === paneId ? leaf : null;
+        if (!paneLeaf) return;
+        if (paneLeaf.connectionStatus === "connected") {
+          setConnStep(null);
+        }
+      });
+      return unsub;
+    }
+  }, [reconnectStatus, connStep, tabId, paneId]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -134,8 +184,50 @@ export default function Terminal({
     shell,
   ]);
 
+  const steps =
+    connectionType === "local"
+      ? ["Detecting shell...", "Initializing PTY...", "Starting session..."]
+      : [
+          "Resolving hostname...",
+          "Establishing SSH connection...",
+          "Verifying host key...",
+          "Authenticating...",
+        ];
+
   return (
     <div ref={containerRef} className="w-full h-full relative">
+      {connStep !== null && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/90 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <span className="text-xs font-medium text-dark-400 mb-1">
+              {connectionType === "local"
+                ? hostName || "Local"
+                : hostAddress
+                  ? `${hostAddress}:${hostPort || 22}`
+                  : hostName}
+            </span>
+            {steps.map((text, i) => (
+              <div
+                key={text}
+                className={`flex items-center gap-2 text-sm transition-opacity duration-300 ${
+                  i <= connStep
+                    ? "opacity-100 text-dark-200"
+                    : "opacity-30 text-dark-500"
+                }`}
+              >
+                {i < connStep ? (
+                  <span className="text-green-400">✓</span>
+                ) : i === connStep ? (
+                  <span className="w-3 h-3 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <span className="w-3 h-3" />
+                )}
+                {text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {reconnectStatus !== "idle" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/80 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
