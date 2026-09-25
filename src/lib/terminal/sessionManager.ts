@@ -295,13 +295,6 @@ async function connectLocal(session: Session) {
   update(params.tabId, params.paneId, "connecting");
 
   try {
-    await invoke("connect_local", {
-      sessionId: params.paneId,
-      shell: params.shell || null,
-      cols,
-      rows,
-    });
-
     const unlisten = await listen<{
       sessionId: string;
       type: string;
@@ -351,6 +344,13 @@ async function connectLocal(session: Session) {
       } catch {
         // Session may have been closed
       }
+    });
+
+    await invoke("connect_local", {
+      sessionId: params.paneId,
+      shell: params.shell || null,
+      cols,
+      rows,
     });
   } catch (err) {
     xterm.writeln(`\r\n\x1b[31mFailed to start shell: ${err}\x1b[0m`);

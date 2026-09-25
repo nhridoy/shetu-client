@@ -47,7 +47,7 @@ export default function Layout() {
     } else if (location.pathname === "/editor") {
       setActiveView("editor");
     } else if (location.pathname === "/terminal") {
-      setActiveView("terminal");
+      setActiveView(useTerminalStore.getState().activeTabId ?? "terminal");
     } else if (isVaultPage) {
       setActiveView("vault");
     }

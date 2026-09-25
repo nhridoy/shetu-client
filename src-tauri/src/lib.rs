@@ -17,6 +17,7 @@ use std::thread;
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
 use portable_pty::{native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, PtyPair, PtySize};
 use tauri::{Emitter, Listener, Manager};
+#[cfg(target_os = "windows")]
 use tauri_plugin_prevent_default::PlatformOptions;
 
 pub struct AppState {
@@ -941,11 +942,13 @@ pub fn run() {
         .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_prevent_default::Builder::new()
-                .platform(PlatformOptions::new().browser_accelerator_keys(false))
-                .build(),
-        )
+        .plugin({
+            let builder = tauri_plugin_prevent_default::Builder::new();
+            #[cfg(target_os = "windows")]
+            let builder =
+                builder.platform(PlatformOptions::new().browser_accelerator_keys(false));
+            builder.build()
+        })
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
