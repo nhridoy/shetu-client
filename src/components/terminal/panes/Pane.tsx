@@ -107,7 +107,7 @@ export default function Pane({
         onSplitV={() => splitPane(tabId, pane.id, "vertical")}
         onClose={() => removePane(tabId, pane.id)}
         extra={
-          pane.hostId ? (
+          pane.hostId && pane.connectionType !== "local" ? (
             <Button
               type="button"
               variant="ghost"
@@ -181,7 +181,7 @@ export default function Pane({
       </div>
 
       {/* Port Forwarding Drawer */}
-      {showPortForwarding && (
+      {showPortForwarding && pane.hostId && pane.connectionType !== "local" && (
         <div className="absolute inset-0 z-50 flex">
           <div className="w-80 bg-dark-900 border-l border-dark-700 flex flex-col">
             <div className="flex items-center justify-between p-2 border-b border-dark-700">
@@ -199,7 +199,7 @@ export default function Pane({
               </Button>
             </div>
             <div className="flex-1 overflow-hidden">
-              <PortForwarding hostId={pane.hostId} />
+              <PortForwarding hostId={pane.hostId} paneId={pane.id} />
             </div>
           </div>
           {/* Backdrop */}

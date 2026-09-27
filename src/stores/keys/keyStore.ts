@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
@@ -113,11 +114,19 @@ export const useKeyStore = create<KeyState>((set, get) => ({
   importKey: async (key) => {
     const vaultId = useVaultStore.getState().currentVaultId;
     if (!vaultId) {
-      set({ isLoading: false, error: "No vault selected" });
-      return;
+      const error = new Error("No vault selected");
+      set({ isLoading: false, error: error.message });
+      throw error;
     }
     set({ isLoading: true, error: null });
     try {
+      const publicKey =
+        key.publicKey?.trim() ||
+        (key.encryptedPrivateKey
+          ? await invoke<string>("derive_public_key", {
+              privateKey: key.encryptedPrivateKey,
+            })
+          : "");
       const row = await upsertRow(
         "keys",
         {
@@ -127,7 +136,7 @@ export const useKeyStore = create<KeyState>((set, get) => ({
           description: key.description ?? null,
           key_type: key.keyType ?? "ed25519",
           fingerprint: key.fingerprint ?? null,
-          public_key: key.publicKey ?? null,
+          public_key: publicKey || null,
           sort_order: 0,
         },
         {
@@ -143,7 +152,7 @@ export const useKeyStore = create<KeyState>((set, get) => ({
         name: row.name ?? "",
         description: row.description ?? undefined,
         keyType: key.keyType ?? "ed25519",
-        publicKey: key.publicKey ?? "",
+        publicKey,
         encryptedPrivateKey: "",
         fingerprint: key.fingerprint,
         createdAt: String(row.created_at),
@@ -151,6 +160,7 @@ export const useKeyStore = create<KeyState>((set, get) => ({
       set({ keys: [created, ...get().keys], isLoading: false });
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      throw err;
     }
   },
 

@@ -3,6 +3,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
 import FileInput from "@/components/ui/FileInput";
+import { FormBase } from "@/components/ui/forms/FormBase";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import Modal from "@/components/ui/Modal";
 import { extractError } from "@/lib/common/extractError";
@@ -36,8 +37,6 @@ export default function ImportKeyModal({
       resolver: zodResolver(importKeyFormSchema),
       defaultValues: importKeyFormDefaultValues,
     });
-
-  const privateKey = watch("privateKey");
 
   const handleFile = async (file: File) => {
     setError(null);
@@ -158,7 +157,11 @@ export default function ImportKeyModal({
           description="Supports PEM and OpenSSH formats"
         />
       ) : (
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form
+          id="import-key-form"
+          onSubmit={handleSubmit(onSubmit)}
+          className="space-y-4"
+        >
           <FormInput
             name="name"
             label="Key Name"
@@ -172,26 +175,25 @@ export default function ImportKeyModal({
             control={control}
             placeholder="Production server key"
           />
-          <div>
-            <label
-              htmlFor="privateKey"
-              className="block mb-2 text-sm text-dark-300"
-            >
-              Private Key <span className="text-red-400 ml-0.5">*</span>
-            </label>
-            <textarea
-              id="privateKey"
-              value={privateKey}
-              onChange={(e) => setValue("privateKey", e.target.value)}
-              className="w-full px-4 py-3 font-mono text-sm text-white rounded-lg bg-dark-800 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-              rows={4}
-              maxLength={65536}
-            />
-          </div>
+          <FormBase
+            name="privateKey"
+            label="Private Key"
+            control={control}
+            required
+          >
+            {(field) => (
+              <textarea
+                {...field}
+                className="w-full px-4 py-3 font-mono text-sm text-white rounded-lg bg-dark-800 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                rows={4}
+                maxLength={65536}
+              />
+            )}
+          </FormBase>
           <FormInput
             name="publicKey"
-            label="Public Key (optional — auto-derived if empty)"
+            label="Public Key (optional)"
             control={control}
             placeholder="ssh-ed25519 AAAA..."
           />
@@ -225,7 +227,7 @@ export default function ImportKeyModal({
         {mode === "paste" && (
           <Button
             type="submit"
-            onClick={handleSubmit(onSubmit)}
+            form="import-key-form"
             size="sm"
             disabled={isPending}
           >

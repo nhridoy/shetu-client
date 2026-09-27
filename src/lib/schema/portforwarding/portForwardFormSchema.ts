@@ -1,27 +1,42 @@
 import { z } from "zod";
 
-export const portForwardFormSchema = z.object({
-  localPort: z
-    .number()
-    .int({ error: "Port must be an integer" })
-    .min(1, { error: "Port must be at least 1" })
-    .max(65535, { error: "Port must be at most 65535" }),
-  remoteHost: z
-    .string()
-    .trim()
-    .min(1, { error: "Remote host is required" })
-    .max(255, { error: "Remote host must be at most 255 characters" }),
-  remotePort: z
-    .number()
-    .int({ error: "Port must be an integer" })
-    .min(1, { error: "Port must be at least 1" })
-    .max(65535, { error: "Port must be at most 65535" }),
-});
+const name = z.string().trim().min(1, "Name is required").max(128);
+const port = z
+  .number()
+  .int("Port must be an integer")
+  .min(1, "Port must be at least 1")
+  .max(65535, "Port must be at most 65535");
+const destinationHost = z
+  .string()
+  .trim()
+  .min(1, "Destination host is required")
+  .max(255);
+
+export const portForwardFormSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("local"),
+    name,
+    localPort: port,
+    destinationHost,
+    destinationPort: port,
+  }),
+  z.object({
+    mode: z.literal("remote"),
+    name,
+    remoteBindAddress: z.enum(["127.0.0.1", "0.0.0.0"]),
+    remotePort: port,
+    destinationHost,
+    destinationPort: port,
+  }),
+  z.object({ mode: z.literal("dynamic"), name, localPort: port }),
+]);
 
 export type PortForwardFormSchema = z.infer<typeof portForwardFormSchema>;
 
 export const portForwardFormDefaultValues: PortForwardFormSchema = {
+  mode: "local",
+  name: "",
   localPort: 8080,
-  remoteHost: "localhost",
-  remotePort: 80,
+  destinationHost: "localhost",
+  destinationPort: 80,
 };

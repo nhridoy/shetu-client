@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { authApi } from "@/lib/api/auth";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, listRows, upsertRow } from "@/lib/db/db";
 import { useAuthStore } from "@/stores/auth/authStore";
@@ -87,13 +88,39 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     try {
       // Vaults are per-user rows; the vault_id arg is ignored for them.
       const rows = await listRows("vaults", "");
-      const vaults = rows.map(toVaultItem);
-      set({ vaults, isLoading: false });
-
-      if (!get().currentVaultId && vaults.length > 0) {
-        const personal = vaults.find((v) => v.isDefault) ?? vaults[0];
-        set({ currentVaultId: personal.id });
+      if (!rows.some((row) => Boolean(row.is_default))) {
+        try {
+          // Signup seeds this vault on the server. Until general sync exists,
+          // mirror its canonical ID locally rather than creating a second vault.
+          const serverVault = await authApi.fetchDefaultVault();
+          if (!rows.some((row) => row.id === serverVault.id)) {
+            const mirrored = await upsertRow("vaults", {
+              id: serverVault.id,
+              vault_id: "",
+              owner_id: serverVault.owner_id,
+              name: serverVault.name,
+              kind: serverVault.kind,
+              sort_order: serverVault.sort_order,
+              is_default: serverVault.is_default ? 1 : 0,
+              data: "{}",
+            });
+            rows.push(mirrored);
+          }
+        } catch (error) {
+          if (rows.length === 0) throw error;
+          set({
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+
+      const vaults = rows.map(toVaultItem);
+      const current = get().currentVaultId;
+      const selected =
+        vaults.find((vault) => vault.id === current) ??
+        vaults.find((vault) => vault.isDefault) ??
+        vaults[0];
+      set({ vaults, currentVaultId: selected?.id ?? null, isLoading: false });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
     }

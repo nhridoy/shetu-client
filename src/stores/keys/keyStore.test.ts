@@ -1,6 +1,8 @@
+import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/db/db");
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../lib/crypto/crypto");
 vi.mock("../auth/authStore", () => ({
   useAuthStore: {
@@ -145,6 +147,56 @@ describe("keyStore", () => {
       expect.objectContaining({ recordType: "keys" }),
     );
     expect(useKeyStore.getState().keys.length).toBe(1);
+  });
+
+  it("derives the public key before saving a private-only import", async () => {
+    useVaultStore.setState({ currentVaultId: "v1" });
+    vi.mocked(invoke).mockResolvedValueOnce("ssh-ed25519 AAAADERIVED");
+    mockUpsert.mockResolvedValue({
+      ...keyRow,
+      public_key: "ssh-ed25519 AAAADERIVED",
+    });
+
+    await useKeyStore.getState().importKey({
+      name: "manual",
+      encryptedPrivateKey: "PRIVATE",
+      publicKey: "",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("derive_public_key", {
+      privateKey: "PRIVATE",
+    });
+    expect(mockUpsert.mock.calls[0][1].public_key).toBe(
+      "ssh-ed25519 AAAADERIVED",
+    );
+    expect(useKeyStore.getState().keys[0].publicKey).toBe(
+      "ssh-ed25519 AAAADERIVED",
+    );
+  });
+
+  it("rejects an import when no vault is selected", async () => {
+    useVaultStore.setState({ currentVaultId: null });
+    await expect(
+      useKeyStore.getState().importKey({
+        name: "manual",
+        encryptedPrivateKey: "PRIVATE",
+      }),
+    ).rejects.toThrow("No vault selected");
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(useKeyStore.getState().keys).toEqual([]);
+  });
+
+  it("rejects a failed import so the dialog can show the save error", async () => {
+    useVaultStore.setState({ currentVaultId: "v1" });
+    mockUpsert.mockRejectedValueOnce(new Error("Vault is locked"));
+    await expect(
+      useKeyStore.getState().importKey({
+        name: "manual",
+        encryptedPrivateKey: "PRIVATE",
+      }),
+    ).rejects.toThrow("Vault is locked");
+    expect(useKeyStore.getState().error).toBe("Vault is locked");
+    expect(useKeyStore.getState().keys).toEqual([]);
   });
 
   it("importKey keeps sensitive key material out of plaintext columns", async () => {

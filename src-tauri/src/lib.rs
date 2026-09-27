@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod git;
+mod keys;
 mod crypto;
 mod db;
+mod forwarding;
 mod http;
 mod oauth;
 mod ssh;
@@ -50,7 +52,11 @@ fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn wipe_local_data(db: tauri::State<'_, db::LocalDb>) -> Result<(), String> {
+fn wipe_local_data(
+    db: tauri::State<'_, db::LocalDb>,
+    forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
+) -> Result<(), String> {
+    forwarding.stop_all();
     db::wipe_all(&db)
 }
 
@@ -58,6 +64,7 @@ fn wipe_local_data(db: tauri::State<'_, db::LocalDb>) -> Result<(), String> {
 fn db_upsert(
     db: tauri::State<'_, db::LocalDb>,
     crypto: tauri::State<'_, CryptoState>,
+    forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     table: String,
     row: serde_json::Value,
     plaintext: Option<String>,
@@ -70,7 +77,14 @@ fn db_upsert(
         let rt = record_type.as_deref().unwrap_or(table.as_str());
         row.data = crypto::encrypt_secret(&plaintext, rt, &session)?;
     }
-    db::upsert_sync_row(&db, table, &row)}
+    let deleted_host = table == db::Table::Hosts && row.deleted_at.is_some();
+    let saved = db::upsert_sync_row(&db, table, &row)?;
+    if deleted_host {
+        forwarding.stop_host(&saved.id);
+        forwarding::storage::delete_for_host(&db, &saved.id)?;
+    }
+    Ok(saved)
+}
 
 #[tauri::command]
 fn db_get(db: tauri::State<'_, db::LocalDb>, table: String, id: String) -> Result<Option<db::SyncRow>, String> {
@@ -85,9 +99,21 @@ fn db_list(db: tauri::State<'_, db::LocalDb>, table: String, vault_id: String, i
 }
 
 #[tauri::command]
-fn db_delete(db: tauri::State<'_, db::LocalDb>, table: String, id: String) -> Result<(), String> {
+fn db_delete(
+    db: tauri::State<'_, db::LocalDb>,
+    forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
+    table: String,
+    id: String,
+) -> Result<(), String> {
     let table = db::Table::parse(&table)?;
-    db::tombstone_sync_row(&db, table, &id)
+    if table == db::Table::Hosts {
+        forwarding.stop_host(&id);
+    }
+    db::tombstone_sync_row(&db, table, &id)?;
+    if table == db::Table::Hosts {
+        forwarding::storage::delete_for_host(&db, &id)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -993,6 +1019,7 @@ pub fn run() {
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("termvault"),
         ))
+        .manage(forwarding::runtime::ForwardingState::new())
         .manage(sftp::SftpSessions::new())
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
@@ -1007,6 +1034,13 @@ pub fn run() {
             db_outbox,
             db_update_sort_orders,
             db_update_host_group,
+            forwarding::list_port_forwards,
+            forwarding::create_port_forward,
+            forwarding::update_port_forward,
+            forwarding::delete_port_forward,
+            forwarding::start_port_forward,
+            forwarding::stop_port_forward,
+            forwarding::stop_port_forwards_for_owner,
             write_file,
             detect_shells,
             is_same_volume,
@@ -1024,6 +1058,7 @@ pub fn run() {
             resize_local,
             disconnect_local,
             ssh::connect,
+            keys::derive_public_key,
             ssh::connect_saved,
             ssh::disconnect,
             ssh::send_input,

@@ -137,6 +137,15 @@ export interface LoginResponse extends TokenPair {
   };
 }
 
+export interface DefaultVaultResponse {
+  id: string;
+  owner_id: string;
+  name: string;
+  kind: string;
+  sort_order: number;
+  is_default: boolean;
+}
+
 export interface KeyringRows {
   dek_wrapped_by_kek: string;
   dek_wrapped_by_recovery: string;
@@ -302,6 +311,10 @@ export const authApi = {
     kdf: { m: number; t: number; p: number };
   }): Promise<TokenPair & { user: User }> {
     return apiFetch("POST", "/api/v1/auth/oauth/setup", params);
+  },
+
+  async fetchDefaultVault(): Promise<DefaultVaultResponse> {
+    return apiFetch("GET", "/api/v1/vaults/default");
   },
 
   async fetchKeyring(): Promise<{

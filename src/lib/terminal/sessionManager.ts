@@ -437,6 +437,14 @@ useThemeStore.subscribe((state, prev) => {
 });
 
 export async function destroySession(paneId: string) {
+  // Forward definitions remain saved, but their listeners belong to this pane.
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("stop_port_forwards_for_owner", { ownerPaneId: paneId });
+  } catch {
+    // Continue disposing the terminal if forwarding is already stopped.
+  }
+
   const session = sessions.get(paneId);
   if (!session) return;
   session.cancelReconnect?.();

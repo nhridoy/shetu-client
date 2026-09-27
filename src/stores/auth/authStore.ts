@@ -234,6 +234,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Verification not required: tokens are guaranteed by the server contract
       const pair = res as TokenPair;
+      await setAuthTokens(pair.access_token, pair.refresh_token);
       set({
         user: res.user,
         tokens: pair,
@@ -241,7 +242,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isUnlocked: true,
         isLoading: false,
       });
-      await setAuthTokens(pair.access_token, pair.refresh_token);
       await persistTokens(pair);
       if (!get().alwaysAsk) {
         await savePassword(password);
@@ -282,6 +282,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
+      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       set({
         user: res.user,
         tokens: newTokens,
@@ -290,7 +291,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pendingVerificationEmail: null,
         isLoading: false,
       });
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       if (password && !get().alwaysAsk) {
         await savePassword(password);
@@ -387,6 +387,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
+      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       set({
         user: res.user,
         tokens: newTokens,
@@ -395,7 +396,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pendingVerificationEmail: null,
         isLoading: false,
       });
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       if (!get().alwaysAsk) {
         await savePassword(password);
@@ -640,8 +640,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               access_token: newTokens.access_token,
               refresh_token: newTokens.refresh_token,
             };
-            set({ tokens, isAuthenticated: true });
             await setAuthTokens(tokens.access_token, tokens.refresh_token);
+            set({ tokens, isAuthenticated: true });
             await persistTokens(tokens);
 
             const user = await authApi.me();
@@ -719,6 +719,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: result.accessToken ?? "",
         refresh_token: result.refreshToken ?? "",
       };
+      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       set({
         tokens: newTokens,
         isAuthenticated: true,
@@ -726,7 +727,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         user: null,
         isLoading: false,
       });
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       const user = await authApi.me();
       set({ user });
@@ -795,6 +795,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
+      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       set({
         user: res.user,
         tokens: newTokens,
@@ -805,7 +806,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pendingOAuth: null,
         isLoading: false,
       });
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       if (!get().alwaysAsk) {
         await savePassword(password);

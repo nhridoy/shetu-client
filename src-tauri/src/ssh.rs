@@ -307,6 +307,9 @@ pub struct SshHandler {
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
     auto_accept: bool,
+    forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
+    forward_bind: Option<(String, u32)>,
+    require_known_host: bool,
 }
 
 pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str) {
@@ -326,12 +329,51 @@ impl SshHandler {
         pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
         auto_accept: bool,
     ) -> Self {
-        Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept }
+        Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
     }
+    pub(crate) fn with_forwarded_channels(
+        mut self,
+        sender: mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>,
+        address: String,
+        port: u32,
+    ) -> Self {
+        self.forwarded = Some(sender);
+        self.forward_bind = Some((address, port));
+        self
+    }
+
+    pub(crate) fn require_known_host(mut self) -> Self {
+        self.require_known_host = true;
+        self
+    }
+
 }
 
 impl russh::client::Handler for SshHandler {
     type Error = russh::Error;
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if self.forward_bind.as_ref().is_some_and(|(address, port)| {
+            let address_matches = address == "0.0.0.0"
+                || address == connected_address
+                || (address == "127.0.0.1" && connected_address == "localhost");
+            address_matches && *port == connected_port
+        }) {
+            if let Some(sender) = &self.forwarded {
+                let _ = sender.send((channel, reply)).await;
+            }
+        }
+        Ok(())
+    }
 
     async fn check_server_key(
         &mut self,
@@ -349,6 +391,7 @@ impl russh::client::Handler for SshHandler {
         };
         match known {
             HostKeyStatus::Unknown => {
+                if self.require_known_host { return Ok(false); }
                 self.known_hosts
                     .lock()
                     .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
@@ -415,7 +458,7 @@ async fn resolve_addr(host: &str, port: u16) -> Result<std::net::SocketAddr, Str
         .ok_or_else(|| format!("no address for {host}:{port}"))
 }
 
-async fn connect_authenticated(
+pub(crate) async fn connect_authenticated(
     handler: SshHandler,
     config: &SshConfig,
     progress: Option<(&tauri::AppHandle, &str)>,
@@ -496,15 +539,15 @@ async fn probe_os(
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
 ) -> Option<String> {
-    let handler = SshHandler {
-        host: config.host.clone(),
-        port: config.port,
+    let handler = SshHandler::new(
+        config.host.clone(),
+        config.port,
         session_id,
         app,
         known_hosts,
         pending_keys,
-        auto_accept: true,
-    };
+        true,
+    );
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let session = connect_authenticated(handler, config, None).await.ok()?;
         let mut channel = session.channel_open_session().await.ok()?;
@@ -628,15 +671,15 @@ async fn run_connect_session(
             None
         };
 
-        let handler = SshHandler {
-            host: config.host.clone(),
-            port: config.port,
-            session_id: session_id.clone(),
-            app: app_handle.clone(),
-            known_hosts: Arc::clone(&known_hosts),
-            pending_keys: Arc::clone(&pending_keys),
-            auto_accept: false,
-        };
+        let handler = SshHandler::new(
+            config.host.clone(),
+            config.port,
+            session_id.clone(),
+            app_handle.clone(),
+            Arc::clone(&known_hosts),
+            Arc::clone(&pending_keys),
+            false,
+        );
 
         let session = match connect_authenticated(handler, &config, Some((&app_handle, &session_id)))
             .await

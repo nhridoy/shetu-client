@@ -493,7 +493,8 @@ mod tests {
         // Everything 401s (including /refresh). The initiator discovers the
         // refresh token is revoked → SessionExpired (fires the revoked event
         // upstream); the waiter sees the session already torn down and falls
-        // through to the plain 401 passthrough. Exactly one refresh call.
+        // through to the plain 401 passthrough. Either request can initiate
+        // the refresh. Exactly one refresh call.
         let (url, hits) = spawn_mock(|_| (401, r#"{"error":{"code":"UNAUTHORIZED","message":"x"}}"#.to_string()));
         let state = Arc::new(HttpState::new(url));
         state.set_token(Some("a1".into()));
@@ -507,8 +508,12 @@ mod tests {
             c1.request("GET", "/api/v1/a", None, true),
             c2.request("GET", "/api/v1/b", None, true)
         );
-        assert!(matches!(r1, Err(HttpErrorKind::SessionExpired)));
-        assert!(matches!(r2, Err(HttpErrorKind::Http(401, _))));
+        assert!(
+            (matches!(r1, Err(HttpErrorKind::SessionExpired))
+                && matches!(r2, Err(HttpErrorKind::Http(401, _))))
+                || (matches!(r2, Err(HttpErrorKind::SessionExpired))
+                    && matches!(r1, Err(HttpErrorKind::Http(401, _))))
+        );
         // 2 originals + exactly 1 refresh
         assert_eq!(hits.load(Ordering::SeqCst), 3);
     }

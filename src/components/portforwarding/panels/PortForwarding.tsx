@@ -8,126 +8,169 @@ import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import Spinner from "@/components/ui/Spinner";
-import { useModal } from "@/hooks/useModal";
-import { usePortForwardingStore } from "@/stores/portforwarding/portForwardingStore";
+import type { PortForwardFormSchema } from "@/lib/schema/portforwarding/portForwardFormSchema";
+import {
+  type PortForward,
+  toForwardInput,
+  usePortForwardingStore,
+} from "@/stores/portforwarding/portForwardingStore";
 
 interface PortForwardingProps {
   hostId?: string;
+  paneId?: string;
 }
 
-export default function PortForwarding({ hostId }: PortForwardingProps) {
+export default function PortForwarding({
+  hostId,
+  paneId,
+}: PortForwardingProps) {
   const {
     forwards,
     isLoading,
     error,
+    busyIds,
     loadForwards,
+    createForward,
+    updateForward,
+    deleteForward,
     startForward,
     stopForward,
-    toggleForward,
-    clearError,
   } = usePortForwardingStore();
-  const createModal = useModal();
-  const deleteDialog = useModal();
+  const [formOpen, setFormOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<PortForward | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadForwards();
-  }, [loadForwards]);
+    if (hostId) void loadForwards(hostId).catch(() => undefined);
+  }, [hostId, loadForwards]);
 
-  useEffect(() => {
-    if (error) {
-      toast.error(error);
-      clearError();
+  const submit = async (data: PortForwardFormSchema) => {
+    if (!hostId) throw new Error("Select a saved SSH host first");
+    const input = toForwardInput(hostId, data);
+    if (editTarget) {
+      await updateForward(editTarget.id, input);
+      toast.success("Port forward saved");
+    } else {
+      await createForward(input);
+      toast.success("Port forward saved. Press Start to connect.");
     }
-  }, [error, clearError]);
+    setEditTarget(null);
+  };
 
-  const onSubmit = async (data: {
-    localPort: number;
-    remoteHost: string;
-    remotePort: number;
-  }) => {
-    if (!hostId) {
-      toast.error("Connect to a host first");
+  const handleStart = async (id: string) => {
+    if (!paneId) {
+      toast.error("Open this saved SSH host in a terminal pane first");
       return;
     }
-    await startForward(
-      hostId,
-      data.localPort,
-      data.remoteHost,
-      data.remotePort,
-    );
-    toast.success(`Port forward started on :${data.localPort}`);
+    try {
+      await startForward(id, paneId);
+      toast.success("Port forward started");
+    } catch {
+      // The store keeps the error on the affected card.
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setDeleteTargetId(id);
-    deleteDialog.show();
+  const handleStop = async (id: string) => {
+    try {
+      await stopForward(id);
+      toast.success("Port forward stopped");
+    } catch {
+      // The store displays the IPC error.
+    }
   };
 
-  const confirmDeleteAction = async () => {
-    deleteDialog.hide();
+  const handleDelete = async () => {
     const id = deleteTargetId;
-    setDeleteTargetId(null);
     if (!id) return;
-    await stopForward(id);
-    toast.success("Port forward stopped");
+    try {
+      await deleteForward(id);
+      setDeleteTargetId(null);
+      toast.success("Port forward deleted");
+    } catch {
+      // Keep the confirmation visible so the user can retry.
+    }
   };
 
-  const handleToggle = async (id: string) => {
-    await toggleForward(id);
-  };
+  const hostForwards = forwards.filter((forward) => forward.hostId === hostId);
 
-  const displayForwards = hostId
-    ? forwards.filter((f) => f.sessionId === hostId)
-    : forwards;
+  if (!hostId) {
+    return (
+      <div className="p-4 text-sm text-dark-400">
+        Select a saved SSH host to manage port forwards.
+      </div>
+    );
+  }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="p-4 border-b border-dark-700">
+    <div className="flex h-full flex-col">
+      <div className="border-b border-dark-700 p-4">
         <SectionHeader title="Port Forwarding" className="text-lg">
-          <Button type="button" onClick={createModal.show} size="sm">
+          <Button
+            type="button"
+            onClick={() => {
+              setEditTarget(null);
+              setFormOpen(true);
+            }}
+            size="sm"
+          >
             + Add Forward
           </Button>
         </SectionHeader>
       </div>
-
       <div className="flex-1 overflow-y-auto p-4">
+        {error && (
+          <p
+            role="alert"
+            className="mb-3 rounded-lg bg-danger-500/10 p-2 text-xs text-danger-400"
+          >
+            {error}
+          </p>
+        )}
         {isLoading ? (
-          <div className="text-center text-dark-400 py-8">
+          <div className="py-8 text-center text-dark-400">
             <Spinner className="mx-auto mb-4" />
             <p>Loading port forwards...</p>
           </div>
-        ) : displayForwards.length === 0 ? (
+        ) : hostForwards.length === 0 ? (
           <EmptyState
             icon={ArrowsLeftRightIcon}
             title="No port forwards configured"
-            description="Create a tunnel to forward ports"
+            description="Save a local, remote, or SOCKS5 forward, then start it when needed."
           />
         ) : (
           <div className="space-y-3">
-            {displayForwards.map((forward) => (
+            {hostForwards.map((forward) => (
               <ForwardCard
                 key={forward.id}
                 forward={forward}
-                onToggle={handleToggle}
-                onDelete={handleDelete}
+                busy={busyIds.includes(forward.id)}
+                onStart={handleStart}
+                onStop={handleStop}
+                onEdit={() => {
+                  setEditTarget(forward);
+                  setFormOpen(true);
+                }}
+                onDelete={setDeleteTargetId}
               />
             ))}
           </div>
         )}
       </div>
-      {createModal.open && (
-        <PortForwardForm onClose={createModal.hide} onSubmit={onSubmit} />
+      {formOpen && (
+        <PortForwardForm
+          initial={editTarget ?? undefined}
+          onClose={() => {
+            setFormOpen(false);
+            setEditTarget(null);
+          }}
+          onSubmit={submit}
+        />
       )}
-
       <ConfirmDeleteDialog
-        open={deleteDialog.open}
-        message="Delete this port forward?"
-        onConfirm={confirmDeleteAction}
-        onCancel={() => {
-          deleteDialog.hide();
-          setDeleteTargetId(null);
-        }}
+        open={deleteTargetId !== null}
+        message="Delete this saved port forward? A running forward will stop."
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTargetId(null)}
       />
     </div>
   );

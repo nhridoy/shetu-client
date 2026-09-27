@@ -5,15 +5,20 @@ vi.mock("../../lib/db/db", () => ({
   upsertRow: vi.fn(),
   deleteRow: vi.fn(),
 }));
+vi.mock("../../lib/api/auth", () => ({
+  authApi: { fetchDefaultVault: vi.fn() },
+}));
 vi.mock("../auth/authStore", () => ({
   useAuthStore: {
     getState: () => ({ user: { id: "u1", email: "a@b.c" } }),
   },
 }));
 
+import { authApi } from "../../lib/api/auth";
 import { deleteRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "./vaultStore";
 
+const mockDefaultVault = vi.mocked(authApi.fetchDefaultVault);
 const mockList = vi.mocked(listRows);
 const mockUpsert = vi.mocked(upsertRow);
 const mockDelete = vi.mocked(deleteRow);
@@ -29,12 +34,21 @@ const vaultRow = (overrides: Record<string, unknown> = {}) => ({
   owner_id: "u1",
   kind: "team",
   sort_order: 0,
-  is_default: 0,
+  is_default: 1,
   data: "enc",
   ...overrides,
 });
 
 beforeEach(() => {
+  mockDefaultVault.mockReset();
+  mockDefaultVault.mockResolvedValue({
+    id: "v1",
+    owner_id: "u1",
+    name: "Personal",
+    kind: "personal",
+    sort_order: 0,
+    is_default: true,
+  });
   mockList.mockReset();
   mockUpsert.mockReset();
   mockDelete.mockReset();
@@ -77,15 +91,25 @@ describe("vaultStore", () => {
     });
   });
 
-  it("fetchVaults with no local vaults leaves vaults empty and no selection", async () => {
+  it("mirrors the server-seeded default when local SQLite is empty", async () => {
     mockList.mockResolvedValue([]);
+    mockUpsert.mockResolvedValue(vaultRow());
 
     await useVaultStore.getState().fetchVaults();
 
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockDefaultVault).toHaveBeenCalledOnce();
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "vaults",
+      expect.objectContaining({
+        id: "v1",
+        owner_id: "u1",
+        name: "Personal",
+        is_default: 1,
+      }),
+    );
     const { vaults, currentVaultId } = useVaultStore.getState();
-    expect(vaults).toHaveLength(0);
-    expect(currentVaultId).toBeNull();
+    expect(vaults).toHaveLength(1);
+    expect(currentVaultId).toBe("v1");
   });
 
   it("fetchVaults does not create vaults, only reads local rows", async () => {
@@ -97,19 +121,18 @@ describe("vaultStore", () => {
     expect(useVaultStore.getState().vaults).toHaveLength(1);
   });
 
-  it("app-created personal vaults with is_default=0 are not default/protected", async () => {
+  it("keeps app-created vaults and adds the missing server default", async () => {
     mockList.mockResolvedValue([
-      vaultRow({ id: "old-1", kind: "personal", name: "Old" }),
-      vaultRow({ id: "old-2", kind: "personal", name: "Older" }),
+      vaultRow({ id: "old-1", kind: "personal", name: "Old", is_default: 0 }),
+      vaultRow({ id: "old-2", kind: "personal", name: "Older", is_default: 0 }),
     ]);
 
     await useVaultStore.getState().fetchVaults();
 
-    expect(mockUpsert).not.toHaveBeenCalled();
-    const { vaults } = useVaultStore.getState();
-    expect(vaults).toHaveLength(2);
-    expect(vaults.every((v) => !v.isSystem && !v.isDefault)).toBe(true);
-    expect(vaults[0].kind).toBe("personal");
+    const { vaults, currentVaultId } = useVaultStore.getState();
+    expect(vaults).toHaveLength(3);
+    expect(vaults.filter((v) => v.isSystem).map((v) => v.id)).toEqual(["v1"]);
+    expect(currentVaultId).toBe("v1");
   });
 
   it("createVault upserts locally, appends and switches to the new vault", async () => {

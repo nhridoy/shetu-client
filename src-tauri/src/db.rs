@@ -10,7 +10,7 @@ pub const DB_FILE_NAME: &str = "termvault.db";
 pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     for table in [
-        "user_profiles", "user_keys", "vaults", "groups", "hosts", "keys",
+        "port_forwards", "user_profiles", "user_keys", "vaults", "groups", "hosts", "keys",
         "snippets", "workspaces", "presets", "outbox", "sync_conflicts", "__sync_meta",
     ] {
         conn.execute_batch(&format!("DELETE FROM {table};"))
@@ -107,6 +107,19 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             data TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_hosts_vault_group ON hosts(vault_id, group_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS port_forwards (
+            id TEXT PRIMARY KEY,
+            host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL CHECK (mode IN ('local', 'remote', 'dynamic')),
+            name TEXT NOT NULL,
+            local_port INTEGER,
+            remote_bind_address TEXT,
+            remote_port INTEGER,
+            destination_host TEXT,
+            destination_port INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_port_forwards_host ON port_forwards(host_id);
 
         CREATE TABLE IF NOT EXISTS keys (
             id TEXT PRIMARY KEY,
@@ -399,14 +412,36 @@ pub fn upsert_sync_row(db: &LocalDb, table: Table, row: &SyncRow) -> Result<Sync
     }
     out.updated_at = now;
     out.deleted_at = None; // upsert of a tombstoned row resurrects it (LWW create/update wins)
+    if table == Table::Hosts {
+        // REPLACE used to substitute column defaults for NULL on these required fields.
+        out.auth_type.get_or_insert_with(|| "password".to_string());
+        out.tags.get_or_insert_with(|| "[]".to_string());
+    }
     let cols = table_cols(table);
-    let sql = format!(
-        "INSERT OR REPLACE INTO {t} ({envelope}, {cols}) VALUES ({q})",
-        t = table.as_str(),
-        envelope = ENVELOPE_COLS,
-        cols = cols,
-        q = (1..=6 + cols.split(',').count()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", "),
-    );
+    let insert_cols = format!("{ENVELOPE_COLS}, {cols}");
+    let placeholders = (1..=6 + cols.split(',').count())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = if table == Table::Hosts {
+        // REPLACE deletes the old host row and cascades into local port_forwards.
+        // Update in place so editing a host preserves its local definitions.
+        let updates = insert_cols
+            .split(',')
+            .map(str::trim)
+            .filter(|column| *column != "id")
+            .map(|column| format!("{column} = excluded.{column}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO hosts ({insert_cols}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}"
+        )
+    } else {
+        format!(
+            "INSERT OR REPLACE INTO {t} ({insert_cols}) VALUES ({placeholders})",
+            t = table.as_str(),
+        )
+    };
     let tx = conn.transaction().map_err(|e| format!("upsert_sync_row tx: {e}"))?;
     tx.execute(&sql, rusqlite::params_from_iter(row_vals(&out, cols)))
         .map_err(|e| format!("upsert_sync_row({}): {e}", table.as_str()))?;
@@ -636,7 +671,7 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         for t in ["user_profiles", "user_keys", "vaults", "groups", "hosts", "keys",
-                  "snippets", "workspaces", "presets", "outbox", "sync_conflicts", "__sync_meta"] {
+                  "snippets", "workspaces", "presets", "outbox", "sync_conflicts", "__sync_meta", "port_forwards"] {
             assert!(tables.contains(&t.to_string()), "missing table {t}");
         }
         assert!(!tables.contains(&"records".to_string()));
@@ -708,11 +743,15 @@ mod tests {
         conn.execute(
             "INSERT INTO outbox (table_name, record_id, queued_at) VALUES ('hosts', 'h1', 1)", [],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO port_forwards (id, host_id, mode, name, local_port) VALUES ('f1', 'h1', 'dynamic', 'socks', 1080)", [],
+        ).unwrap();
         drop(conn);
         wipe_all(&db).unwrap();
         let conn = db.conn.lock().unwrap();
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM port_forwards", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 
     #[test]
@@ -755,6 +794,32 @@ mod tests {
         assert_eq!(loaded.color.as_deref(), Some("#ff0000"));
         assert_eq!(loaded.data, "encrypted");                // opaque passthrough
         assert_eq!(list_sync_rows(&db, Table::Hosts, "v1", false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_host_edit_preserves_saved_port_forwards() {
+        use crate::forwarding::{model::ForwardInput, storage};
+
+        let db = test_db();
+        let mut host = SyncRow {
+            id: "h1".into(), revision: 1, vault_id: "v1".into(),
+            created_at: 0, updated_at: 0, deleted_at: None, name: Some("old".into()),
+            os: None, auth_type: Some("password".into()), tags: Some("[]".into()), color: None, description: None,
+            key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
+            sort_order: 0, is_default: 0, parent_id: None, group_id: None, key_id: None,
+            data: "{}".into(),
+        };
+        upsert_sync_row(&db, Table::Hosts, &host).unwrap();
+        let forward = storage::create(
+            &db, ForwardInput::local("h1", "web", 8080, "localhost", 80)
+        ).unwrap();
+
+        host.name = Some("renamed".into());
+        upsert_sync_row(&db, Table::Hosts, &host).unwrap();
+
+        let forwards = storage::list(&db, "h1").unwrap();
+        assert_eq!(forwards.len(), 1);
+        assert_eq!(forwards[0].id, forward.id);
     }
 
     #[test]
