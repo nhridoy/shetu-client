@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getDeviceId } from "@/lib/common/device";
 
 export type TableName =
   | "vaults"
@@ -7,15 +8,21 @@ export type TableName =
   | "keys"
   | "snippets"
   | "workspaces"
-  | "presets";
+  | "presets"
+  | "port_forwards";
 
 export interface SyncRow {
   id: string;
   revision: number;
   vault_id: string;
-  created_at: number;
-  updated_at: number;
-  deleted_at: number | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  edited_at?: string;
+  device_id?: string;
+  operation_id?: string;
+  host_id?: string | null;
+  mode?: string | null;
   name?: string;
   os?: string | null;
   auth_type?: string | null;
@@ -38,7 +45,12 @@ export interface SyncRow {
 export interface OutboxEntry {
   table_name: string;
   record_id: string;
-  queued_at: number;
+  queued_at: string;
+  vault_id: string;
+  operation_id: string;
+  device_id: string;
+  edited_at: string;
+  generation: number;
 }
 
 export async function listRows(
@@ -61,16 +73,31 @@ export async function upsertRow(
   row: { id: string; vault_id: string; data?: string } & Partial<SyncRow>,
   opts?: { plaintext?: string; recordType?: string },
 ): Promise<SyncRow> {
-  return invoke<SyncRow>("db_upsert", {
+  const saved = await invoke<SyncRow>("db_upsert", {
     table,
     row,
+    deviceId: await getDeviceId(),
     plaintext: opts?.plaintext,
     recordType: opts?.recordType,
   });
+  notifyLocalMutation(table, saved.vault_id || saved.id);
+  return saved;
+}
+
+function notifyLocalMutation(table: TableName, vaultId: string): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("termvault:local-mutation", {
+        detail: { table, vaultId },
+      }),
+    );
+  }
 }
 
 export async function deleteRow(table: TableName, id: string): Promise<void> {
-  await invoke("db_delete", { table, id });
+  const previous = await getRow(table, id);
+  await invoke("db_delete", { table, id, deviceId: await getDeviceId() });
+  if (previous) notifyLocalMutation(table, previous.vault_id || previous.id);
 }
 
 export async function getOutbox(): Promise<OutboxEntry[]> {

@@ -148,12 +148,14 @@ export interface DefaultVaultResponse {
 
 export interface KeyringRows {
   dek_wrapped_by_kek: string;
-  dek_wrapped_by_recovery: string;
+  // Absent until the recovery kit is attached after first authentication.
+  dek_wrapped_by_recovery?: string;
   private_key_wrapped_by_dek: string;
 }
 
 export interface RegisterRequest {
   user_id: string;
+  device_id: string;
   email: string;
   full_name?: string;
   password_hash: string;

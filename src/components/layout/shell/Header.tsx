@@ -7,6 +7,7 @@ import {
   PlusIcon,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router";
+import SyncStatus from "@/components/layout/shell/SyncStatus";
 import SortableTab from "@/components/layout/tabs/SortableTab";
 import { Button } from "@/components/ui/Button";
 import VaultSelector from "@/components/vault/selector/VaultSelector";
@@ -245,6 +246,7 @@ export default function Header({
           </Button>
         )}
 
+        <SyncStatus />
         <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 text-xs text-dark-500">
           <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
           <span>Connected</span>

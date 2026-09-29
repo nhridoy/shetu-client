@@ -32,6 +32,10 @@ import {
   wrapDek,
   wrapDekWithRecovery,
 } from "../../lib/crypto/crypto";
+import {
+  loadOfflineIdentity,
+  saveOfflineIdentity,
+} from "../../lib/crypto/offlineIdentity";
 import { wipeLocalData } from "../../lib/db/db";
 import {
   deletePassword,
@@ -40,17 +44,18 @@ import {
 } from "../../lib/keychain/keychain";
 import { cancelOAuthFlow, startOAuthFlow } from "../../lib/oauth/oauth";
 
-// A session revoked by Rust (refresh rejected server-side — recovery,
-// password change elsewhere, or reuse detection) must end the local session
-// immediately; teardownSession is defined below but only invoked at runtime.
+// A rejected server session pauses sync and retains encrypted local work.
+// Only an explicit logout clears this device.
 onSessionRevoked(() => {
-  void teardownSession();
+  void suspendServerSession();
 });
 
 interface AuthState {
   user: User | null;
   tokens: TokenPair | null;
   isAuthenticated: boolean;
+  serverAuthenticated: boolean;
+  localAccessAccountId: string | null;
   isUnlocked: boolean;
   unlockPending: boolean;
   isInitialized: boolean;
@@ -85,6 +90,7 @@ interface AuthState {
   clearRecoveryCode: () => void;
   clearError: () => void;
   restoreSession: () => Promise<void>;
+  retryServerSession: () => Promise<"connected" | "offline" | "auth-required">;
   oauthStartFlow: (provider: string) => Promise<{ needsSetup: boolean }>;
   cancelOAuth: () => Promise<void>;
   oauthSetup: (password: string) => Promise<void>;
@@ -112,6 +118,16 @@ async function persistTokens(tokens: TokenPair | null): Promise<void> {
   }
 }
 
+async function clearVaultSelection(): Promise<void> {
+  const { useVaultStore } = await import("../vault/vaultStore");
+  useVaultStore.setState({
+    vaults: [],
+    currentVaultId: null,
+    decryptedData: null,
+    error: null,
+  });
+}
+
 // Fully tear down a session: zeroize in-memory keys, purge the saved
 // keychain password, clear the store, drop persisted tokens, and reset the
 // local cache. Best-effort end-to-end so no single failure blocks logout.
@@ -122,10 +138,15 @@ async function teardownSession(): Promise<void> {
   } catch {
     // ignore keychain purge errors
   }
+  // Drop the previous account's in-memory selection before a new account
+  // can unlock; otherwise sync may target its stale vault ID once.
+  await clearVaultSelection();
   useAuthStore.setState({
     user: null,
     tokens: null,
     isAuthenticated: false,
+    serverAuthenticated: false,
+    localAccessAccountId: null,
     isUnlocked: false,
     pendingOAuth: null,
     pendingVerificationEmail: null,
@@ -143,7 +164,51 @@ async function teardownSession(): Promise<void> {
   }
 }
 
+// A revoked or expired server session stops sync, but never erases offline
+// enrollment or queued local edits. Only an explicit logout wipes them.
+async function suspendServerSession(): Promise<void> {
+  useAuthStore.setState({
+    tokens: null,
+    isAuthenticated: false,
+    serverAuthenticated: false,
+  });
+  setRefreshToken(null);
+  try {
+    await clearAuthTokens();
+  } catch {
+    /* best effort */
+  }
+}
+
+async function enroll(
+  profile: User,
+  saltCl: string,
+  keyring: KeyringRows,
+): Promise<void> {
+  const existing = await loadOfflineIdentity();
+  if (existing && existing.profile.id !== profile.id) {
+    throw new Error(
+      "Another account is enrolled on this device. Sign out before switching accounts.",
+    );
+  }
+  if (useAuthStore.getState().localAccessAccountId !== profile.id) {
+    await clearVaultSelection();
+  }
+  await saveOfflineIdentity({
+    profile,
+    salt_cl: saltCl,
+    wrapped_keyring: {
+      ...keyring,
+      dek_wrapped_by_recovery: keyring.dek_wrapped_by_recovery ?? "",
+    },
+  });
+  useAuthStore.setState({ localAccessAccountId: profile.id });
+}
+
 let _restoreSessionLock: Promise<void> | null = null;
+let _serverSessionLock: Promise<
+  "connected" | "offline" | "auth-required"
+> | null = null;
 
 function randomHex(bytes: number): string {
   const buf = new Uint8Array(bytes);
@@ -167,6 +232,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   tokens: null,
   isAuthenticated: false,
+  serverAuthenticated: false,
+  localAccessAccountId: null,
   isUnlocked: false,
   unlockPending: false,
   isInitialized: false,
@@ -212,6 +279,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const res = await authApi.register({
         user_id: crypto.randomUUID(),
+        device_id: await getDeviceId(),
         email,
         full_name: name,
         password_hash: proof.verifier,
@@ -234,11 +302,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Verification not required: tokens are guaranteed by the server contract
       const pair = res as TokenPair;
+      await enroll(res.user, material.salt_cl, res.keyring ?? keyring);
       await setAuthTokens(pair.access_token, pair.refresh_token);
       set({
         user: res.user,
         tokens: pair,
         isAuthenticated: true,
+        serverAuthenticated: true,
         isUnlocked: true,
         isLoading: false,
       });
@@ -278,6 +348,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await unwrapDek(res.keyring.dek_wrapped_by_kek);
       }
 
+      if (res.keyring) {
+        const prelogin = await authApi.prelogin(email);
+        await enroll(res.user, prelogin.salt_cl, res.keyring);
+      }
+
       const newTokens = {
         access_token: res.access_token,
         refresh_token: res.refresh_token,
@@ -287,6 +362,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         user: res.user,
         tokens: newTokens,
         isAuthenticated: true,
+        serverAuthenticated: true,
         isUnlocked: true,
         pendingVerificationEmail: null,
         isLoading: false,
@@ -354,6 +430,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         recovery_code: recoveryCode,
         dek_wrapped_by_recovery: dekWrappedByRecovery,
       });
+      // The first register/login response may omit this deferred field. Keep
+      // the offline cache complete after the server accepts the recovery kit.
+      try {
+        const cached = await loadOfflineIdentity();
+        if (cached?.profile.id === user.id) {
+          await enroll(user, cached.salt_cl, {
+            ...cached.wrapped_keyring,
+            dek_wrapped_by_recovery: dekWrappedByRecovery,
+          });
+        }
+      } catch {
+        // Recovery was attached server-side: still show the one-time code.
+      }
       return recoveryCode;
     } catch {
       return null;
@@ -383,6 +472,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await unwrapDek(res.keyring.dek_wrapped_by_kek);
       }
 
+      if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
+
       const newTokens = {
         access_token: res.access_token,
         refresh_token: res.refresh_token,
@@ -392,6 +483,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         user: res.user,
         tokens: newTokens,
         isAuthenticated: true,
+        serverAuthenticated: true,
         isUnlocked: true,
         pendingVerificationEmail: null,
         isLoading: false,
@@ -444,44 +536,46 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   unlock: async (password: string) => {
     set({ error: null });
     try {
-      const { user, tokens } = get();
-      if (!user || !tokens) {
-        throw new Error("Not authenticated");
+      const identity = await loadOfflineIdentity();
+      if (!identity || identity.profile.id !== get().localAccessAccountId) {
+        throw new Error("This account is not enrolled for offline access");
       }
-      const { keyring, salt_cl } = await authApi.fetchKeyring();
-      await deriveKek(password, salt_cl);
-      await unwrapDek(keyring.dek_wrapped_by_kek);
+      await deriveKek(password, identity.salt_cl);
+      await unwrapDek(identity.wrapped_keyring.dek_wrapped_by_kek);
       set({ isUnlocked: true });
       if (!get().alwaysAsk) {
         try {
           await savePassword(password);
         } catch {
-          // best-effort keychain refresh
+          /* best effort */
         }
       }
-      const recoveryCode = await get().ensureRecoveryKit(keyring);
-      if (recoveryCode) {
-        set({
-          pendingRecoveryCode: recoveryCode,
-          pendingRecoveryContext: "signup",
-        });
+      if (get().serverAuthenticated) {
+        const recoveryCode = await get().ensureRecoveryKit(
+          identity.wrapped_keyring,
+        );
+        if (recoveryCode)
+          set({
+            pendingRecoveryCode: recoveryCode,
+            pendingRecoveryContext: "signup",
+          });
       }
     } catch (err) {
-      const message =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Unlock failed";
+      const message = err instanceof Error ? err.message : String(err);
       set({ error: message });
       throw err;
     }
   },
 
   updateProfile: async (data) => {
-    set((state) => ({
-      user: state.user ? { ...state.user, ...data } : null,
-    }));
+    const user = get().user;
+    if (!user) return;
+    const updated = { ...user, ...data };
+    const identity = await loadOfflineIdentity();
+    if (identity?.profile.id === user.id) {
+      await enroll(updated, identity.salt_cl, identity.wrapped_keyring);
+    }
+    set({ user: updated });
   },
 
   changePassword: async (currentPassword: string, newPassword: string) => {
@@ -532,6 +626,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       new_server_salt: newServerSalt,
       new_salt_cl: newSaltCl,
     });
+
+    const identity = await loadOfflineIdentity();
+    if (identity?.profile.id === user.id) {
+      await enroll(user, newSaltCl, {
+        ...identity.wrapped_keyring,
+        dek_wrapped_by_kek: newEncryptedDek,
+      });
+    }
 
     // 7. Refresh the OS keychain entry with the new password
     if (!get().alwaysAsk) {
@@ -596,6 +698,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         new_salt_cl: prefetch.salt_cl,
       });
 
+      const cached = await loadOfflineIdentity();
+      if (cached?.profile.email === prefetch.email) {
+        await enroll(cached.profile, prefetch.salt_cl, keyring);
+      }
+
       set({
         pendingRecoveryCode: newCode,
         pendingRecoveryContext: "recovery",
@@ -617,9 +724,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   restoreSession: async () => {
-    // Deduplicate concurrent calls (e.g., React.StrictMode double-mount)
     if (_restoreSessionLock) return _restoreSessionLock;
-
     _restoreSessionLock = (async () => {
       try {
         await loadApiUrl();
@@ -628,69 +733,90 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         try {
           await setBaseUrl(getApiUrl());
         } catch {
-          // ignore: Rust falls back to the compiled-in default URL
+          /* use compiled default */
         }
-
-        const refreshToken = await loadRefreshToken();
-
-        if (refreshToken) {
-          try {
-            const newTokens = await authApi.refresh(refreshToken);
-            const tokens = {
-              access_token: newTokens.access_token,
-              refresh_token: newTokens.refresh_token,
-            };
-            await setAuthTokens(tokens.access_token, tokens.refresh_token);
-            set({ tokens, isAuthenticated: true });
-            await persistTokens(tokens);
-
-            const user = await authApi.me();
-            set({ user });
-
-            // D6: auto-unlock via OS keychain unless the user opted out
-            let autoKeyring: KeyringRows | null = null;
-            if (!alwaysAsk) {
-              set({ unlockPending: true });
-              try {
-                const { keyring, salt_cl } = await authApi.fetchKeyring();
-                autoKeyring = keyring;
-                const savedPassword = await loadPassword();
-                if (savedPassword) {
-                  await deriveKek(savedPassword, salt_cl);
-                  await unwrapDek(keyring.dek_wrapped_by_kek);
-                  set({ isUnlocked: true });
-                }
-              } catch {
-                // stale or wrong entry — user unlocks manually; self-heal on next ask
-              } finally {
-                set({ unlockPending: false });
+        const identity = await loadOfflineIdentity();
+        if (identity) {
+          set({
+            user: identity.profile,
+            localAccessAccountId: identity.profile.id,
+          });
+          if (!alwaysAsk) {
+            set({ unlockPending: true });
+            try {
+              const savedPassword = await loadPassword();
+              if (savedPassword) {
+                await deriveKek(savedPassword, identity.salt_cl);
+                await unwrapDek(identity.wrapped_keyring.dek_wrapped_by_kek);
+                set({ isUnlocked: true });
               }
+            } catch {
+              /* expired or wrong keychain entry: prompt instead */
+            } finally {
+              set({ unlockPending: false });
             }
-
-            // Self-heal a missing recovery kit (e.g. verify-time attach failed).
-            // Needs a live session; otherwise the manual unlock covers it.
-            if (get().isUnlocked) {
-              const recoveryCode = await get().ensureRecoveryKit(autoKeyring);
-              if (recoveryCode) {
-                set({
-                  pendingRecoveryCode: recoveryCode,
-                  pendingRecoveryContext: "signup",
-                });
-              }
-            }
-          } catch {
-            await teardownSession();
           }
         }
+
+        // The enrolled vault can render immediately; server refresh may time out offline.
+        if (identity) set({ isInitialized: true, isLoading: false });
+        await get().retryServerSession();
       } catch {
-        // ignore
+        // A corrupt/unavailable cache does not prevent online sign-in.
       } finally {
         _restoreSessionLock = null;
         set({ isLoading: false, isInitialized: true });
       }
     })();
-
     return _restoreSessionLock;
+  },
+
+  retryServerSession: async () => {
+    if (_serverSessionLock) return _serverSessionLock;
+    _serverSessionLock = (async () => {
+      try {
+        const refreshToken = await loadRefreshToken();
+        if (!refreshToken) return "auth-required" as const;
+        const identity = await loadOfflineIdentity();
+        const newTokens = await authApi.refresh(refreshToken);
+        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+        const user = await authApi.me();
+        if (identity && user.id !== identity.profile.id) {
+          throw new Error(
+            "Server account differs from enrolled offline account",
+          );
+        }
+        if (!identity) {
+          const { keyring, salt_cl } = await authApi.fetchKeyring();
+          await enroll(user, salt_cl, keyring);
+        }
+        set({
+          user,
+          tokens: newTokens,
+          isAuthenticated: true,
+          serverAuthenticated: true,
+          localAccessAccountId: user.id,
+        });
+        await persistTokens(newTokens);
+        return "connected" as const;
+      } catch (error) {
+        set({
+          tokens: null,
+          isAuthenticated: false,
+          serverAuthenticated: false,
+        });
+        const message =
+          error instanceof AuthApiError ? error.apiError.code : String(error);
+        return /network|offline|connect|timeout/i.test(message)
+          ? ("offline" as const)
+          : ("auth-required" as const);
+      }
+    })();
+    try {
+      return await _serverSessionLock;
+    } finally {
+      _serverSessionLock = null;
+    }
   },
 
   oauthStartFlow: async (provider: string) => {
@@ -723,6 +849,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         tokens: newTokens,
         isAuthenticated: true,
+        serverAuthenticated: true,
         isUnlocked: false,
         user: null,
         isLoading: false,
@@ -731,10 +858,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = await authApi.me();
       set({ user });
 
-      // If this device has the account's password, auto-unlock.
+      // Enroll an OAuth-authenticated account for later offline unlock.
+      const { keyring, salt_cl } = await authApi.fetchKeyring();
+      await enroll(user, salt_cl, keyring);
       if (!get().alwaysAsk) {
         try {
-          const { keyring, salt_cl } = await authApi.fetchKeyring();
           const savedPassword = await loadPassword();
           if (savedPassword) {
             await deriveKek(savedPassword, salt_cl);
@@ -742,7 +870,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             set({ isUnlocked: true });
           }
         } catch {
-          // wrong password for this account — user unlocks manually
+          // Wrong or expired password: prompt for manual unlock.
         }
       }
       return { needsSetup: false };
@@ -795,11 +923,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
+      await enroll(res.user, material.salt_cl, keyring);
       await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       set({
         user: res.user,
         tokens: newTokens,
         isAuthenticated: true,
+        serverAuthenticated: true,
         isUnlocked: true,
         pendingRecoveryCode: material.recovery_code,
         pendingRecoveryContext: "signup",

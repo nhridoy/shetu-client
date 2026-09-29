@@ -6,8 +6,21 @@ interface AuthGuardProps {
   requireAuth: boolean;
 }
 
+export function shouldRedirectPublicRoute(
+  localAccessAccountId: string | null,
+  routeState: unknown,
+  serverAuthenticated: boolean,
+): boolean {
+  const explicitReauth =
+    (routeState as { reauth?: boolean } | null)?.reauth === true;
+  return Boolean(
+    localAccessAccountId && (!explicitReauth || serverAuthenticated),
+  );
+}
+
 export default function AuthGuard({ requireAuth }: AuthGuardProps) {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const localAccessAccountId = useAuthStore((s) => s.localAccessAccountId);
+  const serverAuthenticated = useAuthStore((s) => s.serverAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const location = useLocation();
 
@@ -19,11 +32,18 @@ export default function AuthGuard({ requireAuth }: AuthGuardProps) {
     );
   }
 
-  if (requireAuth && !isAuthenticated) {
+  if (requireAuth && !localAccessAccountId) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (!requireAuth && isAuthenticated) {
+  if (
+    !requireAuth &&
+    shouldRedirectPublicRoute(
+      localAccessAccountId,
+      location.state,
+      serverAuthenticated,
+    )
+  ) {
     const from = (location.state as { from?: Location })?.from?.pathname;
     return <Navigate to={from || "/hosts"} replace />;
   }

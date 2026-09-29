@@ -7,7 +7,7 @@ use chacha20poly1305::{
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
-use x25519_dalek::{StaticSecret, PublicKey};
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -24,6 +24,7 @@ pub struct KeySession {
     pub public_key: PublicKey,
     pub salt_cl: [u8; SALT_CL_LEN],
     pub kek: Option<[u8; DEK_LEN]>,
+    pub unlocked: bool,
 }
 
 impl KeySession {
@@ -36,6 +37,7 @@ impl KeySession {
             public_key,
             salt_cl: [0u8; SALT_CL_LEN],
             kek: None,
+            unlocked: false,
         }
     }
 }
@@ -71,7 +73,10 @@ pub struct EncryptedPayload {
     pub aad: String,
 }
 
-pub fn derive_kek_bytes(password: &str, salt_cl: &[u8; SALT_CL_LEN]) -> Result<[u8; DEK_LEN], String> {
+pub fn derive_kek_bytes(
+    password: &str,
+    salt_cl: &[u8; SALT_CL_LEN],
+) -> Result<[u8; DEK_LEN], String> {
     let mut kek = [0u8; DEK_LEN];
     let params = argon2::Params::new(32 * 1024, 2, 1, Some(DEK_LEN))
         .map_err(|e| format!("Argon2 params error: {e}"))?;
@@ -88,7 +93,10 @@ pub fn generate_recovery_code() -> String {
     BASE64.encode(recovery_bytes)
 }
 
-fn derive_recovery_kek(recovery_code: &str, salt_cl: &[u8; SALT_CL_LEN]) -> Result<[u8; DEK_LEN], String> {
+fn derive_recovery_kek(
+    recovery_code: &str,
+    salt_cl: &[u8; SALT_CL_LEN],
+) -> Result<[u8; DEK_LEN], String> {
     let recovery_bytes = BASE64
         .decode(recovery_code)
         .map_err(|e| format!("Invalid recovery code base64: {e}"))?;
@@ -110,6 +118,7 @@ pub fn generate_account_material(session: &mut KeySession) -> Result<AccountMate
     let mut dek = [0u8; DEK_LEN];
     rand::rngs::OsRng.fill_bytes(&mut dek);
     session.dek = dek;
+    session.unlocked = true;
     session.salt_cl = salt_cl;
 
     let private_key = StaticSecret::random_from_rng(rand::rngs::OsRng);
@@ -130,7 +139,11 @@ pub fn generate_account_material(session: &mut KeySession) -> Result<AccountMate
     })
 }
 
-pub fn derive_kek(password: &str, salt_cl_b64: &str, session: &mut KeySession) -> Result<(), String> {
+pub fn derive_kek(
+    password: &str,
+    salt_cl_b64: &str,
+    session: &mut KeySession,
+) -> Result<(), String> {
     let salt_cl_bytes = BASE64
         .decode(salt_cl_b64)
         .map_err(|e| format!("Invalid salt_cl base64: {e}"))?;
@@ -189,7 +202,8 @@ pub fn build_keyring_rows(
     let dek_wrapped_by_recovery = encrypt_bytes(&recovery_kek, &session.dek, b"dek")?;
 
     let private_key_bytes = session.private_key.to_bytes();
-    let private_key_wrapped_by_dek = encrypt_bytes(&session.dek, &private_key_bytes, b"private_key")?;
+    let private_key_wrapped_by_dek =
+        encrypt_bytes(&session.dek, &private_key_bytes, b"private_key")?;
 
     Ok(KeyringRows {
         dek_wrapped_by_kek,
@@ -224,24 +238,35 @@ pub fn encrypt_secret(
     record_type: &str,
     session: &KeySession,
 ) -> Result<String, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
     let payload = encrypt_bytes(&session.dek, plaintext.as_bytes(), record_type.as_bytes())?;
     Ok(payload)
 }
 
 pub fn decrypt_secret(payload_b64: &str, session: &KeySession) -> Result<String, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
     let plaintext = decrypt_bytes(payload_b64, &session.dek)?;
     String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8: {e}"))
 }
 
-pub fn unwrap_dek(kek: &[u8; DEK_LEN], wrapped_b64: &str, session: &mut KeySession) -> Result<(), String> {
-    let dek_bytes = decrypt_bytes(wrapped_b64, kek)
-        .map_err(|_| "Incorrect password".to_string())?;
+pub fn unwrap_dek(
+    kek: &[u8; DEK_LEN],
+    wrapped_b64: &str,
+    session: &mut KeySession,
+) -> Result<(), String> {
+    let dek_bytes =
+        decrypt_bytes(wrapped_b64, kek).map_err(|_| "Incorrect password".to_string())?;
     if dek_bytes.len() != DEK_LEN {
         return Err("Invalid DEK length".to_string());
     }
     let mut dek = [0u8; DEK_LEN];
     dek.copy_from_slice(&dek_bytes);
     session.dek = dek;
+    session.unlocked = true;
     Ok(())
 }
 
@@ -270,13 +295,14 @@ pub fn recovery_unwrap_dek(
     let mut dek = [0u8; DEK_LEN];
     dek.copy_from_slice(&dek_bytes);
     session.dek = dek;
+    session.unlocked = true;
     session.salt_cl = salt_cl;
     Ok(())
 }
 
 pub fn unwrap_private_key(wrapped_b64: &str, session: &mut KeySession) -> Result<(), String> {
-    let private_key_bytes = decrypt_bytes(wrapped_b64, &session.dek)
-        .map_err(|_| "Incorrect password".to_string())?;
+    let private_key_bytes =
+        decrypt_bytes(wrapped_b64, &session.dek).map_err(|_| "Incorrect password".to_string())?;
     if private_key_bytes.len() != 32 {
         return Err("Invalid private key length".to_string());
     }
@@ -306,6 +332,7 @@ pub fn sign_challenge(nonce_b64: &str, session: &KeySession) -> Result<String, S
 
 pub fn lock(session: &mut KeySession) {
     session.dek.zeroize();
+    session.unlocked = false;
     session.kek.zeroize();
     session.private_key.zeroize();
     session.salt_cl.zeroize();
@@ -336,7 +363,13 @@ fn encrypt_bytes(key: &[u8; DEK_LEN], plaintext: &[u8], aad: &[u8]) -> Result<St
     let nonce = XNonce::from(nonce_bytes);
 
     let ct = cipher
-        .encrypt(&nonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|e| format!("Encryption error: {e}"))?;
 
     let payload = EncryptedPayload {
@@ -351,8 +384,8 @@ fn encrypt_bytes(key: &[u8; DEK_LEN], plaintext: &[u8], aad: &[u8]) -> Result<St
 }
 
 fn decrypt_bytes(payload_b64: &str, key: &[u8; DEK_LEN]) -> Result<Vec<u8>, String> {
-    let payload: EncryptedPayload = serde_json::from_str(payload_b64)
-        .map_err(|e| format!("Invalid payload JSON: {e}"))?;
+    let payload: EncryptedPayload =
+        serde_json::from_str(payload_b64).map_err(|e| format!("Invalid payload JSON: {e}"))?;
 
     if payload.v != 1 {
         return Err("Unsupported payload version".to_string());
@@ -378,7 +411,13 @@ fn decrypt_bytes(payload_b64: &str, key: &[u8; DEK_LEN]) -> Result<Vec<u8>, Stri
 
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
-        .decrypt(&nonce, Payload { msg: ct.as_ref(), aad: aad.as_ref() })
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ct.as_ref(),
+                aad: aad.as_ref(),
+            },
+        )
         .map_err(|e| format!("Decryption error: {e}"))
 }
 
@@ -486,7 +525,13 @@ mod tests {
 
         // Clear session and unwrap with recovery
         lock(&mut session);
-        recovery_unwrap_dek(&material.recovery_code, &salt_cl_b64, &keyring.dek_wrapped_by_recovery, &mut session).unwrap();
+        recovery_unwrap_dek(
+            &material.recovery_code,
+            &salt_cl_b64,
+            &keyring.dek_wrapped_by_recovery,
+            &mut session,
+        )
+        .unwrap();
         assert_eq!(session.dek, original_dek);
     }
 
@@ -495,11 +540,18 @@ mod tests {
         let mut session = KeySession::new();
         let material = generate_account_material(&mut session).unwrap();
 
-        let wrapped = wrap_dek_with_recovery(&material.recovery_code, &material.salt_cl, &session).unwrap();
+        let wrapped =
+            wrap_dek_with_recovery(&material.recovery_code, &material.salt_cl, &session).unwrap();
         let original_dek = session.dek;
 
         lock(&mut session);
-        recovery_unwrap_dek(&material.recovery_code, &material.salt_cl, &wrapped, &mut session).unwrap();
+        recovery_unwrap_dek(
+            &material.recovery_code,
+            &material.salt_cl,
+            &wrapped,
+            &mut session,
+        )
+        .unwrap();
         assert_eq!(session.dek, original_dek);
     }
 
@@ -508,7 +560,8 @@ mod tests {
         let mut session = KeySession::new();
         let material = generate_account_material(&mut session).unwrap();
 
-        let wrapped = wrap_dek_with_recovery(&material.recovery_code, &material.salt_cl, &session).unwrap();
+        let wrapped =
+            wrap_dek_with_recovery(&material.recovery_code, &material.salt_cl, &session).unwrap();
         let wrong_code = generate_recovery_code();
 
         lock(&mut session);
@@ -607,7 +660,13 @@ mod tests {
         assert_eq!(session.dek, [0u8; DEK_LEN]);
         assert!(session.kek.is_none());
 
-        unlock("password", &salt_cl_b64, &keyring.dek_wrapped_by_kek, &mut session).unwrap();
+        unlock(
+            "password",
+            &salt_cl_b64,
+            &keyring.dek_wrapped_by_kek,
+            &mut session,
+        )
+        .unwrap();
         assert_eq!(session.dek, original_dek);
     }
 
@@ -625,5 +684,20 @@ mod tests {
         let proof2 = compute_login_proof(&kek, &server_salt, &nonce).unwrap();
         assert_eq!(proof.verifier, proof2.verifier);
         assert_eq!(proof.proof, proof2.proof);
+    }
+}
+
+#[cfg(test)]
+mod locked_session_tests {
+    use super::*;
+
+    #[test]
+    fn encrypted_record_write_requires_unlocked_dek() {
+        let mut session = KeySession::new();
+        assert!(encrypt_secret("secret", "hosts", &session).is_err());
+        generate_account_material(&mut session).unwrap();
+        assert!(encrypt_secret("secret", "hosts", &session).is_ok());
+        lock(&mut session);
+        assert!(encrypt_secret("secret", "hosts", &session).is_err());
     }
 }

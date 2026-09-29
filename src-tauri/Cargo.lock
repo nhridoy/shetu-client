@@ -5794,6 +5794,7 @@ dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
  "chacha20poly1305 0.9.1",
+ "chrono",
  "cipher 0.4.4",
  "dirs",
  "hmac 0.12.1",

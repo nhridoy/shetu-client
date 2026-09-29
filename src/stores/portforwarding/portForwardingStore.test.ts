@@ -17,6 +17,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
+vi.mock("@/stores/hosts/hostStore", () => ({
+  useHostStore: {
+    getState: () => ({ hosts: [{ id: "host-1", vaultId: "v1" }] }),
+  },
+}));
+vi.mock("@/lib/common/device", () => ({
+  getDeviceId: async () => "00000000-0000-4000-8000-000000000001",
+}));
 
 const input: ForwardInput = {
   hostId: "host-1",
@@ -53,6 +61,7 @@ describe("portForwardingStore", () => {
     mocks.invoke.mockResolvedValueOnce([view]);
     await usePortForwardingStore.getState().loadForwards("host-1");
     expect(mocks.invoke).toHaveBeenCalledWith("list_port_forwards", {
+      deviceId: "00000000-0000-4000-8000-000000000001",
       hostId: "host-1",
     });
     expect(usePortForwardingStore.getState().forwards[0].status.state).toBe(
@@ -85,11 +94,34 @@ describe("portForwardingStore", () => {
     ).toEqual(["forward-2"]);
   });
 
+  it("signals saved-definition edits but not runtime start or stop", async () => {
+    const windowTarget = new EventTarget();
+    vi.stubGlobal("window", windowTarget);
+    const events: Array<{ table?: string; vaultId?: string }> = [];
+    windowTarget.addEventListener("termvault:local-mutation", (event) => {
+      events.push(
+        (event as CustomEvent<{ table?: string; vaultId?: string }>).detail,
+      );
+    });
+    mocks.invoke
+      .mockResolvedValueOnce(view)
+      .mockResolvedValueOnce(view)
+      .mockResolvedValueOnce(view);
+    await usePortForwardingStore.getState().createForward(input);
+    await usePortForwardingStore.getState().startForward("forward-1", "pane-1");
+    await usePortForwardingStore.getState().stopForward("forward-1");
+    expect(events).toEqual([{ table: "port_forwards", vaultId: "v1" }]);
+    vi.unstubAllGlobals();
+  });
+
   it("saves a definition without connecting", async () => {
     usePortForwardingStore.setState({ hostId: "host-1" });
     mocks.invoke.mockResolvedValueOnce(view);
     await usePortForwardingStore.getState().createForward(input);
-    expect(mocks.invoke).toHaveBeenCalledWith("create_port_forward", { input });
+    expect(mocks.invoke).toHaveBeenCalledWith("create_port_forward", {
+      input,
+      deviceId: "00000000-0000-4000-8000-000000000001",
+    });
     expect(usePortForwardingStore.getState().forwards[0].status.state).toBe(
       "stopped",
     );
@@ -106,6 +138,7 @@ describe("portForwardingStore", () => {
       usePortForwardingStore.getState().startForward("forward-1", "pane-1"),
     ).rejects.toBeTruthy();
     expect(mocks.invoke).toHaveBeenCalledWith("start_port_forward", {
+      deviceId: "00000000-0000-4000-8000-000000000001",
       id: "forward-1",
       ownerPaneId: "pane-1",
     });
@@ -128,13 +161,16 @@ describe("portForwardingStore", () => {
     await usePortForwardingStore.getState().stopForward("forward-1");
     await usePortForwardingStore.getState().deleteForward("forward-1");
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "update_port_forward", {
+      deviceId: "00000000-0000-4000-8000-000000000001",
       id: "forward-1",
       input,
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "stop_port_forward", {
+      deviceId: "00000000-0000-4000-8000-000000000001",
       id: "forward-1",
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(3, "delete_port_forward", {
+      deviceId: "00000000-0000-4000-8000-000000000001",
       id: "forward-1",
     });
     expect(usePortForwardingStore.getState().forwards).toEqual([]);

@@ -9,18 +9,28 @@ import SettingsModal from "@/components/settings/modal/SettingsModal";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
-
+import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useKeyStore } from "@/stores/keys/keyStore";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { SYNC_COMPLETED_EVENT, useSyncStore } from "@/stores/sync/syncStore";
 import {
   serializeWorkspaceLayout,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
+import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 export default function Layout() {
   const location = useLocation();
   const { fetchHosts, fetchGroups } = useHostStore();
   const { currentVaultId, fetchVaults } = useVaultStore();
+  const isUnlocked = useAuthStore((state) => state.isUnlocked);
+  const serverAuthenticated = useAuthStore(
+    (state) => state.serverAuthenticated,
+  );
+  const startSync = useSyncStore((state) => state.start);
+  const requestSync = useSyncStore((state) => state.requestSync);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -63,13 +73,45 @@ export default function Layout() {
   useEffect(() => {
     // Vaults are loaded once: switching vaults never changes the vault list
     // (store mutations update it in memory), so it must not refire per switch.
-    fetchVaults();
-  }, [fetchVaults]);
+    if (isUnlocked) void fetchVaults();
+  }, [fetchVaults, isUnlocked]);
 
   useEffect(() => {
-    fetchHosts(currentVaultId || undefined);
-    fetchGroups(currentVaultId || undefined);
-  }, [currentVaultId, fetchHosts, fetchGroups]);
+    if (!isUnlocked) return;
+    void fetchHosts(currentVaultId || undefined);
+    void fetchGroups(currentVaultId || undefined);
+  }, [currentVaultId, fetchHosts, fetchGroups, isUnlocked]);
+
+  useEffect(() => {
+    if (!isUnlocked || !currentVaultId) return;
+    return startSync(currentVaultId);
+  }, [isUnlocked, currentVaultId, startSync]);
+
+  useEffect(() => {
+    if (isUnlocked && serverAuthenticated && currentVaultId) {
+      void requestSync(currentVaultId);
+    }
+  }, [isUnlocked, serverAuthenticated, currentVaultId, requestSync]);
+
+  useEffect(() => {
+    if (!currentVaultId) return;
+    const onSyncCompleted = (event: Event) => {
+      const vaultId = (event as CustomEvent<{ vaultId: string }>).detail
+        ?.vaultId;
+      if (vaultId !== currentVaultId) return;
+      void Promise.allSettled([
+        fetchVaults(),
+        fetchHosts(currentVaultId),
+        fetchGroups(currentVaultId),
+        useKeyStore.getState().fetchKeys(currentVaultId),
+        useSnippetStore.getState().fetchSnippets(currentVaultId),
+        useWorkspaceStore.getState().fetchWorkspaces(currentVaultId),
+      ]);
+    };
+    window.addEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+    return () =>
+      window.removeEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+  }, [currentVaultId, fetchVaults, fetchHosts, fetchGroups]);
 
   const { handleDragStart, handleDragOver, handleDragEnd } = useLayoutDragDrop({
     setActiveView,

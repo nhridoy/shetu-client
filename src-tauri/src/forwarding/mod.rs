@@ -23,52 +23,65 @@ fn view(definition: ForwardDefinition, state: &ForwardingState) -> ForwardView {
 #[tauri::command]
 pub fn list_port_forwards(
     host_id: String,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, ForwardingState>,
 ) -> Result<Vec<ForwardView>, String> {
-    storage::list(&db, &host_id)
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    storage::list(&db, &session, &device_id, &host_id)
         .map(|items| items.into_iter().map(|item| view(item, &state)).collect())
 }
 
 #[tauri::command]
 pub fn create_port_forward(
     input: ForwardInput,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, ForwardingState>,
 ) -> Result<ForwardView, String> {
-    storage::create(&db, input).map(|item| view(item, &state))
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    storage::create(&db, &session, &device_id, input).map(|item| view(item, &state))
 }
 
 #[tauri::command]
 pub fn update_port_forward(
     id: String,
     input: ForwardInput,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, ForwardingState>,
 ) -> Result<ForwardView, String> {
     model::validate(&input)?;
-    let old = storage::get(&db, &id)?;
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    let old = storage::get(&db, &session, &device_id, &id)?;
     if old.host_id != input.host_id {
         return Err("Cannot move a port forward to a different host".into());
     }
     state.stop(&id);
-    storage::update(&db, &id, input).map(|item| view(item, &state))
+    storage::update(&db, &session, &device_id, &id, input).map(|item| view(item, &state))
 }
 
 #[tauri::command]
 pub fn delete_port_forward(
     id: String,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, ForwardingState>,
 ) -> Result<(), String> {
     state.stop(&id);
-    storage::delete(&db, &id)
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    storage::delete(&db, &session, &device_id, &id)
 }
 
 #[tauri::command]
 pub async fn start_port_forward(
     id: String,
     owner_pane_id: String,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     ssh: tauri::State<'_, crate::ssh::SshSessions>,
@@ -78,7 +91,10 @@ pub async fn start_port_forward(
     if owner_pane_id.trim().is_empty() {
         return Err("An owning terminal pane is required".into());
     }
-    let definition = storage::get(&db, &id)?;
+    let definition = {
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        storage::get(&db, &session, &device_id, &id)?
+    };
     state
         .start(definition.clone(), owner_pane_id, &db, &crypto, &app, &ssh)
         .await?;
@@ -88,10 +104,13 @@ pub async fn start_port_forward(
 #[tauri::command]
 pub fn stop_port_forward(
     id: String,
+    device_id: String,
     db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, ForwardingState>,
 ) -> Result<ForwardView, String> {
-    let definition = storage::get(&db, &id)?;
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    let definition = storage::get(&db, &session, &device_id, &id)?;
     state.stop(&id);
     Ok(view(definition, &state))
 }

@@ -1,5 +1,9 @@
+use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use rusqlite::Connection;
 use std::sync::Mutex;
+
+#[path = "sync_db.rs"]
+pub mod sync_db;
 
 pub const DB_FILE_NAME: &str = "termvault.db";
 
@@ -10,8 +14,19 @@ pub const DB_FILE_NAME: &str = "termvault.db";
 pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     for table in [
-        "port_forwards", "user_profiles", "user_keys", "vaults", "groups", "hosts", "keys",
-        "snippets", "workspaces", "presets", "outbox", "sync_conflicts", "__sync_meta",
+        "port_forwards",
+        "user_profiles",
+        "user_keys",
+        "vaults",
+        "groups",
+        "hosts",
+        "keys",
+        "snippets",
+        "workspaces",
+        "presets",
+        "outbox",
+        "sync_conflicts",
+        "__sync_meta",
     ] {
         conn.execute_batch(&format!("DELETE FROM {table};"))
             .map_err(|e| format!("wipe_all: {table}: {e}"))?;
@@ -60,9 +75,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             owner_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             name TEXT NOT NULL,
@@ -79,9 +97,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             parent_id TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
@@ -93,9 +114,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             os TEXT,
             auth_type TEXT NOT NULL DEFAULT 'password',
@@ -110,14 +134,24 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
 
         CREATE TABLE IF NOT EXISTS port_forwards (
             id TEXT PRIMARY KEY,
-            host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+            host_id TEXT NOT NULL,
             mode TEXT NOT NULL CHECK (mode IN ('local', 'remote', 'dynamic')),
             name TEXT NOT NULL,
             local_port INTEGER,
             remote_bind_address TEXT,
             remote_port INTEGER,
             destination_host TEXT,
-            destination_port INTEGER
+            destination_port INTEGER,
+            revision INTEGER NOT NULL DEFAULT 1,
+            vault_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+            updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_port_forwards_host ON port_forwards(host_id);
 
@@ -125,9 +159,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             description TEXT,
             key_type TEXT NOT NULL DEFAULT 'ed25519',
@@ -142,9 +179,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             description TEXT,
             tags TEXT NOT NULL DEFAULT '[]',
@@ -157,9 +197,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             sort_order INTEGER NOT NULL DEFAULT 0,
             data TEXT NOT NULL DEFAULT '{}'
@@ -170,9 +213,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL,
             sort_order INTEGER NOT NULL DEFAULT 0,
             data TEXT NOT NULL DEFAULT '{}'
@@ -182,7 +228,12 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         CREATE TABLE IF NOT EXISTS outbox (
             table_name TEXT NOT NULL,
             record_id TEXT NOT NULL,
-            queued_at INTEGER NOT NULL,
+            queued_at TEXT NOT NULL,
+            vault_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            edited_at TEXT NOT NULL DEFAULT '',
+            generation INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (table_name, record_id)
         );
         CREATE INDEX IF NOT EXISTS idx_outbox_queued_at ON outbox(queued_at);
@@ -192,20 +243,29 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             record_id TEXT NOT NULL,
             remote_rev INTEGER NOT NULL,
             remote_payload TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
             PRIMARY KEY (table_name, record_id)
         );
+
+        CREATE TABLE IF NOT EXISTS sync_known_vaults (vault_id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);
 
         CREATE TABLE IF NOT EXISTS __sync_meta (
             vault_id TEXT PRIMARY KEY,
             watermark INTEGER NOT NULL DEFAULT 0,
-            last_sync_at INTEGER,
+            cursor INTEGER NOT NULL DEFAULT 0,
+            last_sync_at TEXT,
             last_device_id TEXT
 );
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))?;
     migrate_add_columns(&conn)?;
+    migrate_timestamps(&conn)?;
+    migrate_sync_schema(&conn)?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS sync_known_vaults (vault_id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);")
+        .map_err(|e| format!("migrate vault sync markers: {e}"))?;
+    migrate_port_forward_fk(&conn)?;
     Ok(LocalDb {
         conn: Mutex::new(conn),
     })
@@ -246,12 +306,210 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const ENVELOPE_COLS: &str = "id, revision, vault_id, created_at, updated_at, deleted_at";
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(names.iter().any(|name| name == column))
+}
 
-// SELECT-side variant: CAST timestamps to INTEGER so rows written by previous
-// schemas (TEXT-affinity created_at/updated_at on migrated vaults) still read
-// correctly. GET is not applied on the INSERT side — casting there is invalid.
-const ENVELOPE_COLS_SELECT: &str = "id, revision, vault_id, CAST(created_at AS INTEGER), CAST(updated_at AS INTEGER), CAST(deleted_at AS INTEGER)";
+fn has_table(conn: &Connection, table: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |r| r.get::<_, bool>(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn migrate_sync_schema(conn: &Connection) -> Result<(), String> {
+    if has_table(conn, "port_forwards")? {
+        for (column, ddl) in [
+            ("revision", "INTEGER NOT NULL DEFAULT 1"),
+            ("vault_id", "TEXT NOT NULL DEFAULT ''"),
+            (
+                "created_at",
+                "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'",
+            ),
+            (
+                "updated_at",
+                "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'",
+            ),
+            ("deleted_at", "TEXT"),
+            ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+            ("data", "TEXT NOT NULL DEFAULT '{}'"),
+        ] {
+            if !has_column(conn, "port_forwards", column)? {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE port_forwards ADD COLUMN {column} {ddl};"
+                ))
+                .map_err(|e| format!("migrate port_forwards.{column}: {e}"))?;
+            }
+        }
+        conn.execute("UPDATE port_forwards SET vault_id = (SELECT vault_id FROM hosts WHERE hosts.id = port_forwards.host_id) WHERE vault_id = ''", [])
+        .map_err(|e| format!("migrate port forward vault: {e}"))?;
+    }
+    for table in [
+        "vaults",
+        "groups",
+        "hosts",
+        "keys",
+        "snippets",
+        "workspaces",
+        "presets",
+        "port_forwards",
+    ] {
+        if !has_table(conn, table)? {
+            continue;
+        }
+        for column in ["edited_at", "device_id", "operation_id"] {
+            if !has_column(conn, table, column)? {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT '';"
+                ))
+                .map_err(|e| format!("migrate {table}.{column}: {e}"))?;
+            }
+        }
+        conn.execute(
+            &format!("UPDATE {table} SET edited_at = updated_at WHERE edited_at = ''"),
+            [],
+        )
+        .map_err(|e| format!("migrate {table}.edited_at: {e}"))?;
+    }
+    for (column, ddl) in [
+        ("vault_id", "TEXT NOT NULL DEFAULT ''"),
+        ("operation_id", "TEXT NOT NULL DEFAULT ''"),
+        ("device_id", "TEXT NOT NULL DEFAULT ''"),
+        ("edited_at", "TEXT NOT NULL DEFAULT ''"),
+        ("generation", "INTEGER NOT NULL DEFAULT 1"),
+    ] {
+        if !has_column(conn, "outbox", column)? {
+            conn.execute_batch(&format!("ALTER TABLE outbox ADD COLUMN {column} {ddl};"))
+                .map_err(|e| format!("migrate outbox.{column}: {e}"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_record ON outbox(table_name, record_id);",
+    )
+    .map_err(|e| format!("migrate outbox uniqueness: {e}"))?;
+    if has_table(conn, "__sync_meta")? && !has_column(conn, "__sync_meta", "cursor")? {
+        conn.execute_batch("ALTER TABLE __sync_meta ADD COLUMN cursor INTEGER NOT NULL DEFAULT 0;")
+            .map_err(|e| e.to_string())?;
+    }
+    let mut stmt = conn.prepare("SELECT table_name, record_id, CAST(queued_at AS TEXT), vault_id, operation_id FROM outbox")
+        .map_err(|e| e.to_string())?;
+    let legacy = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    for (table_name, record_id, queued_at, vault_id, operation_id) in legacy {
+        let table = Table::parse(&table_name)?;
+        let row =
+            get_sync_row_unlocked(conn, table, &record_id)?.ok_or("legacy outbox row missing")?;
+        let vault = if vault_id.is_empty() {
+            if table == Table::Vaults {
+                record_id.clone()
+            } else {
+                row.vault_id.clone()
+            }
+        } else {
+            vault_id
+        };
+        let op = if operation_id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            operation_id
+        };
+        let stamp = canonical_utc_millis(&queued_at)?;
+        conn.execute("UPDATE outbox SET queued_at = ?1, vault_id = ?2, operation_id = ?3, edited_at = ?4 WHERE table_name = ?5 AND record_id = ?6",
+            rusqlite::params![stamp, vault, op, row.updated_at, table_name, record_id]).map_err(|e| e.to_string())?;
+        conn.execute(
+            &format!(
+                "UPDATE {} SET operation_id = ?1, edited_at = updated_at WHERE id = ?2",
+                table.as_str()
+            ),
+            rusqlite::params![op, record_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS sync_known_vaults (vault_id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);")
+        .map_err(|e| format!("migrate vault sync markers: {e}"))?;
+    Ok(())
+}
+
+/// Legacy forwarding rows had an ON DELETE CASCADE host foreign key. Sync
+/// needs to hydrate records in any order and retain tombstones after host edits.
+fn migrate_port_forward_fk(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("PRAGMA foreign_key_list(port_forwards)")
+        .map_err(|e| e.to_string())?;
+    let has_fk = stmt
+        .query_map([], |r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .next()
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    drop(stmt);
+    if !has_fk {
+        return Ok(());
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| e.to_string())?;
+    let migration = conn.execute_batch(
+        "BEGIN IMMEDIATE;
+        CREATE TABLE port_forwards_no_fk (
+            id TEXT PRIMARY KEY, host_id TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('local', 'remote', 'dynamic')),
+            name TEXT NOT NULL, local_port INTEGER, remote_bind_address TEXT,
+            remote_port INTEGER, destination_host TEXT, destination_port INTEGER,
+            revision INTEGER NOT NULL DEFAULT 1, vault_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        INSERT INTO port_forwards_no_fk
+            (id, host_id, mode, name, local_port, remote_bind_address, remote_port,
+             destination_host, destination_port, revision, vault_id, created_at,
+             updated_at, deleted_at, edited_at, device_id, operation_id, sort_order, data)
+        SELECT id, host_id, mode, name, local_port, remote_bind_address, remote_port,
+             destination_host, destination_port, revision, vault_id, created_at,
+             updated_at, deleted_at, edited_at, device_id, operation_id, sort_order, data
+        FROM port_forwards;
+        DROP TABLE port_forwards;
+        ALTER TABLE port_forwards_no_fk RENAME TO port_forwards;
+        CREATE INDEX IF NOT EXISTS idx_port_forwards_host ON port_forwards(host_id);
+        COMMIT;",
+    );
+    if let Err(err) = migration {
+        let _ = conn.execute_batch("ROLLBACK;");
+        let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+        return Err(format!("migrate port forward foreign key: {err}"));
+    }
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+const ENVELOPE_COLS: &str = "id, revision, vault_id, created_at, updated_at, deleted_at, edited_at, device_id, operation_id";
+
+const ENVELOPE_COLS_SELECT: &str = ENVELOPE_COLS;
 
 #[rustfmt::skip]
 fn table_cols(table: Table) -> &'static str {
@@ -263,14 +521,83 @@ fn table_cols(table: Table) -> &'static str {
         Table::Snippets   => "name, description, tags, sort_order, data",
         Table::Workspaces => "name, sort_order, data",
         Table::Presets    => "name, sort_order, data",
+        Table::PortForwards => "host_id, mode, name, sort_order, data",
     }
 }
 
+/// Normalize legacy SQLite epochs and server date strings to fixed-width UTC ISO milliseconds.
+pub fn canonical_utc_millis(input: &str) -> Result<String, String> {
+    let input = input.trim();
+    let parsed = if let Ok(n) = input.parse::<i64>() {
+        let millis = if input.len() <= 10 {
+            n.checked_mul(1000).ok_or("timestamp overflow")?
+        } else {
+            n
+        };
+        Utc.timestamp_millis_opt(millis)
+            .single()
+            .ok_or("timestamp out of range")?
+    } else if let Ok(date) = DateTime::parse_from_rfc3339(input) {
+        date.with_timezone(&Utc)
+    } else if let Ok(date) = NaiveDateTime::parse_from_str(input, "%Y-%m-%d %H:%M:%S%.f") {
+        date.and_utc()
+    } else if let Ok(date) = NaiveDate::parse_from_str(input, "%Y-%m-%d") {
+        date.and_hms_opt(0, 0, 0).ok_or("invalid date")?.and_utc()
+    } else {
+        return Err(format!("unsupported timestamp: {input}"));
+    };
+    Ok(parsed.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+fn now_iso() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    Utc::now().timestamp_millis()
+}
+
+fn migrate_timestamps(conn: &Connection) -> Result<(), String> {
+    for (table, columns) in [
+        ("vaults", &["created_at", "updated_at", "deleted_at"][..]),
+        ("groups", &["created_at", "updated_at", "deleted_at"]),
+        ("hosts", &["created_at", "updated_at", "deleted_at"]),
+        ("keys", &["created_at", "updated_at", "deleted_at"]),
+        ("snippets", &["created_at", "updated_at", "deleted_at"]),
+        ("workspaces", &["created_at", "updated_at", "deleted_at"]),
+        ("presets", &["created_at", "updated_at", "deleted_at"]),
+        (
+            "user_profiles",
+            &["created_at", "updated_at", "last_login_at"],
+        ),
+        ("user_keys", &["created_at"]),
+    ] {
+        for column in columns {
+            let sql = format!(
+                "SELECT rowid, CAST({column} AS TEXT) FROM {table} WHERE {column} IS NOT NULL"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| format!("migrate {table}.{column}: {e}"))?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            drop(stmt);
+            for (rowid, old) in rows {
+                let canonical = canonical_utc_millis(&old)?;
+                if canonical != old {
+                    conn.execute(
+                        &format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2"),
+                        rusqlite::params![canonical, rowid],
+                    )
+                    .map_err(|e| format!("migrate {table}.{column}: {e}"))?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn row_vals(row: &SyncRow, cols: &str) -> Vec<rusqlite::types::Value> {
@@ -278,12 +605,18 @@ fn row_vals(row: &SyncRow, cols: &str) -> Vec<rusqlite::types::Value> {
         row.id.clone().into(),
         row.revision.into(),
         row.vault_id.clone().into(),
-        row.created_at.into(),
-        row.updated_at.into(),
-        row.deleted_at.into(),
+        row.created_at.clone().into(),
+        row.updated_at.clone().into(),
+        row.deleted_at.clone().into(),
+        row.edited_at.clone().into(),
+        row.device_id.clone().into(),
+        row.operation_id.clone().into(),
     ];
     let add = |v: &mut Vec<rusqlite::types::Value>, val: Option<&String>| {
-        v.push(val.map(|s| s.clone().into()).unwrap_or(rusqlite::types::Value::Null));
+        v.push(
+            val.map(|s| s.clone().into())
+                .unwrap_or(rusqlite::types::Value::Null),
+        );
     };
     match cols {
         "owner_id, kind, name, sort_order, is_default, data" => {
@@ -292,6 +625,13 @@ fn row_vals(row: &SyncRow, cols: &str) -> Vec<rusqlite::types::Value> {
             add(&mut v, row.name.as_ref());
             v.push(row.sort_order.into());
             v.push(row.is_default.into());
+            v.push(row.data.clone().into());
+        }
+        "host_id, mode, name, sort_order, data" => {
+            add(&mut v, row.host_id.as_ref());
+            add(&mut v, row.mode.as_ref());
+            add(&mut v, row.name.as_ref());
+            v.push(row.sort_order.into());
             v.push(row.data.clone().into());
         }
         "name, parent_id, sort_order, data" => {
@@ -349,7 +689,12 @@ fn row_from(_table: Table, row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRow>
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
         deleted_at: row.get(5)?,
+        edited_at: row.get(6)?,
+        device_id: row.get(7)?,
+        operation_id: row.get(8)?,
         name: opt("name"),
+        host_id: opt("host_id"),
+        mode: opt("mode"),
         os: opt("os"),
         auth_type: opt("auth_type"),
         tags: opt("tags"),
@@ -363,8 +708,16 @@ fn row_from(_table: Table, row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRow>
         group_id: opt("group_id"),
         parent_id: opt("parent_id"),
         key_id: opt("key_id"),
-        sort_order: row.get::<_, Option<i64>>("sort_order").ok().flatten().unwrap_or(0),
-        is_default: row.get::<_, Option<i64>>("is_default").ok().flatten().unwrap_or(0),
+        sort_order: row
+            .get::<_, Option<i64>>("sort_order")
+            .ok()
+            .flatten()
+            .unwrap_or(0),
+        is_default: row
+            .get::<_, Option<i64>>("is_default")
+            .ok()
+            .flatten()
+            .unwrap_or(0),
         data: row.get("data")?,
     })
 }
@@ -379,6 +732,7 @@ impl Table {
             "snippets" => Ok(Table::Snippets),
             "workspaces" => Ok(Table::Workspaces),
             "presets" => Ok(Table::Presets),
+            "port_forwards" => Ok(Table::PortForwards),
             other => Err(format!("unknown table: {other}")),
         }
     }
@@ -391,66 +745,66 @@ impl Table {
             Table::Snippets => "snippets",
             Table::Workspaces => "workspaces",
             Table::Presets => "presets",
+            Table::PortForwards => "port_forwards",
         }
     }
 }
 
 pub fn upsert_sync_row(db: &LocalDb, table: Table, row: &SyncRow) -> Result<SyncRow, String> {
+    let device = if row.device_id.is_empty() {
+        uuid::Uuid::nil().to_string()
+    } else {
+        row.device_id.clone()
+    };
+    local_mutate(db, table, row, &device)
+}
+
+/// Save a local edit and its durable operation in the same SQLite transaction.
+pub fn local_mutate(
+    db: &LocalDb,
+    table: Table,
+    row: &SyncRow,
+    device_id: &str,
+) -> Result<SyncRow, String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     let existing = get_sync_row_unlocked(&conn, table, &row.id)?;
-    let rev = match &existing {
-        Some(e) => e.revision + 1,
-        None => 1,
-    };
-    let now = now_ms();
     let mut out = row.clone();
-    out.revision = rev;
-    if let Some(e) = &existing {
-        out.created_at = e.created_at;
-    } else {
-        out.created_at = now;
-    }
-    out.updated_at = now;
-    out.deleted_at = None; // upsert of a tombstoned row resurrects it (LWW create/update wins)
+    out.revision = existing.as_ref().map_or(1, |r| r.revision + 1);
+    let now = now_iso();
+    out.created_at = existing
+        .as_ref()
+        .map_or_else(|| now.clone(), |r| r.created_at.clone());
+    out.updated_at = now.clone();
+    out.edited_at = now.clone();
+    out.device_id = device_id.to_string();
+    out.operation_id = uuid::Uuid::new_v4().to_string();
+    out.deleted_at = None;
     if table == Table::Hosts {
-        // REPLACE used to substitute column defaults for NULL on these required fields.
         out.auth_type.get_or_insert_with(|| "password".to_string());
         out.tags.get_or_insert_with(|| "[]".to_string());
     }
-    let cols = table_cols(table);
-    let insert_cols = format!("{ENVELOPE_COLS}, {cols}");
-    let placeholders = (1..=6 + cols.split(',').count())
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = if table == Table::Hosts {
-        // REPLACE deletes the old host row and cascades into local port_forwards.
-        // Update in place so editing a host preserves its local definitions.
-        let updates = insert_cols
-            .split(',')
-            .map(str::trim)
-            .filter(|column| *column != "id")
-            .map(|column| format!("{column} = excluded.{column}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            "INSERT INTO hosts ({insert_cols}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}"
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("local_mutate tx: {e}"))?;
+    sync_db::write_row(&tx, table, &out)?;
+    sync_db::queue_row(&tx, table, &out, &now)?;
+    if table == Table::Vaults {
+        if out.is_default != 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO sync_known_vaults (vault_id) VALUES (?1)",
+                [&out.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "DELETE FROM sync_cancelled_vaults WHERE vault_id = ?1",
+            [&out.id],
         )
-    } else {
-        format!(
-            "INSERT OR REPLACE INTO {t} ({insert_cols}) VALUES ({placeholders})",
-            t = table.as_str(),
-        )
-    };
-    let tx = conn.transaction().map_err(|e| format!("upsert_sync_row tx: {e}"))?;
-    tx.execute(&sql, rusqlite::params_from_iter(row_vals(&out, cols)))
-        .map_err(|e| format!("upsert_sync_row({}): {e}", table.as_str()))?;
-    tx.execute(
-        "INSERT OR REPLACE INTO outbox (table_name, record_id, queued_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![table.as_str(), out.id, now],
-    )
-    .map_err(|e| format!("upsert_sync_row outbox: {e}"))?;
-    tx.commit().map_err(|e| format!("upsert_sync_row commit: {e}"))?;
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit()
+        .map_err(|e| format!("local_mutate commit: {e}"))?;
     Ok(out)
 }
 
@@ -458,42 +812,146 @@ pub fn upsert_sync_row(db: &LocalDb, table: Table, row: &SyncRow) -> Result<Sync
 pub struct OutboxEntry {
     pub table_name: String,
     pub record_id: String,
-    pub queued_at: i64,
+    pub queued_at: String,
+    pub vault_id: String,
+    pub operation_id: String,
+    pub device_id: String,
+    pub edited_at: String,
+    pub generation: i64,
 }
 
 pub fn tombstone_sync_row(db: &LocalDb, table: Table, id: &str) -> Result<(), String> {
+    tombstone_sync_row_with_device(db, table, id, &uuid::Uuid::nil().to_string())
+}
+
+pub fn tombstone_sync_row_with_device(
+    db: &LocalDb,
+    table: Table,
+    id: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     let Some(existing) = get_sync_row_unlocked(&conn, table, id)? else {
-        return Ok(()); // idempotent: nothing to tombstone
+        return Ok(());
     };
     if existing.deleted_at.is_some() {
-        return Ok(()); // already a tombstone — no revision bump
+        return Ok(());
     }
-    let now = now_ms();
-    let sql = format!(
-        "UPDATE {t} SET revision = ?1, updated_at = ?2, deleted_at = ?2 WHERE id = ?3",
-        t = table.as_str(),
-    );
-    let tx = conn.transaction().map_err(|e| format!("tombstone_sync_row tx: {e}"))?;
-    tx.execute(&sql, rusqlite::params![existing.revision + 1, now, id])
-        .map_err(|e| format!("tombstone_sync_row({}): {e}", table.as_str()))?;
-    tx.execute(
-        "INSERT OR REPLACE INTO outbox (table_name, record_id, queued_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![table.as_str(), id, now],
-    )
-    .map_err(|e| format!("tombstone_sync_row outbox: {e}"))?;
-    tx.commit().map_err(|e| format!("tombstone_sync_row commit: {e}"))?;
-    Ok(())
+    let now = now_iso();
+    let mut tombstone = existing;
+    tombstone.revision += 1;
+    tombstone.updated_at = now.clone();
+    tombstone.edited_at = now.clone();
+    tombstone.deleted_at = Some(now.clone());
+    tombstone.device_id = device_id.to_string();
+    tombstone.operation_id = uuid::Uuid::new_v4().to_string();
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("tombstone tx: {e}"))?;
+    sync_db::write_row(&tx, table, &tombstone)?;
+    sync_db::queue_row(&tx, table, &tombstone, &now)?;
+    tx.commit().map_err(|e| format!("tombstone commit: {e}"))
+}
+
+/// Tombstone a vault and every synced descendant atomically. The outbox sends
+/// descendants before the vault tombstone so the server never strands live rows.
+pub fn tombstone_vault_with_descendants(
+    db: &LocalDb,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let vault = get_sync_row_unlocked(&tx, Table::Vaults, vault_id)?;
+    let Some(vault) = vault else {
+        return Ok(());
+    };
+    let known: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_known_vaults WHERE vault_id = ?1)",
+            [vault_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let local_only = !known && vault.is_default == 0;
+    let now = now_iso();
+    for table in [
+        Table::PortForwards,
+        Table::Hosts,
+        Table::Groups,
+        Table::Keys,
+        Table::Snippets,
+        Table::Workspaces,
+        Table::Presets,
+        Table::Vaults,
+    ] {
+        let ids = if table == Table::Vaults {
+            vec![vault_id.to_string()]
+        } else {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT id FROM {} WHERE vault_id = ?1 AND deleted_at IS NULL",
+                    table.as_str()
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([vault_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+        for id in ids {
+            let Some(mut row) = get_sync_row_unlocked(&tx, table, &id)? else {
+                continue;
+            };
+            if row.deleted_at.is_some() {
+                continue;
+            }
+            if table != Table::Vaults && row.vault_id != vault_id {
+                return Err("vault descendant mismatch".into());
+            }
+            row.revision += 1;
+            row.updated_at = now.clone();
+            row.edited_at = now.clone();
+            row.deleted_at = Some(now.clone());
+            row.device_id = device_id.to_string();
+            row.operation_id = uuid::Uuid::new_v4().to_string();
+            sync_db::write_row(&tx, table, &row)?;
+            sync_db::queue_row(&tx, table, &row, &now)?;
+        }
+    }
+    if local_only {
+        // Preserve encrypted rows and operations for recovery, while avoiding
+        // uploads to a vault the server has never seen.
+        tx.execute(
+            "INSERT OR IGNORE INTO sync_cancelled_vaults (vault_id) VALUES (?1)",
+            [vault_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub fn outbox_pending(db: &LocalDb) -> Result<Vec<OutboxEntry>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT table_name, record_id, queued_at FROM outbox ORDER BY queued_at")
+        .prepare("SELECT table_name, record_id, queued_at, vault_id, operation_id, device_id, edited_at, generation FROM outbox WHERE vault_id NOT IN (SELECT vault_id FROM sync_cancelled_vaults) ORDER BY queued_at")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(OutboxEntry { table_name: r.get(0)?, record_id: r.get(1)?, queued_at: r.get(2)? })
+            Ok(OutboxEntry {
+                table_name: r.get(0)?,
+                record_id: r.get(1)?,
+                queued_at: r.get(2)?,
+                vault_id: r.get(3)?,
+                operation_id: r.get(4)?,
+                device_id: r.get(5)?,
+                edited_at: r.get(6)?,
+                generation: r.get(7)?,
+            })
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -505,8 +963,11 @@ pub fn outbox_pending(db: &LocalDb) -> Result<Vec<OutboxEntry>, String> {
 #[allow(dead_code)]
 pub fn outbox_remove(db: &LocalDb, table: Table, id: &str) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM outbox WHERE table_name = ?1 AND record_id = ?2", rusqlite::params![table.as_str(), id])
-        .map_err(|e| format!("outbox_remove: {e}"))?;
+    conn.execute(
+        "DELETE FROM outbox WHERE table_name = ?1 AND record_id = ?2",
+        rusqlite::params![table.as_str(), id],
+    )
+    .map_err(|e| format!("outbox_remove: {e}"))?;
     Ok(())
 }
 
@@ -516,35 +977,48 @@ pub fn get_sync_row(db: &LocalDb, table: Table, id: &str) -> Result<Option<SyncR
 }
 
 pub fn update_host_os(db: &LocalDb, host_id: &str, os: &str) -> Result<(), String> {
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| format!("update_host_os tx: {e}"))?;
-    let now = now_ms();
-    tx.execute(
-        "UPDATE hosts SET os = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![os, now, host_id],
-    )
-    .map_err(|e| format!("update_host_os: {e}"))?;
-    tx.execute(
-        "INSERT OR REPLACE INTO outbox (table_name, record_id, queued_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params!["hosts", host_id, now],
-    )
-    .map_err(|e| format!("update_host_os outbox: {e}"))?;
-    tx.commit().map_err(|e| format!("update_host_os commit: {e}"))?;
+    update_host_os_with_device(db, host_id, os, &uuid::Uuid::nil().to_string())
+}
+
+pub fn update_host_os_with_device(
+    db: &LocalDb,
+    host_id: &str,
+    os: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    let Some(mut row) = get_sync_row(db, Table::Hosts, host_id)? else {
+        return Ok(());
+    };
+    row.os = Some(os.to_string());
+    local_mutate(db, Table::Hosts, &row, device_id)?;
     Ok(())
 }
 
-fn get_sync_row_unlocked(conn: &Connection, table: Table, id: &str) -> Result<Option<SyncRow>, String> {
+fn get_sync_row_unlocked(
+    conn: &Connection,
+    table: Table,
+    id: &str,
+) -> Result<Option<SyncRow>, String> {
     let cols = table_cols(table);
     let sql = format!(
         "SELECT {envelope}, {cols} FROM {t} WHERE id = ?1",
-        envelope = ENVELOPE_COLS_SELECT, t = table.as_str(), cols = cols,
+        envelope = ENVELOPE_COLS_SELECT,
+        t = table.as_str(),
+        cols = cols,
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let mut rows = stmt.query_map(rusqlite::params![id], |r| row_from(table, r)).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map(rusqlite::params![id], |r| row_from(table, r))
+        .map_err(|e| e.to_string())?;
     Ok(rows.next().transpose().map_err(|e| e.to_string())?)
 }
 
-pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_deleted: bool) -> Result<Vec<SyncRow>, String> {
+pub fn list_sync_rows(
+    db: &LocalDb,
+    table: Table,
+    vault_id: &str,
+    include_deleted: bool,
+) -> Result<Vec<SyncRow>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let cols = table_cols(table);
     // Vaults are per-user, not per-vault: skip the vault_id filter for them.
@@ -555,7 +1029,11 @@ pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_delete
         (false, false) => Some(vault_id),
     };
     let where_clause = if vid.is_some() {
-        if include_deleted { "WHERE vault_id = ?1" } else { "WHERE deleted_at IS NULL AND vault_id = ?1" }
+        if include_deleted {
+            "WHERE vault_id = ?1"
+        } else {
+            "WHERE deleted_at IS NULL AND vault_id = ?1"
+        }
     } else if !include_deleted {
         "WHERE deleted_at IS NULL"
     } else {
@@ -563,7 +1041,10 @@ pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_delete
     };
     let sql = format!(
         "SELECT {envelope}, {cols} FROM {t} {where_clause} ORDER BY sort_order, created_at DESC",
-        envelope = ENVELOPE_COLS_SELECT, t = table.as_str(), cols = cols, where_clause = where_clause,
+        envelope = ENVELOPE_COLS_SELECT,
+        t = table.as_str(),
+        cols = cols,
+        where_clause = where_clause,
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let vault_filter = vid.unwrap_or("");
@@ -581,7 +1062,16 @@ pub fn list_sync_rows(db: &LocalDb, table: Table, vault_id: &str, include_delete
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Table { Vaults, Groups, Hosts, Keys, Snippets, Workspaces, Presets }
+pub enum Table {
+    Vaults,
+    Groups,
+    Hosts,
+    Keys,
+    Snippets,
+    Workspaces,
+    Presets,
+    PortForwards,
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", default)]
@@ -589,10 +1079,15 @@ pub struct SyncRow {
     pub id: String,
     pub revision: i64,
     pub vault_id: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub deleted_at: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+    pub edited_at: String,
+    pub device_id: String,
+    pub operation_id: String,
     pub name: Option<String>,
+    pub host_id: Option<String>,
+    pub mode: Option<String>,
     pub os: Option<String>,
     pub auth_type: Option<String>,
     pub tags: Option<String>,
@@ -611,49 +1106,152 @@ pub struct SyncRow {
     pub data: String,
 }
 
-/// Batch-update sort_order for multiple rows in a single transaction.
+/// Reorder rows through the same durable local-mutation path as ordinary edits.
 pub fn update_sort_orders(
     db: &LocalDb,
     table: Table,
     updates: &[(String, i64)],
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let t = table.as_str();
-    let now = now_ms();
-    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    update_sort_orders_with_device(db, table, updates, &uuid::Uuid::nil().to_string())
+}
+
+pub fn update_sort_orders_with_device(
+    db: &LocalDb,
+    table: Table,
+    updates: &[(String, i64)],
+    device_id: &str,
+) -> Result<(), String> {
     for (id, order) in updates {
-        conn.execute(
-            &format!("UPDATE {t} SET sort_order = ?1, updated_at = ?2 WHERE id = ?3"),
-            rusqlite::params![order, now, id],
-        )
-        .map_err(|e| {
-            let _ = conn.execute_batch("ROLLBACK");
-            format!("update_sort_orders: {e}")
-        })?;
+        if let Some(mut row) = get_sync_row(db, table, id)? {
+            row.sort_order = *order;
+            local_mutate(db, table, &row, device_id)?;
+        }
     }
-    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Update a single host's group_id without decrypt/encrypt — no plaintext involved.
-pub fn update_host_group(
+pub fn update_host_group(db: &LocalDb, host_id: &str, group_id: &str) -> Result<(), String> {
+    update_host_group_with_device(db, host_id, group_id, &uuid::Uuid::nil().to_string())
+}
+
+pub fn update_host_group_with_device(
     db: &LocalDb,
     host_id: &str,
     group_id: &str,
+    device_id: &str,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let now = now_ms();
-    conn.execute(
-        "UPDATE hosts SET group_id = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![group_id, now, host_id],
-    )
-    .map_err(|e| format!("update_host_group: {e}"))?;
+    if let Some(mut row) = get_sync_row(db, Table::Hosts, host_id)? {
+        row.group_id = if group_id.is_empty() {
+            None
+        } else {
+            Some(group_id.to_string())
+        };
+        local_mutate(db, Table::Hosts, &row, device_id)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_db_migrates_legacy_outbox_to_stable_iso_operation() {
+        let path = std::env::temp_dir().join(format!(
+            "termvault-sync-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let path_str = path.to_str().unwrap();
+        let host_id = uuid::Uuid::new_v4().to_string();
+        let vault_id = uuid::Uuid::new_v4().to_string();
+        {
+            let db = open(path_str).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute("INSERT INTO hosts (id, vault_id, created_at, updated_at, name, data) VALUES (?1, ?2, '2023-11-14T22:13:20.000Z', '2023-11-14T22:13:20.001Z', 'legacy', '{}')",
+                rusqlite::params![host_id, vault_id]).unwrap();
+            conn.execute("INSERT INTO outbox (table_name, record_id, queued_at) VALUES ('hosts', ?1, 1700000000000)", [&host_id]).unwrap();
+        }
+        let first = open(path_str).unwrap();
+        let pending = outbox_pending(&first).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].queued_at, "2023-11-14T22:13:20.000Z");
+        assert_eq!(pending[0].vault_id, vault_id);
+        uuid::Uuid::parse_str(&pending[0].operation_id).unwrap();
+        let operation_id = pending[0].operation_id.clone();
+        drop(first);
+        let second = open(path_str).unwrap();
+        assert_eq!(
+            outbox_pending(&second).unwrap()[0].operation_id,
+            operation_id
+        );
+        drop(second);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn sync_db_migrates_forward_fk_without_losing_legacy_definition() {
+        let db = test_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute_batch("DROP TABLE port_forwards;
+            CREATE TABLE port_forwards (
+                id TEXT PRIMARY KEY, host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+                mode TEXT NOT NULL, name TEXT NOT NULL, local_port INTEGER,
+                remote_bind_address TEXT, remote_port INTEGER, destination_host TEXT, destination_port INTEGER
+            );
+            INSERT INTO hosts (id, vault_id, created_at, updated_at, name) VALUES
+                ('legacy-host', 'legacy-vault', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'host');
+            INSERT INTO port_forwards (id, host_id, mode, name, local_port) VALUES
+                ('legacy-forward', 'legacy-host', 'dynamic', 'socks', 1080);")
+            .unwrap();
+        migrate_sync_schema(&conn).unwrap();
+        migrate_port_forward_fk(&conn).unwrap();
+        conn.execute("DELETE FROM hosts WHERE id = 'legacy-host'", [])
+            .unwrap();
+        let port: i64 = conn
+            .query_row(
+                "SELECT local_port FROM port_forwards WHERE id = 'legacy-forward'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(port, 1080);
+        migrate_port_forward_fk(&conn).unwrap();
+    }
+
+    #[test]
+    fn canonical_utc_normalizes_offsets_and_epoch_millis() {
+        assert_eq!(
+            canonical_utc_millis("2026-09-27T06:00:00+06:00").unwrap(),
+            "2026-09-27T00:00:00.000Z"
+        );
+        assert_eq!(
+            canonical_utc_millis("1700000000000").unwrap(),
+            "2023-11-14T22:13:20.000Z"
+        );
+    }
+
+    #[test]
+    fn canonical_utc_migrates_legacy_host_without_touching_ciphertext() {
+        let db = test_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("INSERT INTO hosts (id, vault_id, created_at, updated_at, name, data) VALUES ('legacy', 'v1', 1700000000000, 1700000000001, 'Legacy', 'sealed-blob')", []).unwrap();
+        }
+        migrate_timestamps(&db.conn.lock().unwrap()).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let (created, updated, payload): (String, String, String) = conn
+            .query_row(
+                "SELECT created_at, updated_at, data FROM hosts WHERE id = 'legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(created, "2023-11-14T22:13:20.000Z");
+        assert_eq!(updated, "2023-11-14T22:13:20.001Z");
+        assert_eq!(payload, "sealed-blob");
+    }
 
     fn test_db() -> LocalDb {
         open(":memory:").unwrap()
@@ -670,8 +1268,21 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        for t in ["user_profiles", "user_keys", "vaults", "groups", "hosts", "keys",
-                  "snippets", "workspaces", "presets", "outbox", "sync_conflicts", "__sync_meta", "port_forwards"] {
+        for t in [
+            "user_profiles",
+            "user_keys",
+            "vaults",
+            "groups",
+            "hosts",
+            "keys",
+            "snippets",
+            "workspaces",
+            "presets",
+            "outbox",
+            "sync_conflicts",
+            "__sync_meta",
+            "port_forwards",
+        ] {
             assert!(tables.contains(&t.to_string()), "missing table {t}");
         }
         assert!(!tables.contains(&"records".to_string()));
@@ -684,16 +1295,16 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE hosts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              CREATE TABLE keys (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, description TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              CREATE TABLE snippets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, description TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              -- old vaults schema: no sync envelope at all
              CREATE TABLE vaults (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
@@ -726,7 +1337,10 @@ mod tests {
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
-            assert!(cols.contains(&column.to_string()), "missing {table}.{column}");
+            assert!(
+                cols.contains(&column.to_string()),
+                "missing {table}.{column}"
+            );
         }
         // idempotent
         migrate_add_columns(&conn).unwrap();
@@ -741,49 +1355,111 @@ mod tests {
              VALUES ('h1', 1, 'v1', 1, 1, 'box', 0, '{}')", [],
         ).unwrap();
         conn.execute(
-            "INSERT INTO outbox (table_name, record_id, queued_at) VALUES ('hosts', 'h1', 1)", [],
-        ).unwrap();
+            "INSERT INTO outbox (table_name, record_id, queued_at) VALUES ('hosts', 'h1', 1)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO port_forwards (id, host_id, mode, name, local_port) VALUES ('f1', 'h1', 'dynamic', 'socks', 1080)", [],
         ).unwrap();
         drop(conn);
         wipe_all(&db).unwrap();
         let conn = db.conn.lock().unwrap();
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM port_forwards", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM port_forwards", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
     fn test_upsert_group_roundtrip_and_revision_bump() {
         let db = test_db();
-        let g1 = SyncRow { id: "g1".into(), revision: 99, vault_id: "v1".into(),
-            created_at: 0, updated_at: 0, deleted_at: None, name: Some("Servers".into()),
-            os: None, auth_type: None, tags: None, color: None, description: None,
-            key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
-            sort_order: 0, is_default: 0,
-            parent_id: None, group_id: None, key_id: None, data: "{}".into() };
+        let g1 = SyncRow {
+            id: "g1".into(),
+            revision: 99,
+            vault_id: "v1".into(),
+            created_at: "0".into(),
+            updated_at: "0".into(),
+            deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
+            name: Some("Servers".into()),
+            os: None,
+            auth_type: None,
+            tags: None,
+            color: None,
+            description: None,
+            key_type: None,
+            fingerprint: None,
+            public_key: None,
+            owner_id: None,
+            kind: None,
+            sort_order: 0,
+            is_default: 0,
+            parent_id: None,
+            group_id: None,
+            key_id: None,
+            data: "{}".into(),
+        };
         let saved = upsert_sync_row(&db, Table::Groups, &g1).unwrap();
-        assert_eq!(saved.revision, 1);                       // caller revision ignored
+        assert_eq!(saved.revision, 1); // caller revision ignored
         assert_eq!(saved.vault_id, "v1");
         assert_eq!(saved.name.as_deref(), Some("Servers"));
-        assert!(saved.created_at > 0 && saved.updated_at >= saved.created_at);
+        assert!(!saved.created_at.is_empty() && saved.updated_at >= saved.created_at);
 
         let updated = upsert_sync_row(&db, Table::Groups, &g1).unwrap();
-        assert_eq!(updated.revision, 2);                     // bump on update
-        assert_eq!(updated.created_at, saved.created_at);    // preserved
+        assert_eq!(updated.revision, 2); // bump on update
+        assert_eq!(updated.created_at, saved.created_at); // preserved
     }
 
     #[test]
     fn test_upsert_host_roundtrip() {
         let db = test_db();
-        let h = SyncRow { id: "h1".into(), revision: 1, vault_id: "v1".into(),
-            created_at: 0, updated_at: 0, deleted_at: None, name: Some("prod".into()),
-            os: Some("linux".into()), auth_type: Some("password".into()),
-            tags: Some("[\"web\",\"prod\"]".into()), color: Some("#ff0000".into()),
-            description: None, key_type: None, fingerprint: None, public_key: None,
-            owner_id: None, kind: None, sort_order: 3, is_default: 0, parent_id: None, group_id: Some("g1".into()),
-            key_id: Some("k1".into()), data: "encrypted".into() };
+        let h = SyncRow {
+            id: "h1".into(),
+            revision: 1,
+            vault_id: "v1".into(),
+            created_at: "0".into(),
+            updated_at: "0".into(),
+            deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
+            name: Some("prod".into()),
+            os: Some("linux".into()),
+            auth_type: Some("password".into()),
+            tags: Some("[\"web\",\"prod\"]".into()),
+            color: Some("#ff0000".into()),
+            description: None,
+            key_type: None,
+            fingerprint: None,
+            public_key: None,
+            owner_id: None,
+            kind: None,
+            sort_order: 3,
+            is_default: 0,
+            parent_id: None,
+            group_id: Some("g1".into()),
+            key_id: Some("k1".into()),
+            data: "encrypted".into(),
+        };
         upsert_sync_row(&db, Table::Hosts, &h).unwrap();
         let loaded = get_sync_row(&db, Table::Hosts, "h1").unwrap().unwrap();
         assert_eq!(loaded.name.as_deref(), Some("prod"));
@@ -792,8 +1468,13 @@ mod tests {
         assert_eq!(loaded.auth_type.as_deref(), Some("password"));
         assert_eq!(loaded.tags.as_deref(), Some("[\"web\",\"prod\"]"));
         assert_eq!(loaded.color.as_deref(), Some("#ff0000"));
-        assert_eq!(loaded.data, "encrypted");                // opaque passthrough
-        assert_eq!(list_sync_rows(&db, Table::Hosts, "v1", false).unwrap().len(), 1);
+        assert_eq!(loaded.data, "encrypted"); // opaque passthrough
+        assert_eq!(
+            list_sync_rows(&db, Table::Hosts, "v1", false)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -802,22 +1483,51 @@ mod tests {
 
         let db = test_db();
         let mut host = SyncRow {
-            id: "h1".into(), revision: 1, vault_id: "v1".into(),
-            created_at: 0, updated_at: 0, deleted_at: None, name: Some("old".into()),
-            os: None, auth_type: Some("password".into()), tags: Some("[]".into()), color: None, description: None,
-            key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
-            sort_order: 0, is_default: 0, parent_id: None, group_id: None, key_id: None,
+            id: "h1".into(),
+            revision: 1,
+            vault_id: "v1".into(),
+            created_at: "0".into(),
+            updated_at: "0".into(),
+            deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
+            name: Some("old".into()),
+            os: None,
+            auth_type: Some("password".into()),
+            tags: Some("[]".into()),
+            color: None,
+            description: None,
+            key_type: None,
+            fingerprint: None,
+            public_key: None,
+            owner_id: None,
+            kind: None,
+            sort_order: 0,
+            is_default: 0,
+            parent_id: None,
+            group_id: None,
+            key_id: None,
             data: "{}".into(),
         };
         upsert_sync_row(&db, Table::Hosts, &host).unwrap();
+        let mut session = crate::crypto::KeySession::new();
+        crate::crypto::generate_account_material(&mut session).unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
         let forward = storage::create(
-            &db, ForwardInput::local("h1", "web", 8080, "localhost", 80)
-        ).unwrap();
+            &db,
+            &session,
+            &device_id,
+            ForwardInput::local("h1", "web", 8080, "localhost", 80),
+        )
+        .unwrap();
 
         host.name = Some("renamed".into());
         upsert_sync_row(&db, Table::Hosts, &host).unwrap();
 
-        let forwards = storage::list(&db, "h1").unwrap();
+        let forwards = storage::list(&db, &session, &device_id, "h1").unwrap();
         assert_eq!(forwards.len(), 1);
         assert_eq!(forwards[0].id, forward.id);
     }
@@ -826,40 +1536,96 @@ mod tests {
     fn test_list_scoped_to_vault_and_sorted() {
         let db = test_db();
         for (id, vault, order) in [("h1", "v1", 2), ("h2", "v1", 1), ("h3", "v2", 9)] {
-            let h = SyncRow { id: id.into(), revision: 1, vault_id: vault.into(),
-                created_at: 1, updated_at: 1, deleted_at: None, name: Some(id.into()),
-                os: None, auth_type: None, tags: None, color: None, description: None,
-                key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
-                sort_order: order, is_default: 0,
-                parent_id: None, group_id: None, key_id: None, data: "{}".into() };
+            let h = SyncRow {
+                id: id.into(),
+                revision: 1,
+                vault_id: vault.into(),
+                created_at: "1".into(),
+                updated_at: "1".into(),
+                deleted_at: None,
+                edited_at: String::new(),
+                device_id: String::new(),
+                operation_id: String::new(),
+                host_id: None,
+                mode: None,
+                name: Some(id.into()),
+                os: None,
+                auth_type: None,
+                tags: None,
+                color: None,
+                description: None,
+                key_type: None,
+                fingerprint: None,
+                public_key: None,
+                owner_id: None,
+                kind: None,
+                sort_order: order,
+                is_default: 0,
+                parent_id: None,
+                group_id: None,
+                key_id: None,
+                data: "{}".into(),
+            };
             upsert_sync_row(&db, Table::Hosts, &h).unwrap();
         }
         let v1 = list_sync_rows(&db, Table::Hosts, "v1", false).unwrap();
-        assert_eq!(v1.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["h2", "h1"]);
+        assert_eq!(
+            v1.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["h2", "h1"]
+        );
     }
 
     #[test]
     fn test_tombstone_hides_row_and_bumps_outbox() {
         let db = test_db();
-        let k = SyncRow { id: "k1".into(), revision: 1, vault_id: "v1".into(), created_at: 1,
-            updated_at: 1, deleted_at: None, name: Some("key".into()), os: None,
-            auth_type: None, tags: None, color: None, description: None,
-            key_type: Some("ed25519".into()), fingerprint: Some("SHA256:abc".into()),
-            public_key: Some("ssh-ed25519 AAAA".into()), owner_id: None, kind: None,
-            sort_order: 0, is_default: 0,
-            parent_id: None, group_id: None, key_id: None, data: "enc".into() };
+        let k = SyncRow {
+            id: "k1".into(),
+            revision: 1,
+            vault_id: "v1".into(),
+            created_at: "1".into(),
+            updated_at: "1".into(),
+            deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
+            name: Some("key".into()),
+            os: None,
+            auth_type: None,
+            tags: None,
+            color: None,
+            description: None,
+            key_type: Some("ed25519".into()),
+            fingerprint: Some("SHA256:abc".into()),
+            public_key: Some("ssh-ed25519 AAAA".into()),
+            owner_id: None,
+            kind: None,
+            sort_order: 0,
+            is_default: 0,
+            parent_id: None,
+            group_id: None,
+            key_id: None,
+            data: "enc".into(),
+        };
         upsert_sync_row(&db, Table::Keys, &k).unwrap();
         let loaded = get_sync_row(&db, Table::Keys, "k1").unwrap().unwrap();
         assert_eq!(loaded.key_type.as_deref(), Some("ed25519"));
         assert_eq!(loaded.fingerprint.as_deref(), Some("SHA256:abc"));
         assert_eq!(loaded.public_key.as_deref(), Some("ssh-ed25519 AAAA"));
-        assert_eq!(list_sync_rows(&db, Table::Keys, "v1", false).unwrap().len(), 1);
+        assert_eq!(
+            list_sync_rows(&db, Table::Keys, "v1", false).unwrap().len(),
+            1
+        );
 
         tombstone_sync_row(&db, Table::Keys, "k1").unwrap();
         let all = list_sync_rows(&db, Table::Keys, "v1", true).unwrap();
         assert_eq!(all.len(), 1);
         assert!(all[0].deleted_at.is_some() && all[0].revision == 2);
-        assert_eq!(list_sync_rows(&db, Table::Keys, "v1", false).unwrap().len(), 0);
+        assert_eq!(
+            list_sync_rows(&db, Table::Keys, "v1", false).unwrap().len(),
+            0
+        );
 
         // idempotent: second tombstone does not bump again
         tombstone_sync_row(&db, Table::Keys, "k1").unwrap();
@@ -867,26 +1633,71 @@ mod tests {
         assert_eq!(all2[0].revision, 2);
 
         let pending = outbox_pending(&db).unwrap();
-        assert!(pending.iter().any(|o| o.table_name == "keys" && o.record_id == "k1"));
+        assert!(pending
+            .iter()
+            .any(|o| o.table_name == "keys" && o.record_id == "k1"));
     }
 
     #[test]
     fn test_outbox_remove_and_remaining_tables_roundtrip() {
         let db = test_db();
-        for (table, id) in [(Table::Snippets, "s1"), (Table::Workspaces, "w1"), (Table::Presets, "p1")] {
-            let row = SyncRow { id: id.into(), revision: 1, vault_id: "v1".into(), created_at: 1,
-                updated_at: 1, deleted_at: None, name: Some("n".into()), os: None,
-                auth_type: None, tags: Some("[\"t1\"]".into()), color: None, description: None,
-                key_type: None, fingerprint: None, public_key: None, owner_id: None, kind: None,
-                sort_order: 0, is_default: 0,
-                parent_id: None, group_id: None, key_id: None, data: "enc".into() };
+        for (table, id) in [
+            (Table::Snippets, "s1"),
+            (Table::Workspaces, "w1"),
+            (Table::Presets, "p1"),
+        ] {
+            let row = SyncRow {
+                id: id.into(),
+                revision: 1,
+                vault_id: "v1".into(),
+                created_at: "1".into(),
+                updated_at: "1".into(),
+                deleted_at: None,
+                edited_at: String::new(),
+                device_id: String::new(),
+                operation_id: String::new(),
+                host_id: None,
+                mode: None,
+                name: Some("n".into()),
+                os: None,
+                auth_type: None,
+                tags: Some("[\"t1\"]".into()),
+                color: None,
+                description: None,
+                key_type: None,
+                fingerprint: None,
+                public_key: None,
+                owner_id: None,
+                kind: None,
+                sort_order: 0,
+                is_default: 0,
+                parent_id: None,
+                group_id: None,
+                key_id: None,
+                data: "enc".into(),
+            };
             upsert_sync_row(&db, table, &row).unwrap();
         }
         let s1 = get_sync_row(&db, Table::Snippets, "s1").unwrap().unwrap();
         assert_eq!(s1.tags.as_deref(), Some("[\"t1\"]"));
-        assert_eq!(list_sync_rows(&db, Table::Snippets, "v1", false).unwrap().len(), 1);
-        assert_eq!(list_sync_rows(&db, Table::Workspaces, "v1", false).unwrap().len(), 1);
-        assert_eq!(list_sync_rows(&db, Table::Presets, "v1", false).unwrap().len(), 1);
+        assert_eq!(
+            list_sync_rows(&db, Table::Snippets, "v1", false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_sync_rows(&db, Table::Workspaces, "v1", false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_sync_rows(&db, Table::Presets, "v1", false)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(outbox_pending(&db).unwrap().len(), 3);
 
         outbox_remove(&db, Table::Snippets, "s1").unwrap();
@@ -908,10 +1719,11 @@ mod tests {
             "id": "h1", "vault_id": "v1", "name": "prod",
             "auth_type": "key", "tags": "[\"web\"]", "color": "#0ff",
             "group_id": "g1", "key_id": "k1", "sort_order": 0, "data": "enc"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(host.revision, 0);
-        assert_eq!(host.created_at, 0);
-        assert_eq!(host.updated_at, 0);
+        assert_eq!(host.created_at, "");
+        assert_eq!(host.updated_at, "");
         assert!(host.deleted_at.is_none());
         assert_eq!(host.name.as_deref(), Some("prod"));
         assert!(host.os.is_none());
@@ -926,7 +1738,8 @@ mod tests {
             "id": "k1", "vault_id": "v1", "name": "ssh",
             "description": "main", "key_type": "rsa", "fingerprint": "SHA256:x",
             "public_key": "ssh-rsa AAAA", "sort_order": 0, "data": "enc"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(key.revision, 0);
         assert_eq!(key.description.as_deref(), Some("main"));
         assert_eq!(key.key_type.as_deref(), Some("rsa"));
@@ -937,15 +1750,17 @@ mod tests {
         let snippet = serde_json::from_value::<SyncRow>(serde_json::json!({
             "id": "s1", "vault_id": "v1", "name": "script",
             "description": "d", "sort_order": 0, "data": "enc"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(snippet.revision, 0);
         assert_eq!(snippet.name.as_deref(), Some("script"));
 
         let workspace = serde_json::from_value::<SyncRow>(serde_json::json!({
             "id": "w1", "vault_id": "v1", "name": "prod", "sort_order": 0, "data": "enc"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(workspace.revision, 0);
-        assert_eq!(workspace.updated_at, 0);
+        assert_eq!(workspace.updated_at, "");
         assert!(workspace.deleted_at.is_none());
         assert_eq!(workspace.data, "enc");
     }
@@ -964,9 +1779,14 @@ mod tests {
             id: "v1".into(),
             revision: 0,
             vault_id: String::new(),
-            created_at: 0,
-            updated_at: 0,
+            created_at: "0".into(),
+            updated_at: "0".into(),
             deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
             name: Some("Personal".into()),
             owner_id: Some("u1".into()),
             kind: Some("personal".into()),
@@ -981,11 +1801,13 @@ mod tests {
         // user-created vaults are never the default (the server-seeded one is)
         assert_eq!(saved.is_default, 0);
 
-        let (revision, deleted_at): (i64, Option<i64>) = {
+        let (revision, deleted_at): (i64, Option<String>) = {
             let conn = db.conn.lock().unwrap();
-            conn.query_row("SELECT revision, deleted_at FROM vaults WHERE id = 'v1'", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            conn.query_row(
+                "SELECT revision, deleted_at FROM vaults WHERE id = 'v1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap()
         };
         assert_eq!(revision, 1);
@@ -993,7 +1815,9 @@ mod tests {
 
         // vault writes hit the outbox like any sync row
         let outbox = outbox_pending(&db).unwrap();
-        assert!(outbox.iter().any(|o| o.table_name == "vaults" && o.record_id == "v1"));
+        assert!(outbox
+            .iter()
+            .any(|o| o.table_name == "vaults" && o.record_id == "v1"));
     }
 
     #[test]
@@ -1004,16 +1828,16 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE hosts (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, os TEXT, group_id TEXT, key_id TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              CREATE TABLE keys (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, description TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              CREATE TABLE snippets (id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
-                vault_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                deleted_at INTEGER, name TEXT NOT NULL, description TEXT,
+                vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                deleted_at TEXT, name TEXT NOT NULL, description TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
              -- Regression: vaults table on live DBs has TEXT-affinity timestamps
              CREATE TABLE vaults (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
@@ -1023,15 +1847,23 @@ mod tests {
         )
         .unwrap();
         migrate_add_columns(&conn).unwrap();
-        let db = LocalDb { conn: Mutex::new(conn) };
+        migrate_sync_schema(&conn).unwrap();
+        let db = LocalDb {
+            conn: Mutex::new(conn),
+        };
 
         let vault = SyncRow {
             id: "v1".into(),
             revision: 0,
             vault_id: String::new(),
-            created_at: 0,
-            updated_at: 0,
+            created_at: "0".into(),
+            updated_at: "0".into(),
             deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
             name: Some("Personal".into()),
             owner_id: Some("u1".into()),
             kind: Some("personal".into()),
@@ -1039,7 +1871,7 @@ mod tests {
             ..Default::default()
         };
         let saved = upsert_test_vault(&db, &vault);
-        assert!(saved.created_at > 0);
+        assert!(!saved.created_at.is_empty());
 
         let rows = list_sync_rows(&db, Table::Vaults, "", false).unwrap();
         assert_eq!(rows.len(), 1);
@@ -1059,9 +1891,14 @@ mod tests {
                 id: id.into(),
                 revision: 0,
                 vault_id: String::new(),
-                created_at: 0,
-                updated_at: 0,
+                created_at: "0".into(),
+                updated_at: "0".into(),
                 deleted_at: None,
+                edited_at: String::new(),
+                device_id: String::new(),
+                operation_id: String::new(),
+                host_id: None,
+                mode: None,
                 name: Some(name.into()),
                 owner_id: Some("u1".into()),
                 kind: Some(kind.into()),
@@ -1074,8 +1911,12 @@ mod tests {
         // no vault_id filter for vaults: both rows come back
         let rows = list_sync_rows(&db, Table::Vaults, "", false).unwrap();
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().any(|r| r.id == "v1" && r.kind.as_deref() == Some("personal")));
-        assert!(rows.iter().any(|r| r.id == "v2" && r.kind.as_deref() == Some("team")));
+        assert!(rows
+            .iter()
+            .any(|r| r.id == "v1" && r.kind.as_deref() == Some("personal")));
+        assert!(rows
+            .iter()
+            .any(|r| r.id == "v2" && r.kind.as_deref() == Some("team")));
 
         // generic db_list path also serves vaults
         let rows = list_sync_rows(&db, Table::Vaults, "whatever", false).unwrap();
@@ -1089,9 +1930,14 @@ mod tests {
             id: "v1".into(),
             revision: 0,
             vault_id: String::new(),
-            created_at: 0,
-            updated_at: 0,
+            created_at: "0".into(),
+            updated_at: "0".into(),
             deleted_at: None,
+            edited_at: String::new(),
+            device_id: String::new(),
+            operation_id: String::new(),
+            host_id: None,
+            mode: None,
             name: Some("Personal".into()),
             owner_id: Some("u1".into()),
             kind: Some("personal".into()),
@@ -1101,13 +1947,17 @@ mod tests {
         upsert_test_vault(&db, &vault);
         tombstone_sync_row(&db, Table::Vaults, "v1").unwrap();
 
-        assert!(list_sync_rows(&db, Table::Vaults, "", false).unwrap().is_empty());
+        assert!(list_sync_rows(&db, Table::Vaults, "", false)
+            .unwrap()
+            .is_empty());
         // tombstone remains visible with include_deleted
         let all = list_sync_rows(&db, Table::Vaults, "", true).unwrap();
         assert_eq!(all.len(), 1);
         assert!(all[0].deleted_at.is_some());
         // tombstone queued for sync like any delete
         let outbox = outbox_pending(&db).unwrap();
-        assert!(outbox.iter().any(|o| o.table_name == "vaults" && o.record_id == "v1"));
+        assert!(outbox
+            .iter()
+            .any(|o| o.table_name == "vaults" && o.record_id == "v1"));
     }
 }

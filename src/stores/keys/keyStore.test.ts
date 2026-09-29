@@ -25,8 +25,8 @@ const keyRow = {
   id: "k1",
   revision: 1,
   vault_id: "v1",
-  created_at: 1000,
-  updated_at: 1000,
+  created_at: "1970-01-01T00:00:01.000Z",
+  updated_at: "1970-01-01T00:00:01.000Z",
   deleted_at: null,
   name: "prod",
   description: "prod key",
@@ -66,7 +66,7 @@ describe("keyStore", () => {
     expect(key.publicKey).toBe("pub");
     expect(key.encryptedPrivateKey).toBe("");
     expect(key.fingerprint).toBe("fp");
-    expect(key.createdAt).toBe("1000");
+    expect(key.createdAt).toBe("1970-01-01T00:00:01.000Z");
     expect(key.data).toBe("enc");
   });
 
@@ -115,8 +115,8 @@ describe("keyStore", () => {
       id: "123e4567-e89b-12d3-a456-426614174000",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       sort_order: 0,
       data: "enc",
@@ -204,8 +204,8 @@ describe("keyStore", () => {
       id: "123e4567-e89b-12d3-a456-426614174000",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       sort_order: 0,
       data: "enc",
@@ -241,8 +241,8 @@ describe("keyStore", () => {
       id: "123e4567-e89b-12d3-a456-426614174000",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       sort_order: 0,
       data: "enc",

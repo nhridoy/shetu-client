@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { getDeviceId } from "@/lib/common/device";
 import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
@@ -349,7 +350,18 @@ export const useHostStore = create<HostState>((set, get) => ({
       await invoke("db_update_sort_orders", {
         table: "hosts",
         updates,
+        deviceId: await getDeviceId(),
       });
+      const vaultId = get().hosts.find((host) =>
+        orderedIds.includes(host.id),
+      )?.vaultId;
+      if (vaultId && typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("termvault:local-mutation", {
+            detail: { table: "hosts", vaultId },
+          }),
+        );
+      }
     } catch (err) {
       console.error("[reorderHosts] IPC failed:", err);
     }
@@ -391,7 +403,19 @@ export const useHostStore = create<HostState>((set, get) => ({
 
   updateHostGroup: async (hostId, groupId) => {
     try {
-      await invoke("db_update_host_group", { hostId, groupId });
+      await invoke("db_update_host_group", {
+        hostId,
+        groupId,
+        deviceId: await getDeviceId(),
+      });
+      const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
+      if (vaultId && typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("termvault:local-mutation", {
+            detail: { table: "hosts", vaultId },
+          }),
+        );
+      }
     } catch (err) {
       console.error("[updateHostGroup] IPC failed:", err);
     }

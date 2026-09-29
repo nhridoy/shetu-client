@@ -79,6 +79,11 @@ vi.mock("../../lib/crypto/crypto", () => ({
   wrapDekWithRecovery: vi.fn(async () => "wrapped-recovery"),
 }));
 
+vi.mock("../../lib/crypto/offlineIdentity", () => ({
+  loadOfflineIdentity: vi.fn(async () => null),
+  saveOfflineIdentity: vi.fn(async () => {}),
+}));
+
 vi.mock("../../lib/db/db", () => ({
   wipeLocalData: vi.fn(async () => {}),
 }));
@@ -101,8 +106,16 @@ import {
   lockSession,
   setAuthTokens,
 } from "../../lib/crypto/crypto";
+import {
+  loadOfflineIdentity,
+  saveOfflineIdentity,
+} from "../../lib/crypto/offlineIdentity";
 import { wipeLocalData } from "../../lib/db/db";
-import { deletePassword, savePassword } from "../../lib/keychain/keychain";
+import {
+  deletePassword,
+  loadPassword,
+  savePassword,
+} from "../../lib/keychain/keychain";
 import { useAuthStore } from "./authStore";
 
 // The store registers its session-revoked hook once at import time; capture
@@ -130,7 +143,12 @@ describe("authStore email verification", () => {
       user: null,
       tokens: null,
       isAuthenticated: false,
+      serverAuthenticated: false,
+      localAccessAccountId: null,
       isUnlocked: false,
+      isInitialized: false,
+      alwaysAsk: false,
+      unlockPending: false,
       pendingVerificationEmail: null,
       pendingRecoveryCode: null,
       pendingRecoveryContext: null,
@@ -138,6 +156,8 @@ describe("authStore email verification", () => {
       isLoading: false,
     });
     vi.clearAllMocks();
+    vi.mocked(authApi.refresh).mockReset();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue(null);
   });
 
   it("register with verification_required sets pending email and no tokens", async () => {
@@ -176,6 +196,7 @@ describe("authStore email verification", () => {
     expect(authApi.register).toHaveBeenCalledWith(
       expect.objectContaining({
         recovery_code: "",
+        device_id: "dev-1",
         keyring: expect.objectContaining({ dek_wrapped_by_recovery: "" }),
       }),
     );
@@ -189,6 +210,82 @@ describe("authStore email verification", () => {
     expect(s.isAuthenticated).toBe(true);
     expect(s.pendingRecoveryCode).toBe("new-recovery-code");
     expect(s.pendingRecoveryContext).toBe("signup");
+  });
+
+  it("register caches a complete keyring when recovery wrap is omitted by the server", async () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
+    vi.mocked(authApi.register).mockResolvedValue({
+      access_token: "at",
+      refresh_token: "rt",
+      user,
+      keyring: {
+        dek_wrapped_by_kek: "kek",
+        private_key_wrapped_by_dek: "pk",
+      },
+    });
+    vi.mocked(authApi.attachRecoveryMaterial).mockResolvedValue({
+      recovery_attached: true,
+    });
+    let cached: Awaited<ReturnType<typeof loadOfflineIdentity>> = null;
+    vi.mocked(saveOfflineIdentity).mockImplementation(async (identity) => {
+      cached = identity;
+    });
+    vi.mocked(loadOfflineIdentity).mockImplementation(async () => cached);
+
+    await useAuthStore.getState().register("new@example.com", "New User", "pw");
+
+    expect(saveOfflineIdentity).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        wrapped_keyring: {
+          dek_wrapped_by_kek: "kek",
+          dek_wrapped_by_recovery: "",
+          private_key_wrapped_by_dek: "pk",
+        },
+      }),
+    );
+    expect(saveOfflineIdentity).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        wrapped_keyring: {
+          dek_wrapped_by_kek: "kek",
+          dek_wrapped_by_recovery: "wrapped-recovery",
+          private_key_wrapped_by_dek: "pk",
+        },
+      }),
+    );
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it("signup discards a stale vault selection before enabling sync", async () => {
+    const { useVaultStore } = await import("../vault/vaultStore");
+    useVaultStore.setState({
+      vaults: [
+        {
+          id: "stale-vault",
+          name: "Old account",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      currentVaultId: "stale-vault",
+    });
+    vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
+    vi.mocked(authApi.register).mockResolvedValue({
+      access_token: "at",
+      refresh_token: "rt",
+      user,
+      keyring: {
+        dek_wrapped_by_kek: "kek",
+        dek_wrapped_by_recovery: "rec",
+        private_key_wrapped_by_dek: "pk",
+      },
+    });
+
+    await useAuthStore.getState().register("new@example.com", "New User", "pw");
+
+    expect(useVaultStore.getState().currentVaultId).toBeNull();
+    expect(useVaultStore.getState().vaults).toEqual([]);
+    expect(useAuthStore.getState().isUnlocked).toBe(true);
   });
 
   it("login with VERIFICATION_REQUIRED sets pending email", async () => {
@@ -444,30 +541,56 @@ describe("authStore email verification", () => {
     expect(s.isUnlocked).toBe(false);
   });
 
-  it("registering the session-revoked hook tears the session down when fired", async () => {
+  it("logout clears the previous account's selected vault before another signup", async () => {
+    const { useVaultStore } = await import("../vault/vaultStore");
+    useVaultStore.setState({
+      vaults: [
+        {
+          id: "old-account-vault",
+          name: "Old vault",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      currentVaultId: "old-account-vault",
+    });
+    useAuthStore.setState({
+      user,
+      tokens: { access_token: "at", refresh_token: "rt" },
+      localAccessAccountId: user.id,
+      isUnlocked: true,
+    });
+
+    await useAuthStore.getState().logout();
+
+    expect(useVaultStore.getState().vaults).toEqual([]);
+    expect(useVaultStore.getState().currentVaultId).toBeNull();
+  });
+
+  it("session revocation pauses server access but preserves unlocked local edits", async () => {
     useAuthStore.setState({
       user,
       tokens: { access_token: "at", refresh_token: "rt" },
       isAuthenticated: true,
+      serverAuthenticated: true,
+      localAccessAccountId: user.id,
       isUnlocked: true,
     });
 
     const hook = registeredRevokedHook;
     expect(hook).toBeTypeOf("function");
-
     hook();
-    await vi.waitFor(() => {
-      const s = useAuthStore.getState();
-      expect(s.user).toBeNull();
-    });
-
-    expect(lockSession).toHaveBeenCalled();
-    expect(deletePassword).toHaveBeenCalled();
-    expect(wipeLocalData).toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().serverAuthenticated).toBe(false),
+    );
     const s = useAuthStore.getState();
+    expect(s.user).toEqual(user);
+    expect(s.localAccessAccountId).toBe(user.id);
+    expect(s.isUnlocked).toBe(true);
     expect(s.tokens).toBeNull();
-    expect(s.isAuthenticated).toBe(false);
-    expect(s.isUnlocked).toBe(false);
+    expect(lockSession).not.toHaveBeenCalled();
+    expect(deletePassword).not.toHaveBeenCalled();
+    expect(wipeLocalData).not.toHaveBeenCalled();
   });
 
   it("turning alwaysAsk on purges the saved password from the keychain", async () => {
@@ -546,6 +669,14 @@ describe("authStore email verification", () => {
       refresh_token: "rt2",
     });
     vi.mocked(authApi.me).mockResolvedValue(user);
+    vi.mocked(authApi.fetchKeyring).mockResolvedValue({
+      salt_cl: "sc",
+      keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
 
     await useAuthStore.getState().restoreSession();
 
@@ -556,6 +687,113 @@ describe("authStore email verification", () => {
     expect(s.tokens).toEqual({ access_token: "at2", refresh_token: "rt2" });
     expect(s.user).toEqual(user);
     expect(s.isInitialized).toBe(true);
+  });
+
+  it("offline restart keeps enrolled data usable after refresh network failure", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: user,
+      salt_cl: "sc",
+      wrapped_keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
+    vi.mocked(loadRefreshToken).mockResolvedValue("stale-rt");
+    vi.mocked(authApi.refresh).mockRejectedValue(
+      new Error("network unavailable"),
+    );
+    await useAuthStore.getState().restoreSession();
+    const s = useAuthStore.getState();
+    expect(s.user).toEqual(user);
+    expect(s.localAccessAccountId).toBe(user.id);
+    expect(s.serverAuthenticated).toBe(false);
+    expect(wipeLocalData).not.toHaveBeenCalled();
+    await s.unlock("correct-password");
+    expect(useAuthStore.getState().isUnlocked).toBe(true);
+    expect(authApi.fetchKeyring).not.toHaveBeenCalled();
+  });
+
+  it("auto-unlocks from a valid keychain entry before slow refresh completes", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: user,
+      salt_cl: "sc",
+      wrapped_keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
+    vi.mocked(loadPassword).mockResolvedValue("saved-password");
+    vi.mocked(loadRefreshToken).mockResolvedValue("rt");
+    let rejectRefresh!: (reason: Error) => void;
+    vi.mocked(authApi.refresh).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRefresh = reject;
+        }),
+    );
+    const restoring = useAuthStore.getState().restoreSession();
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().isInitialized).toBe(true),
+    );
+    expect(useAuthStore.getState().isUnlocked).toBe(true);
+    expect(authApi.refresh).toHaveBeenCalled();
+    rejectRefresh(new Error("offline"));
+    await restoring;
+    expect(useAuthStore.getState().isUnlocked).toBe(true);
+  });
+
+  it("alwaysAsk prompts on offline restart and wrong local password fails", async () => {
+    const { load } = await import("@tauri-apps/plugin-store");
+    vi.mocked(load).mockResolvedValueOnce({
+      get: vi.fn(async (key: string) => (key === "alwaysAsk" ? true : null)),
+    } as never);
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: user,
+      salt_cl: "sc",
+      wrapped_keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
+    await useAuthStore.getState().restoreSession();
+    expect(useAuthStore.getState().alwaysAsk).toBe(true);
+    expect(useAuthStore.getState().isUnlocked).toBe(false);
+    const { loadPassword } = await import("../../lib/keychain/keychain");
+    expect(loadPassword).not.toHaveBeenCalled();
+    const { unwrapDek } = await import("../../lib/crypto/crypto");
+    vi.mocked(unwrapDek).mockRejectedValueOnce(new Error("Wrong password"));
+    await expect(useAuthStore.getState().unlock("wrong")).rejects.toThrow(
+      "Wrong password",
+    );
+    expect(useAuthStore.getState().isUnlocked).toBe(false);
+    expect(wipeLocalData).not.toHaveBeenCalled();
+  });
+
+  it("online enrollment saves only wrapped keyring and profile", async () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
+    vi.mocked(authApi.login).mockResolvedValue({
+      user,
+      access_token: "at",
+      refresh_token: "rt",
+      keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
+    await useAuthStore.getState().login(user.email, "password");
+    expect(saveOfflineIdentity).toHaveBeenCalledWith({
+      profile: user,
+      salt_cl: "sc",
+      wrapped_keyring: {
+        dek_wrapped_by_kek: "wrapped",
+        dek_wrapped_by_recovery: "recovery",
+        private_key_wrapped_by_dek: "private",
+      },
+    });
   });
 
   it("restoreSession with no saved refresh token stays signed out", async () => {

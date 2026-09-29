@@ -9,7 +9,7 @@ export default function UnlockDialog() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isUnlocked = useAuthStore((s) => s.isUnlocked);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const localAccessAccountId = useAuthStore((s) => s.localAccessAccountId);
   const unlockPending = useAuthStore((s) => s.unlockPending);
   const unlock = useAuthStore((s) => s.unlock);
 
@@ -35,7 +35,7 @@ export default function UnlockDialog() {
 
   return (
     <Modal
-      open={isAuthenticated && !isUnlocked && !unlockPending}
+      open={!!localAccessAccountId && !isUnlocked && !unlockPending}
       onClose={() => {}}
       title="Unlock TermVault"
       hideClose

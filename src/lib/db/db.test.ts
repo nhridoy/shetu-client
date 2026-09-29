@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@/lib/common/device", () => ({
+  getDeviceId: vi.fn().mockResolvedValue("device-uuid"),
+}));
 
 import { invoke } from "@tauri-apps/api/core";
 import { deleteRow, getOutbox, getRow, listRows, upsertRow } from "./db";
@@ -39,6 +42,7 @@ describe("db wrapper", () => {
     expect(mockInvoke).toHaveBeenCalledWith("db_upsert", {
       table: "hosts",
       row,
+      deviceId: "device-uuid",
       plaintext: undefined,
       recordType: undefined,
     });
@@ -55,17 +59,21 @@ describe("db wrapper", () => {
     expect(mockInvoke).toHaveBeenCalledWith("db_upsert", {
       table: "hosts",
       row,
+      deviceId: "device-uuid",
       plaintext: '{"address":"1.2.3.4"}',
       recordType: "hosts",
     });
   });
 
   it("deleteRow tombstones via db_delete", async () => {
-    mockInvoke.mockResolvedValue(null);
+    mockInvoke.mockImplementation(async (command) =>
+      command === "db_get" ? { id: "s1", vault_id: "v1" } : null,
+    );
     await deleteRow("snippets", "s1");
     expect(mockInvoke).toHaveBeenCalledWith("db_delete", {
       table: "snippets",
       id: "s1",
+      deviceId: "device-uuid",
     });
   });
 
@@ -83,8 +91,8 @@ describe("db wrapper", () => {
         id: "v1",
         revision: 1,
         vault_id: "",
-        created_at: 1700000000000,
-        updated_at: 1700000000000,
+        created_at: "2023-11-14T22:13:20.000Z",
+        updated_at: "2023-11-14T22:13:20.000Z",
         deleted_at: null,
         name: "Personal",
         owner_id: "u1",
@@ -120,6 +128,7 @@ describe("db wrapper", () => {
     expect(mockInvoke).toHaveBeenCalledWith("db_delete", {
       table: "vaults",
       id: "v1",
+      deviceId: "device-uuid",
     });
   });
 });

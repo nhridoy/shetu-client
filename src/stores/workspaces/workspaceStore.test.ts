@@ -23,8 +23,8 @@ const workspaceRow = {
   id: "w1",
   revision: 1,
   vault_id: "v1",
-  created_at: 1000,
-  updated_at: 2000,
+  created_at: "1970-01-01T00:00:01.000Z",
+  updated_at: "1970-01-01T00:00:02.000Z",
   deleted_at: null,
   name: "monitoring",
   sort_order: 0,
@@ -61,8 +61,8 @@ describe("workspaceStore", () => {
     expect(ws.layout).toBe(JSON.stringify(layout));
     expect(ws.hostIds).toBe("h1,h2");
     expect(ws.vaultId).toBe("v1");
-    expect(ws.createdAt).toBe("1000");
-    expect(ws.updatedAt).toBe("2000");
+    expect(ws.createdAt).toBe("1970-01-01T00:00:01.000Z");
+    expect(ws.updatedAt).toBe("1970-01-01T00:00:02.000Z");
   });
 
   it("fetchWorkspaces defaults layout to '{}' without payload", async () => {
@@ -77,8 +77,8 @@ describe("workspaceStore", () => {
       id: "new",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       name: "monitoring",
       sort_order: 0,
@@ -113,8 +113,8 @@ describe("workspaceStore", () => {
       id: "new",
       revision: 1,
       vault_id: "v2",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       name: "monitoring",
       sort_order: 0,
@@ -136,8 +136,8 @@ describe("workspaceStore", () => {
       id: "new",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       name: "monitoring",
       sort_order: 0,
@@ -172,8 +172,8 @@ describe("workspaceStore", () => {
           name: "monitoring",
           layout: JSON.stringify(layout),
           hostIds: "h1",
-          createdAt: "1000",
-          updatedAt: "2000",
+          createdAt: "1970-01-01T00:00:01.000Z",
+          updatedAt: "1970-01-01T00:00:02.000Z",
         },
       ],
     });

@@ -23,8 +23,8 @@ const snippetRow = {
   id: "s1",
   revision: 1,
   vault_id: "v1",
-  created_at: 1000,
-  updated_at: 1000,
+  created_at: "1970-01-01T00:00:01.000Z",
+  updated_at: "1970-01-01T00:00:01.000Z",
   deleted_at: null,
   name: "deploy",
   description: "ship to prod",
@@ -59,7 +59,7 @@ describe("snippetStore", () => {
     expect(snippet.command).toBe("");
     expect(snippet.tags).toEqual(["ci", "prod"]);
     expect(snippet.vaultId).toBe("v1");
-    expect(snippet.createdAt).toBe("1000");
+    expect(snippet.createdAt).toBe("1970-01-01T00:00:01.000Z");
     expect(snippet.data).toBe("enc");
   });
 
@@ -91,8 +91,8 @@ describe("snippetStore", () => {
       id: "new",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       name: "deploy",
       sort_order: 0,
@@ -124,8 +124,8 @@ describe("snippetStore", () => {
       id: "new",
       revision: 1,
       vault_id: "v1",
-      created_at: 1,
-      updated_at: 1,
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
       deleted_at: null,
       name: "deploy",
       description: "ship to prod",
@@ -172,7 +172,7 @@ describe("snippetStore", () => {
           command: "pnpm build",
           description: "ship to prod",
           tags: ["ci"],
-          createdAt: "1000",
+          createdAt: "1970-01-01T00:00:01.000Z",
         },
       ],
     });

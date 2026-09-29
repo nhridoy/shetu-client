@@ -27,8 +27,8 @@ const vaultRow = (overrides: Record<string, unknown> = {}) => ({
   id: "v1",
   revision: 1,
   vault_id: "",
-  created_at: 1700000000000,
-  updated_at: 1700000000000,
+  created_at: "2023-11-14T22:13:20.000Z",
+  updated_at: "2023-11-14T22:13:20.000Z",
   deleted_at: null,
   name: "Personal",
   owner_id: "u1",
@@ -72,8 +72,8 @@ describe("vaultStore", () => {
         id: "v2",
         kind: "team",
         name: "Team",
-        created_at: 1700000001000,
-        updated_at: 1700000001000,
+        created_at: "2023-11-14T22:13:21.000Z",
+        updated_at: "2023-11-14T22:13:21.000Z",
       }),
     ]);
 
@@ -140,7 +140,11 @@ describe("vaultStore", () => {
     await useVaultStore.getState().fetchVaults();
 
     mockUpsert.mockResolvedValue(
-      vaultRow({ id: "new", name: "Production", created_at: 1700000002000 }),
+      vaultRow({
+        id: "new",
+        name: "Production",
+        created_at: "2023-11-14T22:13:22.000Z",
+      }),
     );
 
     await useVaultStore
@@ -175,7 +179,7 @@ describe("vaultStore", () => {
     await useVaultStore.getState().fetchVaults();
 
     mockUpsert.mockResolvedValue(
-      vaultRow({ name: "Renamed", updated_at: 1700000003000 }),
+      vaultRow({ name: "Renamed", updated_at: "2023-11-14T22:13:23.000Z" }),
     );
 
     await useVaultStore.getState().updateVault("v1", {
@@ -200,8 +204,8 @@ describe("vaultStore", () => {
         id: "v2",
         kind: "team",
         name: "Team",
-        created_at: 1700000001000,
-        updated_at: 1700000001000,
+        created_at: "2023-11-14T22:13:21.000Z",
+        updated_at: "2023-11-14T22:13:21.000Z",
       }),
     ]);
     await useVaultStore.getState().fetchVaults();

@@ -1,23 +1,27 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod git;
-mod keys;
 mod crypto;
 mod db;
 mod forwarding;
+mod git;
 mod http;
+mod keys;
 mod oauth;
-mod ssh;
+mod offline_auth;
 mod sftp;
+mod ssh;
+mod sync;
 
+use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
+use portable_pty::{
+    native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, PtyPair, PtySize,
+};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
-use portable_pty::{native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, PtyPair, PtySize};
 use tauri::{Emitter, Listener, Manager};
 #[cfg(target_os = "windows")]
 use tauri_plugin_prevent_default::PlatformOptions;
@@ -45,8 +49,8 @@ fn set_api_url(url: String, state: tauri::State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
-	let guard = state.api_url.lock().map_err(|e| e.to_string())?;
-	Ok(guard
+    let guard = state.api_url.lock().map_err(|e| e.to_string())?;
+    Ok(guard
         .clone()
         .unwrap_or_else(|| "http://localhost:8080".to_string()))
 }
@@ -64,36 +68,40 @@ fn wipe_local_data(
 fn db_upsert(
     db: tauri::State<'_, db::LocalDb>,
     crypto: tauri::State<'_, CryptoState>,
-    forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     table: String,
     row: serde_json::Value,
     plaintext: Option<String>,
     record_type: Option<String>,
+    device_id: String,
 ) -> Result<db::SyncRow, String> {
     let table = db::Table::parse(&table)?;
-    let mut row: db::SyncRow = serde_json::from_value(row).map_err(|e| format!("db_upsert: bad row: {e}"))?;
+    let mut row: db::SyncRow =
+        serde_json::from_value(row).map_err(|e| format!("db_upsert: bad row: {e}"))?;
     if let Some(plaintext) = plaintext {
         let session = crypto.session.lock().map_err(|e| e.to_string())?;
         let rt = record_type.as_deref().unwrap_or(table.as_str());
         row.data = crypto::encrypt_secret(&plaintext, rt, &session)?;
     }
-    let deleted_host = table == db::Table::Hosts && row.deleted_at.is_some();
-    let saved = db::upsert_sync_row(&db, table, &row)?;
-    if deleted_host {
-        forwarding.stop_host(&saved.id);
-        forwarding::storage::delete_for_host(&db, &saved.id)?;
-    }
-    Ok(saved)
+    db::local_mutate(&db, table, &row, &device_id)
 }
 
 #[tauri::command]
-fn db_get(db: tauri::State<'_, db::LocalDb>, table: String, id: String) -> Result<Option<db::SyncRow>, String> {
+fn db_get(
+    db: tauri::State<'_, db::LocalDb>,
+    table: String,
+    id: String,
+) -> Result<Option<db::SyncRow>, String> {
     let table = db::Table::parse(&table)?;
     db::get_sync_row(&db, table, &id)
 }
 
 #[tauri::command]
-fn db_list(db: tauri::State<'_, db::LocalDb>, table: String, vault_id: String, include_deleted: Option<bool>) -> Result<Vec<db::SyncRow>, String> {
+fn db_list(
+    db: tauri::State<'_, db::LocalDb>,
+    table: String,
+    vault_id: String,
+    include_deleted: Option<bool>,
+) -> Result<Vec<db::SyncRow>, String> {
     let table = db::Table::parse(&table)?;
     db::list_sync_rows(&db, table, &vault_id, include_deleted.unwrap_or(false))
 }
@@ -101,18 +109,30 @@ fn db_list(db: tauri::State<'_, db::LocalDb>, table: String, vault_id: String, i
 #[tauri::command]
 fn db_delete(
     db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     table: String,
     id: String,
+    device_id: String,
 ) -> Result<(), String> {
     let table = db::Table::parse(&table)?;
+    if table == db::Table::Vaults {
+        {
+            let session = crypto.session.lock().map_err(|e| e.to_string())?;
+            forwarding::storage::migrate_legacy(&db, &session, &device_id)?;
+        }
+        for host in db::list_sync_rows(&db, db::Table::Hosts, &id, false)? {
+            forwarding.stop_host(&host.id);
+        }
+        return db::tombstone_vault_with_descendants(&db, &id, &device_id);
+    }
     if table == db::Table::Hosts {
         forwarding.stop_host(&id);
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        forwarding::storage::migrate_legacy(&db, &session, &device_id)?;
+        forwarding::storage::delete_for_host(&db, &id, &device_id)?;
     }
-    db::tombstone_sync_row(&db, table, &id)?;
-    if table == db::Table::Hosts {
-        forwarding::storage::delete_for_host(&db, &id)?;
-    }
+    db::tombstone_sync_row_with_device(&db, table, &id, &device_id)?;
     Ok(())
 }
 
@@ -132,10 +152,11 @@ fn db_update_sort_orders(
     db: tauri::State<'_, db::LocalDb>,
     table: String,
     updates: Vec<SortOrderUpdate>,
+    device_id: String,
 ) -> Result<(), String> {
     let table = db::Table::parse(&table)?;
     let pairs: Vec<(String, i64)> = updates.into_iter().map(|u| (u.id, u.sort_order)).collect();
-    db::update_sort_orders(&db, table, &pairs)
+    db::update_sort_orders_with_device(&db, table, &pairs, &device_id)
 }
 
 #[tauri::command]
@@ -143,8 +164,9 @@ fn db_update_host_group(
     db: tauri::State<'_, db::LocalDb>,
     host_id: String,
     group_id: String,
+    device_id: String,
 ) -> Result<(), String> {
-    db::update_host_group(&db, &host_id, &group_id)
+    db::update_host_group_with_device(&db, &host_id, &group_id, &device_id)
 }
 
 #[tauri::command]
@@ -236,11 +258,17 @@ fn detect_shells_platform() -> Vec<ShellInfo> {
 
     // PowerShell 7+ (pwsh)
     if let Some(s) = probe_shell("pwsh", &["--version"]) {
-        shells.push(ShellInfo { name: "PowerShell 7".to_string(), ..s });
+        shells.push(ShellInfo {
+            name: "PowerShell 7".to_string(),
+            ..s
+        });
     }
     // Windows PowerShell
     if let Some(s) = probe_shell("powershell.exe", &["-NoProfile", "-Command", "echo ok"]) {
-        shells.push(ShellInfo { name: "PowerShell".to_string(), ..s });
+        shells.push(ShellInfo {
+            name: "PowerShell".to_string(),
+            ..s
+        });
     }
     // cmd.exe
     if probe_shell("cmd.exe", &["/C", "echo ok"]).is_some() {
@@ -289,11 +317,7 @@ fn detect_shells_platform() -> Vec<ShellInfo> {
 
     // Respect user's default shell
     if let Ok(user_shell) = std::env::var("SHELL") {
-        let shell_name = user_shell
-            .split('/')
-            .last()
-            .unwrap_or("shell")
-            .to_string();
+        let shell_name = user_shell.split('/').last().unwrap_or("shell").to_string();
         shells.push(ShellInfo {
             name: format!("{shell_name} (default)"),
             path: user_shell,
@@ -331,11 +355,7 @@ fn detect_shells_platform() -> Vec<ShellInfo> {
 
     // Respect user's default shell
     if let Ok(user_shell) = std::env::var("SHELL") {
-        let shell_name = user_shell
-            .split('/')
-            .last()
-            .unwrap_or("shell")
-            .to_string();
+        let shell_name = user_shell.split('/').last().unwrap_or("shell").to_string();
         shells.push(ShellInfo {
             name: format!("{shell_name} (default)"),
             path: user_shell,
@@ -465,8 +485,7 @@ async fn fs_remove(path: String, recursive: bool) -> Result<(), String> {
         // removed with remove_file — remove_dir_all fails on Windows with
         // "The directory name is invalid" (os error 267) for anything that is
         // not a real directory.
-        let meta = std::fs::symlink_metadata(&p)
-            .map_err(|e| format!("{path}: {e}"))?;
+        let meta = std::fs::symlink_metadata(&p).map_err(|e| format!("{path}: {e}"))?;
         if meta.is_file() || meta.file_type().is_symlink() {
             std::fs::remove_file(&p)
         } else if recursive {
@@ -488,8 +507,7 @@ async fn fs_copy(source: String, dest: String) -> Result<(), String> {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{dest}: {e}"))?;
         }
-        std::fs::copy(&src, &dst)
-            .map_err(|e| format!("{source} -> {dest}: {e}"))?;
+        std::fs::copy(&src, &dst).map_err(|e| format!("{source} -> {dest}: {e}"))?;
         Ok(())
     })
     .await
@@ -508,10 +526,7 @@ async fn fs_rename(source: String, dest: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn cancel_copy(
-    state: tauri::State<'_, CancelTokens>,
-    operation_id: String,
-) -> Result<(), String> {
+fn cancel_copy(state: tauri::State<'_, CancelTokens>, operation_id: String) -> Result<(), String> {
     let tokens = state.tokens.lock().map_err(|e| e.to_string())?;
     if let Some(token) = tokens.get(&operation_id) {
         token.store(true, Ordering::Relaxed);
@@ -686,7 +701,11 @@ async fn connect_local(
         if shell_path.ends_with("cmd.exe") {
             vec!["/K".to_string()]
         } else if shell_path.contains("pwsh") || shell_path.contains("powershell") {
-            vec!["-NoExit".to_string(), "-Command".to_string(), "".to_string()]
+            vec![
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                "".to_string(),
+            ]
         } else if shell_path.contains("wsl") {
             // Let WSL use its default configured shell; no args needed
             vec![]
@@ -699,12 +718,14 @@ async fn connect_local(
     };
 
     let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    }).map_err(|e| format!("Failed to open pty: {e}"))?;
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("Failed to open pty: {e}"))?;
 
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -716,18 +737,26 @@ async fn connect_local(
     cmd.env(OsString::from("LANG"), OsString::from("en_US.UTF-8"));
     cmd.env(OsString::from("LC_ALL"), OsString::from("en_US.UTF-8"));
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("Failed to spawn: {e}"))?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("Failed to spawn: {e}"))?;
     let child_killer = child.clone_killer();
 
     {
         let mut sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
-        sessions.insert(session_id.clone(), PtySession {
-            pair,
-            writer: Arc::new(Mutex::new(writer)),
-            reader: Arc::new(Mutex::new(reader)),
-            child: Arc::new(Mutex::new(child as Box<dyn PtyChild + Send>)),
-            killer: Arc::new(Mutex::new(child_killer as Box<dyn ChildKiller + Send + Sync>)),
-        });
+        sessions.insert(
+            session_id.clone(),
+            PtySession {
+                pair,
+                writer: Arc::new(Mutex::new(writer)),
+                reader: Arc::new(Mutex::new(reader)),
+                child: Arc::new(Mutex::new(child as Box<dyn PtyChild + Send>)),
+                killer: Arc::new(Mutex::new(
+                    child_killer as Box<dyn ChildKiller + Send + Sync>,
+                )),
+            },
+        );
     }
 
     // Emit connected event
@@ -808,12 +837,15 @@ async fn resize_local(
 ) -> Result<(), String> {
     let sessions = state.sessions.lock().map_err(|_| "Lock failed")?;
     if let Some(pty) = sessions.get(&session_id) {
-        pty.pair.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        }).map_err(|e| e.to_string())?;
+        pty.pair
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -860,7 +892,9 @@ pub struct CryptoState {
 }
 
 #[tauri::command]
-fn generate_account_material(state: tauri::State<'_, CryptoState>) -> Result<crypto::AccountMaterial, String> {
+fn generate_account_material(
+    state: tauri::State<'_, CryptoState>,
+) -> Result<crypto::AccountMaterial, String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     crypto::generate_account_material(&mut session)
 }
@@ -871,27 +905,46 @@ fn generate_recovery_code() -> String {
 }
 
 #[tauri::command]
-fn derive_kek(password: String, salt_cl: String, state: tauri::State<'_, CryptoState>) -> Result<(), String> {
+fn derive_kek(
+    password: String,
+    salt_cl: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     crypto::derive_kek(&password, &salt_cl, &mut session)
 }
 
 #[tauri::command]
-fn compute_login_proof(server_salt: String, nonce: String, state: tauri::State<'_, CryptoState>) -> Result<crypto::LoginProof, String> {
+fn compute_login_proof(
+    server_salt: String,
+    nonce: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<crypto::LoginProof, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
-    let kek = session.kek.ok_or("KEK not derived - call derive_kek first")?;
+    let kek = session
+        .kek
+        .ok_or("KEK not derived - call derive_kek first")?;
     crypto::compute_login_proof(&kek, &server_salt, &nonce)
 }
 
 #[tauri::command]
-fn build_keyring_rows(recovery_code: String, state: tauri::State<'_, CryptoState>) -> Result<crypto::KeyringRows, String> {
+fn build_keyring_rows(
+    recovery_code: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<crypto::KeyringRows, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
-    let kek = session.kek.ok_or("KEK not derived - call derive_kek first")?;
+    let kek = session
+        .kek
+        .ok_or("KEK not derived - call derive_kek first")?;
     crypto::build_keyring_rows(&kek, &recovery_code, &session)
 }
 
 #[tauri::command]
-fn encrypt_secret(plaintext: String, record_type: String, state: tauri::State<'_, CryptoState>) -> Result<String, String> {
+fn encrypt_secret(
+    plaintext: String,
+    record_type: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<String, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     crypto::encrypt_secret(&plaintext, &record_type, &session)
 }
@@ -905,12 +958,19 @@ fn decrypt_secret(payload: String, state: tauri::State<'_, CryptoState>) -> Resu
 #[tauri::command]
 fn unwrap_dek(wrapped: String, state: tauri::State<'_, CryptoState>) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
-    let kek = session.kek.ok_or("KEK not derived - call derive_kek first")?;
+    let kek = session
+        .kek
+        .ok_or("KEK not derived - call derive_kek first")?;
     crypto::unwrap_dek(&kek, &wrapped, &mut session)
 }
 
 #[tauri::command]
-fn recovery_unwrap_dek(recovery_code: String, salt_cl: String, wrapped: String, state: tauri::State<'_, CryptoState>) -> Result<(), String> {
+fn recovery_unwrap_dek(
+    recovery_code: String,
+    salt_cl: String,
+    wrapped: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     crypto::recovery_unwrap_dek(&recovery_code, &salt_cl, &wrapped, &mut session)
 }
@@ -925,7 +985,10 @@ fn unwrap_private_key(wrapped: String, state: tauri::State<'_, CryptoState>) -> 
 }
 
 #[tauri::command]
-fn wrap_dek_with_recovery(recovery_code: String, state: tauri::State<'_, CryptoState>) -> Result<String, String> {
+fn wrap_dek_with_recovery(
+    recovery_code: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<String, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     // The account salt lives in the session (derived at auth); wrapping under
     // it guarantees the kit is recoverable via the server-stored salt_cl.
@@ -947,7 +1010,12 @@ fn lock_session(state: tauri::State<'_, CryptoState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn unlock(password: String, salt_cl: String, wrapped_dek: String, state: tauri::State<'_, CryptoState>) -> Result<(), String> {
+fn unlock(
+    password: String,
+    salt_cl: String,
+    wrapped_dek: String,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     crypto::unlock(&password, &salt_cl, &wrapped_dek, &mut session)
 }
@@ -971,8 +1039,7 @@ pub fn run() {
         .plugin({
             let builder = tauri_plugin_prevent_default::Builder::new();
             #[cfg(target_os = "windows")]
-            let builder =
-                builder.platform(PlatformOptions::new().browser_accelerator_keys(false));
+            let builder = builder.platform(PlatformOptions::new().browser_accelerator_keys(false));
             builder.build()
         })
         .setup(|app| {
@@ -1010,6 +1077,7 @@ pub fn run() {
             session: std::sync::Mutex::new(crypto::KeySession::new()),
         })
         .manage(http::HttpState::new(http::DEFAULT_BASE_URL.to_string()))
+        .manage(sync::SyncLocks::default())
         .manage(git::GitLock(std::sync::Arc::new(Mutex::new(()))))
         .manage(LocalSessions {
             sessions: Mutex::new(HashMap::new()),
@@ -1027,6 +1095,9 @@ pub fn run() {
             set_api_url,
             get_api_url,
             wipe_local_data,
+            offline_auth::save_offline_identity_command,
+            offline_auth::load_offline_identity_command,
+            offline_auth::clear_offline_identity_command,
             db_upsert,
             db_get,
             db_list,
@@ -1126,6 +1197,7 @@ pub fn run() {
             lock_session,
             unlock,
             wrap_dek,
+            sync::sync_now,
             http::http_request,
             http::set_auth_tokens,
             http::clear_auth_tokens,
