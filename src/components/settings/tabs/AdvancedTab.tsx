@@ -1,8 +1,6 @@
 import { useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
-import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
-import { useModal } from "@/hooks/useModal";
 import type { AdvancedTabProps } from "@/types/settings/types";
 
 export default function AdvancedTab({
@@ -24,7 +22,6 @@ export default function AdvancedTab({
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const deleteAllModal = useModal();
 
   const handleExportSettings = () => {
     const settings = {
@@ -126,32 +123,12 @@ export default function AdvancedTab({
       </div>
 
       <div className="border-t border-dark-700 pt-6">
-        <h3 className="text-sm font-medium text-white mb-3">Danger Zone</h3>
-        <div className="bg-dark-800 rounded-lg p-4">
-          <p className="text-sm text-white font-medium mb-1">Delete All Data</p>
-          <p className="text-xs text-dark-400 mb-3">
-            Permanently delete all hosts, keys, snippets, and settings
-          </p>
-          <Button
-            type="button"
-            onClick={deleteAllModal.show}
-            variant="destructive"
-            size="sm"
-          >
-            Delete All Data
-          </Button>
-        </div>
+        <h3 className="text-sm font-medium text-white mb-3">Data deletion</h3>
+        <p className="text-xs text-dark-400">
+          Account-wide data deletion is not available yet. Signing out clears
+          this device's local account data after pending changes are synced.
+        </p>
       </div>
-
-      <ConfirmDeleteDialog
-        open={deleteAllModal.open}
-        message="Are you sure you want to delete all data? This cannot be undone."
-        onConfirm={() => {
-          deleteAllModal.hide();
-          // TODO: Implement data deletion
-        }}
-        onCancel={deleteAllModal.hide}
-      />
     </div>
   );
 }

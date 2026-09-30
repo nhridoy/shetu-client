@@ -184,9 +184,9 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
             await useKeyStore.getState().importKey({
               name: key.name,
               description: key.description,
-              keyType: "ed25519",
               publicKey: key.publicKey || "",
               encryptedPrivateKey: key.encryptedPrivateKey || "",
+              passphrase: key.passphrase,
               fingerprint: key.fingerprint || "",
             });
             importModal.hide();

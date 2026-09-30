@@ -24,6 +24,7 @@ export default function ImportKeyModal({
     description: string;
     publicKey: string;
     encryptedPrivateKey: string;
+    passphrase?: string;
     fingerprint?: string;
   }) => Promise<void>;
 }) {
@@ -91,7 +92,7 @@ export default function ImportKeyModal({
       }
 
       setError(
-        "Unrecognized key file. Please use a PEM, OpenSSH, or PPK file.",
+        "Unrecognized key file. Please use a PEM or OpenSSH private key.",
       );
     } catch (e: unknown) {
       setError(`Failed to read file: ${extractError(e)}`);
@@ -127,6 +128,7 @@ export default function ImportKeyModal({
       description: data.description || "",
       publicKey: data.publicKey || "",
       encryptedPrivateKey: data.privateKey,
+      passphrase: data.passphrase || undefined,
     });
     onClose();
   };
@@ -191,6 +193,13 @@ export default function ImportKeyModal({
               />
             )}
           </FormBase>
+          <FormInput
+            name="passphrase"
+            label="Private Key Passphrase (if encrypted)"
+            type="password"
+            control={control}
+            placeholder="Enter the key passphrase"
+          />
           <FormInput
             name="publicKey"
             label="Public Key (optional)"

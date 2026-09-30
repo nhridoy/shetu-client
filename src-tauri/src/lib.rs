@@ -1130,6 +1130,8 @@ pub fn run() {
             disconnect_local,
             ssh::connect,
             keys::derive_public_key,
+            keys::inspect_private_key,
+            keys::generate_ssh_key,
             ssh::connect_saved,
             ssh::disconnect,
             ssh::send_input,

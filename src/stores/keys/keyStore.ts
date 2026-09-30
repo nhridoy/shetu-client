@@ -12,6 +12,7 @@ interface Key {
   keyType: string;
   publicKey: string;
   encryptedPrivateKey: string;
+  passphrase?: string;
   fingerprint?: string;
   createdAt: string;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
@@ -28,7 +29,11 @@ interface KeyState {
   selectKey: (key: Key | null) => void;
   getDecryptedKey: (keyId: string) => Promise<Key | null>;
   importKey: (key: Partial<Key>) => Promise<void>;
-  generateKey: (name: string, keyType: string) => Promise<void>;
+  generateKey: (
+    name: string,
+    keyType: string,
+    description?: string,
+  ) => Promise<Key>;
   deleteKey: (id: string) => Promise<void>;
   getCredentialsForKey: (keyId: string) => Promise<string>;
   clearError: () => void;
@@ -37,6 +42,16 @@ interface KeyState {
 interface KeyPayload {
   privateKey: string;
   passphrase?: string;
+}
+
+interface KeyMetadata {
+  key_type: string;
+  public_key: string;
+  fingerprint: string;
+}
+
+interface GeneratedKey extends KeyMetadata {
+  private_key: string;
 }
 
 function newId(): string {
@@ -120,13 +135,21 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     }
     set({ isLoading: true, error: null });
     try {
-      const publicKey =
-        key.publicKey?.trim() ||
-        (key.encryptedPrivateKey
-          ? await invoke<string>("derive_public_key", {
-              privateKey: key.encryptedPrivateKey,
-            })
-          : "");
+      if (!key.encryptedPrivateKey?.trim()) {
+        throw new Error("Private key is required");
+      }
+      const metadata = await invoke<KeyMetadata>("inspect_private_key", {
+        privateKey: key.encryptedPrivateKey,
+        passphrase: key.passphrase || null,
+      });
+      const publicKey = metadata.public_key;
+      if (
+        key.publicKey?.trim() &&
+        key.publicKey.trim().split(/\s+/).slice(0, 2).join(" ") !==
+          publicKey.split(/\s+/).slice(0, 2).join(" ")
+      ) {
+        throw new Error("Public key does not match the private key");
+      }
       const row = await upsertRow(
         "keys",
         {
@@ -134,15 +157,15 @@ export const useKeyStore = create<KeyState>((set, get) => ({
           vault_id: vaultId,
           name: key.name ?? "",
           description: key.description ?? null,
-          key_type: key.keyType ?? "ed25519",
-          fingerprint: key.fingerprint ?? null,
+          key_type: metadata.key_type,
+          fingerprint: metadata.fingerprint,
           public_key: publicKey || null,
           sort_order: 0,
         },
         {
           plaintext: JSON.stringify({
             privateKey: key.encryptedPrivateKey ?? "",
-            passphrase: undefined,
+            passphrase: key.passphrase || undefined,
           }),
           recordType: "keys",
         },
@@ -151,10 +174,10 @@ export const useKeyStore = create<KeyState>((set, get) => ({
         id: row.id,
         name: row.name ?? "",
         description: row.description ?? undefined,
-        keyType: key.keyType ?? "ed25519",
+        keyType: metadata.key_type,
         publicKey,
         encryptedPrivateKey: "",
-        fingerprint: key.fingerprint,
+        fingerprint: metadata.fingerprint,
         createdAt: String(row.created_at),
       };
       set({ keys: [created, ...get().keys], isLoading: false });
@@ -164,45 +187,53 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     }
   },
 
-  generateKey: async (name, keyType) => {
+  generateKey: async (name, keyType, description) => {
     const vaultId = useVaultStore.getState().currentVaultId;
     if (!vaultId) {
-      set({ isLoading: false, error: "No vault selected" });
-      return;
+      const error = new Error("No vault selected");
+      set({ error: error.message });
+      throw error;
     }
     set({ isLoading: true, error: null });
     try {
+      const generated = await invoke<GeneratedKey>("generate_ssh_key", {
+        keyType,
+      });
       const row = await upsertRow(
         "keys",
         {
           id: newId(),
           vault_id: vaultId,
-          name: name ?? "",
-          description: null,
-          key_type: keyType ?? "ed25519",
-          fingerprint: null,
-          public_key: null,
+          name,
+          description: description || null,
+          key_type: generated.key_type,
+          fingerprint: generated.fingerprint,
+          public_key: generated.public_key,
           sort_order: 0,
         },
         {
-          plaintext: JSON.stringify({
-            privateKey: "",
-            passphrase: undefined,
-          }),
+          plaintext: JSON.stringify({ privateKey: generated.private_key }),
           recordType: "keys",
         },
       );
       const created: Key = {
         id: row.id,
-        name: row.name ?? "",
-        keyType: keyType ?? "ed25519",
-        publicKey: "",
-        encryptedPrivateKey: "",
+        name,
+        description,
+        keyType: generated.key_type,
+        publicKey: generated.public_key,
+        encryptedPrivateKey: generated.private_key,
+        fingerprint: generated.fingerprint,
         createdAt: String(row.created_at),
       };
-      set({ keys: [created, ...get().keys], isLoading: false });
+      set({
+        keys: [{ ...created, encryptedPrivateKey: "" }, ...get().keys],
+        isLoading: false,
+      });
+      return created;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      throw err;
     }
   },
 

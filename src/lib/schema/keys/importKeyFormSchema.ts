@@ -12,6 +12,7 @@ export const importKeyFormSchema = z.object({
     .min(1, { error: "Private key is required" })
     .max(65536, { error: "Private key must be at most 65536 characters" }),
   publicKey: z.string().optional(),
+  passphrase: z.string().max(1024).optional(),
 });
 
 export type ImportKeyFormSchema = z.infer<typeof importKeyFormSchema>;
@@ -21,4 +22,5 @@ export const importKeyFormDefaultValues: ImportKeyFormSchema = {
   description: "",
   privateKey: "",
   publicKey: "",
+  passphrase: "",
 };

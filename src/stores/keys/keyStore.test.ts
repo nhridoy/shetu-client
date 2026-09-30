@@ -108,6 +108,11 @@ describe("keyStore", () => {
   });
 
   it("importKey falls back to crypto.randomUUID, passes plaintext payload, upserts with vault fallback", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "ed25519",
+      public_key: "pub",
+      fingerprint: "SHA256:pub",
+    });
     vi.spyOn(crypto, "randomUUID").mockReturnValue(
       "123e4567-e89b-12d3-a456-426614174000",
     );
@@ -151,7 +156,11 @@ describe("keyStore", () => {
 
   it("derives the public key before saving a private-only import", async () => {
     useVaultStore.setState({ currentVaultId: "v1" });
-    vi.mocked(invoke).mockResolvedValueOnce("ssh-ed25519 AAAADERIVED");
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "ed25519",
+      public_key: "ssh-ed25519 AAAADERIVED",
+      fingerprint: "SHA256:derived",
+    });
     mockUpsert.mockResolvedValue({
       ...keyRow,
       public_key: "ssh-ed25519 AAAADERIVED",
@@ -163,8 +172,9 @@ describe("keyStore", () => {
       publicKey: "",
     });
 
-    expect(invoke).toHaveBeenCalledWith("derive_public_key", {
+    expect(invoke).toHaveBeenCalledWith("inspect_private_key", {
       privateKey: "PRIVATE",
+      passphrase: null,
     });
     expect(mockUpsert.mock.calls[0][1].public_key).toBe(
       "ssh-ed25519 AAAADERIVED",
@@ -172,6 +182,53 @@ describe("keyStore", () => {
     expect(useKeyStore.getState().keys[0].publicKey).toBe(
       "ssh-ed25519 AAAADERIVED",
     );
+  });
+
+  it("inspects RSA imports and encrypts the passphrase with the private key", async () => {
+    useVaultStore.setState({ currentVaultId: "v1" });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "rsa",
+      public_key: "ssh-rsa AAAARSA",
+      fingerprint: "SHA256:rsa",
+    });
+    mockUpsert.mockResolvedValue({ ...keyRow, key_type: "rsa" });
+
+    await useKeyStore.getState().importKey({
+      name: "rsa-key",
+      encryptedPrivateKey: "RSA_PRIVATE",
+      passphrase: "secret passphrase",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("inspect_private_key", {
+      privateKey: "RSA_PRIVATE",
+      passphrase: "secret passphrase",
+    });
+    expect(mockUpsert.mock.calls[0][1]).toMatchObject({
+      key_type: "rsa",
+      public_key: "ssh-rsa AAAARSA",
+      fingerprint: "SHA256:rsa",
+    });
+    expect(JSON.parse(mockUpsert.mock.calls[0][2]?.plaintext ?? "{}")).toEqual({
+      privateKey: "RSA_PRIVATE",
+      passphrase: "secret passphrase",
+    });
+  });
+
+  it("rejects a public key that does not match its private key", async () => {
+    useVaultStore.setState({ currentVaultId: "v1" });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "ed25519",
+      public_key: "ssh-ed25519 AAAACORRECT comment",
+      fingerprint: "SHA256:correct",
+    });
+    await expect(
+      useKeyStore.getState().importKey({
+        name: "mismatch",
+        encryptedPrivateKey: "PRIVATE",
+        publicKey: "ssh-ed25519 AAAAWRONG other-comment",
+      }),
+    ).rejects.toThrow("Public key does not match");
+    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("rejects an import when no vault is selected", async () => {
@@ -188,6 +245,11 @@ describe("keyStore", () => {
 
   it("rejects a failed import so the dialog can show the save error", async () => {
     useVaultStore.setState({ currentVaultId: "v1" });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "ed25519",
+      public_key: "ssh-ed25519 AAAA",
+      fingerprint: "SHA256:key",
+    });
     mockUpsert.mockRejectedValueOnce(new Error("Vault is locked"));
     await expect(
       useKeyStore.getState().importKey({
@@ -200,6 +262,11 @@ describe("keyStore", () => {
   });
 
   it("importKey keeps sensitive key material out of plaintext columns", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      key_type: "rsa",
+      public_key: "pub",
+      fingerprint: "fp",
+    });
     mockUpsert.mockResolvedValue({
       id: "123e4567-e89b-12d3-a456-426614174000",
       revision: 1,
@@ -236,7 +303,13 @@ describe("keyStore", () => {
     );
   });
 
-  it("generateKey passes empty key material plaintext and upserts", async () => {
+  it("generateKey creates real material before saving, with matching metadata", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      private_key: "GENERATED_PRIVATE",
+      public_key: "ssh-ed25519 AAAAGENERATED",
+      key_type: "ed25519",
+      fingerprint: "SHA256:generated",
+    });
     mockUpsert.mockResolvedValue({
       id: "123e4567-e89b-12d3-a456-426614174000",
       revision: 1,
@@ -249,12 +322,15 @@ describe("keyStore", () => {
     });
     useVaultStore.setState({ currentVaultId: "v1" });
     await useKeyStore.getState().generateKey("gen-key", "ed25519");
+    expect(invoke).toHaveBeenCalledWith("generate_ssh_key", {
+      keyType: "ed25519",
+    });
     const opts = mockUpsert.mock.calls[0][2] as {
       plaintext: string;
       recordType: string;
     };
     expect(JSON.parse(opts.plaintext)).toMatchObject({
-      privateKey: "",
+      privateKey: "GENERATED_PRIVATE",
     });
     expect(opts.recordType).toBe("keys");
     expect(mockUpsert).toHaveBeenCalledWith(
@@ -263,10 +339,22 @@ describe("keyStore", () => {
         name: "gen-key",
         vault_id: "v1",
         key_type: "ed25519",
+        public_key: "ssh-ed25519 AAAAGENERATED",
+        fingerprint: "SHA256:generated",
       }),
       expect.objectContaining({ recordType: "keys" }),
     );
     expect(useKeyStore.getState().keys.length).toBe(1);
+  });
+
+  it("does not persist a key when generation fails", async () => {
+    useVaultStore.setState({ currentVaultId: "v1" });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("RNG unavailable"));
+    await expect(
+      useKeyStore.getState().generateKey("bad", "ed25519"),
+    ).rejects.toThrow("RNG unavailable");
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(useKeyStore.getState().keys).toEqual([]);
   });
 
   it("deleteKey tombstones and clears selection", async () => {

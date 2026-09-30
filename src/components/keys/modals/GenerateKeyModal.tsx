@@ -11,6 +11,7 @@ import {
   generateKeyFormDefaultValues,
   generateKeyFormSchema,
 } from "@/lib/schema/keys/generateKeyFormSchema";
+import { useKeyStore } from "@/stores/keys/keyStore";
 import type { KeyItem } from "@/types/keys/types";
 
 export default function GenerateKeyModal({
@@ -22,10 +23,8 @@ export default function GenerateKeyModal({
 }) {
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [generatedPrivKey, _setGeneratedPrivKey] = useState<string | null>(
-    null,
-  );
-  const [savedKey, _setSavedKey] = useState<KeyItem | null>(null);
+  const [generatedPrivKey, setGeneratedPrivKey] = useState<string | null>(null);
+  const [savedKey, setSavedKey] = useState<KeyItem | null>(null);
   const [copied, setCopied] = useState(false);
 
   const { control, handleSubmit } = useForm<GenerateKeyFormSchema>({
@@ -38,12 +37,14 @@ export default function GenerateKeyModal({
     return "Generate";
   };
 
-  const handleKeySubmit = async (_data: GenerateKeyFormSchema) => {
+  const handleKeySubmit = async (data: GenerateKeyFormSchema) => {
     setError(null);
     try {
-      setError(
-        "Key generation is not available in sync-only mode. Use import instead.",
-      );
+      const key = await useKeyStore
+        .getState()
+        .generateKey(data.name, data.keyType, data.description);
+      setSavedKey(key);
+      setGeneratedPrivKey(key.encryptedPrivateKey);
     } catch (err: unknown) {
       setError(extractError(err, "Failed to generate key"));
     }
@@ -71,8 +72,25 @@ export default function GenerateKeyModal({
         maxWidth="max-w-lg"
       >
         <p className="mb-4 text-sm text-dark-400">
-          Copy and save your private key now. It will not be shown again.
+          Copy the public key to your server's authorized_keys file. Save the
+          private key only if you need an external backup; it is stored
+          encrypted in this vault.
         </p>
+        <p className="mb-2 text-sm text-dark-400">Public key</p>
+        <pre className="p-4 mb-4 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap rounded-lg bg-dark-800 text-dark-300 max-h-24">
+          {savedKey?.publicKey}
+        </pre>
+        <Button
+          type="button"
+          onClick={() =>
+            navigator.clipboard.writeText(savedKey?.publicKey || "")
+          }
+          variant="ghost"
+          size="sm"
+        >
+          Copy Public Key
+        </Button>
+        <p className="mt-4 mb-2 text-sm text-dark-400">Private key</p>
         <div className="p-4 mb-4 rounded-lg bg-dark-800">
           <pre className="overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap text-dark-300 max-h-48">
             {generatedPrivKey}
