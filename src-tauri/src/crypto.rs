@@ -8,7 +8,7 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -421,9 +421,198 @@ fn decrypt_bytes(payload_b64: &str, key: &[u8; DEK_LEN]) -> Result<Vec<u8>, Stri
         .map_err(|e| format!("Decryption error: {e}"))
 }
 
+fn team_key_aad(team_id: &str, vault_id: &str, epoch: u32) -> Result<Vec<u8>, String> {
+    if team_id.is_empty() || vault_id.is_empty() || epoch == 0 {
+        return Err("invalid team key context".into());
+    }
+    serde_json::to_vec(&("team-vault-key-v1", team_id, vault_id, epoch))
+        .map_err(|_| "invalid team key context".into())
+}
+
+pub fn wrap_team_key(
+    key: &[u8; 32],
+    team_id: &str,
+    vault_id: &str,
+    epoch: u32,
+    session: &KeySession,
+) -> Result<String, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
+    let aad = team_key_aad(team_id, vault_id, epoch)?;
+    encrypt_bytes(&session.dek, key, &aad)
+}
+
+pub fn unwrap_team_key(
+    wrapped: &str,
+    team_id: &str,
+    vault_id: &str,
+    epoch: u32,
+    session: &KeySession,
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
+    let aad = team_key_aad(team_id, vault_id, epoch)?;
+    let payload: EncryptedPayload =
+        serde_json::from_str(wrapped).map_err(|_| "invalid wrapped team key".to_string())?;
+    if payload.aad != BASE64.encode(&aad) {
+        return Err("wrapped team key context mismatch".into());
+    }
+    let plaintext = Zeroizing::new(decrypt_bytes(wrapped, &session.dek)?);
+    let key: [u8; 32] = plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| "invalid wrapped team key length".to_string())?;
+    Ok(Zeroizing::new(key))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TeamEncryptedPayload {
+    v: u8,
+    alg: String,
+    nonce: String,
+    ct: String,
+    vault_id: String,
+    epoch: u32,
+    record_type: String,
+}
+
+fn team_record_aad(record_type: &str, vault_id: &str, epoch: u32) -> Result<Vec<u8>, String> {
+    if record_type.is_empty() || vault_id.is_empty() || epoch == 0 {
+        return Err("invalid team record context".into());
+    }
+    serde_json::to_vec(&(record_type, vault_id, epoch))
+        .map_err(|_| "invalid team record context".into())
+}
+
+pub fn encrypt_team_secret(
+    plaintext: &str,
+    record_type: &str,
+    vault_id: &str,
+    epoch: u32,
+    key: &[u8; 32],
+    session: &KeySession,
+) -> Result<String, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
+    let aad = team_record_aad(record_type, vault_id, epoch)?;
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let ct = cipher
+        .encrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| "team record encryption failed".to_string())?;
+    serde_json::to_string(&TeamEncryptedPayload {
+        v: 2,
+        alg: "xchacha20poly1305".into(),
+        nonce: BASE64.encode(nonce),
+        ct: BASE64.encode(ct),
+        vault_id: vault_id.into(),
+        epoch,
+        record_type: record_type.into(),
+    })
+    .map_err(|_| "team record encoding failed".into())
+}
+
+pub fn decrypt_team_secret(
+    payload: &str,
+    record_type: &str,
+    vault_id: &str,
+    epoch: u32,
+    key: &[u8; 32],
+    session: &KeySession,
+) -> Result<String, String> {
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
+    let value: TeamEncryptedPayload =
+        serde_json::from_str(payload).map_err(|_| "invalid team record".to_string())?;
+    if value.v != 2
+        || value.alg != "xchacha20poly1305"
+        || value.vault_id != vault_id
+        || value.epoch != epoch
+        || value.record_type != record_type
+    {
+        return Err("team record context mismatch".into());
+    }
+    let aad = team_record_aad(record_type, vault_id, epoch)?;
+    let nonce: [u8; NONCE_LEN] = BASE64
+        .decode(value.nonce)
+        .map_err(|_| "invalid team nonce".to_string())?
+        .try_into()
+        .map_err(|_| "invalid team nonce length".to_string())?;
+    let ct = BASE64
+        .decode(value.ct)
+        .map_err(|_| "invalid team ciphertext".to_string())?;
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let plaintext = cipher
+        .decrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: &ct,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| "team record authentication failed".to_string())?;
+    String::from_utf8(plaintext).map_err(|_| "invalid team record text".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_team_key_wrap_binds_team_vault_epoch() {
+        let mut session = KeySession::new();
+        generate_account_material(&mut session).unwrap();
+        let key = [9u8; 32];
+        let wrapped = wrap_team_key(&key, "team-a", "vault-a", 1, &session).unwrap();
+        assert_eq!(
+            *unwrap_team_key(&wrapped, "team-a", "vault-a", 1, &session).unwrap(),
+            key
+        );
+        assert!(unwrap_team_key(&wrapped, "team-b", "vault-a", 1, &session).is_err());
+        assert!(unwrap_team_key(&wrapped, "team-a", "vault-b", 1, &session).is_err());
+        assert!(unwrap_team_key(&wrapped, "team-a", "vault-a", 2, &session).is_err());
+        lock(&mut session);
+        assert!(unwrap_team_key(&wrapped, "team-a", "vault-a", 1, &session).is_err());
+    }
+
+    #[test]
+    fn test_team_secret_binds_vault_and_epoch() {
+        let mut session = KeySession::new();
+        generate_account_material(&mut session).unwrap();
+        let team_key = [7u8; 32];
+        let encrypted =
+            encrypt_team_secret("host password", "hosts", "vault-a", 1, &team_key, &session)
+                .unwrap();
+        assert_eq!(
+            decrypt_team_secret(&encrypted, "hosts", "vault-a", 1, &team_key, &session).unwrap(),
+            "host password"
+        );
+        assert!(decrypt_secret(&encrypted, &session).is_err());
+        assert!(
+            decrypt_team_secret(&encrypted, "hosts", "vault-b", 1, &team_key, &session).is_err()
+        );
+        assert!(
+            decrypt_team_secret(&encrypted, "hosts", "vault-a", 2, &team_key, &session).is_err()
+        );
+        assert!(
+            decrypt_team_secret(&encrypted, "keys", "vault-a", 1, &team_key, &session).is_err()
+        );
+        let wrong_key = [8u8; 32];
+        assert!(
+            decrypt_team_secret(&encrypted, "hosts", "vault-a", 1, &wrong_key, &session).is_err()
+        );
+    }
 
     #[test]
     fn test_derive_kek_deterministic() {

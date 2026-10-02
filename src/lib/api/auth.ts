@@ -123,6 +123,7 @@ export interface User {
   id: string;
   email: string;
   full_name?: string;
+  public_key?: string;
   initialized: boolean;
   auth_provider: string;
   created_at: string;

@@ -16,10 +16,7 @@ interface VaultFormProps {
   onClose: () => void;
 }
 
-const VAULT_KIND_OPTIONS = [
-  { value: "personal", label: "Personal" },
-  { value: "team", label: "Team" },
-];
+const VAULT_KIND_OPTIONS = [{ value: "personal", label: "Personal" }];
 
 export default function VaultForm({ vault, onClose }: VaultFormProps) {
   const { createVault, updateVault } = useVaultStore();

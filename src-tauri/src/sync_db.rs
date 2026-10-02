@@ -5,7 +5,7 @@ use base64::{
     engine::general_purpose::{STANDARD as BASE64_PADDED, STANDARD_NO_PAD as BASE64},
     Engine as _,
 };
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,12 +91,22 @@ fn validate_ciphertext(table: Table, data: &str) -> Result<(), String> {
     }
     let value: Value = serde_json::from_str(data).map_err(|_| "invalid encrypted data")?;
     let field = |name: &str| value.get(name).and_then(Value::as_str).unwrap_or("");
-    if value.get("v").and_then(Value::as_i64) != Some(1)
-        || field("alg") != "xchacha20poly1305"
-        || (field("aad") != BASE64.encode(table.as_str())
-            && field("aad") != BASE64_PADDED.encode(table.as_str()))
-    {
+    let version = value.get("v").and_then(Value::as_i64);
+    if field("alg") != "xchacha20poly1305" {
         return Err("unsupported encrypted data envelope".into());
+    }
+    match version {
+        Some(1)
+            if field("aad") == BASE64.encode(table.as_str())
+                || field("aad") == BASE64_PADDED.encode(table.as_str()) => {}
+        Some(2)
+            if field("record_type") == table.as_str()
+                && value
+                    .get("epoch")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|epoch| epoch > 0)
+                && uuid::Uuid::parse_str(field("vault_id")).is_ok() => {}
+        _ => return Err("unsupported encrypted data envelope".into()),
     }
     let decode = |value| {
         BASE64
@@ -166,6 +176,13 @@ fn parse_record(table: Table, vault_id: &str, value: &Value) -> Result<SyncRow, 
         }
     }
     validate_ciphertext(table, &row.data)?;
+    if let Ok(header) = serde_json::from_str::<Value>(&row.data) {
+        if header.get("v").and_then(Value::as_i64) == Some(2)
+            && header.get("vault_id").and_then(Value::as_str) != Some(vault_id)
+        {
+            return Err("team ciphertext vault mismatch".into());
+        }
+    }
     Ok(row)
 }
 
@@ -249,6 +266,7 @@ pub fn adopt_pending_device(db: &LocalDb, device_id: &str) -> Result<(), String>
 /// Authenticate downloaded ciphertext with the unlocked account DEK before any
 /// row or pull cursor is committed. Envelope-shape validation alone is not enough.
 pub fn validate_pull_payloads(
+    db: &LocalDb,
     changes: &[PullChange],
     session: &crate::crypto::KeySession,
 ) -> Result<(), String> {
@@ -263,7 +281,20 @@ pub fn validate_pull_payloads(
         if table == Table::Vaults && data == "{}" {
             continue;
         }
-        crate::crypto::decrypt_secret(data, session)
+        let vault_id = if table == Table::Vaults {
+            change
+                .record
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("sync vault ID missing")?
+        } else {
+            change
+                .record
+                .get("vault_id")
+                .and_then(Value::as_str)
+                .ok_or("sync vault ID missing")?
+        };
+        crate::team_keys::decrypt_row_secret(db, session, data, table.as_str(), vault_id)
             .map_err(|_| "unreadable encrypted sync record".to_string())?;
     }
     Ok(())
@@ -312,6 +343,116 @@ pub fn pending_batch(
             record: record_value(table, &row)?,
         });
     }
+    Ok(result)
+}
+
+pub fn pending_team_rows(db: &LocalDb, vault_id: &str) -> Result<Vec<(Table, SyncRow)>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT table_name, record_id, operation_id FROM outbox WHERE vault_id = ?1 AND table_name <> 'vaults' ORDER BY table_name, record_id",
+    ).map_err(|e| e.to_string())?;
+    let entries = stmt
+        .query_map([vault_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let mut result = Vec::with_capacity(entries.len());
+    for (table_name, id, operation_id) in entries {
+        let table = Table::parse(&table_name)?;
+        let row = get_sync_row_unlocked(&conn, table, &id)?.ok_or("outbox record missing")?;
+        if row.vault_id != vault_id || row.operation_id != operation_id {
+            return Err("outbox and current row differ".into());
+        }
+        result.push((table, row));
+    }
+    Ok(result)
+}
+
+pub struct RebasedPendingRow {
+    pub table: Table,
+    pub previous_operation_id: String,
+    pub row: SyncRow,
+}
+
+pub fn replace_pending_team_rows(
+    db: &LocalDb,
+    vault_id: &str,
+    rows: &[RebasedPendingRow],
+) -> Result<(), String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for item in rows {
+        if item.table == Table::Vaults || item.row.vault_id != vault_id {
+            return Err("invalid pending team row".into());
+        }
+        let current = get_sync_row_unlocked(&tx, item.table, &item.row.id)?
+            .ok_or("pending row disappeared")?;
+        let queued: Option<String> = tx.query_row(
+            "SELECT operation_id FROM outbox WHERE table_name = ?1 AND record_id = ?2 AND vault_id = ?3",
+            params![item.table.as_str(), item.row.id, vault_id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if current.operation_id != item.previous_operation_id
+            || queued.as_deref() != Some(item.previous_operation_id.as_str())
+        {
+            return Err("pending team row changed during rebase".into());
+        }
+        validate_ciphertext(item.table, &item.row.data)?;
+        write_row(&tx, item.table, &item.row)?;
+        queue_row(&tx, item.table, &item.row, &item.row.edited_at)?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn discard_revoked_pending_edits(db: &LocalDb, vault_id: &str) -> Result<usize, String> {
+    let (_, _, state) = super::team_vault_meta(db, vault_id)?.ok_or("not a team vault")?;
+    if state != "revoked" {
+        return Err("team vault access is not revoked".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM outbox WHERE vault_id = ?1 AND table_name <> 'vaults'",
+        [vault_id],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct RevokedVaultEdits {
+    pub vault_id: String,
+    pub name: String,
+    pub pending: usize,
+}
+
+pub fn list_revoked_pending_edits(db: &LocalDb) -> Result<Vec<RevokedVaultEdits>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.vault_id, COALESCE(v.name, 'Shared vault'), COUNT(o.record_id)
+        FROM team_vaults t
+        LEFT JOIN vaults v ON v.id = t.vault_id
+        JOIN outbox o ON o.vault_id = t.vault_id AND o.table_name <> 'vaults'
+        WHERE t.rotation_state = 'revoked'
+        GROUP BY t.vault_id, v.name ORDER BY v.name, t.vault_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let result = stmt
+        .query_map([], |row| {
+            Ok(RevokedVaultEdits {
+                vault_id: row.get(0)?,
+                name: row.get(1)?,
+                pending: row.get::<_, i64>(2)? as usize,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     Ok(result)
 }
 
@@ -393,6 +534,18 @@ pub fn apply_pull_page(
     changes: &[PullChange],
     next_cursor: u64,
 ) -> Result<(), String> {
+    apply_pull_page_with_rotation(db, vault_id, changes, next_cursor, false, false, 0)
+}
+
+pub fn apply_pull_page_with_rotation(
+    db: &LocalDb,
+    vault_id: &str,
+    changes: &[PullChange],
+    next_cursor: u64,
+    reset: bool,
+    has_more: bool,
+    rotation_cursor: u64,
+) -> Result<(), String> {
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let current_cursor = tx
@@ -411,6 +564,38 @@ pub fn apply_pull_page(
         .map_err(|e| e.to_string())?;
     if next_cursor < current_cursor {
         return Err("sync cursor cannot move backward".into());
+    }
+    if reset {
+        if rotation_cursor == 0
+            || next_cursor < rotation_cursor
+            || changes
+                .first()
+                .is_none_or(|change| change.cursor != rotation_cursor || change.table != "vaults")
+        {
+            return Err("invalid rotation snapshot boundary".into());
+        }
+        tx.execute(
+            "DELETE FROM sync_snapshot_seen WHERE vault_id = ?1",
+            [vault_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO sync_snapshot_state (vault_id, boundary) VALUES (?1, ?2)
+            ON CONFLICT(vault_id) DO UPDATE SET boundary = excluded.boundary",
+            params![vault_id, rotation_cursor],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let active_boundary: Option<u64> = tx
+        .query_row(
+            "SELECT boundary FROM sync_snapshot_state WHERE vault_id = ?1",
+            [vault_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if active_boundary.is_some_and(|boundary| boundary != rotation_cursor) {
+        return Err("rotation snapshot boundary changed".into());
     }
     let mut last = current_cursor;
     for change in changes {
@@ -431,6 +616,10 @@ pub fn apply_pull_page(
             )
             .map_err(|e| e.to_string())?;
         }
+        if active_boundary.is_some() && table != Table::Vaults {
+            tx.execute("INSERT OR IGNORE INTO sync_snapshot_seen (vault_id, table_name, record_id) VALUES (?1, ?2, ?3)",
+                params![vault_id, table.as_str(), remote.id]).map_err(|e| e.to_string())?;
+        }
         let local = get_sync_row_unlocked(&tx, table, &remote.id)?;
         if local
             .as_ref()
@@ -438,9 +627,21 @@ pub fn apply_pull_page(
         {
             return Err("cross-vault sync record collision".into());
         }
-        if local
-            .as_ref()
-            .is_none_or(|row| edit_tuple(&remote) > edit_tuple(row))
+        let pending_local = if active_boundary.is_some() {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM outbox WHERE table_name = ?1 AND record_id = ?2)",
+                params![table.as_str(), remote.id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            false
+        };
+        if !pending_local
+            && (active_boundary.is_some()
+                || local
+                    .as_ref()
+                    .is_none_or(|row| edit_tuple(&remote) > edit_tuple(row)))
         {
             write_row(&tx, table, &remote)?;
             if let Some(row) = local {
@@ -449,6 +650,33 @@ pub fn apply_pull_page(
             }
         }
         last = change.cursor;
+    }
+    if active_boundary.is_some() && !has_more {
+        for table in [
+            Table::Groups,
+            Table::Hosts,
+            Table::Keys,
+            Table::Snippets,
+            Table::Workspaces,
+            Table::Presets,
+            Table::PortForwards,
+        ] {
+            let sql = format!("DELETE FROM {} WHERE vault_id = ?1
+                AND id NOT IN (SELECT record_id FROM sync_snapshot_seen WHERE vault_id = ?1 AND table_name = ?2)
+                AND id NOT IN (SELECT record_id FROM outbox WHERE vault_id = ?1 AND table_name = ?2)", table.as_str());
+            tx.execute(&sql, params![vault_id, table.as_str()])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "DELETE FROM sync_snapshot_state WHERE vault_id = ?1",
+            [vault_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM sync_snapshot_seen WHERE vault_id = ?1",
+            [vault_id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     tx.execute("INSERT INTO __sync_meta (vault_id, cursor) VALUES (?1, ?2) ON CONFLICT(vault_id) DO UPDATE SET cursor = excluded.cursor", params![vault_id, next_cursor])
         .map_err(|e| e.to_string())?;
@@ -514,8 +742,6 @@ pub fn ack_push_results(
     tx.commit().map_err(|e| e.to_string())
 }
 
-use rusqlite::OptionalExtension;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,16 +769,65 @@ mod tests {
     }
 
     #[test]
+    fn sync_db_validates_team_ciphertext_with_cached_vault_key() {
+        let db = super::super::open(":memory:").unwrap();
+        let mut session = crate::crypto::KeySession::new();
+        crate::crypto::generate_account_material(&mut session).unwrap();
+        super::super::store_team_vault_meta(
+            &db,
+            "11111111-1111-4111-8111-111111111111",
+            "team",
+            1,
+            "ready",
+        )
+        .unwrap();
+        let key = [5u8; 32];
+        let encrypted = crate::crypto::encrypt_team_secret(
+            "secret",
+            "hosts",
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            &key,
+            &session,
+        )
+        .unwrap();
+        let change = PullChange {
+            cursor: 1,
+            table: "hosts".into(),
+            record: serde_json::json!({"vault_id":"11111111-1111-4111-8111-111111111111","data":encrypted}),
+        };
+        assert!(validate_pull_payloads(&db, &[change.clone()], &session).is_err());
+        let wrapped = crate::crypto::wrap_team_key(
+            &key,
+            "team",
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            &session,
+        )
+        .unwrap();
+        super::super::store_wrapped_team_key(
+            &db,
+            "11111111-1111-4111-8111-111111111111",
+            "team",
+            1,
+            &wrapped,
+        )
+        .unwrap();
+        validate_pull_payloads(&db, &[change], &session).unwrap();
+    }
+
+    #[test]
     fn sync_db_rejects_well_shaped_unreadable_ciphertext() {
         let mut session = crate::crypto::KeySession::new();
         crate::crypto::generate_account_material(&mut session).unwrap();
         let encrypted = crate::crypto::encrypt_secret("secret", "hosts", &session).unwrap();
+        let db = super::super::open(":memory:").unwrap();
         let valid = PullChange {
             cursor: 1,
             table: "hosts".into(),
-            record: serde_json::json!({"data":encrypted}),
+            record: serde_json::json!({"vault_id":"private","data":encrypted}),
         };
-        validate_pull_payloads(&[valid.clone()], &session).unwrap();
+        validate_pull_payloads(&db, &[valid.clone()], &session).unwrap();
         let mut corrupt = valid;
         let mut payload: Value =
             serde_json::from_str(corrupt.record["data"].as_str().unwrap()).unwrap();
@@ -560,7 +835,7 @@ mod tests {
         ct[0] ^= 1;
         payload["ct"] = Value::String(BASE64.encode(ct));
         corrupt.record["data"] = Value::String(payload.to_string());
-        assert!(validate_pull_payloads(&[corrupt], &session).is_err());
+        assert!(validate_pull_payloads(&db, &[corrupt], &session).is_err());
     }
 
     #[test]
@@ -660,6 +935,88 @@ mod tests {
             Some("remote")
         );
         assert!(pending_batch(&db, &vault, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rotation_snapshot_prunes_only_after_final_page_and_preserves_pending_edits() {
+        let db = super::super::open(":memory:").unwrap();
+        let vault = Uuid::new_v4().to_string();
+        let kept = Uuid::new_v4().to_string();
+        let stale = Uuid::new_v4().to_string();
+        let pending = Uuid::new_v4().to_string();
+        let device = Uuid::new_v4().to_string();
+        let local_vault = super::super::upsert_sync_row(
+            &db,
+            Table::Vaults,
+            &SyncRow {
+                id: vault.clone(),
+                owner_id: Some(Uuid::new_v4().to_string()),
+                kind: Some("team".into()),
+                name: Some("Shared".into()),
+                data: "{}".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        super::super::upsert_sync_row(&db, Table::Hosts, &host(&kept, &vault, "old")).unwrap();
+        super::super::upsert_sync_row(&db, Table::Hosts, &host(&stale, &vault, "stale")).unwrap();
+        super::super::outbox_remove(&db, Table::Vaults, &vault).unwrap();
+        super::super::outbox_remove(&db, Table::Hosts, &kept).unwrap();
+        super::super::outbox_remove(&db, Table::Hosts, &stale).unwrap();
+        super::super::local_mutate(
+            &db,
+            Table::Hosts,
+            &host(&pending, &vault, "pending"),
+            &device,
+        )
+        .unwrap();
+        let mut marker = local_vault.clone();
+        marker.revision = 2;
+        marker.edited_at = "2099-01-01T00:00:00.000Z".into();
+        marker.updated_at = marker.edited_at.clone();
+        marker.device_id = Uuid::new_v4().to_string();
+        marker.operation_id = Uuid::new_v4().to_string();
+        let marker = PullChange {
+            cursor: 2,
+            table: "vaults".into(),
+            record: record_value(Table::Vaults, &marker).unwrap(),
+        };
+        apply_pull_page_with_rotation(&db, &vault, &[marker], 2, true, true, 2).unwrap();
+        assert!(super::super::get_sync_row(&db, Table::Hosts, &stale)
+            .unwrap()
+            .is_some());
+        let local_kept = super::super::get_sync_row(&db, Table::Hosts, &kept)
+            .unwrap()
+            .unwrap();
+        let mut remote = host(&kept, &vault, "new");
+        remote.auth_type = Some("password".into());
+        remote.tags = Some("[]".into());
+        remote.created_at = "2026-01-01T00:00:00.000Z".into();
+        remote.edited_at = local_kept.edited_at.clone();
+        remote.updated_at = remote.edited_at.clone();
+        remote.device_id = local_kept.device_id.clone();
+        remote.operation_id = local_kept.operation_id.clone();
+        let event = PullChange {
+            cursor: 3,
+            table: "hosts".into(),
+            record: record_value(Table::Hosts, &remote).unwrap(),
+        };
+        apply_pull_page_with_rotation(&db, &vault, &[event], 3, false, false, 2).unwrap();
+        assert_eq!(
+            super::super::get_sync_row(&db, Table::Hosts, &kept)
+                .unwrap()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("new")
+        );
+        assert!(super::super::get_sync_row(&db, Table::Hosts, &stale)
+            .unwrap()
+            .is_none());
+        assert!(super::super::get_sync_row(&db, Table::Hosts, &pending)
+            .unwrap()
+            .is_some());
+        assert_eq!(pending_count(&db, &vault).unwrap(), 1);
     }
 
     #[test]

@@ -23,6 +23,8 @@ interface VaultItem {
   kind?: string;
   isDefault?: boolean;
   isSystem?: boolean;
+  isShared?: boolean;
+  accessState?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,7 +96,7 @@ export function VaultSelector() {
   };
 
   const handleDelete = (vault: VaultItem) => {
-    if (vault.isSystem) return;
+    if (vault.isSystem || vault.isShared) return;
     setDeleteTarget(vault);
     deleteDialog.show();
   };
@@ -129,6 +131,9 @@ export function VaultSelector() {
         <span className="text-sm font-medium text-white truncate max-w-[140px]">
           {currentVault?.name || "Vault"}
         </span>
+        {currentVault?.accessState === "revoked" && (
+          <span className="text-xs text-danger-400">Access denied</span>
+        )}
         <CaretDownIcon
           className={`w-3.5 h-3.5 text-dark-400 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
         />
@@ -193,6 +198,19 @@ export function VaultSelector() {
                         {vault.isDefault && (
                           <Badge variant="amber">Default</Badge>
                         )}
+                        {vault.isShared && (
+                          <Badge variant="primary">Shared</Badge>
+                        )}
+                        {vault.accessState === "revoked" && (
+                          <span className="text-xs text-danger-400">
+                            Access denied
+                          </span>
+                        )}
+                        {vault.accessState === "rotation_required" && (
+                          <span className="text-xs text-amber-300">
+                            Rotate keys
+                          </span>
+                        )}
                         {vault.isSystem && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-dark-400 bg-white/5 rounded">
                             <ShieldIcon className="w-2.5 h-2.5" weight="fill" />
@@ -206,7 +224,7 @@ export function VaultSelector() {
                         </p>
                       )}
                     </div>
-                    {vault.isSystem ? (
+                    {vault.isSystem || vault.isShared ? (
                       <span className="w-7 shrink-0" />
                     ) : (
                       <div className="flex items-center gap-0.5 shrink-0">

@@ -85,6 +85,34 @@ describe("isEncrypted", () => {
     ).toBe(false);
   });
 
+  it("recognizes contextual team ciphertext only when its binding fields are present", () => {
+    expect(
+      isEncrypted(
+        JSON.stringify({
+          v: 2,
+          alg: "xchacha20poly1305",
+          nonce: "abc",
+          ct: "def",
+          record_type: "hosts",
+          vault_id: "vault",
+          epoch: 1,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isEncrypted(
+        JSON.stringify({
+          v: 2,
+          alg: "xchacha20poly1305",
+          nonce: "abc",
+          ct: "def",
+          record_type: "hosts",
+          vault_id: "vault",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("returns true for valid encrypted payload", () => {
     const payload = JSON.stringify({
       v: 1,

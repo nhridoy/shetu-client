@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { authApi } from "@/lib/api/auth";
 import type { SyncRow } from "@/lib/db/db";
@@ -14,6 +15,8 @@ interface VaultItem {
   kind?: string;
   isDefault?: boolean;
   isSystem?: boolean;
+  isShared?: boolean;
+  accessState?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -114,7 +117,19 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         }
       }
 
-      const vaults = rows.map(toVaultItem);
+      const vaults = await Promise.all(
+        rows.map(async (row) => {
+          const isShared = await invoke<boolean>("is_team_vault", {
+            vaultId: row.id,
+          });
+          const status = isShared
+            ? await invoke<{ state: string }>("team_vault_recovery_status", {
+                vaultId: row.id,
+              })
+            : null;
+          return { ...toVaultItem(row), isShared, accessState: status?.state };
+        }),
+      );
       const current = get().currentVaultId;
       const selected =
         vaults.find((vault) => vault.id === current) ??
@@ -127,6 +142,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   createVault: async (name, kind, description) => {
+    if (kind !== VAULT_KIND_PERSONAL)
+      throw new Error("Create shared vaults from the Teams page.");
     set({ isLoading: true, error: null });
     try {
       const row = vaultRow(name, kind);
@@ -144,6 +161,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   updateVault: async (id, vault) => {
+    if (await invoke<boolean>("is_team_vault", { vaultId: id }))
+      throw new Error("Shared vaults must be managed from the Teams page.");
     set({ isLoading: true, error: null });
     try {
       const existing = get().vaults.find((v) => v.id === id);
@@ -158,7 +177,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           vault_id: "",
           name: vault.name ?? existing.name,
           owner_id: getUserId(),
-          kind: vault.kind ?? existing.kind ?? VAULT_KIND_TEAM,
+          kind: existing.kind ?? VAULT_KIND_PERSONAL,
           sort_order: 0,
           is_default: existing.isDefault ? 1 : 0,
         },
@@ -174,10 +193,14 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
+      throw error;
     }
   },
 
   deleteVault: async (id) => {
+    if (await invoke<boolean>("is_team_vault", { vaultId: id })) {
+      throw new Error("Shared vaults must be managed from the Teams page.");
+    }
     set({ isLoading: true, error: null });
     try {
       await deleteRow("vaults", id);

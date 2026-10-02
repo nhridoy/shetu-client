@@ -16,6 +16,6 @@ export type VaultFormSchema = z.infer<typeof vaultFormSchema>;
 
 export const vaultFormDefaultValues: VaultFormSchema = {
   name: "",
-  kind: "team",
+  kind: "personal",
   description: "",
 };

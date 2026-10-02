@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock("../../lib/db/db", () => ({
   listRows: vi.fn(),
   upsertRow: vi.fn(),
@@ -14,6 +18,7 @@ vi.mock("../auth/authStore", () => ({
   },
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import { authApi } from "../../lib/api/auth";
 import { deleteRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "./vaultStore";
@@ -40,6 +45,8 @@ const vaultRow = (overrides: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockResolvedValue(false);
   mockDefaultVault.mockReset();
   mockDefaultVault.mockResolvedValue({
     id: "v1",
@@ -149,13 +156,13 @@ describe("vaultStore", () => {
 
     await useVaultStore
       .getState()
-      .createVault("Production", "team", "prod cluster");
+      .createVault("Production", "personal", "prod cluster");
 
     expect(mockUpsert).toHaveBeenCalledWith(
       "vaults",
       expect.objectContaining({
         owner_id: "u1",
-        kind: "team",
+        kind: "personal",
         is_default: 0,
         name: "Production",
       }),
@@ -167,6 +174,13 @@ describe("vaultStore", () => {
     expect(created).toBeDefined();
     expect(created?.description).toBe("prod cluster");
     expect(currentVaultId).toBe(created?.id);
+  });
+
+  it("rejects creating a fake shared vault through the generic vault store", async () => {
+    await expect(
+      useVaultStore.getState().createVault("Team", "team"),
+    ).rejects.toThrow("Teams page");
+    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("switchVault sets currentVaultId", async () => {
@@ -225,6 +239,20 @@ describe("vaultStore", () => {
     await useVaultStore.getState().deleteVault("v1");
 
     expect(useVaultStore.getState().currentVaultId).toBeNull();
+  });
+
+  it("blocks generic edits and deletion for a true shared vault", async () => {
+    mockList.mockResolvedValue([vaultRow({ id: "shared", is_default: 1 })]);
+    await useVaultStore.getState().fetchVaults();
+    vi.mocked(invoke).mockResolvedValue(true);
+    await expect(
+      useVaultStore.getState().updateVault("shared", { name: "Bad" }),
+    ).rejects.toThrow("Teams page");
+    await expect(
+      useVaultStore.getState().deleteVault("shared"),
+    ).rejects.toThrow("Teams page");
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("clearError resets the error field", () => {

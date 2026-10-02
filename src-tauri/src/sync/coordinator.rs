@@ -1,7 +1,7 @@
 use crate::db::sync_db::{
-    ack_push_results, adopt_pending_device, apply_pull_page, is_cancelled_vault, last_sync_at,
-    mark_sync_complete, pending_batch, pending_count, pull_cursor, validate_pull_payloads,
-    PullChange, PushResult,
+    ack_push_results, adopt_pending_device, apply_pull_page_with_rotation, is_cancelled_vault,
+    last_sync_at, mark_sync_complete, pending_batch, pending_count, pull_cursor,
+    validate_pull_payloads, PullChange, PushResult,
 };
 use crate::db::LocalDb;
 use crate::http::{HttpClient, HttpErrorKind};
@@ -39,6 +39,10 @@ struct PullReply {
     changes: Vec<PullChange>,
     next_cursor: u64,
     has_more: bool,
+    #[serde(default)]
+    reset: bool,
+    #[serde(default)]
+    rotation_cursor: u64,
 }
 
 #[derive(Deserialize)]
@@ -77,9 +81,18 @@ async fn pull_until_caught_up(
                 .session
                 .lock()
                 .map_err(|e| local_error(e.to_string()))?;
-            validate_pull_payloads(&page.changes, &session).map_err(local_error)?;
+            validate_pull_payloads(db, &page.changes, &session).map_err(local_error)?;
         }
-        apply_pull_page(db, vault_id, &page.changes, page.next_cursor).map_err(local_error)?;
+        apply_pull_page_with_rotation(
+            db,
+            vault_id,
+            &page.changes,
+            page.next_cursor,
+            page.reset,
+            page.has_more,
+            page.rotation_cursor,
+        )
+        .map_err(local_error)?;
         if !page.has_more {
             return Ok(());
         }
@@ -107,6 +120,12 @@ pub async fn run_sync_cycle(
             cursor: pull_cursor(db, vault_id).map_err(local_error)?,
         });
     }
+    if crate::db::team_vault_meta(db, vault_id)
+        .map_err(local_error)?
+        .is_some_and(|(_, _, state)| state == "revoked")
+    {
+        return Err(local_error("team vault access revoked".into()));
+    }
     // A vault created offline does not exist on the server yet, so its first
     // pull would be forbidden. Publish its vault row before pulling children.
     if pull_cursor(db, vault_id).map_err(local_error)? == 0 {
@@ -133,6 +152,24 @@ pub async fn run_sync_cycle(
         }
     }
     pull_until_caught_up(vault_id, db, crypto, http).await?;
+    if let Some((_, _, state)) = crate::db::team_vault_meta(db, vault_id).map_err(local_error)? {
+        if state == "revoked" {
+            return Err(local_error("team vault access revoked".into()));
+        }
+        if state != "ready" {
+            return Ok(SyncReport {
+                pending: pending_count(db, vault_id).map_err(local_error)?,
+                last_sync_at: last_sync_at(db, vault_id).map_err(local_error)?,
+                cursor: pull_cursor(db, vault_id).map_err(local_error)?,
+            });
+        }
+        let session = crypto
+            .session
+            .lock()
+            .map_err(|e| local_error(e.to_string()))?;
+        crate::team_keys::rebase_pending_team_rows(db, &session, vault_id, device_id)
+            .map_err(local_error)?;
+    }
     let pending = pending_batch(db, vault_id, PAGE_SIZE).map_err(local_error)?;
     if !pending.is_empty() {
         let response = http

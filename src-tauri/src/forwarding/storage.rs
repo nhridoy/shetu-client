@@ -1,5 +1,5 @@
 use super::model::{validate, ForwardDefinition, ForwardInput, ForwardMode};
-use crate::crypto::{self, KeySession};
+use crate::crypto::KeySession;
 use crate::db::{self, LocalDb, SyncRow, Table};
 use serde::{Deserialize, Serialize};
 
@@ -24,13 +24,14 @@ impl From<&ForwardInput> for SecretFields {
     }
 }
 
-fn encode_secret(input: &ForwardInput, session: &KeySession) -> Result<String, String> {
+fn encode_secret(db: &LocalDb, input: &ForwardInput, session: &KeySession) -> Result<String, String> {
+    let host = live_host(db, &input.host_id)?;
     let plaintext = serde_json::to_string(&SecretFields::from(input)).map_err(|e| e.to_string())?;
-    crypto::encrypt_secret(&plaintext, Table::PortForwards.as_str(), session)
+    crate::team_keys::encrypt_row_secret(db, session, &plaintext, Table::PortForwards.as_str(), &host.vault_id)
 }
 
-fn definition(row: &SyncRow, session: &KeySession) -> Result<ForwardDefinition, String> {
-    let plaintext = crypto::decrypt_secret(&row.data, session)?;
+fn definition(db: &LocalDb, row: &SyncRow, session: &KeySession) -> Result<ForwardDefinition, String> {
+    let plaintext = crate::team_keys::decrypt_row_secret(db, session, &row.data, Table::PortForwards.as_str(), &row.vault_id)?;
     let secret: SecretFields =
         serde_json::from_str(&plaintext).map_err(|e| format!("Invalid saved forward: {e}"))?;
     let mode = ForwardMode::parse(row.mode.as_deref().ok_or("Forward mode missing")?)?;
@@ -116,7 +117,7 @@ pub fn migrate_legacy(db: &LocalDb, session: &KeySession, device_id: &str) -> Re
             host_id: Some(host_id),
             mode: Some(mode),
             name: Some(name),
-            data: encode_secret(&input, session)?,
+            data: encode_secret(db, &input, session)?,
             ..Default::default()
         };
         db::local_mutate(db, Table::PortForwards, &row, device_id)?;
@@ -144,7 +145,7 @@ pub fn get(
         return Err("Saved port forward does not exist".into());
     }
     live_host(db, row.host_id.as_deref().ok_or("Forward host missing")?)?;
-    definition(&row, session)
+    definition(db, &row, session)
 }
 
 pub fn list(
@@ -161,7 +162,7 @@ pub fn list(
     db::list_sync_rows(db, Table::PortForwards, &host.vault_id, false)?
         .into_iter()
         .filter(|row| row.host_id.as_deref() == Some(host_id))
-        .map(|row| definition(&row, session))
+        .map(|row| definition(db, &row, session))
         .collect()
 }
 
@@ -180,11 +181,11 @@ pub fn create(
         host_id: Some(input.host_id.clone()),
         mode: Some(input.mode.as_str().into()),
         name: Some(input.name.clone()),
-        data: encode_secret(&input, session)?,
+        data: encode_secret(db, &input, session)?,
         ..Default::default()
     };
     let saved = db::local_mutate(db, Table::PortForwards, &row, device_id)?;
-    definition(&saved, session)
+    definition(db, &saved, session)
 }
 
 pub fn update(
@@ -203,9 +204,9 @@ pub fn update(
     live_host(db, &input.host_id)?;
     row.mode = Some(input.mode.as_str().into());
     row.name = Some(input.name.clone());
-    row.data = encode_secret(&input, session)?;
+    row.data = encode_secret(db, &input, session)?;
     let saved = db::local_mutate(db, Table::PortForwards, &row, device_id)?;
-    definition(&saved, session)
+    definition(db, &saved, session)
 }
 
 pub fn delete(db: &LocalDb, session: &KeySession, device_id: &str, id: &str) -> Result<(), String> {
@@ -278,7 +279,7 @@ mod tests {
             host_id: Some(host_id.clone()),
             mode: Some("dynamic".into()),
             name: Some(input.name.clone()),
-            data: encode_secret(&input, &session).unwrap(),
+            data: encode_secret(&db, &input, &session).unwrap(),
             created_at: "2026-09-27T00:00:00.000Z".into(),
             updated_at: "2026-09-27T00:00:00.000Z".into(),
             edited_at: "2026-09-27T00:00:00.000Z".into(),

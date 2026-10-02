@@ -41,11 +41,18 @@ export function isEncrypted(value: unknown): boolean {
   if (typeof value !== "string") return false;
   try {
     const parsed = JSON.parse(value);
-    return (
-      parsed.v === 1 &&
-      typeof parsed.alg === "string" &&
+    const hasCiphertext =
+      parsed.alg === "xchacha20poly1305" &&
       typeof parsed.nonce === "string" &&
-      typeof parsed.ct === "string"
+      typeof parsed.ct === "string";
+    if (!hasCiphertext) return false;
+    if (parsed.v === 1) return true;
+    return (
+      parsed.v === 2 &&
+      typeof parsed.record_type === "string" &&
+      typeof parsed.vault_id === "string" &&
+      Number.isInteger(parsed.epoch) &&
+      parsed.epoch > 0
     );
   } catch {
     return false;

@@ -9,6 +9,7 @@ const LABELS = {
   synced: "Synced",
   offline: "Offline",
   "auth-required": "Sign in to sync",
+  "access-denied": "Access denied",
   error: "Sync error",
 } as const;
 

@@ -5,6 +5,7 @@ import { useAuthStore } from "../auth/authStore";
 import { useVaultStore } from "../vault/vaultStore";
 
 export const SYNC_COMPLETED_EVENT = "termvault:sync-completed";
+export const TEAM_ACCESS_REVOKED_EVENT = "termvault:team-access-revoked";
 
 export type SyncState =
   | "local-only"
@@ -13,6 +14,7 @@ export type SyncState =
   | "synced"
   | "offline"
   | "auth-required"
+  | "access-denied"
   | "error";
 
 interface SyncStore {
@@ -41,6 +43,11 @@ async function countPending(): Promise<number> {
 
 function classifyFailure(error: unknown): SyncState {
   const message = String(error).toLowerCase();
+  if (
+    message.includes("server-error-403") ||
+    message.includes("team vault access revoked")
+  )
+    return "access-denied";
   if (
     message.includes("network:") ||
     message.includes("offline") ||
@@ -96,6 +103,16 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
           error: null,
         });
       } catch (error) {
+        if (
+          typeof window !== "undefined" &&
+          String(error).includes("server-error-403")
+        ) {
+          window.dispatchEvent(
+            new CustomEvent(TEAM_ACCESS_REVOKED_EVENT, {
+              detail: { vaultId },
+            }),
+          );
+        }
         const pendingCount = await countPending();
         set({
           state: classifyFailure(error),

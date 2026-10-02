@@ -11,6 +11,7 @@ mod offline_auth;
 mod sftp;
 mod ssh;
 mod sync;
+mod team_keys;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
 use portable_pty::{
@@ -80,7 +81,7 @@ fn db_upsert(
     if let Some(plaintext) = plaintext {
         let session = crypto.session.lock().map_err(|e| e.to_string())?;
         let rt = record_type.as_deref().unwrap_or(table.as_str());
-        row.data = crypto::encrypt_secret(&plaintext, rt, &session)?;
+        row.data = team_keys::encrypt_row_secret(&db, &session, &plaintext, rt, &row.vault_id)?;
     }
     db::local_mutate(&db, table, &row, &device_id)
 }
@@ -950,9 +951,152 @@ fn encrypt_secret(
 }
 
 #[tauri::command]
-fn decrypt_secret(payload: String, state: tauri::State<'_, CryptoState>) -> Result<String, String> {
+fn decrypt_secret(
+    payload: String,
+    db: tauri::State<'_, db::LocalDb>,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<String, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
-    crypto::decrypt_secret(&payload, &session)
+    let header: serde_json::Value =
+        serde_json::from_str(&payload).map_err(|_| "invalid ciphertext".to_string())?;
+    if header.get("v").and_then(serde_json::Value::as_u64) == Some(2) {
+        let table = header
+            .get("record_type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("team record type missing")?;
+        let vault_id = header
+            .get("vault_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("team vault ID missing")?;
+        team_keys::decrypt_row_secret(&db, &session, &payload, table, vault_id)
+    } else {
+        crypto::decrypt_secret(&payload, &session)
+    }
+}
+
+#[tauri::command]
+fn cache_team_vault_metadata(
+    vault_id: String,
+    team_id: String,
+    owner_id: String,
+    name: String,
+    epoch: u32,
+    rotation_state: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<(), String> {
+    db::import_team_vault_metadata(&db, &vault_id, &team_id, &owner_id, &name, epoch, &rotation_state)
+}
+
+#[tauri::command]
+fn identity_key_fingerprint(public_key: String) -> Result<String, String> {
+    team_keys::fingerprint_identity_key(&public_key)
+}
+
+#[tauri::command]
+fn is_team_vault(vault_id: String, db: tauri::State<'_, db::LocalDb>) -> Result<bool, String> {
+    Ok(db::team_vault_meta(&db, &vault_id)?.is_some())
+}
+
+#[tauri::command]
+fn team_vault_recovery_status(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<serde_json::Value, String> {
+    let Some((_, _, state)) = db::team_vault_meta(&db, &vault_id)? else {
+        return Err("not a team vault".into());
+    };
+    let pending = db::sync_db::pending_count(&db, &vault_id)?;
+    Ok(serde_json::json!({"state": state, "pending": pending}))
+}
+
+#[tauri::command]
+fn revoke_cached_team_vault_command(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<usize, String> {
+    db::revoke_cached_team_vault(&db, &vault_id)
+}
+
+#[tauri::command]
+fn revoke_cached_team_command(
+    team_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<usize, String> {
+    db::revoke_cached_team(&db, &team_id)
+}
+
+#[tauri::command]
+fn list_revoked_team_edits(
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<Vec<db::sync_db::RevokedVaultEdits>, String> {
+    db::sync_db::list_revoked_pending_edits(&db)
+}
+
+#[tauri::command]
+fn export_revoked_team_edits(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+) -> Result<Vec<team_keys::ExportedPendingEdit>, String> {
+    let session = crypto.session.lock().map_err(|e| e.to_string())?;
+    team_keys::export_revoked_pending_edits(&db, &session, &vault_id)
+}
+
+#[tauri::command]
+fn discard_revoked_team_edits(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<usize, String> {
+    db::sync_db::discard_revoked_pending_edits(&db, &vault_id)
+}
+
+#[tauri::command]
+fn prepare_team_rotation(
+    team_id: String,
+    vault_id: String,
+    expected_epoch: u32,
+    expected_revision: u32,
+    rows: Vec<team_keys::RotationRow>,
+    recipients: Vec<team_keys::RecipientKey>,
+    db: tauri::State<'_, db::LocalDb>,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<team_keys::PreparedRotation, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    team_keys::prepare_rotation(&db, &session, &team_id, &vault_id, expected_epoch, expected_revision, rows, recipients)
+}
+
+#[tauri::command]
+fn create_team_vault_key(
+    vault_id: String,
+    team_id: String,
+    recipients: Vec<team_keys::RecipientKey>,
+    db: tauri::State<'_, db::LocalDb>,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<Vec<team_keys::TeamKeyEnvelope>, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    team_keys::create_team_grants(&db, &session, &team_id, &vault_id, &recipients)
+}
+
+#[tauri::command]
+fn grant_team_vault_key(
+    vault_id: String,
+    recipient: team_keys::RecipientKey,
+    db: tauri::State<'_, db::LocalDb>,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<team_keys::TeamKeyEnvelope, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    team_keys::grant_team_key(&db, &session, &vault_id, &recipient)
+}
+
+#[tauri::command]
+fn import_team_key_envelope(
+    envelope: team_keys::TeamKeyEnvelope,
+    user_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    state: tauri::State<'_, CryptoState>,
+) -> Result<(), String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    team_keys::import_team_grant(&db, &session, &user_id, &envelope)
 }
 
 #[tauri::command]
@@ -1099,6 +1243,19 @@ pub fn run() {
             offline_auth::load_offline_identity_command,
             offline_auth::clear_offline_identity_command,
             db_upsert,
+            cache_team_vault_metadata,
+            is_team_vault,
+            team_vault_recovery_status,
+            revoke_cached_team_vault_command,
+            revoke_cached_team_command,
+            list_revoked_team_edits,
+            export_revoked_team_edits,
+            discard_revoked_team_edits,
+            identity_key_fingerprint,
+            create_team_vault_key,
+            prepare_team_rotation,
+            grant_team_vault_key,
+            import_team_key_envelope,
             db_get,
             db_list,
             db_delete,

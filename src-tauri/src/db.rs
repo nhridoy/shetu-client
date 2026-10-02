@@ -17,6 +17,8 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "port_forwards",
         "user_profiles",
         "user_keys",
+        "team_vault_keys",
+        "team_vaults",
         "vaults",
         "groups",
         "hosts",
@@ -26,6 +28,8 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "presets",
         "outbox",
         "sync_conflicts",
+        "sync_snapshot_seen",
+        "sync_snapshot_state",
         "__sync_meta",
     ] {
         conn.execute_batch(&format!("DELETE FROM {table};"))
@@ -36,6 +40,159 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
 
 pub struct LocalDb {
     pub conn: Mutex<Connection>,
+}
+
+pub fn import_team_vault_metadata(
+    db: &LocalDb,
+    vault_id: &str,
+    team_id: &str,
+    owner_id: &str,
+    name: &str,
+    epoch: u32,
+    rotation_state: &str,
+) -> Result<(), String> {
+    for id in [vault_id, team_id, owner_id] {
+        uuid::Uuid::parse_str(id).map_err(|_| "invalid team vault metadata ID")?;
+    }
+    if name.trim().is_empty() || epoch == 0 || rotation_state.is_empty() {
+        return Err("invalid team vault metadata".into());
+    }
+    use rusqlite::OptionalExtension;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let existing: Option<(String, u32, String)> = tx
+        .query_row(
+            "SELECT team_id, epoch, rotation_state FROM team_vaults WHERE vault_id = ?1",
+            [vault_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let row_exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults WHERE id = ?1)",
+            [vault_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if existing.is_none() && row_exists {
+        return Err("cannot convert existing private vault into team vault".into());
+    }
+    if let Some((stored_team, stored_epoch, stored_state)) = existing {
+        if stored_team != team_id || epoch < stored_epoch {
+            return Err("team vault identity or epoch rollback".into());
+        }
+        if stored_state == "revoked" && epoch == stored_epoch && rotation_state != "revoked" {
+            return Err("revoked team vault requires a newer key epoch".into());
+        }
+    }
+    tx.execute("INSERT INTO team_vaults (vault_id, team_id, epoch, rotation_state) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(vault_id) DO UPDATE SET epoch = excluded.epoch, rotation_state = excluded.rotation_state",
+        rusqlite::params![vault_id, team_id, epoch, rotation_state]).map_err(|e| e.to_string())?;
+    let now = now_iso();
+    tx.execute("INSERT INTO vaults (id, revision, vault_id, created_at, updated_at, owner_id, kind, name, data)
+        VALUES (?1, 1, '', ?2, ?2, ?3, 'team', ?4, '{}')
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+        rusqlite::params![vault_id, now, owner_id, name.trim()]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn team_vault_has_row(db: &LocalDb, vault_id: &str) -> Result<bool, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM vaults WHERE id = ?1)",
+        [vault_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn store_team_vault_meta(
+    db: &LocalDb,
+    vault_id: &str,
+    team_id: &str,
+    epoch: u32,
+    rotation_state: &str,
+) -> Result<(), String> {
+    if vault_id.is_empty() || team_id.is_empty() || epoch == 0 || rotation_state.is_empty() {
+        return Err("invalid team vault metadata".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let changed = conn.execute("INSERT INTO team_vaults (vault_id, team_id, epoch, rotation_state) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(vault_id) DO UPDATE SET epoch = excluded.epoch, rotation_state = excluded.rotation_state
+        WHERE team_vaults.team_id = excluded.team_id AND excluded.epoch >= team_vaults.epoch
+        AND NOT (team_vaults.rotation_state = 'revoked' AND excluded.epoch = team_vaults.epoch AND excluded.rotation_state <> 'revoked')",
+        rusqlite::params![vault_id, team_id, epoch, rotation_state]).map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("team vault identity or epoch rollback".into());
+    }
+    Ok(())
+}
+
+pub fn team_vault_meta(
+    db: &LocalDb,
+    vault_id: &str,
+) -> Result<Option<(String, u32, String)>, String> {
+    use rusqlite::OptionalExtension;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT team_id, epoch, rotation_state FROM team_vaults WHERE vault_id = ?1",
+        [vault_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn revoke_cached_team_vault(db: &LocalDb, vault_id: &str) -> Result<usize, String> {
+    uuid::Uuid::parse_str(vault_id).map_err(|_| "invalid team vault ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE team_vaults SET rotation_state = 'revoked' WHERE vault_id = ?1",
+        [vault_id],
+    ).map_err(|e| e.to_string())
+}
+
+pub fn revoke_cached_team(db: &LocalDb, team_id: &str) -> Result<usize, String> {
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE team_vaults SET rotation_state = 'revoked' WHERE team_id = ?1",
+        [team_id],
+    ).map_err(|e| e.to_string())
+}
+
+pub fn store_wrapped_team_key(
+    db: &LocalDb,
+    vault_id: &str,
+    team_id: &str,
+    epoch: u32,
+    wrapped_key: &str,
+) -> Result<(), String> {
+    if vault_id.is_empty() || team_id.is_empty() || epoch == 0 || wrapped_key.is_empty() {
+        return Err("invalid team key cache entry".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO team_vault_keys (vault_id, team_id, epoch, wrapped_key) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(vault_id, epoch) DO UPDATE SET wrapped_key = excluded.wrapped_key WHERE team_id = excluded.team_id",
+        rusqlite::params![vault_id, team_id, epoch, wrapped_key]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_wrapped_team_key(
+    db: &LocalDb,
+    vault_id: &str,
+    epoch: u32,
+) -> Result<Option<(String, String)>, String> {
+    use rusqlite::OptionalExtension;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT team_id, wrapped_key FROM team_vault_keys WHERE vault_id = ?1 AND epoch = ?2",
+        rusqlite::params![vault_id, epoch],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 /// Open (or create) the local SQLite database and ensure all tables exist.
@@ -69,6 +226,21 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             payload TEXT NOT NULL,
             created_at TEXT NOT NULL,
             UNIQUE(user_id, key_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS team_vaults (
+            vault_id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            epoch INTEGER NOT NULL,
+            rotation_state TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS team_vault_keys (
+            vault_id TEXT NOT NULL,
+            team_id TEXT NOT NULL,
+            epoch INTEGER NOT NULL,
+            wrapped_key TEXT NOT NULL,
+            PRIMARY KEY (vault_id, epoch)
         );
 
         CREATE TABLE IF NOT EXISTS vaults (
@@ -247,6 +419,16 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             PRIMARY KEY (table_name, record_id)
         );
 
+        CREATE TABLE IF NOT EXISTS sync_snapshot_state (
+            vault_id TEXT PRIMARY KEY,
+            boundary INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sync_snapshot_seen (
+            vault_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            PRIMARY KEY (vault_id, table_name, record_id)
+        );
         CREATE TABLE IF NOT EXISTS sync_known_vaults (vault_id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);
 
@@ -1255,6 +1437,118 @@ mod tests {
 
     fn test_db() -> LocalDb {
         open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn imported_team_vault_is_visible_without_sync_outbox() {
+        let db = test_db();
+        let vault_id = uuid::Uuid::new_v4().to_string();
+        let team_id = uuid::Uuid::new_v4().to_string();
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        import_team_vault_metadata(&db, &vault_id, &team_id, &owner_id, "Shared", 1, "ready")
+            .unwrap();
+        let vaults = list_sync_rows(&db, Table::Vaults, "", false).unwrap();
+        assert_eq!(
+            vaults
+                .iter()
+                .find(|row| row.id == vault_id)
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Shared")
+        );
+        assert!(outbox_pending(&db).unwrap().is_empty());
+        assert_eq!(team_vault_meta(&db, &vault_id).unwrap().unwrap().0, team_id);
+        assert!(import_team_vault_metadata(
+            &db,
+            &vault_id,
+            &uuid::Uuid::new_v4().to_string(),
+            &owner_id,
+            "Wrong",
+            1,
+            "ready"
+        )
+        .is_err());
+        store_team_vault_meta(&db, &vault_id, &team_id, 1, "revoked").unwrap();
+        assert!(import_team_vault_metadata(
+            &db, &vault_id, &team_id, &owner_id, "Stale", 1, "ready"
+        )
+        .is_err());
+        assert_eq!(
+            team_vault_meta(&db, &vault_id).unwrap().unwrap().2,
+            "revoked"
+        );
+    }
+
+    #[test]
+    fn confirmed_deletions_revoke_only_matching_cached_team_vaults() {
+        let db = test_db();
+        let team_id = uuid::Uuid::new_v4().to_string();
+        let other_team_id = uuid::Uuid::new_v4().to_string();
+        let vault_a = uuid::Uuid::new_v4().to_string();
+        let vault_b = uuid::Uuid::new_v4().to_string();
+        let other_vault = uuid::Uuid::new_v4().to_string();
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        for (vault_id, team) in [
+            (&vault_a, &team_id),
+            (&vault_b, &team_id),
+            (&other_vault, &other_team_id),
+        ] {
+            import_team_vault_metadata(&db, vault_id, team, &owner_id, "Shared", 1, "ready")
+                .unwrap();
+        }
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO outbox (table_name, record_id, queued_at, vault_id) VALUES ('hosts', 'pending-host', '2026-10-02T00:00:00.000Z', ?1)",
+                [&vault_a],
+            ).unwrap();
+        }
+        assert_eq!(revoke_cached_team_vault(&db, &vault_a).unwrap(), 1);
+        assert_eq!(team_vault_meta(&db, &vault_a).unwrap().unwrap().2, "revoked");
+        assert_eq!(team_vault_meta(&db, &vault_b).unwrap().unwrap().2, "ready");
+        assert_eq!(revoke_cached_team(&db, &team_id).unwrap(), 2);
+        assert_eq!(team_vault_meta(&db, &vault_b).unwrap().unwrap().2, "revoked");
+        assert_eq!(team_vault_meta(&db, &other_vault).unwrap().unwrap().2, "ready");
+        let conn = db.conn.lock().unwrap();
+        let pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE record_id = 'pending-host'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pending, 1);
+        assert_eq!(revoke_cached_team(&db, "invalid"), Err("invalid team ID".into()));
+    }
+
+    #[test]
+    fn team_vault_marker_prevents_personal_key_fallback() {
+        let db = test_db();
+        assert_eq!(team_vault_meta(&db, "vault-1").unwrap(), None);
+        store_team_vault_meta(&db, "vault-1", "team-1", 1, "ready").unwrap();
+        assert_eq!(
+            team_vault_meta(&db, "vault-1").unwrap(),
+            Some(("team-1".into(), 1, "ready".into()))
+        );
+        store_team_vault_meta(&db, "vault-1", "team-1", 2, "ready").unwrap();
+        store_team_vault_meta(&db, "vault-1", "team-1", 2, "revoked").unwrap();
+        assert!(store_team_vault_meta(&db, "vault-1", "team-1", 2, "ready").is_err());
+        assert!(store_team_vault_meta(&db, "vault-1", "team-1", 1, "ready").is_err());
+        assert!(store_team_vault_meta(&db, "vault-1", "other-team", 2, "ready").is_err());
+        wipe_all(&db).unwrap();
+        assert_eq!(team_vault_meta(&db, "vault-1").unwrap(), None);
+    }
+
+    #[test]
+    fn team_key_cache_is_wrapped_and_wiped() {
+        let db = test_db();
+        store_wrapped_team_key(&db, "vault-1", "team-1", 1, "wrapped-ciphertext").unwrap();
+        assert_eq!(
+            load_wrapped_team_key(&db, "vault-1", 1).unwrap(),
+            Some(("team-1".into(), "wrapped-ciphertext".into()))
+        );
+        assert_eq!(load_wrapped_team_key(&db, "vault-1", 2).unwrap(), None);
+        wipe_all(&db).unwrap();
+        assert_eq!(load_wrapped_team_key(&db, "vault-1", 1).unwrap(), None);
     }
 
     #[test]

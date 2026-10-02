@@ -34,15 +34,19 @@ pub async fn sync_now(
         http.inner().clone(),
         Arc::new(KeyringRefreshProvider { app: app.clone() }),
     );
-    run_sync_cycle(&vault_id, &device_id, &db, &crypto, &client)
-        .await
-        .map_err(|err| match err {
-            HttpErrorKind::Network => "network:Cannot reach the sync server".into(),
-            HttpErrorKind::SessionExpired => "auth:Sign in again to sync pending changes".into(),
-            HttpErrorKind::Http(0, message) => format!("sync:{message}"),
-            HttpErrorKind::Http(status, _) if status == 401 => {
-                "auth:Sign in again to sync pending changes".into()
-            }
-            HttpErrorKind::Http(status, _) => format!("sync:server-error-{status}"),
-        })
+    let outcome = run_sync_cycle(&vault_id, &device_id, &db, &crypto, &client).await;
+    if matches!(&outcome, Err(HttpErrorKind::Http(403, _))) {
+        if let Some((team_id, epoch, _)) = crate::db::team_vault_meta(&db, &vault_id)? {
+            crate::db::store_team_vault_meta(&db, &vault_id, &team_id, epoch, "revoked")?;
+        }
+    }
+    outcome.map_err(|err| match err {
+        HttpErrorKind::Network => "network:Cannot reach the sync server".into(),
+        HttpErrorKind::SessionExpired => "auth:Sign in again to sync pending changes".into(),
+        HttpErrorKind::Http(0, message) => format!("sync:{message}"),
+        HttpErrorKind::Http(status, _) if status == 401 => {
+            "auth:Sign in again to sync pending changes".into()
+        }
+        HttpErrorKind::Http(status, _) => format!("sync:server-error-{status}"),
+    })
 }

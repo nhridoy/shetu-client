@@ -13,7 +13,13 @@ import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
-import { SYNC_COMPLETED_EVENT, useSyncStore } from "@/stores/sync/syncStore";
+import {
+  SYNC_COMPLETED_EVENT,
+  TEAM_ACCESS_REVOKED_EVENT,
+  useSyncStore,
+} from "@/stores/sync/syncStore";
+import { useSharedVaultStore } from "@/stores/teams/sharedVaultStore";
+import { useTeamStore } from "@/stores/teams/teamStore";
 import {
   serializeWorkspaceLayout,
   useTerminalStore,
@@ -77,6 +83,23 @@ export default function Layout() {
   }, [fetchVaults, isUnlocked]);
 
   useEffect(() => {
+    if (!isUnlocked || !serverAuthenticated) return;
+    let cancelled = false;
+    void (async () => {
+      await useTeamStore.getState().fetchTeams();
+      if (cancelled || useTeamStore.getState().error) return;
+      for (const team of useTeamStore.getState().teams) {
+        await useSharedVaultStore.getState().fetchSharedVaults(team.id);
+        if (cancelled) return;
+      }
+      if (!cancelled) void useSyncStore.getState().requestAll();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isUnlocked, serverAuthenticated]);
+
+  useEffect(() => {
     if (!isUnlocked) return;
     void fetchHosts(currentVaultId || undefined);
     void fetchGroups(currentVaultId || undefined);
@@ -112,6 +135,13 @@ export default function Layout() {
     return () =>
       window.removeEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
   }, [currentVaultId, fetchVaults, fetchHosts, fetchGroups]);
+
+  useEffect(() => {
+    const onRevoked = () => void fetchVaults();
+    window.addEventListener(TEAM_ACCESS_REVOKED_EVENT, onRevoked);
+    return () =>
+      window.removeEventListener(TEAM_ACCESS_REVOKED_EVENT, onRevoked);
+  }, [fetchVaults]);
 
   const { handleDragStart, handleDragOver, handleDragEnd } = useLayoutDragDrop({
     setActiveView,

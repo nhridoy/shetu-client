@@ -45,6 +45,13 @@ export default function VaultList() {
                   )}
                 </div>
                 {vault.isDefault && <Badge variant="primary">Default</Badge>}
+                {vault.isShared && <Badge variant="primary">Shared</Badge>}
+                {vault.accessState === "revoked" && (
+                  <span className="text-xs text-danger-400">Access denied</span>
+                )}
+                {vault.accessState === "rotation_required" && (
+                  <span className="text-xs text-amber-300">Rotate keys</span>
+                )}
                 {vault.isSystem && (
                   <span className="px-2 py-0.5 text-xs bg-dark-600 text-dark-300 rounded flex items-center gap-1">
                     <LockIcon className="w-3 h-3" weight="bold" />

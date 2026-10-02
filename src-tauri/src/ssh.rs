@@ -952,7 +952,7 @@ pub fn load_host_config(
     let row = crate::db::get_sync_row(db, crate::db::Table::Hosts, host_id)?
         .ok_or_else(|| "host not found".to_string())?;
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
-    let plaintext = crate::crypto::decrypt_secret(&row.data, &session)?;
+    let plaintext = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id)?;
     drop(session);
     let payload: serde_json::Value =
         serde_json::from_str(&plaintext).map_err(|e| format!("bad host payload: {e}"))?;
@@ -976,7 +976,7 @@ pub fn load_host_config(
             let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
                 .ok_or_else(|| "key not found".to_string())?;
             let session = crypto.session.lock().map_err(|e| e.to_string())?;
-            let key_plain = crate::crypto::decrypt_secret(&key_row.data, &session)?;
+            let key_plain = crate::team_keys::decrypt_row_secret(db, &session, &key_row.data, "keys", &key_row.vault_id)?;
             drop(session);
             let key_payload: serde_json::Value = serde_json::from_str(&key_plain)
                 .map_err(|e| format!("bad key payload: {e}"))?;

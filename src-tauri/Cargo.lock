@@ -5797,6 +5797,7 @@ dependencies = [
  "chrono",
  "cipher 0.4.4",
  "dirs",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "portable-pty",
  "rand 0.8.7",

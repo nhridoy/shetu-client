@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useTransition } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -12,41 +12,41 @@ import {
 
 interface TeamFormProps {
   onClose: () => void;
-  onSubmit: (data: CreateTeamFormSchema) => void;
+  onSubmit: (data: CreateTeamFormSchema) => Promise<void>;
 }
 
 export default function TeamForm({ onClose, onSubmit }: TeamFormProps) {
-  const [isPending, startTransition] = useTransition();
-
-  const { control, handleSubmit, reset } = useForm<CreateTeamFormSchema>({
+  const [isPending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { control, handleSubmit } = useForm<CreateTeamFormSchema>({
     resolver: zodResolver(createTeamFormSchema),
     defaultValues: createTeamFormDefaultValues,
   });
 
-  const getButtonText = () => {
-    if (isPending) return "Creating...";
-    return "Create";
-  };
-
-  const handleTeamSubmit = (data: CreateTeamFormSchema) => {
-    onSubmit(data);
-    reset();
-    onClose();
-  };
-
-  const onValid = (data: CreateTeamFormSchema) => {
-    startTransition(async () => {
-      await handleTeamSubmit(data);
-    });
-  };
+  const submit = handleSubmit(async (data) => {
+    setPending(true);
+    setError(null);
+    try {
+      await onSubmit(data);
+      onClose();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not create the team. Try again.",
+      );
+    } finally {
+      setPending(false);
+    }
+  });
 
   return (
     <ModalForm
       onClose={onClose}
       title="Create Team"
       isPending={isPending}
-      onSubmit={handleSubmit(onValid)}
-      submitButtonText={getButtonText()}
+      onSubmit={submit}
+      submitButtonText={isPending ? "Creating..." : "Create team"}
     >
       <FormInput
         name="name"
@@ -61,6 +61,11 @@ export default function TeamForm({ onClose, onSubmit }: TeamFormProps) {
         control={control}
         placeholder="Optional description"
       />
+      {error && (
+        <p role="alert" className="text-sm text-danger-400">
+          {error}
+        </p>
+      )}
     </ModalForm>
   );
 }
