@@ -16,10 +16,12 @@ export interface TerminalTabProps {
   cursorBlink: boolean;
   scrollback: number;
   bellStyle: string;
+  recordTerminalOutput: boolean;
   setCursorStyle: (style: string) => void;
   setCursorBlink: (blink: boolean) => void;
   setScrollback: (lines: number) => void;
   setBellStyle: (style: string) => void;
+  setRecordTerminalOutput: (enabled: boolean) => void;
 }
 
 export interface SshTabProps {

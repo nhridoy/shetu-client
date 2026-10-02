@@ -12,6 +12,7 @@ export interface AppSettings {
   cursorBlink: boolean;
   scrollback: number;
   bellStyle: BellStyle;
+  recordTerminalOutput: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -22,6 +23,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   cursorBlink: true,
   scrollback: 10000,
   bellStyle: "none",
+  recordTerminalOutput: false,
 };
 
 const STORE_KEY = "settings.json";
@@ -49,7 +51,7 @@ function parseValue(
       ? value
       : Number.parseInt(String(value), 10);
   }
-  if (key === "cursorBlink") {
+  if (key === "cursorBlink" || key === "recordTerminalOutput") {
     return typeof value === "boolean" ? value : value === "true";
   }
   return String(value);

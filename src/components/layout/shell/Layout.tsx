@@ -12,6 +12,7 @@ import { useModal } from "@/hooks/useModal";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
+import { useSessionStore } from "@/stores/sessions/sessionStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import {
   SYNC_COMPLETED_EVENT,
@@ -31,6 +32,10 @@ export default function Layout() {
   const location = useLocation();
   const { fetchHosts, fetchGroups } = useHostStore();
   const { currentVaultId, fetchVaults } = useVaultStore();
+  const defaultPersonalVaultId = useVaultStore(
+    (state) =>
+      state.vaults.find((vault) => vault.isDefault && !vault.isShared)?.id,
+  );
   const isUnlocked = useAuthStore((state) => state.isUnlocked);
   const serverAuthenticated = useAuthStore(
     (state) => state.serverAuthenticated,
@@ -81,6 +86,18 @@ export default function Layout() {
     // (store mutations update it in memory), so it must not refire per switch.
     if (isUnlocked) void fetchVaults();
   }, [fetchVaults, isUnlocked]);
+
+  useEffect(() => {
+    if (!isUnlocked || !defaultPersonalVaultId) return;
+    void useSessionStore.getState().fetchSessions();
+    const timer = window.setInterval(
+      () => {
+        void useSessionStore.getState().fetchSessions();
+      },
+      60 * 60 * 1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [isUnlocked, defaultPersonalVaultId]);
 
   useEffect(() => {
     if (!isUnlocked || !serverAuthenticated) return;

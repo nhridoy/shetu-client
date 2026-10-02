@@ -8,10 +8,12 @@ export default function TerminalTab({
   cursorBlink,
   scrollback,
   bellStyle,
+  recordTerminalOutput,
   setCursorStyle,
   setCursorBlink,
   setScrollback,
   setBellStyle,
+  setRecordTerminalOutput,
 }: TerminalTabProps) {
   return (
     <div className="space-y-6">
@@ -72,6 +74,26 @@ export default function TerminalTab({
             step={1000}
           />
         </div>
+      </div>
+
+      <div className="border-t border-dark-700 pt-6">
+        <h3 className="text-sm font-medium text-white mb-3">
+          Session recording
+        </h3>
+        <label
+          htmlFor="record-terminal-output"
+          className="flex items-start gap-2 cursor-pointer"
+        >
+          <Checkbox
+            id="record-terminal-output"
+            checked={recordTerminalOutput}
+            onCheckedChange={setRecordTerminalOutput}
+          />
+          <span className="text-sm text-dark-300">
+            Record terminal output on this device. Output can contain secrets;
+            recordings sync encrypted to your other devices. New sessions only.
+          </span>
+        </label>
       </div>
 
       <div className="border-t border-dark-700 pt-6">

@@ -10,6 +10,12 @@ import {
   terminalThemeFor,
   useThemeStore,
 } from "@/stores/themeStore";
+import {
+  beginHistoryAttempt,
+  captureHistoryOutput,
+  finishHistoryAttempt,
+  markHistoryConnected,
+} from "./sessionHistory";
 
 export interface SessionParams {
   paneId: string;
@@ -36,6 +42,7 @@ export interface Session {
   unlisten: (() => void) | null;
   unlistenHostKey: (() => void) | null;
   cancelReconnect: (() => void) | null;
+  historyAttemptId: string | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -71,6 +78,7 @@ function createSession(params: SessionParams): Session {
     unlisten: null,
     unlistenHostKey: null,
     cancelReconnect: null,
+    historyAttemptId: null,
   };
 
   return session;
@@ -102,29 +110,50 @@ async function connectViaTauri(session: Session) {
   };
 
   const doConnect = async () => {
+    session.historyAttemptId = await beginHistoryAttempt(
+      params.hostId,
+      params.hostName,
+      "ssh",
+      params.paneId,
+    );
     const savedHost = params.hostId
       ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)
       : undefined;
 
-    if (savedHost) {
-      await invoke("connect_saved", {
-        sessionId: params.paneId,
-        hostId: params.hostId,
-        detectOs: !savedHost.os,
-        cols,
-        rows,
-      });
-    } else {
-      const config = {
-        host: params.hostAddress || "",
-        port: params.hostPort || 22,
-        username: params.hostUsername || "root",
-        password: null,
-        privateKey: null,
-        passphrase: null,
-        detectOs: false,
-      };
-      await invoke("connect", { sessionId: params.paneId, config, cols, rows });
+    try {
+      if (savedHost) {
+        await invoke("connect_saved", {
+          sessionId: params.paneId,
+          hostId: params.hostId,
+          detectOs: !savedHost.os,
+          cols,
+          rows,
+        });
+      } else {
+        const config = {
+          host: params.hostAddress || "",
+          port: params.hostPort || 22,
+          username: params.hostUsername || "root",
+          password: null,
+          privateKey: null,
+          passphrase: null,
+          detectOs: false,
+        };
+        await invoke("connect", {
+          sessionId: params.paneId,
+          config,
+          cols,
+          rows,
+        });
+      }
+    } catch (error) {
+      await finishHistoryAttempt(
+        session.historyAttemptId,
+        "failed",
+        String(error),
+      );
+      session.historyAttemptId = null;
+      throw error;
     }
   };
 
@@ -229,6 +258,7 @@ async function connectViaTauri(session: Session) {
 
       switch (type) {
         case "connected":
+          void markHistoryConnected(session.historyAttemptId);
           clearReconnect();
           updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
@@ -240,11 +270,20 @@ async function connectViaTauri(session: Session) {
           break;
         case "output":
           xterm.write(data);
+          void captureHistoryOutput(session.historyAttemptId, data);
           break;
         case "disconnected":
+          void finishHistoryAttempt(
+            session.historyAttemptId,
+            "ended",
+            "remote disconnected",
+          );
+          session.historyAttemptId = null;
           startReconnect();
           break;
         case "error":
+          void finishHistoryAttempt(session.historyAttemptId, "failed", data);
+          session.historyAttemptId = null;
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);
           update(params.tabId, params.paneId, "error");
           break;
@@ -295,6 +334,12 @@ async function connectLocal(session: Session) {
   update(params.tabId, params.paneId, "connecting");
 
   try {
+    session.historyAttemptId = await beginHistoryAttempt(
+      params.hostId,
+      params.hostName,
+      "local",
+      params.paneId,
+    );
     const unlisten = await listen<{
       sessionId: string;
       type: string;
@@ -305,16 +350,26 @@ async function connectLocal(session: Session) {
 
       switch (type) {
         case "connected":
+          void markHistoryConnected(session.historyAttemptId);
           update(params.tabId, params.paneId, "connected");
           break;
         case "output":
           xterm.write(data);
+          void captureHistoryOutput(session.historyAttemptId, data);
           break;
         case "disconnected":
+          void finishHistoryAttempt(
+            session.historyAttemptId,
+            "ended",
+            "shell exited",
+          );
+          session.historyAttemptId = null;
           xterm.writeln(`\r\n\x1b[33mShell exited\x1b[0m`);
           update(params.tabId, params.paneId, "disconnected");
           break;
         case "error":
+          void finishHistoryAttempt(session.historyAttemptId, "failed", data);
+          session.historyAttemptId = null;
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);
           update(params.tabId, params.paneId, "error");
           break;
@@ -353,6 +408,8 @@ async function connectLocal(session: Session) {
       rows,
     });
   } catch (err) {
+    await finishHistoryAttempt(session.historyAttemptId, "failed", String(err));
+    session.historyAttemptId = null;
     xterm.writeln(`\r\n\x1b[31mFailed to start shell: ${err}\x1b[0m`);
     update(params.tabId, params.paneId, "error");
   }
@@ -448,6 +505,8 @@ export async function destroySession(paneId: string) {
   const session = sessions.get(paneId);
   if (!session) return;
   session.cancelReconnect?.();
+  await finishHistoryAttempt(session.historyAttemptId, "ended", "pane closed");
+  session.historyAttemptId = null;
   session.resizeObserver?.disconnect();
   if (session.resizeRaf) cancelAnimationFrame(session.resizeRaf);
 

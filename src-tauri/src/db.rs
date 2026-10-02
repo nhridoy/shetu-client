@@ -26,6 +26,9 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "snippets",
         "workspaces",
         "presets",
+        "session_history",
+        "session_output_chunks",
+        "session_preferences",
         "outbox",
         "sync_conflicts",
         "sync_snapshot_seen",
@@ -442,6 +445,17 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))?;
+    for table in ["session_history", "session_output_chunks", "session_preferences"] {
+        conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {table} (
+            id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+            vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            deleted_at TEXT, edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '', operation_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL
+        ); CREATE INDEX IF NOT EXISTS idx_{table}_vault ON {table}(vault_id, sort_order);"))
+            .map_err(|e| format!("create {table}: {e}"))?;
+    }
     migrate_add_columns(&conn)?;
     migrate_timestamps(&conn)?;
     migrate_sync_schema(&conn)?;
@@ -544,6 +558,9 @@ fn migrate_sync_schema(conn: &Connection) -> Result<(), String> {
         "snippets",
         "workspaces",
         "presets",
+        "session_history",
+        "session_output_chunks",
+        "session_preferences",
         "port_forwards",
     ] {
         if !has_table(conn, table)? {
@@ -703,6 +720,7 @@ fn table_cols(table: Table) -> &'static str {
         Table::Snippets   => "name, description, tags, sort_order, data",
         Table::Workspaces => "name, sort_order, data",
         Table::Presets    => "name, sort_order, data",
+        Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => "name, sort_order, data",
         Table::PortForwards => "host_id, mode, name, sort_order, data",
     }
 }
@@ -748,6 +766,9 @@ fn migrate_timestamps(conn: &Connection) -> Result<(), String> {
         ("snippets", &["created_at", "updated_at", "deleted_at"]),
         ("workspaces", &["created_at", "updated_at", "deleted_at"]),
         ("presets", &["created_at", "updated_at", "deleted_at"]),
+        ("session_history", &["created_at", "updated_at", "deleted_at"]),
+        ("session_output_chunks", &["created_at", "updated_at", "deleted_at"]),
+        ("session_preferences", &["created_at", "updated_at", "deleted_at"]),
         (
             "user_profiles",
             &["created_at", "updated_at", "last_login_at"],
@@ -914,6 +935,9 @@ impl Table {
             "snippets" => Ok(Table::Snippets),
             "workspaces" => Ok(Table::Workspaces),
             "presets" => Ok(Table::Presets),
+            "session_history" => Ok(Table::SessionHistory),
+            "session_output_chunks" => Ok(Table::SessionOutputChunks),
+            "session_preferences" => Ok(Table::SessionPreferences),
             "port_forwards" => Ok(Table::PortForwards),
             other => Err(format!("unknown table: {other}")),
         }
@@ -927,6 +951,9 @@ impl Table {
             Table::Snippets => "snippets",
             Table::Workspaces => "workspaces",
             Table::Presets => "presets",
+            Table::SessionHistory => "session_history",
+            Table::SessionOutputChunks => "session_output_chunks",
+            Table::SessionPreferences => "session_preferences",
             Table::PortForwards => "port_forwards",
         }
     }
@@ -950,6 +977,19 @@ pub fn local_mutate(
 ) -> Result<SyncRow, String> {
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    if matches!(
+        table,
+        Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences
+    ) {
+        let allowed: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults v WHERE v.id = ?1 AND v.kind = 'personal' AND v.is_default = 1 AND v.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_vaults tv WHERE tv.vault_id = v.id))",
+            [&row.vault_id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        if !allowed {
+            return Err("history requires default personal vault".into());
+        }
+    }
     let existing = get_sync_row_unlocked(&conn, table, &row.id)?;
     let mut out = row.clone();
     out.revision = existing.as_ref().map_or(1, |r| r.revision + 1);
@@ -1036,6 +1076,35 @@ pub fn tombstone_sync_row_with_device(
     tx.commit().map_err(|e| format!("tombstone commit: {e}"))
 }
 
+/// Tombstone related synced records and queue every deletion atomically.
+pub fn tombstone_sync_rows_with_device(
+    db: &LocalDb,
+    rows: &[(Table, String)],
+    device_id: &str,
+) -> Result<(), String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let now = now_iso();
+    for (table, id) in rows {
+        let Some(mut row) = get_sync_row_unlocked(&tx, *table, id)? else {
+            continue;
+        };
+        if row.deleted_at.is_some() {
+            continue;
+        }
+        row.revision += 1;
+        row.updated_at = now.clone();
+        row.edited_at = now.clone();
+        row.deleted_at = Some(now.clone());
+        row.device_id = device_id.into();
+        row.operation_id = uuid::Uuid::new_v4().to_string();
+        sync_db::write_row(&tx, *table, &row)?;
+        sync_db::queue_row(&tx, *table, &row, &now)?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 /// Tombstone a vault and every synced descendant atomically. The outbox sends
 /// descendants before the vault tombstone so the server never strands live rows.
 pub fn tombstone_vault_with_descendants(
@@ -1067,6 +1136,9 @@ pub fn tombstone_vault_with_descendants(
         Table::Snippets,
         Table::Workspaces,
         Table::Presets,
+        Table::SessionHistory,
+        Table::SessionOutputChunks,
+        Table::SessionPreferences,
         Table::Vaults,
     ] {
         let ids = if table == Table::Vaults {
@@ -1252,6 +1324,9 @@ pub enum Table {
     Snippets,
     Workspaces,
     Presets,
+    SessionHistory,
+    SessionOutputChunks,
+    SessionPreferences,
     PortForwards,
 }
 
@@ -1481,6 +1556,32 @@ mod tests {
     }
 
     #[test]
+    fn history_rows_cannot_be_queued_in_team_vaults() {
+        let db = test_db();
+        let vault_id = uuid::Uuid::new_v4().to_string();
+        let team_id = uuid::Uuid::new_v4().to_string();
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        import_team_vault_metadata(&db, &vault_id, &team_id, &owner_id, "Shared", 1, "ready")
+            .unwrap();
+        for table in [
+            Table::SessionHistory,
+            Table::SessionOutputChunks,
+            Table::SessionPreferences,
+        ] {
+            let row = SyncRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                vault_id: vault_id.clone(),
+                name: Some("Session".into()),
+                data: "ciphertext".into(),
+                ..SyncRow::default()
+            };
+            assert!(local_mutate(&db, table, &row, &device_id).is_err());
+        }
+        assert!(outbox_pending(&db).unwrap().is_empty());
+    }
+
+    #[test]
     fn confirmed_deletions_revoke_only_matching_cached_team_vaults() {
         let db = test_db();
         let team_id = uuid::Uuid::new_v4().to_string();
@@ -1572,6 +1673,9 @@ mod tests {
             "snippets",
             "workspaces",
             "presets",
+            "session_history",
+            "session_output_chunks",
+            "session_preferences",
             "outbox",
             "sync_conflicts",
             "__sync_meta",

@@ -1,6 +1,6 @@
 import { useDraggable } from "@dnd-kit/react";
 import { ArrowsLeftRightIcon, XIcon } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DropZone } from "@/components/common/DropZone";
 import PortForwarding from "@/components/portforwarding/panels/PortForwarding";
 import HostBrowser from "@/components/terminal/browser/HostBrowser";
@@ -10,6 +10,7 @@ import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import PaneHeader from "@/components/ui/PaneHeader";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { previewStyle } from "@/lib/common/paneLayout";
+import { isPaneRecording } from "@/lib/terminal/sessionHistory";
 import { type DropSide, useDragStore } from "@/stores/dragStore";
 import type { Host } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
@@ -52,6 +53,14 @@ export default function Pane({
       ? dropPane.side
       : null;
   const [showPortForwarding, setShowPortForwarding] = useState(false);
+  const [recording, setRecording] = useState(() => isPaneRecording(pane.id));
+  useEffect(() => {
+    const refresh = () => setRecording(isPaneRecording(pane.id));
+    window.addEventListener("termvault:recording-change", refresh);
+    refresh();
+    return () =>
+      window.removeEventListener("termvault:recording-change", refresh);
+  }, [pane.id]);
 
   const { ref, isDragging } = useDraggable({
     id: `pane:${pane.id}`,
@@ -107,21 +116,31 @@ export default function Pane({
         onSplitV={() => splitPane(tabId, pane.id, "vertical")}
         onClose={() => removePane(tabId, pane.id)}
         extra={
-          pane.hostId && pane.connectionType !== "local" ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowPortForwarding(true);
-              }}
-              className="rounded"
-              title="Port Forwarding"
-            >
-              <ArrowsLeftRightIcon className="w-3.5 h-3.5" weight="bold" />
-            </Button>
-          ) : undefined
+          <>
+            {recording && (
+              <span
+                className="text-xs text-red-300"
+                title="Terminal output recording active"
+              >
+                ● REC
+              </span>
+            )}
+            {pane.hostId && pane.connectionType !== "local" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowPortForwarding(true);
+                }}
+                className="rounded"
+                title="Port Forwarding"
+              >
+                <ArrowsLeftRightIcon className="w-3.5 h-3.5" weight="bold" />
+              </Button>
+            )}
+          </>
         }
       />
 

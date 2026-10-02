@@ -160,10 +160,14 @@ export default function SettingsPanel() {
             cursorBlink={settings.cursorBlink}
             scrollback={settings.scrollback}
             bellStyle={settings.bellStyle}
+            recordTerminalOutput={settings.recordTerminalOutput}
             setCursorStyle={handleCursorStyleChange}
             setCursorBlink={handleCursorBlinkChange}
             setScrollback={handleScrollbackChange}
             setBellStyle={handleBellStyleChange}
+            setRecordTerminalOutput={(enabled) =>
+              updateSetting("recordTerminalOutput", enabled)
+            }
           />
         )}
         {activeTab === "ssh" && (

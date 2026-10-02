@@ -2,6 +2,7 @@
 
 mod crypto;
 mod db;
+mod session_history;
 mod forwarding;
 mod git;
 mod http;
@@ -34,6 +35,121 @@ pub struct AppState {
 
 pub struct CancelTokens {
     pub tokens: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+#[derive(Default)]
+pub struct HistoryRecorderState {
+    buffers: Mutex<HashMap<String, session_history::OutputBuffer>>,
+    active: Mutex<std::collections::HashSet<String>>,
+}
+
+#[tauri::command]
+fn history_start_attempt(
+    vault_id: String,
+    attempt_id: String,
+    host_id: String,
+    host_label: String,
+    connection_type: String,
+    recording: bool,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, HistoryRecorderState>,
+) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::start_attempt(&db, &keys, &app.device_id, &vault_id, &attempt_id, &host_id, &host_label, &connection_type, recording)?;
+    if recording {
+        recorder.buffers.lock().map_err(|e| e.to_string())?.insert(attempt_id.clone(), session_history::OutputBuffer::default());
+    }
+    recorder.active.lock().map_err(|e| e.to_string())?.insert(attempt_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn history_mark_connected(attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::mark_connected(&db, &keys, &app.device_id, &attempt_id)
+}
+
+#[tauri::command]
+fn history_append_output(attempt_id: String, output: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
+    if let Some(buffer) = buffers.get_mut(&attempt_id) {
+        session_history::append_output(&db, &keys, &app.device_id, &attempt_id, buffer, &output)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn history_flush_output(attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<bool, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
+    if let Some(buffer) = buffers.get_mut(&attempt_id) {
+        return session_history::flush_output(&db, &keys, &app.device_id, &attempt_id, buffer);
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+fn history_finish_attempt(attempt_id: String, outcome: String, reason: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    {
+        let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
+        if let Some(buffer) = buffers.get_mut(&attempt_id) {
+            session_history::flush_output(&db, &keys, &app.device_id, &attempt_id, buffer)?;
+        }
+    }
+    session_history::finish_attempt(&db, &keys, &app.device_id, &attempt_id, &outcome, &reason)?;
+    recorder.buffers.lock().map_err(|e| e.to_string())?.remove(&attempt_id);
+    recorder.active.lock().map_err(|e| e.to_string())?.remove(&attempt_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn history_list(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<Vec<session_history::HistoryItem>, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::reconcile_deleted_chunks(&db, &keys, &app.device_id, &vault_id)?;
+    session_history::list_attempts(&db, &keys, &vault_id)
+}
+
+#[tauri::command]
+fn history_recover_interrupted(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<usize, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    let active = recorder.active.lock().map_err(|e| e.to_string())?.iter().cloned().collect::<Vec<_>>();
+    session_history::recover_interrupted(&db, &keys, &app.device_id, &vault_id, &active)
+}
+
+#[tauri::command]
+fn history_get_output(vault_id: String, attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>) -> Result<String, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::read_output(&db, &keys, &vault_id, &attempt_id)
+}
+
+#[tauri::command]
+fn history_delete(vault_id: String, attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::delete_attempt(&db, &keys, &app.device_id, &vault_id, &attempt_id)
+}
+
+#[tauri::command]
+fn history_get_retention(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>) -> Result<u32, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::get_retention_days(&db, &keys, &vault_id)
+}
+
+#[tauri::command]
+fn history_set_retention(vault_id: String, days: u32, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    session_history::set_retention_days(&db, &keys, &app.device_id, &vault_id, days)
+}
+
+#[tauri::command]
+fn history_apply_retention(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<usize, String> {
+    let keys = crypto.session.lock().map_err(|e| e.to_string())?;
+    let expired = session_history::apply_retention(&db, &keys, &app.device_id, &vault_id)?;
+    let orphaned = session_history::reconcile_deleted_chunks(&db, &keys, &app.device_id, &vault_id)?;
+    Ok(expired + orphaned)
 }
 
 #[tauri::command]
@@ -1217,6 +1333,7 @@ pub fn run() {
         .manage(CancelTokens {
             tokens: Mutex::new(HashMap::new()),
         })
+        .manage(HistoryRecorderState::default())
         .manage(CryptoState {
             session: std::sync::Mutex::new(crypto::KeySession::new()),
         })
@@ -1236,6 +1353,18 @@ pub fn run() {
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
             get_device_id,
+            history_start_attempt,
+            history_mark_connected,
+            history_append_output,
+            history_flush_output,
+            history_finish_attempt,
+            history_list,
+            history_recover_interrupted,
+            history_get_output,
+            history_delete,
+            history_get_retention,
+            history_set_retention,
+            history_apply_retention,
             set_api_url,
             get_api_url,
             wipe_local_data,

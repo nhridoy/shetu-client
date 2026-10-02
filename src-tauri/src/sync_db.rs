@@ -50,7 +50,7 @@ fn expected_fields(table: Table) -> &'static [&'static str] {
         Table::Hosts => &["os", "auth_type", "tags", "color", "group_id", "key_id"],
         Table::Keys => &["description", "key_type", "fingerprint", "public_key"],
         Table::Snippets => &["description", "tags"],
-        Table::Workspaces | Table::Presets => &[],
+        Table::Workspaces | Table::Presets | Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => &[],
         Table::PortForwards => &["host_id", "mode"],
     }
 }
@@ -637,7 +637,11 @@ pub fn apply_pull_page_with_rotation(
         } else {
             false
         };
+        let history_tombstone_wins = matches!(table, Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences)
+            && local.as_ref().is_some_and(|row| row.deleted_at.is_some())
+            && remote.deleted_at.is_none();
         if !pending_local
+            && !history_tombstone_wins
             && (active_boundary.is_some()
                 || local
                     .as_ref()
@@ -659,6 +663,9 @@ pub fn apply_pull_page_with_rotation(
             Table::Snippets,
             Table::Workspaces,
             Table::Presets,
+            Table::SessionHistory,
+            Table::SessionOutputChunks,
+            Table::SessionPreferences,
             Table::PortForwards,
         ] {
             let sql = format!("DELETE FROM {} WHERE vault_id = ?1
