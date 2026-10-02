@@ -27,6 +27,7 @@ export interface Host {
   privateKey?: string;
   passphrase?: string;
   keyId?: string;
+  jumpHostId?: string | null;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
   data?: string;
 }
@@ -71,6 +72,7 @@ interface HostPayload {
   port: number;
   username: string;
   password?: string;
+  jumpHostId?: string | null;
 }
 
 function parseTags(tags: string | null | undefined): string[] {
@@ -118,6 +120,7 @@ async function decryptHostRow(row: SyncRow): Promise<Host> {
     port: payload.port ?? 22,
     username: payload.username ?? "root",
     password: payload.password,
+    jumpHostId: payload.jumpHostId ?? null,
   };
 }
 
@@ -242,6 +245,7 @@ export const useHostStore = create<HostState>((set, get) => ({
             port: host.port ?? 22,
             username: host.username ?? "root",
             password: host.password,
+            jumpHostId: host.jumpHostId ?? null,
           }),
           recordType: "hosts",
         },
@@ -263,6 +267,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         authType: host.authType ?? "password",
         password: undefined,
         keyId: host.keyId ?? undefined,
+        jumpHostId: host.jumpHostId ?? null,
         data: row.data,
       };
       set({ hosts: [created, ...get().hosts], isLoading: false });
@@ -289,6 +294,8 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (patch.port !== undefined) sensitive.port = patch.port;
       if (patch.username !== undefined) sensitive.username = patch.username;
       if (patch.password !== undefined) sensitive.password = patch.password;
+      if (patch.jumpHostId !== undefined)
+        sensitive.jumpHostId = patch.jumpHostId;
       const saved = await upsertRow(
         "hosts",
         {
@@ -386,6 +393,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         port: payload.port ?? 22,
         username: payload.username ?? "root",
         password: payload.password,
+        jumpHostId: payload.jumpHostId ?? null,
       };
     }
     const row = await getRow("hosts", hostId);

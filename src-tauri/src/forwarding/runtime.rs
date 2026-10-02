@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::model::{ForwardDefinition, ForwardMode, ForwardStatus};
 use super::{relay, socks};
-use crate::ssh::{self, SshHandler, SshSessions};
+use crate::ssh::{SshHandler, SshSessions};
 
 struct Running {
     host_id: String,
@@ -175,7 +175,8 @@ impl ForwardingState {
         stop: CancellationToken,
     ) -> Result<impl std::future::Future<Output = Result<(), String>> + Send + 'static, String>
     {
-        let config = ssh::load_host_config(db, crypto, &definition.host_id)?;
+        let route = crate::ssh_route::resolve_saved_route(db, crypto, &definition.host_id)?;
+        let config = &route.target;
         let listener = if definition.mode != ForwardMode::Remote {
             let port = definition.local_port.ok_or("Local port missing")?;
             Some(
@@ -207,10 +208,18 @@ impl ForwardingState {
                 definition.remote_port.ok_or("Remote port missing")? as u32,
             );
         }
-        let mut session = tokio::select! {
+        let bastion_config = route.bastion.as_ref().unwrap_or(config);
+        let bastion_handler = SshHandler::new(
+            bastion_config.host.clone(), bastion_config.port,
+            format!("forward:{}", definition.id), app.clone(),
+            Arc::clone(&ssh.known_hosts), Arc::clone(&ssh.pending_keys), true,
+        ).require_known_host();
+        let connection = tokio::select! {
             _ = stop.cancelled() => return Err("Forward stopped".into()),
-            result = ssh::connect_authenticated(handler, &config, None) => result?,
+            result = crate::ssh_route::connect_saved_route(&route, handler, bastion_handler, None) => result?,
         };
+        let mut session = connection.target;
+        let mut bastion = connection.bastion;
         let remote_bind = if definition.mode == ForwardMode::Remote {
             let address = definition
                 .remote_bind_address
@@ -233,6 +242,7 @@ impl ForwardingState {
                 loop {
                     tokio::select! {
                         _ = stop.cancelled() => break,
+                        ended = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err(format!("Bastion connection ended: {ended:?}")),
                         ended = &mut session => return Err(format!("SSH connection ended: {ended:?}")),
                         accepted = listener.accept() => {
                             let (mut stream, peer) = accepted.map_err(|e| format!("accept: {e}"))?;
@@ -288,6 +298,7 @@ impl ForwardingState {
                 loop {
                     let received = tokio::select! {
                         _ = stop.cancelled() => break,
+                        ended = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err(format!("Bastion connection ended: {ended:?}")),
                         ended = &mut session => return Err(format!("SSH connection ended: {ended:?}")),
                         received = rx.recv() => received,
                     };

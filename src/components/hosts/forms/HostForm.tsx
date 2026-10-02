@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { Controller, useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
@@ -22,7 +22,9 @@ export interface HostData {
   port: number;
   username: string;
   authType: "password" | "key" | "both" | "none";
+  password?: string;
   keyId?: string;
+  jumpHostId?: string | null;
   color?: string;
   groupId?: string;
   tags?: string[];
@@ -39,15 +41,52 @@ export default function HostForm({
   defaultGroupId,
   onClose,
 }: HostFormProps) {
-  const { createHost, updateHost, groups } = useHostStore();
+  const { createHost, updateHost, groups, hosts } = useHostStore();
   const { currentVaultId } = useVaultStore();
   const keys = useKeyStore((s) => s.keys);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
+  const [bastions, setBastions] = useState<
+    { id: string; name: string; jumpHostId?: string | null }[]
+  >([]);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchKeys(currentVaultId ?? undefined);
   }, [fetchKeys, currentVaultId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBastions([]);
+    void Promise.allSettled(
+      hosts
+        .filter(
+          (candidate) =>
+            candidate.vaultId === currentVaultId && candidate.id !== host?.id,
+        )
+        .map(async (candidate) =>
+          useHostStore.getState().getDecryptedHost(candidate.id),
+        ),
+    )
+      .then((results) => {
+        if (!cancelled)
+          setBastions(
+            results.flatMap((result) =>
+              result.status === "fulfilled" &&
+              result.value &&
+              !result.value.jumpHostId
+                ? [result.value]
+                : [],
+            ),
+          );
+      })
+      .catch((error) => {
+        if (!cancelled) setRouteError(String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hosts, currentVaultId, host?.id]);
 
   const { control, handleSubmit, watch, reset } = useForm<HostFormValues>({
     resolver: zodResolver(hostFormSchema),
@@ -57,8 +96,9 @@ export default function HostForm({
       port: host?.port || hostFormDefaultValues.port,
       username: host?.username || hostFormDefaultValues.username,
       authType: host?.authType || hostFormDefaultValues.authType,
-      password: hostFormDefaultValues.password,
+      password: host?.password ?? hostFormDefaultValues.password,
       keyId: host?.keyId || hostFormDefaultValues.keyId,
+      jumpHostId: host?.jumpHostId || "",
       color: host?.color || hostFormDefaultValues.color,
       groupId: host?.groupId || defaultGroupId || hostFormDefaultValues.groupId,
       tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
@@ -66,6 +106,10 @@ export default function HostForm({
   });
 
   const authType = watch("authType");
+  const selectedJumpHostId = watch("jumpHostId");
+  const missingBastion =
+    !!selectedJumpHostId &&
+    !bastions.some((item) => item.id === selectedJumpHostId);
 
   const colors = [
     "#64748b",
@@ -84,6 +128,16 @@ export default function HostForm({
   };
 
   const handleHostSubmit = async (data: HostFormValues) => {
+    if (
+      data.jumpHostId &&
+      !bastions.some((item) => item.id === data.jumpHostId)
+    ) {
+      setRouteError(
+        "Selected bastion is unavailable or already uses a jump host",
+      );
+      return;
+    }
+    setRouteError(null);
     const hostData = {
       name: data.name,
       address: data.address,
@@ -94,6 +148,7 @@ export default function HostForm({
         data.authType === "key" || data.authType === "both"
           ? data.keyId
           : undefined,
+      jumpHostId: data.jumpHostId || null,
       password:
         data.authType === "password" || data.authType === "both"
           ? data.password
@@ -222,6 +277,29 @@ export default function HostForm({
           ]}
           required
         />
+      )}
+
+      <FormSelect
+        name="jumpHostId"
+        label="Connect through"
+        control={control}
+        options={[
+          { value: "", label: "Direct connection" },
+          ...bastions.map((candidate) => ({
+            value: candidate.id,
+            label: candidate.name,
+          })),
+        ]}
+      />
+      <p className="text-xs text-dark-400">
+        The bastion uses its own SSH credentials and host-key check before
+        connecting to this host.
+      </p>
+      {(missingBastion || routeError) && (
+        <p role="alert" className="text-xs text-red-400">
+          {routeError ??
+            "Selected bastion is unavailable. Choose another route before saving."}
+        </p>
       )}
 
       <fieldset>

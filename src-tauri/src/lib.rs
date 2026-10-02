@@ -11,6 +11,7 @@ mod oauth;
 mod offline_auth;
 mod sftp;
 mod ssh;
+mod ssh_route;
 mod sync;
 mod team_keys;
 

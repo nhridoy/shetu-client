@@ -248,6 +248,18 @@ mod tests {
         assert_eq!(reloaded.check("web", 22, "fp-c"), HostKeyStatus::Known);
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
+        assert!(!watch.is_waiting());
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![tx]);
+        assert!(watch.is_waiting());
+        pending.lock().unwrap().remove("target.internal:22");
+        assert!(!watch.is_waiting());
+    }
 }
 
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
@@ -312,6 +324,25 @@ pub struct SshHandler {
     require_known_host: bool,
 }
 
+pub(crate) struct HostKeyPromptWatch {
+    pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    key: String,
+}
+
+impl HostKeyPromptWatch {
+    pub(crate) fn new(
+        pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        host: &str,
+        port: u16,
+    ) -> Self {
+        Self { pending, key: format!("{host}:{port}") }
+    }
+
+    pub(crate) fn is_waiting(&self) -> bool {
+        self.pending.lock().map(|pending| pending.contains_key(&self.key)).unwrap_or(false)
+    }
+}
+
 pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str) {
     let _ = app.emit(
         "ssh-progress",
@@ -320,6 +351,10 @@ pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str
 }
 
 impl SshHandler {
+    pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
+        HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port)
+    }
+
     pub fn new(
         host: String,
         port: u16,
@@ -477,8 +512,19 @@ pub(crate) async fn connect_authenticated(
     .await
     .map_err(|_| format!("connection timeout to {}:{}", config.host, config.port))?
     .map_err(|e| format!("connect {}:{}: {e}", config.host, config.port))?;
+    authenticate_over_stream(handler, config, socket, progress).await
+}
+
+pub(crate) async fn authenticate_over_stream<R>(
+    handler: SshHandler,
+    config: &SshConfig,
+    stream: R,
+    progress: Option<(&tauri::AppHandle, &str)>,
+) -> Result<russh::client::Handle<SshHandler>, String>
+where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let client_config = Arc::new(russh::client::Config::default());
-    let mut session = russh::client::connect_stream(client_config, socket, handler)
+    let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
     if let Some((app, sid)) = progress {
@@ -577,6 +623,36 @@ async fn probe_os(
     .flatten()
 }
 
+async fn probe_os_saved(
+    app: tauri::AppHandle,
+    session_id: String,
+    route: &crate::ssh_route::SavedRoute,
+    known_hosts: Arc<Mutex<KnownHosts>>,
+    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+) -> Option<String> {
+    if route.bastion.is_none() {
+        return probe_os(app, session_id, &route.target, known_hosts, pending_keys).await;
+    }
+    let target_handler = SshHandler::new(route.target.host.clone(), route.target.port, session_id.clone(), app.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), true);
+    let bastion = route.bastion.as_ref()?;
+    let bastion_handler = SshHandler::new(bastion.host.clone(), bastion.port, session_id, app, known_hosts, pending_keys, true);
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        let connection = crate::ssh_route::connect_saved_route(route, target_handler, bastion_handler, None).await.ok()?;
+        let mut channel = connection.target.channel_open_session().await.ok()?;
+        channel.exec(true, "uname -s; echo __TERMVAULT_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null").await.ok()?;
+        let mut out = String::new();
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { data } => out.push_str(&String::from_utf8_lossy(&data)),
+                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let (uname, os_release) = out.split_once("__TERMVAULT_OS_RELEASE__")?;
+        detect_os(uname, os_release).map(str::to_string)
+    }).await.ok().flatten()
+}
+
 #[tauri::command]
 pub async fn connect(
     app_handle: tauri::AppHandle,
@@ -586,7 +662,7 @@ pub async fn connect(
     rows: u32,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    run_connect_session(app_handle, session_id, config, None, &state, cols, rows).await;
+    run_connect_session(app_handle, session_id, config, None, None, &state, cols, rows).await;
     Ok(())
 }
 
@@ -604,18 +680,20 @@ pub async fn connect_saved(
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let mut config = load_host_config(&db, &crypto, &host_id)?;
+    let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let mut config = route.target.clone();
     config.detect_os = detect_os;
+    route.target.detect_os = detect_os;
     let os = if detect_os {
         let existing_os = crate::db::get_sync_row(&db, crate::db::Table::Hosts, &host_id)?
             .and_then(|r| r.os);
         if existing_os.is_some() {
             existing_os
         } else {
-            let detected = probe_os(
+            let detected = probe_os_saved(
                 app_handle.clone(),
                 session_id.clone(),
-                &config,
+                &route,
                 Arc::clone(&state.known_hosts),
                 Arc::clone(&state.pending_keys),
             )
@@ -628,7 +706,7 @@ pub async fn connect_saved(
     } else {
         None
     };
-    run_connect_session(app_handle, session_id, config, os, &state, cols, rows).await;
+    run_connect_session(app_handle, session_id, config, Some(route), os, &state, cols, rows).await;
     Ok(())
 }
 
@@ -636,6 +714,7 @@ async fn run_connect_session(
     app_handle: tauri::AppHandle,
     session_id: String,
     config: SshConfig,
+    route: Option<crate::ssh_route::SavedRoute>,
     pre_detected_os: Option<String>,
     state: &SshSessions,
     cols: u32,
@@ -659,14 +738,17 @@ async fn run_connect_session(
         let os = if pre_detected_os.is_some() {
             pre_detected_os
         } else if config.detect_os {
-            probe_os(
+            if let Some(ref route) = route { probe_os_saved(
+                app_handle.clone(), session_id.clone(), route,
+                Arc::clone(&known_hosts), Arc::clone(&pending_keys),
+            ).await } else { probe_os(
                 app_handle.clone(),
                 session_id.clone(),
                 &config,
                 Arc::clone(&known_hosts),
                 Arc::clone(&pending_keys),
             )
-            .await
+            .await }
         } else {
             None
         };
@@ -681,16 +763,24 @@ async fn run_connect_session(
             false,
         );
 
-        let session = match connect_authenticated(handler, &config, Some((&app_handle, &session_id)))
-            .await
-        {
-            Ok(s) => s,
+        let routed = if let Some(ref route) = route {
+            let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
+            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false);
+            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await
+        } else {
+            connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await
+                .map(|target| crate::ssh_route::RouteConnection { target, bastion: None })
+        };
+        let connection = match routed {
+            Ok(connection) => connection,
             Err(e) => {
                 emit(&app_handle, "error", &e);
                 emit(&app_handle, "disconnected", "");
                 return;
             }
         };
+        let session = connection.target;
+        let _bastion = connection.bastion;
 
         emit_progress(&app_handle, &session_id, "starting_shell");
         let channel = match session.channel_open_session().await {
@@ -911,10 +1001,27 @@ pub async fn ping_host_saved(
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<PingResult, String> {
-    let mut config = load_host_config(&db, &crypto, &host_id)?;
+    let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let mut config = route.target.clone();
     config.detect_os = detect_os;
+    route.target.detect_os = detect_os;
     let timeout = std::time::Duration::from_millis(2000);
     let start = std::time::Instant::now();
+    if route.bastion.is_some() {
+        let target_handler = SshHandler::new(config.host.clone(), config.port, "ping".into(), app_handle.clone(), Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys), true);
+        let bastion_config = route.bastion.as_ref().expect("checked above");
+        let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, "ping".into(), app_handle.clone(), Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys), true);
+        let connected = tokio::time::timeout(std::time::Duration::from_secs(20), crate::ssh_route::connect_saved_route(&route, target_handler, bastion_handler, None)).await;
+        match connected {
+            Ok(Ok(connection)) => drop(connection),
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Ok(PingResult { reachable: false, latency_ms: None, os: None }),
+        }
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let os = if detect_os { probe_os_saved(app_handle, "ping".into(), &route, Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys)).await } else { None };
+        if let Some(ref value) = os { let _ = crate::db::update_host_os(&db, &host_id, value); }
+        return Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os });
+    }
     let addr = resolve_addr(&config.host, config.port).await?;
     let connected = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
     match connected {

@@ -102,6 +102,7 @@ describe("hostStore", () => {
       port: 2222,
       username: "root",
       password: "pw",
+      jumpHostId: "bastion",
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(mockGet).not.toHaveBeenCalled();
@@ -110,6 +111,7 @@ describe("hostStore", () => {
     expect(host?.port).toBe(2222);
     expect(host?.username).toBe("root");
     expect(host?.password).toBe("pw");
+    expect(host?.jumpHostId).toBe("bastion");
     expect(host?.tags).toEqual([]);
   });
 
@@ -201,6 +203,49 @@ describe("hostStore", () => {
       expect.objectContaining({ recordType: "hosts" }),
     );
     expect(useHostStore.getState().hosts.length).toBe(1);
+  });
+
+  it("stores a jump host only inside encrypted host data and can clear it", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "target",
+      vault_id: "v1",
+      data: "encrypted",
+      created_at: "2026-10-02T00:00:00Z",
+      updated_at: "2026-10-02T00:00:00Z",
+      sort_order: 0,
+    } as never);
+    useVaultStore.setState({ currentVaultId: "v1" });
+    await useHostStore.getState().createHost({
+      name: "target",
+      address: "10.0.0.2",
+      jumpHostId: "bastion",
+    });
+    expect(
+      JSON.parse(
+        (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+      ).jumpHostId,
+    ).toBe("bastion");
+    expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty("jump_host_id");
+
+    mockGet.mockResolvedValue({
+      id: "target",
+      vault_id: "v1",
+      data: "encrypted",
+      name: "target",
+      sort_order: 0,
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "10.0.0.2",
+      port: 22,
+      username: "root",
+      jumpHostId: "bastion",
+    });
+    await useHostStore.getState().updateHost("target", { jumpHostId: null });
+    expect(
+      JSON.parse(
+        (mockUpsert.mock.calls[1][2] as { plaintext: string }).plaintext,
+      ).jumpHostId,
+    ).toBeNull();
   });
 
   it("updateHost preserves unpatched encrypted fields", async () => {

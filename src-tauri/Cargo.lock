@@ -5800,6 +5800,7 @@ dependencies = [
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "portable-pty",
+ "rand 0.10.2",
  "rand 0.8.7",
  "rand_core 0.6.4",
  "reqwest 0.12.28",

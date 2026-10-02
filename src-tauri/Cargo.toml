@@ -49,3 +49,6 @@ tokio-util = "0.7"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+rand10 = { package = "rand", version = "0.10" }

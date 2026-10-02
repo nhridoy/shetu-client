@@ -49,6 +49,7 @@ pub struct SftpSession {
     pub username: String,
     pub sftp: Arc<russh_sftp::client::SftpSession>,
     pub ssh_handle: Option<russh::client::Handle<crate::ssh::SshHandler>>,
+    pub bastion_handle: Option<russh::client::Handle<crate::ssh::SshHandler>>,
     pub created_ourselves: bool,
 }
 
@@ -186,11 +187,12 @@ pub async fn sftp_connect(
 
     let sftp_session = SftpSession {
         host_id: None,
-        host: config.host,
+        host: config.host.clone(),
         port: config.port,
-        username: config.username,
+        username: config.username.clone(),
         sftp: Arc::new(sftp),
         ssh_handle: Some(ssh),
+        bastion_handle: None,
         created_ourselves: true,
     };
 
@@ -210,7 +212,8 @@ pub async fn sftp_connect_saved(
     sftp_sessions: tauri::State<'_, SftpSessions>,
     app_handle: tauri::AppHandle,
 ) -> Result<SftpConnectResult, String> {
-    let config = crate::ssh::load_host_config(&db, &crypto, &host_id)?;
+    let route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let config = &route.target;
 
     // Check if we already have an SFTP session for this session_id
     {
@@ -237,56 +240,15 @@ pub async fn sftp_connect_saved(
         Arc::clone(&ssh_sessions.pending_keys),
         false,
     );
-    let client_config = Arc::new(russh::client::Config::default());
-    crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
-    let mut ssh = russh::client::connect_stream(
-        client_config,
-        tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port))
-            .await
-            .map_err(|e| format!("tcp connect: {e}"))?,
-        handler,
-    )
-    .await
-    .map_err(|e| format!("ssh handshake: {e}"))?;
-
-    // Authenticate
-    if let Some(ref key) = config.private_key {
-        let key = russh::keys::decode_secret_key(key, config.passphrase.as_deref())
-            .map_err(|e| format!("decode key: {e}"))?;
-        let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            Some(russh::keys::HashAlg::Sha256),
-        );
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_publickey(config.username.clone(), key_with_alg)
-            .await
-            .map_err(|e| format!("publickey auth: {e}"))?;
-        if !auth.success() {
-            return Err("public key authentication rejected".to_string());
-        }
-    } else if let Some(ref password) = config.password {
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_password(config.username.clone(), password.clone())
-            .await
-            .map_err(|e| format!("password auth: {e}"))?;
-        if !auth.success() {
-            return Err("password authentication rejected".to_string());
-        }
-    } else {
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_none(config.username.clone())
-            .await
-            .map_err(|e| format!("none auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication required".to_string());
-        }
-    }
+    let bastion_config = route.bastion.as_ref().unwrap_or(config);
+    let bastion_handler = crate::ssh::SshHandler::new(
+        bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(),
+        Arc::clone(&ssh_sessions.known_hosts), Arc::clone(&ssh_sessions.pending_keys), false,
+    );
+    let connection = crate::ssh_route::connect_saved_route(&route, handler, bastion_handler, Some((&app_handle, &session_id))).await?;
 
     crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
-    let sftp = open_sftp_from_handle(&ssh).await?;
+    let sftp = open_sftp_from_handle(&connection.target).await?;
 
     let result = SftpConnectResult {
         session_id: session_id.clone(),
@@ -299,11 +261,12 @@ pub async fn sftp_connect_saved(
 
     let sftp_session = SftpSession {
         host_id: Some(host_id),
-        host: config.host,
+        host: config.host.clone(),
         port: config.port,
-        username: config.username,
+        username: config.username.clone(),
         sftp: Arc::new(sftp),
-        ssh_handle: Some(ssh),
+        ssh_handle: Some(connection.target),
+        bastion_handle: connection.bastion,
         created_ourselves: true,
     };
 
