@@ -47,6 +47,10 @@
         { "path": "D:/**" }
       ]
     },
-    "keyring-store:default"
+    "keyring-store:default",
+    "process:allow-restart",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install"
   ]
 }

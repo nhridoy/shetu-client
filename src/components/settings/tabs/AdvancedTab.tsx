@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { useUpdateStore } from "@/stores/update/updateStore";
 import type { AdvancedTabProps } from "@/types/settings/types";
 
 export default function AdvancedTab({
@@ -22,6 +23,10 @@ export default function AdvancedTab({
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const updateStatus = useUpdateStore((state) => state.status);
+  const updateError = useUpdateStore((state) => state.error);
+  const checkForUpdates = useUpdateStore((state) => state.checkForUpdates);
+  const openReleasePage = useUpdateStore((state) => state.openReleasePage);
 
   const handleExportSettings = () => {
     const settings = {
@@ -120,6 +125,51 @@ export default function AdvancedTab({
             </Button>
           </div>
         </div>
+      </div>
+
+      <div className="border-t border-dark-700 pt-6">
+        <h3 className="mb-3 text-sm font-medium text-white">App updates</h3>
+        <p className="mb-3 text-xs text-dark-400">
+          Check GitHub Releases for a newer signed desktop version.
+        </p>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={["checking", "downloading", "installing"].includes(
+            updateStatus,
+          )}
+          onClick={() => void checkForUpdates(true)}
+        >
+          {updateStatus === "checking"
+            ? "Checking…"
+            : ["available", "ready", "restart_required"].includes(updateStatus)
+              ? "Review update"
+              : "Check for updates"}
+        </Button>
+        {updateStatus === "current" && (
+          <p className="mt-2 text-xs text-dark-400">You're up to date.</p>
+        )}
+        {updateStatus === "development" && (
+          <p className="mt-2 text-xs text-dark-400">
+            Updates are unavailable in development builds.
+          </p>
+        )}
+        {updateStatus === "error" && updateError && (
+          <div className="mt-2">
+            <p role="alert" className="mb-2 text-xs text-red-400">
+              Update check failed: {updateError}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void openReleasePage()}
+            >
+              Open release page
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="border-t border-dark-700 pt-6">

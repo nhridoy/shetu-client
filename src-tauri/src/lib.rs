@@ -14,6 +14,7 @@ mod ssh;
 mod ssh_route;
 mod sync;
 mod team_keys;
+mod update;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
 use portable_pty::{
@@ -1297,6 +1298,8 @@ pub fn run() {
         .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin({
             let builder = tauri_plugin_prevent_default::Builder::new();
             #[cfg(target_os = "windows")]
@@ -1353,6 +1356,7 @@ pub fn run() {
         .manage(sftp::SftpSessions::new())
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
+            update::update_installation_kind,
             get_device_id,
             history_start_attempt,
             history_mark_connected,

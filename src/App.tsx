@@ -5,6 +5,7 @@ import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
 import UnlockDialog from "@/components/auth/UnlockDialog";
 import Layout from "@/components/layout/shell/Layout";
+import UpdateNotification from "@/components/update/UpdateNotification";
 import LoginPage from "@/pages/auth/LoginPage";
 import RecoveryPage from "@/pages/auth/RecoveryPage";
 import RecoveryRevealModal from "@/pages/auth/RecoveryRevealModal";
@@ -22,6 +23,7 @@ import { useAuthStore } from "@/stores/auth/authStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 import { useThemeStore } from "@/stores/themeStore";
+import { useUpdateStore } from "@/stores/update/updateStore";
 
 function App() {
   const restoreSession = useAuthStore((s) => s.restoreSession);
@@ -31,6 +33,7 @@ function App() {
   const initSettings = useSettingsStore((s) => s.initSettings);
   const initTheme = useThemeStore((s) => s.initTheme);
   const detectShells = useShellStore((s) => s.detect);
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
   useEffect(() => {
     const init = async () => {
@@ -42,6 +45,10 @@ function App() {
     };
     init();
   }, [restoreSession, initSettings, initTheme, detectShells]);
+
+  useEffect(() => {
+    void checkForUpdates(false);
+  }, [checkForUpdates]);
 
   return (
     <BrowserRouter>
@@ -75,6 +82,7 @@ function App() {
         context={pendingRecoveryContext ?? "signup"}
       />
       <UnlockDialog />
+      <UpdateNotification />
       <Toaster richColors />
     </BrowserRouter>
   );
