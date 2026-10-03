@@ -7,11 +7,15 @@ import {
   PlusIcon,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import SyncStatus from "@/components/layout/shell/SyncStatus";
 import SortableTab from "@/components/layout/tabs/SortableTab";
 import { Button } from "@/components/ui/Button";
 import VaultSelector from "@/components/vault/selector/VaultSelector";
-import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import {
+  useTerminalStore,
+  workspaceLayoutSnapshot,
+} from "@/stores/terminal/terminalStore";
 
 interface HeaderProps {
   activeView: string;
@@ -40,11 +44,22 @@ export default function Header({
   const removeTab = useTerminalStore((s) => s.removeTab);
   const setActiveTab = useTerminalStore((s) => s.setActiveTab);
   const activeWorkspaceId = useTerminalStore((s) => s.activeWorkspaceId);
-  const isDirty = useTerminalStore((s) => s.isDirty);
+  const isDirty = useTerminalStore(
+    (s) =>
+      Boolean(s.activeWorkspaceId) &&
+      workspaceLayoutSnapshot(s.tabs) !== s.savedSnapshot,
+  );
   const activeWorkspaceName = useTerminalStore((s) => s.activeWorkspaceName);
 
   const handleSaveCurrentWorkspace = () => {
-    useTerminalStore.getState().saveCurrentWorkspace();
+    void useTerminalStore
+      .getState()
+      .saveCurrentWorkspace()
+      .then(
+        () => toast.success("Workspace saved"),
+        (error) =>
+          toast.error(error instanceof Error ? error.message : String(error)),
+      );
   };
 
   return (

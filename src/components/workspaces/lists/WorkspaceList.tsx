@@ -5,6 +5,7 @@ import {
   TrashIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { EmptyActionState } from "@/components/ui/EmptyActionState";
@@ -15,12 +16,17 @@ import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import {
   type PaneNode,
   useTerminalStore,
+  type WorkspaceLayout,
 } from "@/stores/terminal/terminalStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 interface WorkspaceListProps {
-  onLaunch: (tabId: string) => void;
+  onLaunch: (
+    layout: WorkspaceLayout,
+    id: string,
+    name: string,
+  ) => Promise<void>;
   onSaveNew: () => void;
 }
 
@@ -82,14 +88,17 @@ export default function WorkspaceList({
   const canSave = connectedTabCount >= 2 && !activeWorkspaceId;
 
   // Launch a saved workspace: rebuild its tabs and switch to the terminal view.
-  const handleLaunch = (layoutStr: string, id: string, name: string) => {
+  const handleLaunch = async (layoutStr: string, id: string, name: string) => {
     try {
-      const layout = JSON.parse(layoutStr);
-      useTerminalStore.getState().launchWorkspace(layout, id, name);
-      const firstTabId = useTerminalStore.getState().activeTabId;
-      if (firstTabId) onLaunch(firstTabId);
+      const parsed = JSON.parse(layoutStr);
+      const layout = (
+        Array.isArray(parsed) ? { tabs: parsed } : parsed
+      ) as WorkspaceLayout;
+      if (!Array.isArray(layout?.tabs) || layout.tabs.length === 0)
+        throw new Error("This workspace has no saved tabs");
+      await onLaunch(layout, id, name);
     } catch (e) {
-      console.error("Failed to launch workspace:", e);
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -98,10 +107,12 @@ export default function WorkspaceList({
     renameModal.show();
   };
 
-  const handleRenameSubmit = (name: string) => {
-    if (renamingId) renameWorkspace(renamingId, name);
-    renameModal.hide();
-    setRenamingId(null);
+  const handleRenameSubmit = async (name: string) => {
+    if (renamingId) {
+      await renameWorkspace(renamingId, name);
+      if (useTerminalStore.getState().activeWorkspaceId === renamingId)
+        useTerminalStore.setState({ activeWorkspaceName: name });
+    }
   };
 
   const handleDelete = (id: string) => {
@@ -114,16 +125,19 @@ export default function WorkspaceList({
     if (!deleteTargetId) return;
     const id = deleteTargetId;
     setDeleteTargetId(null);
-    const activeId = useTerminalStore.getState().activeWorkspaceId;
-    deleteWorkspace(id);
-    if (activeId && activeId === id) {
-      useTerminalStore.setState({
-        activeWorkspaceId: null,
-        activeWorkspaceName: null,
-        isDirty: false,
-        savedSnapshot: "",
-      });
-    }
+    void deleteWorkspace(id).then(
+      () => {
+        if (useTerminalStore.getState().activeWorkspaceId === id)
+          useTerminalStore.setState({
+            activeWorkspaceId: null,
+            activeWorkspaceName: null,
+            isDirty: false,
+            savedSnapshot: "",
+          });
+      },
+      (error) =>
+        toast.error(error instanceof Error ? error.message : String(error)),
+    );
   };
 
   return (
@@ -171,9 +185,9 @@ export default function WorkspaceList({
                   key={ws.id}
                   role="button"
                   tabIndex={0}
-                  onClick={() => handleLaunch(ws.layout, ws.id, ws.name)}
-                  onKeyDown={accessibleClickHandler(() =>
-                    handleLaunch(ws.layout, ws.id, ws.name),
+                  onClick={() => void handleLaunch(ws.layout, ws.id, ws.name)}
+                  onKeyDown={accessibleClickHandler(
+                    () => void handleLaunch(ws.layout, ws.id, ws.name),
                   )}
                   className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group"
                 >

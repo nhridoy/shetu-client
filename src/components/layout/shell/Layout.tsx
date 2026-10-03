@@ -2,6 +2,7 @@ import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router";
+import { toast } from "sonner";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
 import Header from "@/components/layout/shell/Header";
 
@@ -13,6 +14,7 @@ import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSessionStore } from "@/stores/sessions/sessionStore";
+import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import {
   SYNC_COMPLETED_EVENT,
@@ -22,6 +24,7 @@ import {
 import { useSharedVaultStore } from "@/stores/teams/sharedVaultStore";
 import { useTeamStore } from "@/stores/teams/teamStore";
 import {
+  serializePresetRoot,
   serializeWorkspaceLayout,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
@@ -146,6 +149,7 @@ export default function Layout() {
         useKeyStore.getState().fetchKeys(currentVaultId),
         useSnippetStore.getState().fetchSnippets(currentVaultId),
         useWorkspaceStore.getState().fetchWorkspaces(currentVaultId),
+        useTabGroupStore.getState().fetchTabGroups(currentVaultId),
       ]);
     };
     window.addEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
@@ -170,21 +174,24 @@ export default function Layout() {
         .getState()
         .tabs.find((t) => t.id === presetTargetTabId);
       if (tab) {
-        const { useTabGroupStore } = await import(
-          "@/stores/sessions/tabGroupStore"
-        );
         const created = await useTabGroupStore
           .getState()
-          .createTabGroup(name, tab.root, currentVaultId || undefined);
-        if (created) {
-          useTerminalStore
-            .getState()
-            .setPresetForTab(presetTargetTabId, created.id, created.name);
-        }
+          .createTabGroup(
+            name,
+            serializePresetRoot(tab.root),
+            currentVaultId || undefined,
+          );
+        if (!created)
+          throw new Error(
+            useTabGroupStore.getState().error ?? "Could not save preset",
+          );
+        useTerminalStore
+          .getState()
+          .setPresetForTab(presetTargetTabId, created.id, created.name);
+        return;
       }
     }
-    presetModal.hide();
-    setPresetTargetTabId(null);
+    throw new Error("Tab is no longer available");
   };
 
   return (
@@ -229,7 +236,16 @@ export default function Layout() {
             presetModal.show();
           }}
           onSavePresetChanges={(tabId) => {
-            useTerminalStore.getState().saveCurrentPreset(tabId);
+            void useTerminalStore
+              .getState()
+              .saveCurrentPreset(tabId)
+              .then(
+                () => toast.success("Preset saved"),
+                (error) =>
+                  toast.error(
+                    error instanceof Error ? error.message : String(error),
+                  ),
+              );
           }}
         />
 
@@ -263,12 +279,11 @@ export default function Layout() {
           <WorkspaceForm
             title="Save Workspace"
             submitLabel="Save"
-            onSubmit={(name) => {
+            onSubmit={(name) =>
               useTerminalStore
                 .getState()
-                .saveAsNewWorkspace(name, currentVaultId || undefined);
-              workspaceModal.hide();
-            }}
+                .saveAsNewWorkspace(name, currentVaultId || undefined)
+            }
             onClose={() => workspaceModal.hide()}
           />
         )}

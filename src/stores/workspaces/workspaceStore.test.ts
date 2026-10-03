@@ -47,6 +47,16 @@ const layout = {
 };
 
 describe("workspaceStore", () => {
+  it("clears previous vault workspaces when no vault is selected", async () => {
+    useWorkspaceStore.setState({
+      workspaces: [
+        { id: "w1", name: "old", layout: "{}", createdAt: "", updatedAt: "" },
+      ],
+    });
+    await useWorkspaceStore.getState().fetchWorkspaces();
+    expect(useWorkspaceStore.getState().workspaces).toEqual([]);
+  });
+
   it("fetchWorkspaces maps layout string from payload", async () => {
     mockList.mockResolvedValue([workspaceRow]);
     mockDecrypt.mockResolvedValue({
@@ -200,6 +210,37 @@ describe("workspaceStore", () => {
     expect(useWorkspaceStore.getState().workspaces[0]).toMatchObject({
       name: "observability",
     });
+  });
+
+  it("updates an existing workspace layout without changing its identity", async () => {
+    mockGet.mockResolvedValue(workspaceRow);
+    mockDecrypt.mockResolvedValue({ layout: "{}", hostIds: "" });
+    mockUpsert.mockResolvedValue(workspaceRow);
+    useWorkspaceStore.setState({
+      workspaces: [
+        {
+          id: "w1",
+          name: "monitoring",
+          layout: "{}",
+          createdAt: workspaceRow.created_at,
+          updatedAt: workspaceRow.updated_at,
+        },
+      ],
+    });
+    await useWorkspaceStore.getState().updateWorkspace("w1", layout);
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "workspaces",
+      expect.objectContaining({ id: "w1", vault_id: "v1", name: "monitoring" }),
+      expect.objectContaining({ recordType: "workspaces" }),
+    );
+    expect(
+      JSON.parse(
+        (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+      ).layout,
+    ).toBe(JSON.stringify(layout));
+    expect(useWorkspaceStore.getState().workspaces[0].layout).toBe(
+      JSON.stringify(layout),
+    );
   });
 
   it("deleteWorkspace tombstones", async () => {

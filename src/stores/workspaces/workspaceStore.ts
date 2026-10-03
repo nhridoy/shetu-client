@@ -4,7 +4,7 @@ import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
-interface Workspace {
+export interface Workspace {
   id: string;
   name: string;
   layout: string;
@@ -24,6 +24,10 @@ interface WorkspaceState {
     name: string,
     layout: Record<string, unknown>,
     vaultId?: string,
+  ) => Promise<Workspace | null>;
+  updateWorkspace: (
+    id: string,
+    layout: Record<string, unknown>,
   ) => Promise<void>;
   renameWorkspace: (id: string, name: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
@@ -62,7 +66,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   fetchWorkspaces: async (vaultId) => {
     const vid = vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vid) {
-      set({ isLoading: false });
+      set({ workspaces: [], isLoading: false, error: null });
       return;
     }
     set({ isLoading: true, error: null });
@@ -73,7 +77,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       );
       set({ workspaces, isLoading: false });
     } catch (err) {
-      set({ isLoading: false, error: errorMessage(err) });
+      set({ workspaces: [], isLoading: false, error: errorMessage(err) });
     }
   },
 
@@ -81,7 +85,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const vid = vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vid) {
       set({ isLoading: false, error: "No vault selected" });
-      return;
+      return null;
     }
     set({ isLoading: true, error: null });
     try {
@@ -111,8 +115,52 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         updatedAt: String(row.updated_at),
       };
       set({ workspaces: [created, ...get().workspaces], isLoading: false });
+      return created;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      return null;
+    }
+  },
+
+  updateWorkspace: async (id, layout) => {
+    set({ isLoading: true, error: null });
+    try {
+      const row = await getRow("workspaces", id);
+      if (!row) throw new Error("Workspace not found");
+      const payload = ((await decryptRowData(row.data)) ?? {}) as {
+        hostIds?: string;
+      };
+      const saved = await upsertRow(
+        "workspaces",
+        {
+          id: row.id,
+          vault_id: row.vault_id,
+          name: row.name,
+          sort_order: row.sort_order,
+        },
+        {
+          plaintext: JSON.stringify({
+            layout: JSON.stringify(layout),
+            hostIds: payload.hostIds,
+          }),
+          recordType: "workspaces",
+        },
+      );
+      set({
+        workspaces: get().workspaces.map((workspace) =>
+          workspace.id === id
+            ? {
+                ...workspace,
+                layout: JSON.stringify(layout),
+                updatedAt: String(saved.updated_at),
+              }
+            : workspace,
+        ),
+        isLoading: false,
+      });
+    } catch (err) {
+      set({ isLoading: false, error: errorMessage(err) });
+      throw err;
     }
   },
 
@@ -122,7 +170,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const row = await getRow("workspaces", id);
       if (!row) {
         set({ isLoading: false, error: "Workspace not found" });
-        return;
+        throw new Error("Workspace not found");
       }
       const payload = ((await decryptRowData(row.data)) ?? {}) as {
         layout?: string;
@@ -152,6 +200,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       });
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      throw err;
     }
   },
 
@@ -165,6 +214,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }));
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      throw err;
     }
   },
 

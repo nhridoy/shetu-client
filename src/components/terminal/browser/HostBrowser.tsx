@@ -8,6 +8,7 @@ import {
   TrashIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
@@ -19,7 +20,10 @@ import type { ShellInfo } from "@/lib/terminal/shellDetection";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
-import type { PaneNode } from "@/stores/terminal/terminalStore";
+import {
+  type PaneNode,
+  useTerminalStore,
+} from "@/stores/terminal/terminalStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
 interface HostBrowserProps {
@@ -63,8 +67,13 @@ export default function HostBrowser({
 }: HostBrowserProps) {
   const { hosts } = useHostStore();
   const { currentVaultId } = useVaultStore();
-  const { tabGroups, fetchTabGroups, renameTabGroup, deleteTabGroup } =
-    useTabGroupStore();
+  const {
+    tabGroups,
+    error: presetError,
+    fetchTabGroups,
+    renameTabGroup,
+    deleteTabGroup,
+  } = useTabGroupStore();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const renameModal = useModal();
@@ -170,10 +179,17 @@ export default function HostBrowser({
     renameModal.show();
   };
 
-  const handleRenameSubmit = (name: string) => {
-    if (renamingId) renameTabGroup(renamingId, name);
-    renameModal.hide();
-    setRenamingId(null);
+  const handleRenameSubmit = async (name: string) => {
+    if (renamingId) {
+      await renameTabGroup(renamingId, name);
+      useTerminalStore.setState((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.activePresetId === renamingId
+            ? { ...tab, activePresetName: name }
+            : tab,
+        ),
+      }));
+    }
   };
 
   const showPresets = !query || presetMatches.length > 0;
@@ -235,6 +251,11 @@ export default function HostBrowser({
             <h3 className="px-4 pt-4 pb-1 text-sm font-semibold tracking-wider uppercase text-dark-400">
               Quick Presets
             </h3>
+            {presetError && (
+              <p role="alert" className="px-4 py-2 text-sm text-red-400">
+                {presetError}
+              </p>
+            )}
             {presetMatches.length === 0 ? (
               <div className="px-4 py-3 text-sm text-dark-500">
                 {query
@@ -419,7 +440,30 @@ export default function HostBrowser({
         message="Delete this preset?"
         onConfirm={() => {
           deleteDialog.hide();
-          if (deleteTargetId) deleteTabGroup(deleteTargetId);
+          if (deleteTargetId) {
+            const id = deleteTargetId;
+            void deleteTabGroup(id).then(
+              () => {
+                useTerminalStore.setState((state) => ({
+                  tabs: state.tabs.map((tab) =>
+                    tab.activePresetId === id
+                      ? {
+                          ...tab,
+                          activePresetId: null,
+                          activePresetName: null,
+                          savedPresetSnapshot: "",
+                          presetDirty: false,
+                        }
+                      : tab,
+                  ),
+                }));
+              },
+              (error) =>
+                toast.error(
+                  error instanceof Error ? error.message : String(error),
+                ),
+            );
+          }
           setDeleteTargetId(null);
         }}
         onCancel={() => {

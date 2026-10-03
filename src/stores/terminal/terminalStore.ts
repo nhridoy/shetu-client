@@ -10,6 +10,9 @@ import {
   sideToDirection,
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
+import { useHostStore } from "@/stores/hosts/hostStore";
+import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
+import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 type ConnectionStatus =
   | "connected"
@@ -77,7 +80,60 @@ export interface TerminalTab {
 export const findLeaf = findLeafUtil;
 
 export function computeTabSnapshot(root: PaneNode): string {
-  return JSON.stringify(root);
+  return JSON.stringify(serializePresetRoot(root));
+}
+
+export function serializePresetRoot(node: PaneNode): PaneNode {
+  if (node.type === "split") {
+    return {
+      type: "split",
+      id: node.id,
+      direction: node.direction,
+      size: node.size,
+      children: node.children.map(serializePresetRoot),
+    };
+  }
+  return {
+    type: "leaf",
+    id: node.id,
+    hostId: node.hostId,
+    hostName: node.hostName,
+    connectionType: node.connectionType,
+    shell: node.connectionType === "local" ? node.shell : undefined,
+    title: node.title,
+    connectionStatus: "disconnected",
+    reconnect: null,
+    size: node.size,
+  };
+}
+
+function restoreSavedPane(
+  node: PaneNode,
+  availableHostIds: Set<string>,
+): PaneNode {
+  if (node.type === "split") {
+    return {
+      ...node,
+      id: nextPaneId(),
+      children: node.children.map((child) =>
+        restoreSavedPane(child, availableHostIds),
+      ),
+    };
+  }
+  const saved = serializePresetRoot(node) as LeafNode;
+  const missing =
+    saved.hostId &&
+    saved.connectionType !== "local" &&
+    !availableHostIds.has(saved.hostId);
+  return missing
+    ? {
+        ...saved,
+        id: nextPaneId(),
+        hostId: undefined,
+        hostName: `Missing host: ${saved.hostName || saved.hostId}`,
+        title: `Missing host: ${saved.hostName || saved.hostId}`,
+      }
+    : { ...saved, id: nextPaneId() };
 }
 
 export function serializeWorkspaceLayout(tabs: TerminalTab[]): {
@@ -89,9 +145,38 @@ export function serializeWorkspaceLayout(tabs: TerminalTab[]): {
     collectHostIds(tab.root, hostIds);
   }
   return {
-    tabs: tabs.map((t) => ({ title: t.title, root: t.root })),
+    tabs: tabs.map((t) => ({
+      title: t.title,
+      root: serializePresetRoot(t.root),
+    })),
     hostIds: [...hostIds],
   };
+}
+
+function canonicalPane(node: PaneNode): Record<string, unknown> {
+  if (node.type === "split") {
+    return {
+      type: "split",
+      direction: node.direction,
+      size: node.size,
+      children: node.children.map(canonicalPane),
+    };
+  }
+  return {
+    type: "leaf",
+    hostId: node.hostId,
+    hostName: node.hostName,
+    connectionType: node.connectionType,
+    shell: node.connectionType === "local" ? node.shell : undefined,
+    title: node.title,
+    size: node.size,
+  };
+}
+
+export function workspaceLayoutSnapshot(tabs: TerminalTab[]): string {
+  return JSON.stringify(
+    tabs.map((tab) => ({ title: tab.title, root: canonicalPane(tab.root) })),
+  );
 }
 
 function collectHostIds(node: PaneNode, out: Set<string>) {
@@ -594,17 +679,16 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   launchWorkspace: (layout, workspaceId, workspaceName) => {
+    const availableHostIds = new Set(
+      useHostStore.getState().hosts.map((host) => host.id),
+    );
     const tabs: TerminalTab[] = layout.tabs.map((t, i) => {
       const tabId = nextTabId();
+      const root = restoreSavedPane(t.root, availableHostIds);
       return {
         id: tabId,
-        root: t.root,
-        activePaneId:
-          t.root.type === "leaf"
-            ? t.root.id
-            : t.root.children[0]?.type === "leaf"
-              ? t.root.children[0].id
-              : null,
+        root,
+        activePaneId: findFirstLeafId(root),
         focusedPaneId: null,
         isActive: i === layout.tabs.length - 1,
         title: t.title,
@@ -620,13 +704,18 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       activeTabId,
       activeWorkspaceId: workspaceId ?? null,
       activeWorkspaceName: workspaceName ?? null,
+      savedSnapshot: workspaceLayoutSnapshot(tabs),
+      isDirty: false,
     });
   },
 
   restorePreset: (preset, tabId) => {
     let root: PaneNode;
     try {
-      root = JSON.parse(preset.layout);
+      const availableHostIds = new Set(
+        useHostStore.getState().hosts.map((host) => host.id),
+      );
+      root = restoreSavedPane(JSON.parse(preset.layout), availableHostIds);
     } catch {
       return;
     }
@@ -636,15 +725,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         return {
           ...t,
           root,
-          activePaneId:
-            root.type === "leaf"
-              ? root.id
-              : root.children[0]?.type === "leaf"
-                ? root.children[0].id
-                : t.activePaneId,
+          activePaneId: findFirstLeafId(root),
           focusedPaneId: null,
           activePresetId: preset.id ?? null,
           activePresetName: preset.name ?? null,
+          savedPresetSnapshot: computeTabSnapshot(root),
           presetDirty: false,
         };
       }),
@@ -654,8 +739,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   saveCurrentPreset: async (tabId) => {
     const { tabs } = get();
     const tab = findTab(tabs, tabId);
-    if (!tab) return;
+    if (!tab?.activePresetId) return;
     const snapshot = computeTabSnapshot(tab.root);
+    await useTabGroupStore
+      .getState()
+      .updateTabGroup(tab.activePresetId, serializePresetRoot(tab.root));
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === tabId
@@ -666,10 +754,19 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   setPresetForTab: (tabId, presetId, presetName) => {
+    const tab = findTab(get().tabs, tabId);
+    if (!tab) return;
+    const snapshot = computeTabSnapshot(tab.root);
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === tabId
-          ? { ...t, activePresetId: presetId, activePresetName: presetName }
+          ? {
+              ...t,
+              activePresetId: presetId,
+              activePresetName: presetName,
+              savedPresetSnapshot: snapshot,
+              presetDirty: false,
+            }
           : t,
       ),
     }));
@@ -679,17 +776,30 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const { tabs, activeWorkspaceId } = get();
     if (!activeWorkspaceId) return;
     const layout = serializeWorkspaceLayout(tabs);
-    const snapshot = JSON.stringify(layout);
+    const snapshot = workspaceLayoutSnapshot(tabs);
+    await useWorkspaceStore
+      .getState()
+      .updateWorkspace(activeWorkspaceId, layout);
     set({ savedSnapshot: snapshot, isDirty: false });
   },
-  saveAsNewWorkspace: async (name) => {
+  saveAsNewWorkspace: async (name, vaultId) => {
     const { tabs } = get();
+    if (tabs.length === 0)
+      throw new Error("Open a terminal tab before saving a workspace");
     const layout = serializeWorkspaceLayout(tabs);
-    const snapshot = JSON.stringify(layout);
+    const snapshot = workspaceLayoutSnapshot(tabs);
+    const created = await useWorkspaceStore
+      .getState()
+      .createWorkspace(name, layout, vaultId);
+    if (!created)
+      throw new Error(
+        useWorkspaceStore.getState().error ?? "Could not save workspace",
+      );
     set({
       savedSnapshot: snapshot,
       isDirty: false,
-      activeWorkspaceName: name,
+      activeWorkspaceId: created.id,
+      activeWorkspaceName: created.name,
     });
   },
 }));

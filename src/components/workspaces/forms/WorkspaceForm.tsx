@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -13,7 +13,7 @@ interface WorkspaceFormProps {
   title: string;
   initialName?: string;
   submitLabel?: string;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string) => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -25,6 +25,7 @@ export default function WorkspaceForm({
   onClose,
 }: WorkspaceFormProps) {
   const [isPending, startTransition] = useTransition();
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const { control, handleSubmit, reset } = useForm<WorkspaceFormSchema>({
     resolver: zodResolver(workspaceFormSchema),
@@ -40,15 +41,16 @@ export default function WorkspaceForm({
     return submitLabel;
   };
 
-  const handleWorkspaceSubmit = (data: WorkspaceFormSchema) => {
-    onSubmit(data.name);
-    reset();
-    onClose();
-  };
-
   const onValid = (data: WorkspaceFormSchema) => {
     startTransition(async () => {
-      await handleWorkspaceSubmit(data);
+      setSubmitError(null);
+      try {
+        await onSubmit(data.name);
+        reset();
+        onClose();
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : String(error));
+      }
     });
   };
 
@@ -60,6 +62,11 @@ export default function WorkspaceForm({
       onSubmit={handleSubmit(onValid)}
       submitButtonText={getButtonText()}
     >
+      {submitError && (
+        <p role="alert" className="text-sm text-red-400">
+          {submitError}
+        </p>
+      )}
       <FormInput
         name="name"
         label="Workspace name"
