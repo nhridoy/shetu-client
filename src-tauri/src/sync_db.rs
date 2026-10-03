@@ -227,16 +227,18 @@ pub(crate) fn queue_row(
     Ok(())
 }
 
-/// Bind pre-sync legacy edits to the enrolled device before uploading them.
+/// Bind queued local edits to the authenticated device before uploading them.
+/// Rust-owned history commands can use a separate persisted device ID from the
+/// frontend auth store, but the server requires every pushed row to match the
+/// device ID on the authenticated request.
 pub fn adopt_pending_device(db: &LocalDb, device_id: &str) -> Result<(), String> {
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut stmt = tx.prepare("SELECT table_name, record_id, operation_id FROM outbox WHERE device_id = '' OR device_id = ?1")
+    let mut stmt = tx.prepare("SELECT table_name, record_id, operation_id FROM outbox WHERE device_id != ?1")
         .map_err(|e| e.to_string())?;
-    let nil = uuid::Uuid::nil().to_string();
     let entries = stmt
-        .query_map([&nil], |r| {
+        .query_map([device_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -773,6 +775,30 @@ mod tests {
             data: ciphertext(Table::Hosts),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn pending_edits_adopt_authenticated_device_id() {
+        let db = super::super::open(":memory:").unwrap();
+        let vault = Uuid::new_v4().to_string();
+        let id = Uuid::new_v4().to_string();
+        let rust_device = Uuid::new_v4().to_string();
+        let auth_device = Uuid::new_v4().to_string();
+        super::super::local_mutate(&db, Table::Hosts, &host(&id, &vault, "host"), &rust_device)
+            .unwrap();
+
+        adopt_pending_device(&db, &auth_device).unwrap();
+
+        let batch = pending_batch(&db, &vault, 10).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].record["device_id"], auth_device);
+        assert_eq!(
+            super::super::get_sync_row(&db, Table::Hosts, &id)
+                .unwrap()
+                .unwrap()
+                .device_id,
+            auth_device
+        );
     }
 
     #[test]
