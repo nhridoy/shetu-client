@@ -26,7 +26,7 @@ export default function AuthGuard({ requireAuth }: AuthGuardProps) {
 
   if (!isInitialized) {
     return (
-      <div className="min-h-screen bg-dark-950 flex items-center justify-center">
+      <div className="min-h-[calc(100vh-2.25rem)] bg-dark-950 flex items-center justify-center">
         <Spinner />
       </div>
     );

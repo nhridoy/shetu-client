@@ -5,6 +5,7 @@ import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
 import UnlockDialog from "@/components/auth/UnlockDialog";
 import Layout from "@/components/layout/shell/Layout";
+import TitleBar from "@/components/layout/shell/TitleBar";
 import UpdateNotification from "@/components/update/UpdateNotification";
 import LoginPage from "@/pages/auth/LoginPage";
 import RecoveryPage from "@/pages/auth/RecoveryPage";
@@ -52,38 +53,41 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Routes>
-        <Route element={<AuthGuard requireAuth={false} />}>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/setup" element={<SetupPage />} />
-          <Route path="/recovery" element={<RecoveryPage />} />
-        </Route>
-
-        <Route element={<AuthGuard requireAuth={true} />}>
-          <Route element={<Layout />}>
-            <Route index element={<Navigate to="/hosts" replace />} />
-            <Route path="hosts" element={<HostsPage />} />
-            <Route path="workspaces" element={<WorkspacesPage />} />
-            <Route path="snippets" element={<SnippetsPage />} />
-            <Route path="keys" element={<KeysPage />} />
-            <Route path="history" element={<HistoryPage />} />
-            <Route path="terminal" element={<TerminalPage />} />
-            <Route path="sftp" element={<SftpPage />} />
-            <Route path="editor" element={<EditorPage />} />
-            <Route path="*" element={<Navigate to="/hosts" replace />} />
+      <TitleBar />
+      <div className="pt-9">
+        <Routes>
+          <Route element={<AuthGuard requireAuth={false} />}>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/setup" element={<SetupPage />} />
+            <Route path="/recovery" element={<RecoveryPage />} />
           </Route>
-        </Route>
-      </Routes>
-      <RecoveryRevealModal
-        open={!!pendingRecoveryCode}
-        recoveryCode={pendingRecoveryCode ?? ""}
-        onClose={clearRecoveryCode}
-        context={pendingRecoveryContext ?? "signup"}
-      />
-      <UnlockDialog />
-      <UpdateNotification />
-      <Toaster richColors />
+
+          <Route element={<AuthGuard requireAuth={true} />}>
+            <Route element={<Layout />}>
+              <Route index element={<Navigate to="/hosts" replace />} />
+              <Route path="hosts" element={<HostsPage />} />
+              <Route path="workspaces" element={<WorkspacesPage />} />
+              <Route path="snippets" element={<SnippetsPage />} />
+              <Route path="keys" element={<KeysPage />} />
+              <Route path="history" element={<HistoryPage />} />
+              <Route path="terminal" element={<TerminalPage />} />
+              <Route path="sftp" element={<SftpPage />} />
+              <Route path="editor" element={<EditorPage />} />
+              <Route path="*" element={<Navigate to="/hosts" replace />} />
+            </Route>
+          </Route>
+        </Routes>
+        <RecoveryRevealModal
+          open={!!pendingRecoveryCode}
+          recoveryCode={pendingRecoveryCode ?? ""}
+          onClose={clearRecoveryCode}
+          context={pendingRecoveryContext ?? "signup"}
+        />
+        <UnlockDialog />
+        <UpdateNotification />
+        <Toaster richColors />
+      </div>
     </BrowserRouter>
   );
 }

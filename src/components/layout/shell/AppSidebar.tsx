@@ -41,7 +41,7 @@ export default function AppSidebar({
 
   return (
     <aside
-      className={`fixed left-0 top-10 bottom-0 z-40 w-72 bg-dark-900 border-r border-dark-800 transform transition-transform duration-300 ease-in-out flex flex-col ${
+      className={`fixed left-0 top-[4.75rem] bottom-0 z-40 w-72 bg-dark-900 border-r border-dark-800 transform transition-transform duration-300 ease-in-out flex flex-col ${
         isMobile
           ? isOpen
             ? "translate-x-0"
