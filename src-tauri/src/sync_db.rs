@@ -1099,7 +1099,7 @@ mod vault_delete_tests {
     #[test]
     fn sync_db_local_only_vault_delete_keeps_recoverable_rows_without_upload() {
         let path =
-            std::env::temp_dir().join(format!("termvault-cancelled-vault-{}.db", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("terra-cancelled-vault-{}.db", Uuid::new_v4()));
         let path_str = path.to_str().unwrap();
         let vault = Uuid::new_v4().to_string();
         let host = Uuid::new_v4().to_string();

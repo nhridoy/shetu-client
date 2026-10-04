@@ -43,7 +43,7 @@ export default function RecoveryPage() {
             <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
               <span className="text-white font-bold text-2xl">TV</span>
             </div>
-            <h1 className="text-3xl font-bold text-white">TermVault</h1>
+            <h1 className="text-3xl font-bold text-white">Terra</h1>
           </div>
 
           <div className="bg-dark-900 rounded-xl p-6 shadow-xl text-center">
@@ -79,7 +79,7 @@ export default function RecoveryPage() {
           <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <span className="text-white font-bold text-2xl">TV</span>
           </div>
-          <h1 className="text-3xl font-bold text-white">TermVault</h1>
+          <h1 className="text-3xl font-bold text-white">Terra</h1>
         </div>
 
         <div className="bg-dark-900 rounded-xl p-6 shadow-xl">

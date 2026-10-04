@@ -46,7 +46,7 @@ export default function RevokedTeamEditsPanel() {
     setNotice(null);
     try {
       const path = await saveFilePicker(
-        `termvault-unsynced-team-edits-${vault.vault_id}.json`,
+        `terra-unsynced-team-edits-${vault.vault_id}.json`,
       );
       if (!path) return;
       const edits = await invoke<ExportedEdit[]>("export_revoked_team_edits", {

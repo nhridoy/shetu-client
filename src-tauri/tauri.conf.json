@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TermVault",
+  "productName": "Terra",
   "version": "1.0.0",
-  "mainBinaryName": "TermVault",
-  "identifier": "com.termvault.app",
+  "mainBinaryName": "Terra",
+  "identifier": "com.nhridoy.terra",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -25,7 +25,7 @@
       {
         "label": "main",
         "visible": false,
-        "title": "TermVault",
+        "title": "Terra",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -39,7 +39,13 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["$HOME/**/*", "$HOME/*", "C:/**/*", "D:/**/*", "/**"]
+        "scope": [
+          "$HOME/**/*",
+          "$HOME/*",
+          "C:/**/*",
+          "D:/**/*",
+          "/**"
+        ]
       },
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; frame-src 'self' asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' http://localhost:* https://localhost:* tauri: asset: http://asset.localhost ws://localhost:* wss://localhost:*; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
@@ -48,7 +54,13 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
         "installMode": "both"
@@ -56,13 +68,23 @@
     },
     "macOS": {
       "dmg": {
-        "appPosition": {"x": 180, "y": 170},
-        "applicationFolderPosition": {"x": 480, "y": 170}
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
       }
     },
     "linux": {
       "deb": {
-        "depends": ["libgtk-3-0", "libwebkit2gtk-4.1-0", "libappindicator3-1"]
+        "depends": [
+          "libgtk-3-0",
+          "libwebkit2gtk-4.1-0",
+          "libappindicator3-1"
+        ]
       }
     }
   },
@@ -71,8 +93,10 @@
       "requireLiteralLeadingDot": false
     },
     "updater": {
-      "endpoints": ["https://github.com/nhridoy/terra/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGMjMwOTFCRTJFODM5QkYKUldTL09lamlHd2tqM3hqR0J4UCtTY1JIODJ6ZHZ6Rzh1YUdsdE4vWkVMWjhKWmxPd3ppRUU4aXMK"
+      "endpoints": [
+        "https://github.com/nhridoy/terra/releases/latest/download/terra-latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3N0MzQkUzQUREREQ3MDQKUldRRTE5MnQ0enQ4dHpxbUJzL1RiYmRodjY5MXFtb0hmU3lOWWJ1eEhLWnlDZ3k0SzRFZnFEdnIK"
     }
   }
 }

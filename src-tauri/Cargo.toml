@@ -1,7 +1,7 @@
 [package]
-name = "termvault"
+name = "terra"
 version = "1.0.0"
-description = "TermVault - Self-hosted SSH client"
+description = "Terra - Self-hosted SSH client"
 edition = "2021"
 
 [lib]

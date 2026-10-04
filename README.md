@@ -1,5 +1,4 @@
-# Name
-### termvault
+# Terra Client
 
 # Synopsis
 
@@ -9,10 +8,9 @@
 # Example
 
 # Install:
-`npm install termvault`
+`pnpm install`
 
 # Test:
-`npm test`
+`pnpm vitest run`
 
 #License:
-

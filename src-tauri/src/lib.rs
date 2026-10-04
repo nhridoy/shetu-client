@@ -989,9 +989,13 @@ async fn disconnect_local(
     Ok(())
 }
 
+fn device_id_path(data_local_dir: &std::path::Path) -> std::path::PathBuf {
+    data_local_dir.join("terra").join("device_id")
+}
+
 fn get_or_create_device_id() -> String {
     let dirs = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let path = dirs.join("termvault").join("device_id");
+    let path = device_id_path(&dirs);
     if let Ok(id) = std::fs::read_to_string(&path) {
         let id = id.trim().to_string();
         if !id.is_empty() {
@@ -1004,6 +1008,20 @@ fn get_or_create_device_id() -> String {
     }
     let _ = std::fs::write(&path, &id);
     id
+}
+
+#[cfg(test)]
+mod terra_identity_tests {
+    use super::device_id_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn device_id_uses_terra_local_namespace() {
+        assert_eq!(
+            device_id_path(Path::new("/tmp/app-data")),
+            PathBuf::from("/tmp/app-data/terra/device_id")
+        );
+    }
 }
 
 pub struct CryptoState {
@@ -1310,7 +1328,7 @@ pub fn run() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
-            window.set_title("TermVault")?;
+            window.set_title("Terra")?;
 
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let db_path = data_dir.join(db::DB_FILE_NAME);
@@ -1350,7 +1368,7 @@ pub fn run() {
         .manage(ssh::SshSessions::new(
             dirs::data_local_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("termvault"),
+                .join("terra"),
         ))
         .manage(forwarding::runtime::ForwardingState::new())
         .manage(sftp::SftpSessions::new())
@@ -1499,7 +1517,7 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
-            eprintln!("Failed to run TermVault: {e}");
+            eprintln!("Failed to run Terra: {e}");
             std::process::exit(1);
         });
 }

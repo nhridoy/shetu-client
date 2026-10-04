@@ -44,7 +44,7 @@ pub async fn bind_oauth_listener(state: tauri::State<'_, OAuthListener>) -> Resu
     }
     let (port, listener) = bound.ok_or_else(|| {
         "Could not bind a local callback port (1421-1423). \
-         Close the app using it, or restart TermVault and try again."
+         Close the app using it, or restart Terra and try again."
             .to_string()
     })?;
     let attempt = state.next_attempt.fetch_add(1, Ordering::Relaxed);
@@ -133,10 +133,10 @@ async fn handle_callback(listener: TcpListener, port: u16) -> Result<String, Str
     let callback_url = format!("http://127.0.0.1:{port}{request_target}");
 
     let body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
-                <title>TermVault</title></head>\
+                <title>Terra</title></head>\
                 <body style=\"font-family:system-ui;text-align:center;padding:3rem;\">\
                 <h2>Authentication complete</h2>\
-                <p>You can close this tab and return to TermVault.</p>\
+                <p>You can close this tab and return to Terra.</p>\
                 </body></html>";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\

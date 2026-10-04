@@ -20,7 +20,7 @@ export function buildRecoveryKitContent(
   account: string,
 ): string {
   return [
-    "TermVault Recovery Kit",
+    "Terra Recovery Kit",
     "=====================",
     "",
     `Account: ${account}`,
@@ -31,12 +31,16 @@ export function buildRecoveryKitContent(
   ].join("\n");
 }
 
+export function buildRecoveryKitFilename(account: string): string {
+  return `terra-recovery-kit-(${sanitizeFileNamePart(account)}).txt`;
+}
+
 export async function downloadRecoveryKit(
   recoveryCode: string,
   account: string,
 ): Promise<string | null> {
   const content = buildRecoveryKitContent(recoveryCode, account);
-  const fileName = `termvault-recovery-kit-(${sanitizeFileNamePart(account)}).txt`;
+  const fileName = buildRecoveryKitFilename(account);
 
   if (isTauriAvailable()) {
     const path = await saveFilePicker(fileName);

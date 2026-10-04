@@ -127,7 +127,7 @@ export default function SecurityTab({
               Ask for password every time
             </span>
             <span className="text-xs text-dark-400 mt-1 block">
-              When off, TermVault securely remembers your password on this
+              When off, Terra securely remembers your password on this
               device and unlocks automatically when you open the app (entry
               expires after 14 days of inactivity or 90 days). When on,
               you&apos;ll enter your password on every launch and after logout,

@@ -130,7 +130,7 @@ export function WindowDragArea({
             aria-hidden="true"
           />
           <span className="font-semibold tracking-wide text-dark-200">
-            TermVault
+            Terra
           </span>
         </>
       )}

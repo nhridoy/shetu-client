@@ -5,7 +5,7 @@ use std::sync::Mutex;
 #[path = "sync_db.rs"]
 pub mod sync_db;
 
-pub const DB_FILE_NAME: &str = "termvault.db";
+pub const DB_FILE_NAME: &str = "terra.db";
 
 /// Reset the local database contents to pristine state. Row-deletion is used
 /// instead of file removal because the managed connection holds the DB file
@@ -1413,9 +1413,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_database_filename_uses_terra_identity() {
+        assert_eq!(DB_FILE_NAME, "terra.db");
+    }
+
+
+    #[test]
     fn sync_db_migrates_legacy_outbox_to_stable_iso_operation() {
         let path = std::env::temp_dir().join(format!(
-            "termvault-sync-migration-{}.db",
+            "terra-sync-migration-{}.db",
             uuid::Uuid::new_v4()
         ));
         let path_str = path.to_str().unwrap();
