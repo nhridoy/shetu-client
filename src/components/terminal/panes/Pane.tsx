@@ -56,10 +56,10 @@ export default function Pane({
   const [recording, setRecording] = useState(() => isPaneRecording(pane.id));
   useEffect(() => {
     const refresh = () => setRecording(isPaneRecording(pane.id));
-    window.addEventListener("termvault:recording-change", refresh);
+    window.addEventListener("terra:recording-change", refresh);
     refresh();
     return () =>
-      window.removeEventListener("termvault:recording-change", refresh);
+      window.removeEventListener("terra:recording-change", refresh);
   }, [pane.id]);
 
   const { ref, isDragging } = useDraggable({

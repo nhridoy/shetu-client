@@ -23,7 +23,7 @@ export function isPaneRecording(paneId: string): boolean {
 
 function notifyRecordingChange() {
   if (typeof window !== "undefined")
-    window.dispatchEvent(new Event("termvault:recording-change"));
+    window.dispatchEvent(new Event("terra:recording-change"));
 }
 
 function reportHistoryError(error: unknown) {
@@ -33,7 +33,7 @@ function reportHistoryError(error: unknown) {
 function notifyMutation(vaultId: string) {
   if (typeof window !== "undefined") {
     window.dispatchEvent(
-      new CustomEvent("termvault:local-mutation", { detail: { vaultId } }),
+      new CustomEvent("terra:local-mutation", { detail: { vaultId } }),
     );
   }
 }

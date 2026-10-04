@@ -339,8 +339,19 @@ pub fn delete_attempt(
 }
 
 fn preference_id(vault_id: &str) -> Result<String, String> {
+    preference_id_with_domain(vault_id, b"terra:session-preferences:")
+}
+
+fn legacy_preference_id(vault_id: &str) -> Result<String, String> {
+    preference_id_with_domain(vault_id, b"termvault:session-preferences:")
+}
+
+fn preference_id_with_domain(vault_id: &str, domain: &[u8]) -> Result<String, String> {
     uuid::Uuid::parse_str(vault_id).map_err(|_| "invalid vault ID")?;
-    let digest = Sha256::digest(format!("termvault:session-preferences:{vault_id}").as_bytes());
+    let mut input = Vec::with_capacity(domain.len() + vault_id.len());
+    input.extend_from_slice(domain);
+    input.extend_from_slice(vault_id.as_bytes());
+    let digest = Sha256::digest(input);
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
@@ -355,7 +366,12 @@ struct Preferences {
 
 pub fn get_retention_days(db: &LocalDb, keys: &KeySession, vault_id: &str) -> Result<u32, String> {
     let id = preference_id(vault_id)?;
-    let Some(row) = db::get_sync_row(db, Table::SessionPreferences, &id)? else {
+    let row = db::get_sync_row(db, Table::SessionPreferences, &id)?.or(db::get_sync_row(
+        db,
+        Table::SessionPreferences,
+        &legacy_preference_id(vault_id)?,
+    )?);
+    let Some(row) = row else {
         return Ok(30);
     };
     if row.deleted_at.is_some() {
@@ -421,6 +437,50 @@ pub fn apply_retention(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terra_preference_ids_are_new_but_legacy_preferences_still_load() {
+        let db = crate::db::open(":memory:").unwrap();
+        let vault_id = uuid::Uuid::new_v4().to_string();
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        db.conn.lock().unwrap().execute("INSERT INTO vaults (id, owner_id, kind, name, is_default, created_at, updated_at) VALUES (?1, ?2, 'personal', 'Personal', 1, '2026-10-02T00:00:00.000Z', '2026-10-02T00:00:00.000Z')", rusqlite::params![vault_id, owner_id]).unwrap();
+        let mut keys = crate::crypto::KeySession::new();
+        crate::crypto::generate_account_material(&mut keys).unwrap();
+
+        let legacy_id = legacy_preference_id_for_test(&vault_id);
+        assert_ne!(preference_id(&vault_id).unwrap(), legacy_id);
+        let encrypted = crypto::encrypt_secret(
+            r#"{"retention_days":7}"#,
+            Table::SessionPreferences.as_str(),
+            &keys,
+        )
+        .unwrap();
+        db::local_mutate(
+            &db,
+            Table::SessionPreferences,
+            &SyncRow {
+                id: legacy_id,
+                vault_id: vault_id.clone(),
+                name: Some("Session preferences".into()),
+                data: encrypted,
+                ..SyncRow::default()
+            },
+            &device_id,
+        )
+        .unwrap();
+
+        assert_eq!(get_retention_days(&db, &keys, &vault_id).unwrap(), 7);
+    }
+
+    fn legacy_preference_id_for_test(vault_id: &str) -> String {
+        let digest = Sha256::digest(format!("termvault:session-preferences:{vault_id}").as_bytes());
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x50;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        uuid::Uuid::from_bytes(bytes).to_string()
+    }
 
     #[test]
     fn session_attempt_finishes_without_reopening() {

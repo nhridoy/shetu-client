@@ -87,7 +87,7 @@ export async function upsertRow(
 function notifyLocalMutation(table: TableName, vaultId: string): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(
-      new CustomEvent("termvault:local-mutation", {
+      new CustomEvent("terra:local-mutation", {
         detail: { table, vaultId },
       }),
     );

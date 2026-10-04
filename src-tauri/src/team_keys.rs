@@ -34,7 +34,8 @@ pub struct TeamKeyEnvelope {
     pub ciphertext: String,
 }
 
-const DOMAIN: &[u8] = b"termvault-team-vault-key-envelope-v1";
+const DOMAIN: &[u8] = b"terra-team-vault-key-envelope-v1";
+const LEGACY_DOMAIN: &[u8] = b"termvault-team-vault-key-envelope-v1";
 
 pub fn generate_vault_key() -> Zeroizing<[u8; 32]> {
     let mut key = Zeroizing::new([0u8; 32]);
@@ -68,15 +69,16 @@ fn derive_aead_key(
     shared: &[u8; 32],
     ephemeral: &[u8; 32],
     recipient: &[u8; 32],
+    domain: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     if shared.iter().all(|byte| *byte == 0) {
         return Err("invalid recipient key".into());
     }
-    let mut info = Vec::with_capacity(DOMAIN.len() + 64);
-    info.extend_from_slice(DOMAIN);
+    let mut info = Vec::with_capacity(domain.len() + 64);
+    info.extend_from_slice(domain);
     info.extend_from_slice(ephemeral);
     info.extend_from_slice(recipient);
-    let hkdf = Hkdf::<Sha256>::new(Some(DOMAIN), shared);
+    let hkdf = Hkdf::<Sha256>::new(Some(domain), shared);
     let mut key = Zeroizing::new([0u8; 32]);
     hkdf.expand(&info, &mut *key)
         .map_err(|_| "key derivation failed".to_string())?;
@@ -88,6 +90,15 @@ pub fn seal_key_bytes(
     context: &GrantContext,
     recipient_public_key: &[u8; 32],
 ) -> Result<TeamKeyEnvelope, String> {
+    seal_key_bytes_with_domain(key, context, recipient_public_key, DOMAIN)
+}
+
+fn seal_key_bytes_with_domain(
+    key: &[u8; 32],
+    context: &GrantContext,
+    recipient_public_key: &[u8; 32],
+    domain: &[u8],
+) -> Result<TeamKeyEnvelope, String> {
     let recipient = PublicKey::from(*recipient_public_key);
     if fingerprint_identity_key(&BASE64.encode(recipient_public_key))?
         != context.recipient_fingerprint
@@ -97,7 +108,12 @@ pub fn seal_key_bytes(
     let ephemeral_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let ephemeral_public = PublicKey::from(&ephemeral_secret);
     let shared = Zeroizing::new(ephemeral_secret.diffie_hellman(&recipient).to_bytes());
-    let mut derived = derive_aead_key(&shared, ephemeral_public.as_bytes(), recipient_public_key)?;
+    let mut derived = derive_aead_key(
+        &shared,
+        ephemeral_public.as_bytes(),
+        recipient_public_key,
+        domain,
+    )?;
     let mut nonce = [0u8; 24];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let cipher = XChaCha20Poly1305::new((&*derived).into());
@@ -155,18 +171,28 @@ pub fn open_key_bytes(
             .diffie_hellman(&ephemeral_public)
             .to_bytes(),
     );
-    let derived = derive_aead_key(&shared, &ephemeral_bytes, recipient_public.as_bytes())?;
-    let cipher = XChaCha20Poly1305::new((&*derived).into());
     let aad = context_bytes(&envelope.context)?;
-    let plaintext = cipher
-        .decrypt(
+    let mut plaintext = None;
+    for domain in [DOMAIN, LEGACY_DOMAIN] {
+        let derived = derive_aead_key(
+            &shared,
+            &ephemeral_bytes,
+            recipient_public.as_bytes(),
+            domain,
+        )?;
+        let cipher = XChaCha20Poly1305::new((&*derived).into());
+        if let Ok(value) = cipher.decrypt(
             &XNonce::from(nonce),
             Payload {
                 msg: &ciphertext,
                 aad: &aad,
             },
-        )
-        .map_err(|_| "team key authentication failed".to_string())?;
+        ) {
+            plaintext = Some(value);
+            break;
+        }
+    }
+    let plaintext = plaintext.ok_or("team key authentication failed")?;
     let key: [u8; 32] = plaintext
         .try_into()
         .map_err(|_| "invalid team key length".to_string())?;
@@ -672,6 +698,25 @@ mod tests {
         changed.version = 2;
         assert!(open_key_bytes(&changed, &recipient).is_err());
         assert!(fingerprint_identity_key("broken").is_err());
+    }
+
+    #[test]
+    fn opens_legacy_termvault_team_envelopes_after_identity_rename() {
+        let recipient = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let public = PublicKey::from(&recipient);
+        let public_b64 = BASE64.encode(public.as_bytes());
+        let context = GrantContext {
+            team_id: "team".into(),
+            vault_id: "vault".into(),
+            epoch: 1,
+            recipient_user_id: "recipient".into(),
+            recipient_fingerprint: fingerprint_identity_key(&public_b64).unwrap(),
+        };
+        let key = generate_vault_key();
+        let legacy =
+            seal_key_bytes_with_domain(&key, &context, public.as_bytes(), LEGACY_DOMAIN).unwrap();
+
+        assert_eq!(*open_key_bytes(&legacy, &recipient).unwrap(), *key);
     }
 
     #[test]

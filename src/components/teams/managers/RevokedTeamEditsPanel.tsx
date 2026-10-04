@@ -54,7 +54,7 @@ export default function RevokedTeamEditsPanel() {
       });
       const content = JSON.stringify(
         {
-          format: "termvault-revoked-team-edits-v1",
+          format: "terra-revoked-team-edits-v1",
           vault_id: vault.vault_id,
           exported_at: new Date().toISOString(),
           edits,

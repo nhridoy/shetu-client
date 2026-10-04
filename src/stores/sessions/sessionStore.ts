@@ -45,7 +45,7 @@ function personalVaultId(): string {
 function notifyMutation(vaultId: string) {
   if (typeof window !== "undefined")
     window.dispatchEvent(
-      new CustomEvent("termvault:local-mutation", { detail: { vaultId } }),
+      new CustomEvent("terra:local-mutation", { detail: { vaultId } }),
     );
 }
 
