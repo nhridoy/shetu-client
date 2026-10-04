@@ -9,6 +9,11 @@ import {
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import SyncStatus from "@/components/layout/shell/SyncStatus";
+import {
+  isMac,
+  WindowControls,
+  WindowDragArea,
+} from "@/components/layout/shell/TitleBar";
 import SortableTab from "@/components/layout/tabs/SortableTab";
 import { Button } from "@/components/ui/Button";
 import VaultSelector from "@/components/vault/selector/VaultSelector";
@@ -63,7 +68,8 @@ export default function Header({
   };
 
   return (
-    <header className="fixed top-9 left-0 right-0 z-50 h-10 bg-dark-900 border-b border-dark-800 flex items-center px-2 gap-0.5">
+    <header className="fixed top-0 left-0 right-0 z-50 h-10 bg-dark-900 border-b border-dark-800 flex items-center pl-2 gap-0.5">
+      {isMac && <WindowControls />}
       {/* Mobile menu toggle */}
       <Button
         type="button"
@@ -92,106 +98,108 @@ export default function Header({
       >
         <FolderIcon className="w-3.5 h-3.5" />
         Vaults
-        {activeView === "vault" && <VaultSelector />}
       </Button>
+      {activeView === "vault" && <VaultSelector compact />}
 
-      {/* SFTP Tab */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          setActiveView("sftp");
-          navigate("/sftp");
-        }}
-        className={`shrink-0 rounded ${
-          activeView === "sftp"
-            ? "bg-dark-800 text-white"
-            : "hover:bg-dark-800/50"
-        }`}
-      >
-        <FolderIcon className="w-3.5 h-3.5" />
-        SFTP
-      </Button>
+      <div className="flex min-w-0 max-w-full items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {/* SFTP Tab */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setActiveView("sftp");
+            navigate("/sftp");
+          }}
+          className={`shrink-0 rounded ${
+            activeView === "sftp"
+              ? "bg-dark-800 text-white"
+              : "hover:bg-dark-800/50"
+          }`}
+        >
+          <FolderIcon className="w-3.5 h-3.5" />
+          SFTP
+        </Button>
 
-      {/* Editor Tab */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          setActiveView("editor");
-          navigate("/editor");
-        }}
-        className={`shrink-0 rounded ${
-          activeView === "editor"
-            ? "bg-dark-800 text-white"
-            : "hover:bg-dark-800/50"
-        }`}
-      >
-        <CodeIcon className="w-3.5 h-3.5" />
-        Editor
-      </Button>
+        {/* Editor Tab */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setActiveView("editor");
+            navigate("/editor");
+          }}
+          className={`shrink-0 rounded ${
+            activeView === "editor"
+              ? "bg-dark-800 text-white"
+              : "hover:bg-dark-800/50"
+          }`}
+        >
+          <CodeIcon className="w-3.5 h-3.5" />
+          Editor
+        </Button>
 
-      {/* Separator */}
-      {tabs.length > 0 && (
-        <div className="shrink-0 w-px h-4 mx-1 bg-dark-700" />
-      )}
+        {/* Separator */}
+        {tabs.length > 0 && (
+          <div className="shrink-0 w-px h-4 mx-1 bg-dark-700" />
+        )}
 
-      {/* Real Tabs (sortable, powered by dnd-kit) */}
-      <div className="flex items-center">
-        {tabs.map((tab, index) => (
-          <SortableTab
-            key={tab.id}
-            tab={tab}
-            index={index}
-            isActive={activeView === tab.id}
-            onActivate={() => {
-              setActiveTab(tab.id);
-              setActiveView(tab.id);
-              navigate("/terminal");
-            }}
-            onSavePreset={onSavePreset}
-            onSavePresetChanges={onSavePresetChanges}
-            onClose={() => {
-              const isClosingActive = activeView === tab.id;
-              removeTab(tab.id);
-              if (isClosingActive) {
-                const { tabs: remainingTabs } = useTerminalStore.getState();
-                if (remainingTabs.length > 0) {
-                  const lastTab = remainingTabs.at(-1);
-                  if (lastTab) {
-                    setActiveView(lastTab.id);
+        {/* Real Tabs (sortable, powered by dnd-kit) */}
+        <div className="flex items-center">
+          {tabs.map((tab, index) => (
+            <SortableTab
+              key={tab.id}
+              tab={tab}
+              index={index}
+              isActive={activeView === tab.id}
+              onActivate={() => {
+                setActiveTab(tab.id);
+                setActiveView(tab.id);
+                navigate("/terminal");
+              }}
+              onSavePreset={onSavePreset}
+              onSavePresetChanges={onSavePresetChanges}
+              onClose={() => {
+                const isClosingActive = activeView === tab.id;
+                removeTab(tab.id);
+                if (isClosingActive) {
+                  const { tabs: remainingTabs } = useTerminalStore.getState();
+                  if (remainingTabs.length > 0) {
+                    const lastTab = remainingTabs.at(-1);
+                    if (lastTab) {
+                      setActiveView(lastTab.id);
+                    }
+                    navigate("/terminal");
+                  } else {
+                    setActiveView("vault");
+                    navigate("/hosts");
                   }
-                  navigate("/terminal");
-                } else {
-                  setActiveView("vault");
-                  navigate("/hosts");
                 }
-              }
-            }}
-          />
-        ))}
+              }}
+            />
+          ))}
+        </div>
+
+        {/* New Tab Button */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            const newTabId = addEmptyTab();
+            setActiveView(newTabId);
+            navigate("/terminal");
+          }}
+          className="shrink-0 rounded"
+          title="New Tab"
+        >
+          <PlusIcon className="w-3.5 h-3.5" />
+        </Button>
       </div>
 
-      {/* New Tab Button */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        onClick={() => {
-          const newTabId = addEmptyTab();
-          setActiveView(newTabId);
-          navigate("/terminal");
-        }}
-        className="shrink-0 rounded"
-        title="New Tab"
-      >
-        <PlusIcon className="w-3.5 h-3.5" />
-      </Button>
-
       {/* Spacer */}
-      <div className="flex-1" />
+      <WindowDragArea className="min-w-6 flex-1 px-0" />
 
       {/* Right-side actions */}
       <div className="flex items-center gap-1.5 shrink-0">
@@ -277,6 +285,7 @@ export default function Header({
           <GearSixIcon className="w-4 h-4" />
         </Button>
       </div>
+      {!isMac && <WindowControls />}
     </header>
   );
 }

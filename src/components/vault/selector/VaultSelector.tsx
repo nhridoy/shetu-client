@@ -44,7 +44,7 @@ function colorFor(vault: Partial<VaultItem>, index: number): string {
   return VAULT_COLORS[index % VAULT_COLORS.length];
 }
 
-export function VaultSelector() {
+export function VaultSelector({ compact = false }: { compact?: boolean }) {
   const { vaults, currentVaultId, switchVault } = useVaultStore();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -114,13 +114,18 @@ export function VaultSelector() {
   };
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative shrink-0" ref={containerRef}>
       {/* Trigger */}
       <Button
         type="button"
         variant="outline"
+        size={compact ? "sm" : undefined}
         onClick={() => setOpen((o) => !o)}
-        className="h-8 pl-2.5 pr-2 rounded-lg bg-dark-800 hover:bg-dark-700 hover:border-dark-600"
+        className={
+          compact
+            ? "h-7 max-w-36 gap-1.5 rounded px-2 py-0 text-xs bg-transparent border-0 hover:bg-dark-800"
+            : "h-8 pl-2.5 pr-2 rounded-lg bg-dark-800 hover:bg-dark-700 hover:border-dark-600"
+        }
       >
         <span
           className={`w-2 h-2 rounded-full shrink-0 ${colorFor(
@@ -128,7 +133,9 @@ export function VaultSelector() {
             vaults.findIndex((v) => v.id === currentVaultId),
           )}`}
         />
-        <span className="text-sm font-medium text-white truncate max-w-[140px]">
+        <span
+          className={`${compact ? "text-xs max-w-24" : "text-sm max-w-[140px]"} font-medium text-white truncate`}
+        >
           {currentVault?.name || "Vault"}
         </span>
         {currentVault?.accessState === "revoked" && (

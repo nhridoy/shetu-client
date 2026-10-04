@@ -1,6 +1,6 @@
 import { emit } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router";
 import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
 import UnlockDialog from "@/components/auth/UnlockDialog";
@@ -53,42 +53,52 @@ function App() {
 
   return (
     <BrowserRouter>
-      <TitleBar />
-      <div className="pt-9">
-        <Routes>
+      <Routes>
+        <Route element={<PublicChrome />}>
           <Route element={<AuthGuard requireAuth={false} />}>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/recovery" element={<RecoveryPage />} />
           </Route>
+        </Route>
 
-          <Route element={<AuthGuard requireAuth={true} />}>
-            <Route element={<Layout />}>
-              <Route index element={<Navigate to="/hosts" replace />} />
-              <Route path="hosts" element={<HostsPage />} />
-              <Route path="workspaces" element={<WorkspacesPage />} />
-              <Route path="snippets" element={<SnippetsPage />} />
-              <Route path="keys" element={<KeysPage />} />
-              <Route path="history" element={<HistoryPage />} />
-              <Route path="terminal" element={<TerminalPage />} />
-              <Route path="sftp" element={<SftpPage />} />
-              <Route path="editor" element={<EditorPage />} />
-              <Route path="*" element={<Navigate to="/hosts" replace />} />
-            </Route>
+        <Route element={<AuthGuard requireAuth={true} />}>
+          <Route element={<Layout />}>
+            <Route index element={<Navigate to="/hosts" replace />} />
+            <Route path="hosts" element={<HostsPage />} />
+            <Route path="workspaces" element={<WorkspacesPage />} />
+            <Route path="snippets" element={<SnippetsPage />} />
+            <Route path="keys" element={<KeysPage />} />
+            <Route path="history" element={<HistoryPage />} />
+            <Route path="terminal" element={<TerminalPage />} />
+            <Route path="sftp" element={<SftpPage />} />
+            <Route path="editor" element={<EditorPage />} />
+            <Route path="*" element={<Navigate to="/hosts" replace />} />
           </Route>
-        </Routes>
-        <RecoveryRevealModal
-          open={!!pendingRecoveryCode}
-          recoveryCode={pendingRecoveryCode ?? ""}
-          onClose={clearRecoveryCode}
-          context={pendingRecoveryContext ?? "signup"}
-        />
-        <UnlockDialog />
-        <UpdateNotification />
-        <Toaster richColors />
-      </div>
+        </Route>
+      </Routes>
+      <RecoveryRevealModal
+        open={!!pendingRecoveryCode}
+        recoveryCode={pendingRecoveryCode ?? ""}
+        onClose={clearRecoveryCode}
+        context={pendingRecoveryContext ?? "signup"}
+      />
+      <UnlockDialog />
+      <UpdateNotification />
+      <Toaster richColors />
     </BrowserRouter>
+  );
+}
+
+function PublicChrome() {
+  return (
+    <>
+      <TitleBar />
+      <div className="pt-9">
+        <Outlet />
+      </div>
+    </>
   );
 }
 
