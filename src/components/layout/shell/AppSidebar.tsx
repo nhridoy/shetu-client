@@ -7,6 +7,7 @@ import {
   KeyIcon,
   SignOutIcon,
   UserIcon,
+  UsersIcon,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router";
 import { Button } from "@/components/ui/Button";
@@ -18,6 +19,7 @@ const sidebarItems = [
   { path: "/snippets", label: "Snippets", icon: FileTextIcon },
   { path: "/keys", label: "Keys", icon: KeyIcon },
   { path: "/history", label: "History", icon: ClockCounterClockwiseIcon },
+  { path: "/teams", label: "Teams", icon: UsersIcon },
 ] as const;
 
 interface AppSidebarProps {

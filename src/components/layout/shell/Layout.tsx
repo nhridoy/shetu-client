@@ -63,6 +63,7 @@ export default function Layout() {
     "/snippets",
     "/keys",
     "/history",
+    "/teams",
   ].includes(location.pathname);
 
   useEffect(() => {

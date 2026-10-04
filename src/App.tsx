@@ -6,6 +6,7 @@ import AuthGuard from "@/components/auth/guard/AuthGuard";
 import UnlockDialog from "@/components/auth/UnlockDialog";
 import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
+import TeamManager from "@/components/teams/managers/TeamManager";
 import UpdateNotification from "@/components/update/UpdateNotification";
 import LoginPage from "@/pages/auth/LoginPage";
 import RecoveryPage from "@/pages/auth/RecoveryPage";
@@ -71,6 +72,7 @@ function App() {
             <Route path="snippets" element={<SnippetsPage />} />
             <Route path="keys" element={<KeysPage />} />
             <Route path="history" element={<HistoryPage />} />
+            <Route path="teams" element={<TeamManager />} />
             <Route path="terminal" element={<TerminalPage />} />
             <Route path="sftp" element={<SftpPage />} />
             <Route path="editor" element={<EditorPage />} />
