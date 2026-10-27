@@ -3,19 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/api/teams", () => ({
   teamsApi: { listTeams: vi.fn(), createTeam: vi.fn(), listMembers: vi.fn() },
 }));
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn().mockRejectedValue(new Error("no cache")),
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "account-1" } }) },
 }));
 
 import { teamsApi } from "@/lib/api/teams";
+import { invoke } from "@tauri-apps/api/core";
 import { useTeamStore } from "./teamStore";
 
 beforeEach(() => {
   vi.mocked(teamsApi.listTeams).mockReset();
   vi.mocked(teamsApi.createTeam).mockReset();
+  vi.mocked(invoke).mockReset();
   useTeamStore.setState({
     teams: [],
     selectedTeam: null,
@@ -25,17 +25,21 @@ beforeEach(() => {
 });
 
 describe("team store", () => {
-  it("loads server teams into the existing UI model", async () => {
-    vi.mocked(teamsApi.listTeams).mockResolvedValue([
+  it("loads teams from local SQLite without calling the server API", async () => {
+    vi.mocked(invoke).mockResolvedValue([
       {
         id: "team-1",
         name: "Ops",
-        owner_id: "account-1",
-        created_at: "2026-10-01T00:00:00.000Z",
-        updated_at: "2026-10-01T00:00:00.000Z",
+        ownerId: "account-1",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:00:00.000Z",
       },
     ]);
     await useTeamStore.getState().fetchTeams();
+    expect(invoke).toHaveBeenCalledWith("local_teams", {
+      accountId: "account-1",
+    });
+    expect(teamsApi.listTeams).not.toHaveBeenCalled();
     expect(useTeamStore.getState().teams[0]).toMatchObject({
       id: "team-1",
       name: "Ops",

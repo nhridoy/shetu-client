@@ -19,6 +19,7 @@ import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import {
   SYNC_COMPLETED_EVENT,
   TEAM_ACCESS_REVOKED_EVENT,
+  TEAM_SYNC_COMPLETED_EVENT,
   useSyncStore,
 } from "@/stores/sync/syncStore";
 import { useSharedVaultStore } from "@/stores/teams/sharedVaultStore";
@@ -104,23 +105,6 @@ export default function Layout() {
   }, [isUnlocked, defaultPersonalVaultId]);
 
   useEffect(() => {
-    if (!isUnlocked || !serverAuthenticated) return;
-    let cancelled = false;
-    void (async () => {
-      await useTeamStore.getState().fetchTeams();
-      if (cancelled || useTeamStore.getState().error) return;
-      for (const team of useTeamStore.getState().teams) {
-        await useSharedVaultStore.getState().fetchSharedVaults(team.id);
-        if (cancelled) return;
-      }
-      if (!cancelled) void useSyncStore.getState().requestAll();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isUnlocked, serverAuthenticated]);
-
-  useEffect(() => {
     if (!isUnlocked) return;
     void fetchHosts(currentVaultId || undefined);
     void fetchGroups(currentVaultId || undefined);
@@ -157,6 +141,37 @@ export default function Layout() {
     return () =>
       window.removeEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
   }, [currentVaultId, fetchVaults, fetchHosts, fetchGroups]);
+
+  useEffect(() => {
+    const onTeamSyncCompleted = (event: Event) => {
+      void (async () => {
+        const teamStore = useTeamStore.getState();
+        await Promise.all([
+          fetchVaults(),
+          teamStore.fetchTeams(),
+          teamStore.fetchMyInvites(),
+        ]);
+        const rotatedVaultIds = (
+          event as CustomEvent<{ rotatedVaultIds?: string[] }>
+        ).detail?.rotatedVaultIds;
+        for (const vaultId of rotatedVaultIds ?? []) {
+          void requestSync(vaultId);
+        }
+        const refreshedTeamStore = useTeamStore.getState();
+        const teamId = refreshedTeamStore.selectedTeam?.id;
+        if (teamId) {
+          await refreshedTeamStore.fetchTeamDetails(teamId).catch(() => {});
+          await useSharedVaultStore.getState().fetchSharedVaults(teamId);
+        }
+      })();
+    };
+    window.addEventListener(TEAM_SYNC_COMPLETED_EVENT, onTeamSyncCompleted);
+    return () =>
+      window.removeEventListener(
+        TEAM_SYNC_COMPLETED_EVENT,
+        onTeamSyncCompleted,
+      );
+  }, [fetchVaults, requestSync]);
 
   useEffect(() => {
     const onRevoked = () => void fetchVaults();

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { triggerSync } from "../../lib/api/sync";
 import { getOutbox } from "../../lib/db/db";
@@ -5,6 +6,7 @@ import { useAuthStore } from "../auth/authStore";
 import { useVaultStore } from "../vault/vaultStore";
 
 export const SYNC_COMPLETED_EVENT = "terra:sync-completed";
+export const TEAM_SYNC_COMPLETED_EVENT = "terra:team-sync-completed";
 export const TEAM_ACCESS_REVOKED_EVENT = "terra:team-access-revoked";
 
 export type SyncState =
@@ -30,8 +32,65 @@ interface SyncStore {
 }
 
 const inFlight = new Map<string, Promise<void>>();
+const teamSyncInFlight = new Map<string, Promise<void>>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let activeVaultId: string | null = null;
+
+async function requestTeamSync(throwOnError = false): Promise<void> {
+  const auth = useAuthStore.getState();
+  const accountId = auth.localAccessAccountId ?? auth.user?.id;
+  if (!accountId) {
+    if (throwOnError) throw new Error("Sign in to sync team changes.");
+    return;
+  }
+  const existing = teamSyncInFlight.get(accountId);
+  if (existing) {
+    try {
+      await existing;
+    } catch (error) {
+      if (throwOnError) throw error;
+      console.warn("Team sync deferred:", error);
+    }
+    return;
+  }
+  const task = (async () => {
+    const currentAuth = useAuthStore.getState();
+    if (!currentAuth.serverAuthenticated) {
+      const result = await currentAuth.retryServerSession();
+      if (result !== "connected") {
+        if (throwOnError)
+          throw new Error(`Team sync requires a connection: ${result}`);
+        return;
+      }
+    }
+    const summary = await invoke<{ rotatedVaultIds?: string[] }>(
+      "team_sync_now",
+      { accountId },
+    );
+    if (typeof window !== "undefined")
+      window.dispatchEvent(
+        new CustomEvent(TEAM_SYNC_COMPLETED_EVENT, { detail: summary }),
+      );
+  })();
+  teamSyncInFlight.set(accountId, task);
+  try {
+    await task;
+  } catch (error) {
+    // Team data remains available from SQLite; a later timer or reconnect retries.
+    console.warn("Team sync deferred:", error);
+    if (throwOnError) throw error;
+  } finally {
+    teamSyncInFlight.delete(accountId);
+  }
+}
+
+export function notifyTeamMutation(): void {
+  void requestTeamSync();
+}
+
+export function syncTeamsNow(): Promise<void> {
+  return requestTeamSync(true);
+}
 
 async function countPending(): Promise<number> {
   try {
@@ -136,6 +195,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     await Promise.allSettled(
       [...vaultIds].map((vaultId) => get().requestSync(vaultId)),
     );
+    await requestTeamSync();
   },
 
   notifyLocalMutation: (vaultId) => {
@@ -156,7 +216,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
   start: (vaultId) => {
     activeVaultId = vaultId;
-    void get().requestSync(vaultId);
+    void get().requestAll();
     if (typeof window === "undefined") return () => {};
     const onMutation = (event: Event) => {
       const detail = (event as CustomEvent<{ vaultId?: string }>).detail;

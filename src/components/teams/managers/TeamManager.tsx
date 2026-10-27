@@ -52,7 +52,10 @@ export default function TeamManager() {
   const ownRole = selectedTeam?.members?.find(
     (member) => member.userId === currentUserId,
   )?.role;
-  const canManage = ownRole === "owner" || ownRole === "admin";
+  const canManage =
+    selectedTeam?.ownerId === currentUserId ||
+    ownRole === "owner" ||
+    ownRole === "admin";
 
   const createModal = useModal();
   const inviteModal = useModal();
@@ -112,7 +115,7 @@ export default function TeamManager() {
   const handleRemoveMember = async (userId: string) => {
     if (!selectedTeam) return;
     requestDelete(
-      "Remove this member? Their server access ends immediately, but offline copies they already have cannot be erased. Shared vaults will need key rotation.",
+      "Remove this member? The change will take effect on the server after it syncs. Offline copies they already have cannot be erased, and shared vaults will need key rotation.",
       () => void removeMember(selectedTeam.id, userId),
     );
   };
@@ -161,36 +164,49 @@ export default function TeamManager() {
           <h3 className="text-sm font-medium text-white">
             Invitations for you
           </h3>
-          {pendingInvites.map((invite) => (
-            <div
-              key={invite.id}
-              className="flex items-center justify-between gap-3 text-sm text-dark-200"
-            >
-              <span>
-                Team invitation · {invite.role} · expires{" "}
-                {new Date(invite.expires_at).toLocaleDateString()}
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={isLoading}
-                  onClick={() => void declineInvite(invite.id)}
-                >
-                  Decline
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={isLoading}
-                  onClick={() => void acceptInvite(invite.id)}
-                >
-                  Accept
-                </Button>
+          {pendingInvites.map((invite) => {
+            const queued =
+              invite.state === "accept_pending" ||
+              invite.state === "decline_pending";
+            const rejected = invite.state === "sync_rejected";
+            return (
+              <div
+                key={invite.id}
+                className="flex items-center justify-between gap-3 text-sm text-dark-200"
+              >
+                <span>
+                  Team invitation · {invite.role}
+                  {queued
+                    ? ` · ${invite.state === "accept_pending" ? "Accept" : "Decline"} waiting to sync`
+                    : rejected
+                      ? " · previous response could not sync; choose again"
+                      : " · expires "}
+                  {!queued &&
+                    !rejected &&
+                    new Date(invite.expires_at).toLocaleDateString()}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isLoading || queued}
+                    onClick={() => void declineInvite(invite.id)}
+                  >
+                    Decline
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isLoading || queued}
+                    onClick={() => void acceptInvite(invite.id)}
+                  >
+                    Accept
+                  </Button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       <div className="flex-1 flex overflow-hidden">
@@ -229,6 +245,16 @@ export default function TeamManager() {
                     <div className="text-dark-400 text-sm">
                       {team.members?.length || 0} members
                     </div>
+                    {team.syncStatus !== "synced" && (
+                      <div
+                        className={`text-xs ${team.syncStatus === "rejected" ? "text-danger-400" : "text-primary-300"}`}
+                        title={team.syncError ?? undefined}
+                      >
+                        {team.syncStatus === "rejected"
+                          ? "Sync rejected"
+                          : "Waiting to sync"}
+                      </div>
+                    )}
                   </div>
                 </div>
               </Button>

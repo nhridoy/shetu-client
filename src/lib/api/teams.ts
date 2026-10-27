@@ -28,7 +28,15 @@ export interface TeamInviteDto {
   recipient_email: string;
   recipient_fingerprint: string;
   role: TeamRole;
-  state: "pending" | "accepted" | "declined" | "cancelled" | "expired";
+  state:
+    | "pending"
+    | "accepted"
+    | "declined"
+    | "cancelled"
+    | "expired"
+    | "accept_pending"
+    | "decline_pending"
+    | "sync_rejected";
   expires_at: string;
   created_at: string;
 }

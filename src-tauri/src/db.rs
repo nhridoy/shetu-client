@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use std::sync::Mutex;
 
 #[path = "sync_db.rs"]
@@ -19,6 +19,11 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "user_keys",
         "team_vault_keys",
         "team_vaults",
+        "team_outbox",
+        "team_sync_state",
+        "team_invites",
+        "team_members",
+        "team_records",
         "vaults",
         "groups",
         "hosts",
@@ -43,6 +48,1059 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
 
 pub struct LocalDb {
     pub conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRecord {
+    pub account_id: String,
+    pub id: String,
+    pub owner_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub sync_status: String,
+    pub sync_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamOutboxOperation {
+    pub account_id: String,
+    pub operation_id: String,
+    pub operation_type: String,
+    pub payload: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMemberRecord {
+    pub account_id: String,
+    pub team_id: String,
+    pub id: String,
+    pub user_id: String,
+    pub email: String,
+    pub full_name: String,
+    pub role: String,
+    pub created_at: String,
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamInviteRecord {
+    pub account_id: String,
+    pub id: String,
+    pub team_id: String,
+    pub email: String,
+    pub role: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamVaultRecord {
+    pub account_id: String,
+    pub team_id: String,
+    pub id: String,
+    pub name: String,
+    pub owner_id: String,
+    pub key_epoch: u32,
+    pub rotation_state: String,
+    pub revision: u32,
+    pub created_at: String,
+}
+
+/// Apply one server snapshot page, its key envelopes, revocations, and cursor
+/// as a single SQLite transaction. A cursor can therefore never move past a
+/// page whose local changes failed to commit.
+pub fn apply_team_sync_page(
+    db: &LocalDb,
+    account_id: &str,
+    snapshot: &crate::team_sync::TeamSnapshot,
+    envelopes: &[crate::team_sync::KeyEnvelopeWire],
+    session: &crate::crypto::KeySession,
+    cursor: Option<&str>,
+    persist_cursor: bool,
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    for team in &snapshot.teams {
+        uuid::Uuid::parse_str(&team.id).map_err(|_| "invalid team ID")?;
+        uuid::Uuid::parse_str(&team.owner_id).map_err(|_| "invalid team owner ID")?;
+        if team.name.trim().is_empty() {
+            return Err("team name cannot be empty".into());
+        }
+        tx.execute(
+            "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error) VALUES (?1,?2,?3,?4,?5,?6,'synced',NULL)
+             ON CONFLICT(account_id,id) DO UPDATE SET owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status='synced',sync_error=NULL",
+            rusqlite::params![account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at],
+        ).map_err(|e| e.to_string())?;
+
+        tx.execute(
+            "DELETE FROM team_members WHERE account_id=?1 AND team_id=?2",
+            rusqlite::params![account_id, team.id],
+        )
+        .map_err(|e| e.to_string())?;
+        for member in snapshot
+            .members
+            .iter()
+            .filter(|member| member.team_id == team.id)
+        {
+            for id in [&member.id, &member.user_id] {
+                uuid::Uuid::parse_str(id).map_err(|_| "invalid team member ID")?;
+            }
+            tx.execute(
+                "INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                rusqlite::params![account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut pending_responses = std::collections::HashMap::new();
+    {
+        let mut stmt = tx
+            .prepare("SELECT operation_type,payload FROM team_outbox WHERE account_id=?1 AND status='pending' AND operation_type IN ('invite.accept','invite.decline')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (operation_type, payload) = row.map_err(|e| e.to_string())?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                continue;
+            };
+            if let Some(invite_id) = value.get("invite_id").and_then(serde_json::Value::as_str) {
+                pending_responses.insert(
+                    invite_id.to_owned(),
+                    if operation_type == "invite.accept" {
+                        "accept_pending"
+                    } else {
+                        "decline_pending"
+                    },
+                );
+            }
+        }
+    }
+    tx.execute("DELETE FROM team_invites WHERE account_id=?1", [account_id])
+        .map_err(|e| e.to_string())?;
+    for invite in &snapshot.invites {
+        for id in [&invite.id, &invite.team_id] {
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid invite ID")?;
+        }
+        let status = pending_responses
+            .get(&invite.id)
+            .copied()
+            .unwrap_or(&invite.state);
+        tx.execute(
+            "INSERT INTO team_invites (account_id,id,team_id,email,role,status,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![account_id, invite.id, invite.team_id, invite.recipient_email, invite.role, status, invite.created_at, invite.expires_at],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    for vault in &snapshot.vaults {
+        import_team_vault_metadata_in_transaction(
+            &tx,
+            &vault.id,
+            &vault.team_id,
+            &vault.owner_id,
+            &vault.name,
+            vault.key_epoch,
+            &vault.rotation_state,
+        )?;
+        if vault.revision == 0 {
+            return Err("invalid team vault revision".into());
+        }
+        tx.execute(
+            "UPDATE vaults SET revision=?1 WHERE id=?2 AND kind='team'",
+            rusqlite::params![vault.revision, vault.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for envelope in envelopes {
+        let grant = crate::team_keys::TeamKeyEnvelope {
+            version: envelope.version,
+            context: crate::team_keys::GrantContext {
+                team_id: envelope.team_id.clone(),
+                vault_id: envelope.vault_id.clone(),
+                epoch: envelope.epoch,
+                recipient_user_id: envelope.recipient_user_id.clone(),
+                recipient_fingerprint: envelope.recipient_fingerprint.clone(),
+            },
+            ephemeral_public_key: envelope.ephemeral_public_key.clone(),
+            nonce: envelope.nonce.clone(),
+            ciphertext: envelope.ciphertext.clone(),
+        };
+        crate::team_keys::import_team_grant_in_transaction(&tx, session, account_id, &grant)?;
+    }
+
+    for team_id in &snapshot.revoked_team_ids {
+        uuid::Uuid::parse_str(team_id).map_err(|_| "invalid revoked team ID")?;
+        tx.execute(
+            "UPDATE team_vaults SET rotation_state='revoked' WHERE team_id=?1",
+            [team_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM team_members WHERE account_id=?1 AND team_id=?2",
+            rusqlite::params![account_id, team_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM team_invites WHERE account_id=?1 AND team_id=?2",
+            rusqlite::params![account_id, team_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM team_records WHERE account_id=?1 AND id=?2",
+            rusqlite::params![account_id, team_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for vault_id in &snapshot.deleted_vault_ids {
+        uuid::Uuid::parse_str(vault_id).map_err(|_| "invalid deleted vault ID")?;
+        tx.execute(
+            "UPDATE team_vaults SET rotation_state='revoked' WHERE vault_id=?1 AND EXISTS (SELECT 1 FROM team_records tr WHERE tr.id=team_vaults.team_id AND tr.account_id=?2)",
+            rusqlite::params![vault_id, account_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let now = now_iso();
+        tx.execute(
+            "UPDATE vaults SET deleted_at=COALESCE(deleted_at,?1),updated_at=?1 WHERE id=?2 AND kind='team'",
+            rusqlite::params![now, vault_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if persist_cursor {
+        tx.execute(
+            "INSERT INTO team_sync_state (account_id,cursor,updated_at) VALUES (?1,?2,?3) ON CONFLICT(account_id) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at",
+            rusqlite::params![account_id, cursor, now_iso()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn import_team_vault_metadata_in_transaction(
+    tx: &Transaction<'_>,
+    vault_id: &str,
+    team_id: &str,
+    owner_id: &str,
+    name: &str,
+    epoch: u32,
+    rotation_state: &str,
+) -> Result<(), String> {
+    for id in [vault_id, team_id, owner_id] {
+        uuid::Uuid::parse_str(id).map_err(|_| "invalid team vault metadata ID")?;
+    }
+    if name.trim().is_empty() || epoch == 0 || rotation_state.is_empty() {
+        return Err("invalid team vault metadata".into());
+    }
+    use rusqlite::OptionalExtension;
+    let existing: Option<(String, u32, String)> = tx
+        .query_row(
+            "SELECT team_id, epoch, rotation_state FROM team_vaults WHERE vault_id=?1",
+            [vault_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let row_exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults WHERE id=?1)",
+            [vault_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if existing.is_none() && row_exists {
+        return Err("cannot convert existing private vault into team vault".into());
+    }
+    if let Some((stored_team, stored_epoch, stored_state)) = existing {
+        if stored_team != team_id || epoch < stored_epoch {
+            return Err("team vault identity or epoch rollback".into());
+        }
+        if stored_state == "revoked" && epoch == stored_epoch && rotation_state != "revoked" {
+            return Err("revoked team vault requires a newer key epoch".into());
+        }
+    }
+    tx.execute(
+        "INSERT INTO team_vaults (vault_id,team_id,epoch,rotation_state) VALUES (?1,?2,?3,?4) ON CONFLICT(vault_id) DO UPDATE SET epoch=excluded.epoch,rotation_state=excluded.rotation_state",
+        rusqlite::params![vault_id, team_id, epoch, rotation_state],
+    )
+    .map_err(|e| e.to_string())?;
+    let now = now_iso();
+    tx.execute(
+        "INSERT INTO vaults (id,revision,vault_id,created_at,updated_at,owner_id,kind,name,data) VALUES (?1,1,'',?2,?2,?3,'team',?4,'{}') ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at,deleted_at=NULL",
+        rusqlite::params![vault_id, now, owner_id, name.trim()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn import_legacy_team_cache(
+    db: &LocalDb,
+    account_id: &str,
+    teams: &serde_json::Value,
+    vaults: &serde_json::Value,
+) -> Result<bool, String> {
+    fn field<'a>(
+        value: &'a serde_json::Value,
+        camel: &str,
+        snake: &str,
+    ) -> Option<&'a str> {
+        value
+            .get(camel)
+            .or_else(|| value.get(snake))
+            .and_then(serde_json::Value::as_str)
+    }
+    use rusqlite::OptionalExtension;
+    validate_team_account_id(account_id)?;
+    let teams = teams
+        .as_array()
+        .ok_or("legacy teams cache must be an array")?;
+    let vaults = vaults
+        .as_array()
+        .ok_or("legacy vault cache must be an array")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let imported: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM team_cache_migrations WHERE account_id=?1)",
+            [account_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if imported {
+        return Ok(false);
+    }
+    for team in teams {
+        let (Some(id), Some(name)) = (field(team, "id", "id"), field(team, "name", "name")) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() || name.trim().is_empty() {
+            continue;
+        }
+        let owner = field(team, "ownerId", "owner_id").unwrap_or(account_id);
+        if uuid::Uuid::parse_str(owner).is_err() {
+            continue;
+        }
+        let created = field(team, "createdAt", "created_at").unwrap_or_else(|| "");
+        let updated = field(team, "updatedAt", "updated_at").unwrap_or(created);
+        tx.execute("INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status) VALUES (?1,?2,?3,?4,?5,?6,'pending') ON CONFLICT(account_id,id) DO NOTHING", rusqlite::params![account_id,id,owner,name.trim(),created,updated]).map_err(|e| e.to_string())?;
+        if let Some(members) = team.get("members").and_then(serde_json::Value::as_array) {
+            for member in members {
+                let Some(user_id) = field(member, "userId", "user_id") else {
+                    continue;
+                };
+                if uuid::Uuid::parse_str(user_id).is_err() {
+                    continue;
+                }
+                let member_id = field(member, "id", "id").unwrap_or(user_id);
+                if uuid::Uuid::parse_str(member_id).is_err() {
+                    continue;
+                }
+                let email = field(member, "email", "email").unwrap_or("");
+                let full_name = field(member, "username", "full_name")
+                    .or_else(|| field(member, "fullName", "full_name"))
+                    .unwrap_or("");
+                let role = field(member, "role", "role").unwrap_or("member");
+                let joined = field(member, "joinedAt", "created_at")
+                    .or_else(|| field(member, "createdAt", "created_at"))
+                    .unwrap_or(created);
+                let public_key = field(member, "publicKey", "public_key").unwrap_or("");
+                let fingerprint = field(member, "fingerprint", "fingerprint").unwrap_or("");
+                tx.execute("INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(account_id,team_id,user_id) DO NOTHING", rusqlite::params![account_id,id,member_id,user_id,email,full_name,role,joined,public_key,fingerprint]).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    for vault in vaults {
+        let (Some(id), Some(team_id), Some(name)) = (
+            field(vault, "id", "id"),
+            field(vault, "teamId", "team_id"),
+            field(vault, "name", "name"),
+        ) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err()
+            || uuid::Uuid::parse_str(team_id).is_err()
+            || name.trim().is_empty()
+        {
+            continue;
+        }
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT owner_id FROM team_records WHERE account_id=?1 AND id=?2",
+                rusqlite::params![account_id, team_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(owner) = owner else {
+            continue;
+        };
+        let created = field(vault, "createdAt", "created_at").unwrap_or_else(|| "");
+        tx.execute("INSERT INTO team_vaults (vault_id,team_id,epoch,rotation_state) VALUES (?1,?2,1,'ready') ON CONFLICT(vault_id) DO NOTHING", rusqlite::params![id,team_id]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO vaults (id,revision,vault_id,created_at,updated_at,owner_id,kind,name,data) VALUES (?1,1,'',?2,?2,?3,'team',?4,'{}') ON CONFLICT(id) DO NOTHING", rusqlite::params![id,created,owner,name.trim()]).map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "INSERT INTO team_cache_migrations (account_id,imported_at) VALUES (?1,?2)",
+        rusqlite::params![account_id, now_iso()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub fn team_cache_imported(db: &LocalDb, account_id: &str) -> Result<bool, String> {
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM team_cache_migrations WHERE account_id=?1)",
+        [account_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn validate_team_account_id(account_id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(account_id)
+        .map(|_| ())
+        .map_err(|_| "invalid account ID".into())
+}
+
+pub fn upsert_team(db: &LocalDb, team: &TeamRecord) -> Result<(), String> {
+    validate_team_account_id(&team.account_id)?;
+    uuid::Uuid::parse_str(&team.id).map_err(|_| "invalid team ID")?;
+    if team.name.trim().is_empty() {
+        return Err("team name cannot be empty".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+         ON CONFLICT(account_id,id) DO UPDATE SET owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status=excluded.sync_status,sync_error=excluded.sync_error",
+        rusqlite::params![team.account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at, team.sync_status, team.sync_error],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_teams(db: &LocalDb, account_id: &str) -> Result<Vec<TeamRecord>, String> {
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error FROM team_records WHERE account_id=?1 ORDER BY name COLLATE NOCASE,id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([account_id], |row| {
+            Ok(TeamRecord {
+                account_id: row.get(0)?,
+                id: row.get(1)?,
+                owner_id: row.get(2)?,
+                name: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                sync_status: row.get(6)?,
+                sync_error: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn replace_team_members(
+    db: &LocalDb,
+    account_id: &str,
+    team_id: &str,
+    members: &[TeamMemberRecord],
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM team_members WHERE account_id=?1 AND team_id=?2",
+        rusqlite::params![account_id, team_id],
+    )
+    .map_err(|e| e.to_string())?;
+    for member in members {
+        if member.account_id != account_id || member.team_id != team_id {
+            return Err("team member scope mismatch".into());
+        }
+        uuid::Uuid::parse_str(&member.user_id).map_err(|_| "invalid member ID")?;
+        uuid::Uuid::parse_str(&member.id).map_err(|_| "invalid team membership ID")?;
+        tx.execute("INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![member.account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint]).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn list_team_members(
+    db: &LocalDb,
+    account_id: &str,
+    team_id: &str,
+) -> Result<Vec<TeamMemberRecord>, String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint FROM team_members WHERE account_id=?1 AND team_id=?2 ORDER BY email COLLATE NOCASE,user_id").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![account_id, team_id], |r| {
+            Ok(TeamMemberRecord {
+                account_id: r.get(0)?,
+                team_id: r.get(1)?,
+                id: r.get(2)?,
+                user_id: r.get(3)?,
+                email: r.get(4)?,
+                full_name: r.get(5)?,
+                role: r.get(6)?,
+                created_at: r.get(7)?,
+                public_key: r.get(8)?,
+                fingerprint: r.get(9)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn replace_team_invites(
+    db: &LocalDb,
+    account_id: &str,
+    invites: &[TeamInviteRecord],
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut pending_responses = std::collections::HashMap::new();
+    {
+        let mut stmt = tx
+            .prepare("SELECT operation_type,payload FROM team_outbox WHERE account_id=?1 AND status='pending' AND operation_type IN ('invite.accept','invite.decline')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([account_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (operation_type, payload) = row.map_err(|e| e.to_string())?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                continue;
+            };
+            if let Some(invite_id) = value.get("invite_id").and_then(serde_json::Value::as_str) {
+                pending_responses.insert(
+                    invite_id.to_owned(),
+                    if operation_type == "invite.accept" {
+                        "accept_pending"
+                    } else {
+                        "decline_pending"
+                    },
+                );
+            }
+        }
+    }
+    tx.execute("DELETE FROM team_invites WHERE account_id=?1", [account_id])
+        .map_err(|e| e.to_string())?;
+    for invite in invites {
+        if invite.account_id != account_id {
+            return Err("team invite scope mismatch".into());
+        }
+        for id in [&invite.id, &invite.team_id] {
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid invite ID")?;
+        }
+        let status = pending_responses
+            .get(&invite.id)
+            .copied()
+            .unwrap_or(&invite.status);
+        tx.execute("INSERT INTO team_invites (account_id,id,team_id,email,role,status,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![invite.account_id,invite.id,invite.team_id,invite.email,invite.role,status,invite.created_at,invite.expires_at]).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn list_team_invites(db: &LocalDb, account_id: &str) -> Result<Vec<TeamInviteRecord>, String> {
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT account_id,id,team_id,email,role,status,created_at,expires_at FROM team_invites WHERE account_id=?1 ORDER BY created_at DESC,id").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([account_id], |r| {
+            Ok(TeamInviteRecord {
+                account_id: r.get(0)?,
+                id: r.get(1)?,
+                team_id: r.get(2)?,
+                email: r.get(3)?,
+                role: r.get(4)?,
+                status: r.get(5)?,
+                created_at: r.get(6)?,
+                expires_at: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn list_team_vaults(
+    db: &LocalDb,
+    account_id: &str,
+    team_id: &str,
+) -> Result<Vec<TeamVaultRecord>, String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT ?1,t.team_id,v.id,v.name,v.owner_id,t.epoch,t.rotation_state,v.revision,v.created_at FROM team_vaults t JOIN vaults v ON v.id=t.vault_id JOIN team_records tr ON tr.id=t.team_id WHERE tr.account_id=?1 AND t.team_id=?2 AND v.deleted_at IS NULL ORDER BY v.name COLLATE NOCASE,v.id").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![account_id, team_id], |r| {
+            Ok(TeamVaultRecord {
+                account_id: r.get(0)?,
+                team_id: r.get(1)?,
+                id: r.get(2)?,
+                name: r.get(3)?,
+                owner_id: r.get(4)?,
+                key_epoch: r.get(5)?,
+                rotation_state: r.get(6)?,
+                revision: r.get(7)?,
+                created_at: r.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn update_team_vault_revision(
+    db: &LocalDb,
+    vault_id: &str,
+    revision: u32,
+) -> Result<(), String> {
+    uuid::Uuid::parse_str(vault_id).map_err(|_| "invalid team vault ID")?;
+    if revision == 0 {
+        return Err("invalid team vault revision".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE vaults SET revision=?1 WHERE id=?2 AND kind='team'",
+        rusqlite::params![revision, vault_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn enqueue_team_operation(
+    db: &LocalDb,
+    account_id: &str,
+    operation_type: &str,
+    payload: &str,
+) -> Result<String, String> {
+    validate_team_account_id(account_id)?;
+    const TYPES: &[&str] = &[
+        "team.create",
+        "team.rename",
+        "team.delete",
+        "vault.create",
+        "vault.rename",
+        "vault.delete",
+        "invite.create",
+        "invite.accept",
+        "invite.decline",
+        "member.remove",
+        "member.role",
+        "vault.rotate",
+    ];
+    if !TYPES.contains(&operation_type) {
+        return Err("unsupported team operation".into());
+    }
+    if payload.len() > 32 * 1024 {
+        return Err("team operation payload exceeds 32 KiB".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|_| "invalid team operation JSON")?;
+    if !value.is_object() {
+        return Err("team operation payload must be an object".into());
+    }
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let now = now_iso();
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let get = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("team operation is missing {key}"))
+    };
+    match operation_type {
+        "team.create" => {
+            let id = get("team_id")?;
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid team ID")?;
+            let name = get("name")?.trim();
+            if name.is_empty() || name.len() > 120 {
+                return Err("invalid team name".into());
+            }
+            tx.execute("INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status) VALUES (?1,?2,?1,?3,?4,?4,'pending')", rusqlite::params![account_id,id,name,now]).map_err(|e| e.to_string())?;
+        }
+        "team.rename" => {
+            let id = get("team_id")?;
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid team ID")?;
+            let name = get("name")?.trim();
+            if name.is_empty() || name.len() > 120 {
+                return Err("invalid team name".into());
+            }
+            let changed = tx.execute("UPDATE team_records SET name=?1,updated_at=?2,sync_status='pending',sync_error=NULL WHERE account_id=?3 AND id=?4", rusqlite::params![name,now,account_id,id]).map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err("team not found locally".into());
+            }
+        }
+        "team.delete" => {
+            let id = get("team_id")?;
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid team ID")?;
+            let changed = tx
+                .execute(
+                    "DELETE FROM team_records WHERE account_id=?1 AND id=?2",
+                    rusqlite::params![account_id, id],
+                )
+                .map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err("team not found locally".into());
+            }
+        }
+        "member.remove" | "member.role" => {
+            let team_id = get("team_id")?;
+            let user_id = get("user_id")?;
+            uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+            uuid::Uuid::parse_str(user_id).map_err(|_| "invalid member ID")?;
+            if operation_type == "member.remove" {
+                tx.execute(
+                    "DELETE FROM team_members WHERE account_id=?1 AND team_id=?2 AND user_id=?3",
+                    rusqlite::params![account_id, team_id, user_id],
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                let role = get("role")?;
+                if role != "member" && role != "admin" {
+                    return Err("invalid team role".into());
+                }
+                let changed = tx.execute("UPDATE team_members SET role=?1 WHERE account_id=?2 AND team_id=?3 AND user_id=?4", rusqlite::params![role,account_id,team_id,user_id]).map_err(|e| e.to_string())?;
+                if changed == 0 {
+                    return Err("team member not found locally".into());
+                }
+            }
+        }
+        "vault.create" => {
+            let id = get("vault_id")?;
+            let team_id = get("team_id")?;
+            let name = get("name")?.trim();
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid vault ID")?;
+            uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+            if name.is_empty() || name.len() > 120 {
+                return Err("invalid vault name".into());
+            }
+            let owner_id: String = tx
+                .query_row(
+                    "SELECT owner_id FROM team_records WHERE account_id=?1 AND id=?2",
+                    rusqlite::params![account_id, team_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "team not found locally")?;
+            tx.execute("INSERT INTO vaults (id,revision,vault_id,created_at,updated_at,owner_id,kind,name,data) VALUES (?1,1,'',?2,?2,?3,'team',?4,'{}') ON CONFLICT(id) DO NOTHING", rusqlite::params![id,now,owner_id,name]).map_err(|e| e.to_string())?;
+        }
+        "vault.rotate" => {
+            let id = get("vault_id")?;
+            let team_id = get("team_id")?;
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid vault ID")?;
+            uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+            let changed = tx.execute(
+                "UPDATE team_vaults SET rotation_state='rotation_pending' WHERE vault_id=?1 AND team_id=?2 AND rotation_state='rotation_required'",
+                rusqlite::params![id, team_id],
+            ).map_err(|e| e.to_string())?;
+            if changed == 0 {
+                return Err("team vault is not awaiting rotation".into());
+            }
+        }
+        "vault.rename" | "vault.delete" => {
+            let id = get("vault_id")?;
+            uuid::Uuid::parse_str(id).map_err(|_| "invalid vault ID")?;
+            if operation_type == "vault.rename" {
+                let name = get("name")?.trim();
+                if name.is_empty() || name.len() > 120 {
+                    return Err("invalid vault name".into());
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE vaults SET name=?1,updated_at=?2 WHERE id=?3 AND kind='team'",
+                        rusqlite::params![name, now, id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if changed == 0 {
+                    return Err("team vault not found locally".into());
+                }
+            } else {
+                let changed = tx
+                    .execute(
+                        "UPDATE vaults SET deleted_at=?1,updated_at=?1 WHERE id=?2 AND kind='team'",
+                        rusqlite::params![now, id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if changed == 0 {
+                    return Err("team vault not found locally".into());
+                }
+            }
+        }
+        "invite.accept" | "invite.decline" => {
+            let invite_id = get("invite_id")?;
+            uuid::Uuid::parse_str(invite_id).map_err(|_| "invalid invite ID")?;
+            let state = if operation_type == "invite.accept" {
+                "accept_pending"
+            } else {
+                "decline_pending"
+            };
+            tx.execute(
+                "UPDATE team_invites SET status=?1 WHERE account_id=?2 AND id=?3",
+                rusqlite::params![state, account_id, invite_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        _ => {}
+    }
+    let affected_team =
+        if let Some(team_id) = value.get("team_id").and_then(serde_json::Value::as_str) {
+            Some(team_id.to_owned())
+        } else if let Some(vault_id) = value.get("vault_id").and_then(serde_json::Value::as_str) {
+            tx.query_row(
+                "SELECT team_id FROM team_vaults WHERE vault_id=?1",
+                [vault_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        } else if let Some(invite_id) = value.get("invite_id").and_then(serde_json::Value::as_str) {
+            tx.query_row(
+                "SELECT team_id FROM team_invites WHERE account_id=?1 AND id=?2",
+                rusqlite::params![account_id, invite_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        } else {
+            None
+        };
+    if let Some(team_id) = affected_team {
+        tx.execute("UPDATE team_records SET sync_status='pending',sync_error=NULL,updated_at=?1 WHERE account_id=?2 AND id=?3", rusqlite::params![now,account_id,team_id]).map_err(|e| e.to_string())?;
+    }
+    tx.execute("INSERT INTO team_outbox (account_id,operation_id,operation_type,payload,status,created_at,updated_at) VALUES (?1,?2,?3,?4,'pending',?5,?5)",
+        rusqlite::params![account_id, operation_id, operation_type, payload, now]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(operation_id)
+}
+
+pub fn pending_team_operations(
+    db: &LocalDb,
+    account_id: &str,
+    limit: usize,
+) -> Result<Vec<TeamOutboxOperation>, String> {
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT account_id,operation_id,operation_type,payload,status,error,created_at FROM team_outbox WHERE account_id=?1 AND status='pending' ORDER BY created_at,operation_id LIMIT ?2").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![account_id, limit.min(50) as i64], |row| {
+            Ok(TeamOutboxOperation {
+                account_id: row.get(0)?,
+                operation_id: row.get(1)?,
+                operation_type: row.get(2)?,
+                payload: row.get(3)?,
+                status: row.get(4)?,
+                error: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn update_team_operation_payload(
+    db: &LocalDb,
+    account_id: &str,
+    operation_id: &str,
+    payload: &str,
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(operation_id).map_err(|_| "invalid operation ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let changed = conn.execute(
+        "UPDATE team_outbox SET payload=?1,updated_at=?2 WHERE account_id=?3 AND operation_id=?4 AND status='pending'",
+        rusqlite::params![payload, now_iso(), account_id, operation_id],
+    ).map_err(|e| e.to_string())?;
+    if changed != 1 {
+        return Err("pending team operation not found".into());
+    }
+    Ok(())
+}
+
+pub fn acknowledge_team_operation(
+    db: &LocalDb,
+    account_id: &str,
+    operation_id: &str,
+    error: Option<&str>,
+) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(operation_id).map_err(|_| "invalid operation ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let operation: Option<(String, String)> = conn.query_row(
+        "SELECT operation_type,payload FROM team_outbox WHERE account_id=?1 AND operation_id=?2",
+        rusqlite::params![account_id, operation_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    if let Some((operation_type, payload)) = operation {
+        let value: serde_json::Value =
+            serde_json::from_str(&payload).map_err(|_| "invalid queued team operation")?;
+        let team_id = value
+            .get("team_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                value
+                    .get("vault_id")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|vault_id| {
+                        conn.query_row(
+                            "SELECT team_id FROM team_vaults WHERE vault_id=?1",
+                            [vault_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok()
+                    })
+            })
+            .or_else(|| {
+                value
+                    .get("invite_id")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|invite_id| {
+                        conn.query_row(
+                            "SELECT team_id FROM team_invites WHERE account_id=?1 AND id=?2",
+                            rusqlite::params![account_id, invite_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok()
+                    })
+            });
+        if let Some(team_id) = team_id.as_deref() {
+            if error.is_some() {
+                conn.execute("UPDATE team_records SET sync_status='rejected',sync_error=?1 WHERE account_id=?2 AND id=?3", rusqlite::params![error,account_id,team_id]).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute("UPDATE team_records SET sync_status='synced',sync_error=NULL WHERE account_id=?1 AND id=?2", rusqlite::params![account_id,team_id]).map_err(|e| e.to_string())?;
+            }
+            if error.is_none() && operation_type == "team.delete" {
+                conn.execute(
+                    "UPDATE team_vaults SET rotation_state='revoked' WHERE team_id=?1",
+                    [team_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if let Some(vault_id) = value.get("vault_id").and_then(serde_json::Value::as_str) {
+            if error.is_some() && operation_type == "vault.create" {
+                let now = now_iso();
+                conn.execute(
+                    "UPDATE vaults SET deleted_at=?1,updated_at=?1 WHERE id=?2 AND kind='team'",
+                    rusqlite::params![now, vault_id],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE team_vaults SET rotation_state='revoked' WHERE vault_id=?1",
+                    [vault_id],
+                )
+                .map_err(|e| e.to_string())?;
+            } else if error.is_none() && operation_type == "vault.delete" {
+                conn.execute(
+                    "UPDATE team_vaults SET rotation_state='revoked' WHERE vault_id=?1",
+                    [vault_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if error.is_some() && matches!(operation_type.as_str(), "invite.accept" | "invite.decline") {
+            if let Some(invite_id) = value.get("invite_id").and_then(serde_json::Value::as_str) {
+                conn.execute(
+                    "UPDATE team_invites SET status='sync_rejected' WHERE account_id=?1 AND id=?2",
+                    rusqlite::params![account_id, invite_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if error.is_some() && operation_type == "vault.rotate" {
+            if let Some(vault_id) = value.get("vault_id").and_then(serde_json::Value::as_str) {
+                conn.execute(
+                    "UPDATE team_vaults SET rotation_state='rotation_required' WHERE vault_id=?1 AND rotation_state='rotation_pending'",
+                    [vault_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    if let Some(error) = error {
+        conn.execute("UPDATE team_outbox SET status='rejected',error=?1,updated_at=?2 WHERE account_id=?3 AND operation_id=?4", rusqlite::params![error, now_iso(), account_id, operation_id]).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "DELETE FROM team_outbox WHERE account_id=?1 AND operation_id=?2",
+            rusqlite::params![account_id, operation_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn team_sync_cursor(db: &LocalDb, account_id: &str) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT cursor FROM team_sync_state WHERE account_id=?1",
+        [account_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn store_team_sync_cursor(
+    db: &LocalDb,
+    account_id: &str,
+    cursor: Option<&str>,
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO team_sync_state (account_id,cursor,updated_at) VALUES (?1,?2,?3) ON CONFLICT(account_id) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at", rusqlite::params![account_id,cursor,now_iso()]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn set_team_sync_status(
+    db: &LocalDb,
+    account_id: &str,
+    team_id: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<(), String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    if status != "pending" && status != "synced" && status != "rejected" {
+        return Err("invalid team sync status".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE team_records SET sync_status=?1,sync_error=?2 WHERE account_id=?3 AND id=?4",
+        rusqlite::params![status, error, account_id, team_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn import_team_vault_metadata(
@@ -95,7 +1153,7 @@ pub fn import_team_vault_metadata(
     let now = now_iso();
     tx.execute("INSERT INTO vaults (id, revision, vault_id, created_at, updated_at, owner_id, kind, name, data)
         VALUES (?1, 1, '', ?2, ?2, ?3, 'team', ?4, '{}')
-        ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at, deleted_at = NULL",
         rusqlite::params![vault_id, now, owner_id, name.trim()]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
@@ -153,7 +1211,8 @@ pub fn revoke_cached_team_vault(db: &LocalDb, vault_id: &str) -> Result<usize, S
     conn.execute(
         "UPDATE team_vaults SET rotation_state = 'revoked' WHERE vault_id = ?1",
         [vault_id],
-    ).map_err(|e| e.to_string())
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn revoke_cached_team(db: &LocalDb, team_id: &str) -> Result<usize, String> {
@@ -162,7 +1221,55 @@ pub fn revoke_cached_team(db: &LocalDb, team_id: &str) -> Result<usize, String> 
     conn.execute(
         "UPDATE team_vaults SET rotation_state = 'revoked' WHERE team_id = ?1",
         [team_id],
-    ).map_err(|e| e.to_string())
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn revoke_cached_team_for_account(
+    db: &LocalDb,
+    account_id: &str,
+    team_id: &str,
+) -> Result<usize, String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE team_vaults SET rotation_state='revoked' WHERE team_id=?1",
+        [team_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM team_members WHERE account_id=?1 AND team_id=?2",
+        rusqlite::params![account_id, team_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM team_invites WHERE account_id=?1 AND team_id=?2",
+        rusqlite::params![account_id, team_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let removed = tx
+        .execute(
+            "DELETE FROM team_records WHERE account_id=?1 AND id=?2",
+            rusqlite::params![account_id, team_id],
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(removed)
+}
+
+pub fn revoke_cached_team_vault_for_account(
+    db: &LocalDb,
+    account_id: &str,
+    vault_id: &str,
+) -> Result<usize, String> {
+    validate_team_account_id(account_id)?;
+    uuid::Uuid::parse_str(vault_id).map_err(|_| "invalid team vault ID")?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let now = now_iso();
+    conn.execute("UPDATE team_vaults SET rotation_state='revoked' WHERE vault_id=?1 AND EXISTS (SELECT 1 FROM team_records tr WHERE tr.id=team_vaults.team_id AND tr.account_id=?2)", rusqlite::params![vault_id,account_id]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE vaults SET deleted_at=COALESCE(deleted_at,?1),updated_at=?1 WHERE id=?2 AND kind='team'", rusqlite::params![now,vault_id]).map_err(|e| e.to_string())
 }
 
 pub fn store_wrapped_team_key(
@@ -244,6 +1351,37 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             epoch INTEGER NOT NULL,
             wrapped_key TEXT NOT NULL,
             PRIMARY KEY (vault_id, epoch)
+        );
+
+        CREATE TABLE IF NOT EXISTS team_records (
+            account_id TEXT NOT NULL, id TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            sync_status TEXT NOT NULL DEFAULT 'synced', sync_error TEXT,
+            PRIMARY KEY(account_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS team_members (
+            account_id TEXT NOT NULL, team_id TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT '', full_name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', public_key TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(account_id, team_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS team_invites (
+            account_id TEXT NOT NULL, id TEXT NOT NULL, team_id TEXT NOT NULL,
+            email TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '', expires_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(account_id, id)
+        );
+        CREATE TABLE IF NOT EXISTS team_sync_state (
+            account_id TEXT PRIMARY KEY, cursor TEXT, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS team_cache_migrations (
+            account_id TEXT PRIMARY KEY, imported_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS team_outbox (
+            account_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+            operation_type TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', error TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(account_id, operation_id)
         );
 
         CREATE TABLE IF NOT EXISTS vaults (
@@ -445,16 +1583,22 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         ",
     )
     .map_err(|e| format!("Failed to create tables: {e}"))?;
-    for table in ["session_history", "session_output_chunks", "session_preferences"] {
-        conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {table} (
+    for table in [
+        "session_history",
+        "session_output_chunks",
+        "session_preferences",
+    ] {
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {table} (
             id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
             vault_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             deleted_at TEXT, edited_at TEXT NOT NULL DEFAULT '',
             device_id TEXT NOT NULL DEFAULT '', operation_id TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0,
             data TEXT NOT NULL
-        ); CREATE INDEX IF NOT EXISTS idx_{table}_vault ON {table}(vault_id, sort_order);"))
-            .map_err(|e| format!("create {table}: {e}"))?;
+        ); CREATE INDEX IF NOT EXISTS idx_{table}_vault ON {table}(vault_id, sort_order);"
+        ))
+        .map_err(|e| format!("create {table}: {e}"))?;
     }
     migrate_add_columns(&conn)?;
     migrate_timestamps(&conn)?;
@@ -473,6 +1617,11 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
 fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
     const COLUMNS: &[(&str, &str, &str)] = &[
         ("hosts", "auth_type", "TEXT NOT NULL DEFAULT 'password'"),
+        ("team_records", "owner_id", "TEXT NOT NULL DEFAULT ''"),
+        ("team_members", "id", "TEXT NOT NULL DEFAULT ''"),
+        ("team_members", "public_key", "TEXT NOT NULL DEFAULT ''"),
+        ("team_members", "fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("team_invites", "expires_at", "TEXT NOT NULL DEFAULT ''"),
         ("hosts", "tags", "TEXT NOT NULL DEFAULT '[]'"),
         ("hosts", "color", "TEXT"),
         ("keys", "key_type", "TEXT NOT NULL DEFAULT 'ed25519'"),
@@ -766,9 +1915,18 @@ fn migrate_timestamps(conn: &Connection) -> Result<(), String> {
         ("snippets", &["created_at", "updated_at", "deleted_at"]),
         ("workspaces", &["created_at", "updated_at", "deleted_at"]),
         ("presets", &["created_at", "updated_at", "deleted_at"]),
-        ("session_history", &["created_at", "updated_at", "deleted_at"]),
-        ("session_output_chunks", &["created_at", "updated_at", "deleted_at"]),
-        ("session_preferences", &["created_at", "updated_at", "deleted_at"]),
+        (
+            "session_history",
+            &["created_at", "updated_at", "deleted_at"],
+        ),
+        (
+            "session_output_chunks",
+            &["created_at", "updated_at", "deleted_at"],
+        ),
+        (
+            "session_preferences",
+            &["created_at", "updated_at", "deleted_at"],
+        ),
         (
             "user_profiles",
             &["created_at", "updated_at", "last_login_at"],
@@ -1417,13 +2575,10 @@ mod tests {
         assert_eq!(DB_FILE_NAME, "terra.db");
     }
 
-
     #[test]
     fn sync_db_migrates_legacy_outbox_to_stable_iso_operation() {
-        let path = std::env::temp_dir().join(format!(
-            "terra-sync-migration-{}.db",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("terra-sync-migration-{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_str().unwrap();
         let host_id = uuid::Uuid::new_v4().to_string();
         let vault_id = uuid::Uuid::new_v4().to_string();
@@ -1612,19 +2767,33 @@ mod tests {
             ).unwrap();
         }
         assert_eq!(revoke_cached_team_vault(&db, &vault_a).unwrap(), 1);
-        assert_eq!(team_vault_meta(&db, &vault_a).unwrap().unwrap().2, "revoked");
+        assert_eq!(
+            team_vault_meta(&db, &vault_a).unwrap().unwrap().2,
+            "revoked"
+        );
         assert_eq!(team_vault_meta(&db, &vault_b).unwrap().unwrap().2, "ready");
         assert_eq!(revoke_cached_team(&db, &team_id).unwrap(), 2);
-        assert_eq!(team_vault_meta(&db, &vault_b).unwrap().unwrap().2, "revoked");
-        assert_eq!(team_vault_meta(&db, &other_vault).unwrap().unwrap().2, "ready");
+        assert_eq!(
+            team_vault_meta(&db, &vault_b).unwrap().unwrap().2,
+            "revoked"
+        );
+        assert_eq!(
+            team_vault_meta(&db, &other_vault).unwrap().unwrap().2,
+            "ready"
+        );
         let conn = db.conn.lock().unwrap();
-        let pending: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM outbox WHERE record_id = 'pending-host'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE record_id = 'pending-host'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(pending, 1);
-        assert_eq!(revoke_cached_team(&db, "invalid"), Err("invalid team ID".into()));
+        assert_eq!(
+            revoke_cached_team(&db, "invalid"),
+            Err("invalid team ID".into())
+        );
     }
 
     #[test]
@@ -2363,5 +3532,105 @@ mod tests {
         assert!(outbox
             .iter()
             .any(|o| o.table_name == "vaults" && o.record_id == "v1"));
+    }
+}
+
+#[cfg(test)]
+mod team_sync_tests {
+    use super::*;
+
+    #[test]
+    fn team_snapshots_and_outbox_are_account_scoped_and_durable() {
+        let db = open(":memory:").unwrap();
+        let now = "2026-10-04T00:00:00.000Z";
+        let account_id = "d31e18e3-613b-4656-a085-4688c40b7890";
+        let other_account_id = "8e7b3d3a-9f6d-4a52-a7d1-e7088f48da68";
+        let team = TeamRecord {
+            account_id: account_id.into(),
+            id: "73ca4a95-574e-4174-a255-e45169ca7494".into(),
+            owner_id: account_id.into(),
+            name: "Alpha".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            sync_status: "synced".into(),
+            sync_error: None,
+        };
+        upsert_team(&db, &team).unwrap();
+        assert_eq!(list_teams(&db, account_id).unwrap(), vec![team]);
+        assert!(list_teams(&db, other_account_id).unwrap().is_empty());
+
+        let operation_id = enqueue_team_operation(
+            &db,
+            account_id,
+            "team.rename",
+            r#"{"team_id":"73ca4a95-574e-4174-a255-e45169ca7494","name":"Renamed"}"#,
+        )
+        .unwrap();
+        let pending = pending_team_operations(&db, account_id, 50).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation_id, operation_id);
+        assert_eq!(pending[0].operation_type, "team.rename");
+        assert!(pending_team_operations(&db, other_account_id, 50)
+            .unwrap()
+            .is_empty());
+
+        acknowledge_team_operation(&db, account_id, &operation_id, None).unwrap();
+        assert!(pending_team_operations(&db, account_id, 50)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn invalid_team_operation_does_not_write_an_outbox_row() {
+        let db = open(":memory:").unwrap();
+        assert!(enqueue_team_operation(
+            &db,
+            "d31e18e3-613b-4656-a085-4688c40b7890",
+            "invalid",
+            "{}"
+        )
+        .is_err());
+        assert!(pending_team_operations(&db, "not-a-uuid", 50).is_err());
+    }
+
+    #[test]
+    fn member_and_invitation_snapshots_are_scoped_by_account() {
+        let db = open(":memory:").unwrap();
+        let account_id = "d31e18e3-613b-4656-a085-4688c40b7890";
+        let other_account_id = "8e7b3d3a-9f6d-4a52-a7d1-e7088f48da68";
+        let team_id = "73ca4a95-574e-4174-a255-e45169ca7494";
+        let member = TeamMemberRecord {
+            account_id: account_id.into(),
+            team_id: team_id.into(),
+            id: "c8d6eeed-99b9-4e15-89e5-0da1d962a5e4".into(),
+            user_id: "d431ba16-5ec2-4431-a1b5-3f7908b97b07".into(),
+            email: "member@example.com".into(),
+            full_name: "Member".into(),
+            role: "member".into(),
+            created_at: "2026-10-04T00:00:00.000Z".into(),
+            public_key: "".into(),
+            fingerprint: "".into(),
+        };
+        replace_team_members(&db, account_id, team_id, &[member.clone()]).unwrap();
+        assert_eq!(
+            list_team_members(&db, account_id, team_id).unwrap(),
+            vec![member]
+        );
+        assert!(list_team_members(&db, other_account_id, team_id)
+            .unwrap()
+            .is_empty());
+        let invite = TeamInviteRecord {
+            account_id: account_id.into(),
+            id: "de84a26e-5008-44a7-aa2b-1a4dd3af86bd".into(),
+            team_id: team_id.into(),
+            email: "pending@example.com".into(),
+            role: "member".into(),
+            status: "pending".into(),
+            created_at: "2026-10-04T00:00:00.000Z".into(),
+            expires_at: "2026-10-11T00:00:00.000Z".into(),
+        };
+        replace_team_invites(&db, account_id, &[invite.clone()]).unwrap();
+        assert_eq!(list_team_invites(&db, account_id).unwrap(), vec![invite]);
+        assert!(list_team_invites(&db, other_account_id).unwrap().is_empty());
     }
 }

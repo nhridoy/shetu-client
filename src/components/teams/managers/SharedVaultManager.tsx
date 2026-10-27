@@ -176,7 +176,9 @@ export default function SharedVaultManager({
                   )}
                   {vault.rotationState !== "ready" && (
                     <p className="text-xs text-amber-300">
-                      Key rotation required before new changes can sync.
+                      {vault.rotationState === "rotation_pending"
+                        ? "Key rotation queued and will run when connected."
+                        : "Key rotation required before new changes can sync."}
                     </p>
                   )}
                 </div>
@@ -195,17 +197,24 @@ export default function SharedVaultManager({
                       Rename
                     </Button>
                   )}
-                  {canManage && vault.rotationState === "rotation_required" && (
-                    <Button
-                      type="button"
-                      variant="default"
-                      size="sm"
-                      disabled={isLoading}
-                      onClick={() => void rotateSharedVault(teamId, vault.id)}
-                    >
-                      Rotate keys
-                    </Button>
-                  )}
+                  {canManage &&
+                    (vault.rotationState === "rotation_required" ||
+                      vault.rotationState === "rotation_pending") && (
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        disabled={
+                          isLoading ||
+                          vault.rotationState === "rotation_pending"
+                        }
+                        onClick={() => void rotateSharedVault(teamId, vault.id)}
+                      >
+                        {vault.rotationState === "rotation_pending"
+                          ? "Rotation queued"
+                          : "Rotate keys"}
+                      </Button>
+                    )}
                   <Button
                     type="button"
                     variant="ghost"

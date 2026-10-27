@@ -2,18 +2,19 @@
 
 mod crypto;
 mod db;
-mod session_history;
 mod forwarding;
 mod git;
 mod http;
 mod keys;
 mod oauth;
 mod offline_auth;
+mod session_history;
 mod sftp;
 mod ssh;
 mod ssh_route;
 mod sync;
 mod team_keys;
+mod team_sync;
 mod update;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
@@ -59,22 +60,52 @@ fn history_start_attempt(
     recorder: tauri::State<'_, HistoryRecorderState>,
 ) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
-    session_history::start_attempt(&db, &keys, &app.device_id, &vault_id, &attempt_id, &host_id, &host_label, &connection_type, recording)?;
+    session_history::start_attempt(
+        &db,
+        &keys,
+        &app.device_id,
+        &vault_id,
+        &attempt_id,
+        &host_id,
+        &host_label,
+        &connection_type,
+        recording,
+    )?;
     if recording {
-        recorder.buffers.lock().map_err(|e| e.to_string())?.insert(attempt_id.clone(), session_history::OutputBuffer::default());
+        recorder
+            .buffers
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(attempt_id.clone(), session_history::OutputBuffer::default());
     }
-    recorder.active.lock().map_err(|e| e.to_string())?.insert(attempt_id);
+    recorder
+        .active
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(attempt_id);
     Ok(())
 }
 
 #[tauri::command]
-fn history_mark_connected(attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+fn history_mark_connected(
+    attempt_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::mark_connected(&db, &keys, &app.device_id, &attempt_id)
 }
 
 #[tauri::command]
-fn history_append_output(attempt_id: String, output: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<(), String> {
+fn history_append_output(
+    attempt_id: String,
+    output: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, HistoryRecorderState>,
+) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
     if let Some(buffer) = buffers.get_mut(&attempt_id) {
@@ -84,7 +115,13 @@ fn history_append_output(attempt_id: String, output: String, db: tauri::State<'_
 }
 
 #[tauri::command]
-fn history_flush_output(attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<bool, String> {
+fn history_flush_output(
+    attempt_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, HistoryRecorderState>,
+) -> Result<bool, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
     if let Some(buffer) = buffers.get_mut(&attempt_id) {
@@ -94,7 +131,15 @@ fn history_flush_output(attempt_id: String, db: tauri::State<'_, db::LocalDb>, c
 }
 
 #[tauri::command]
-fn history_finish_attempt(attempt_id: String, outcome: String, reason: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<(), String> {
+fn history_finish_attempt(
+    attempt_id: String,
+    outcome: String,
+    reason: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, HistoryRecorderState>,
+) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     {
         let mut buffers = recorder.buffers.lock().map_err(|e| e.to_string())?;
@@ -103,54 +148,106 @@ fn history_finish_attempt(attempt_id: String, outcome: String, reason: String, d
         }
     }
     session_history::finish_attempt(&db, &keys, &app.device_id, &attempt_id, &outcome, &reason)?;
-    recorder.buffers.lock().map_err(|e| e.to_string())?.remove(&attempt_id);
-    recorder.active.lock().map_err(|e| e.to_string())?.remove(&attempt_id);
+    recorder
+        .buffers
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&attempt_id);
+    recorder
+        .active
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&attempt_id);
     Ok(())
 }
 
 #[tauri::command]
-fn history_list(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<Vec<session_history::HistoryItem>, String> {
+fn history_list(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+) -> Result<Vec<session_history::HistoryItem>, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::reconcile_deleted_chunks(&db, &keys, &app.device_id, &vault_id)?;
     session_history::list_attempts(&db, &keys, &vault_id)
 }
 
 #[tauri::command]
-fn history_recover_interrupted(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>, recorder: tauri::State<'_, HistoryRecorderState>) -> Result<usize, String> {
+fn history_recover_interrupted(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, HistoryRecorderState>,
+) -> Result<usize, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
-    let active = recorder.active.lock().map_err(|e| e.to_string())?.iter().cloned().collect::<Vec<_>>();
+    let active = recorder
+        .active
+        .lock()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     session_history::recover_interrupted(&db, &keys, &app.device_id, &vault_id, &active)
 }
 
 #[tauri::command]
-fn history_get_output(vault_id: String, attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>) -> Result<String, String> {
+fn history_get_output(
+    vault_id: String,
+    attempt_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+) -> Result<String, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::read_output(&db, &keys, &vault_id, &attempt_id)
 }
 
 #[tauri::command]
-fn history_delete(vault_id: String, attempt_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+fn history_delete(
+    vault_id: String,
+    attempt_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::delete_attempt(&db, &keys, &app.device_id, &vault_id, &attempt_id)
 }
 
 #[tauri::command]
-fn history_get_retention(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>) -> Result<u32, String> {
+fn history_get_retention(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+) -> Result<u32, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::get_retention_days(&db, &keys, &vault_id)
 }
 
 #[tauri::command]
-fn history_set_retention(vault_id: String, days: u32, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<(), String> {
+fn history_set_retention(
+    vault_id: String,
+    days: u32,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     session_history::set_retention_days(&db, &keys, &app.device_id, &vault_id, days)
 }
 
 #[tauri::command]
-fn history_apply_retention(vault_id: String, db: tauri::State<'_, db::LocalDb>, crypto: tauri::State<'_, CryptoState>, app: tauri::State<'_, AppState>) -> Result<usize, String> {
+fn history_apply_retention(
+    vault_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    app: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
     let keys = crypto.session.lock().map_err(|e| e.to_string())?;
     let expired = session_history::apply_retention(&db, &keys, &app.device_id, &vault_id)?;
-    let orphaned = session_history::reconcile_deleted_chunks(&db, &keys, &app.device_id, &vault_id)?;
+    let orphaned =
+        session_history::reconcile_deleted_chunks(&db, &keys, &app.device_id, &vault_id)?;
     Ok(expired + orphaned)
 }
 
@@ -1120,7 +1217,158 @@ fn cache_team_vault_metadata(
     rotation_state: String,
     db: tauri::State<'_, db::LocalDb>,
 ) -> Result<(), String> {
-    db::import_team_vault_metadata(&db, &vault_id, &team_id, &owner_id, &name, epoch, &rotation_state)
+    db::import_team_vault_metadata(
+        &db,
+        &vault_id,
+        &team_id,
+        &owner_id,
+        &name,
+        epoch,
+        &rotation_state,
+    )
+}
+
+#[tauri::command]
+fn local_teams(
+    account_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<Vec<db::TeamRecord>, String> {
+    db::list_teams(&db, &account_id)
+}
+
+#[tauri::command]
+fn team_cache_imported(
+    account_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<bool, String> {
+    db::team_cache_imported(&db, &account_id)
+}
+
+#[tauri::command]
+fn import_legacy_team_cache(
+    account_id: String,
+    teams: serde_json::Value,
+    vaults: serde_json::Value,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<bool, String> {
+    db::import_legacy_team_cache(&db, &account_id, &teams, &vaults)
+}
+
+#[tauri::command]
+fn local_team_members(
+    account_id: String,
+    team_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<Vec<db::TeamMemberRecord>, String> {
+    db::list_team_members(&db, &account_id, &team_id)
+}
+
+#[tauri::command]
+fn local_team_invites(
+    account_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<Vec<db::TeamInviteRecord>, String> {
+    db::list_team_invites(&db, &account_id)
+}
+
+#[tauri::command]
+fn local_team_vaults(
+    account_id: String,
+    team_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<Vec<db::TeamVaultRecord>, String> {
+    db::list_team_vaults(&db, &account_id, &team_id)
+}
+
+#[tauri::command]
+fn queue_team_operation(
+    account_id: String,
+    operation_type: String,
+    payload: String,
+    db: tauri::State<'_, db::LocalDb>,
+) -> Result<String, String> {
+    db::enqueue_team_operation(&db, &account_id, &operation_type, &payload)
+}
+
+#[tauri::command]
+async fn team_sync_now(
+    app: tauri::AppHandle,
+    account_id: String,
+    db: tauri::State<'_, db::LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    http: tauri::State<'_, http::HttpState>,
+    locks: tauri::State<'_, team_sync::TeamSyncLocks>,
+) -> Result<team_sync::TeamSyncSummary, String> {
+    let lock = locks.for_account(&account_id).await;
+    let _guard = lock.lock().await;
+    let client = http::HttpClient::new(
+        http.inner().clone(),
+        Arc::new(http::KeyringRefreshProvider { app }),
+    );
+    team_sync::run_team_sync(&account_id, &db, &crypto.session, &client)
+        .await
+        .map_err(|error| match error {
+            http::HttpErrorKind::Network => "network:Cannot reach the team sync server".into(),
+            http::HttpErrorKind::SessionExpired => "auth:Sign in again to sync team changes".into(),
+            http::HttpErrorKind::Http(0, message) => format!("team-sync:{message}"),
+            http::HttpErrorKind::Http(status, _) => format!("team-sync:server-error-{status}"),
+        })
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct TeamRecipientKey {
+    user_id: String,
+    public_key: String,
+    fingerprint: String,
+}
+
+#[tauri::command]
+async fn lookup_team_recipient_key(
+    app: tauri::AppHandle,
+    team_id: String,
+    email: String,
+    http: tauri::State<'_, http::HttpState>,
+) -> Result<TeamRecipientKey, String> {
+    uuid::Uuid::parse_str(&team_id).map_err(|_| "invalid team ID")?;
+    if email.trim().is_empty() || email.len() > 320 {
+        return Err("enter a valid account email".into());
+    }
+    let encoded_email = email
+        .trim()
+        .to_lowercase()
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect::<String>();
+    let path = format!("/api/v1/teams/{team_id}/recipient-key?email={encoded_email}");
+    let client = http::HttpClient::new(
+        http.inner().clone(),
+        Arc::new(http::KeyringRefreshProvider { app }),
+    );
+    let response = client
+        .request("GET", &path, None, true)
+        .await
+        .map_err(|error| match error {
+            http::HttpErrorKind::Network => "network:Cannot reach the team server".into(),
+            http::HttpErrorKind::SessionExpired => {
+                "auth:Sign in again to look up a team member".into()
+            }
+            http::HttpErrorKind::Http(status, body) => {
+                format!("team-recipient:server-error-{status}:{body}")
+            }
+        })?;
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        data: TeamRecipientKey,
+    }
+    serde_json::from_str::<Envelope>(&response.body)
+        .map(|envelope| envelope.data)
+        .map_err(|_| "invalid recipient key response".into())
 }
 
 #[tauri::command]
@@ -1198,7 +1446,16 @@ fn prepare_team_rotation(
     state: tauri::State<'_, CryptoState>,
 ) -> Result<team_keys::PreparedRotation, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
-    team_keys::prepare_rotation(&db, &session, &team_id, &vault_id, expected_epoch, expected_revision, rows, recipients)
+    team_keys::prepare_rotation(
+        &db,
+        &session,
+        &team_id,
+        &vault_id,
+        expected_epoch,
+        expected_revision,
+        rows,
+        recipients,
+    )
 }
 
 #[tauri::command]
@@ -1372,6 +1629,7 @@ pub fn run() {
         ))
         .manage(forwarding::runtime::ForwardingState::new())
         .manage(sftp::SftpSessions::new())
+        .manage(team_sync::TeamSyncLocks::default())
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
             update::update_installation_kind,
@@ -1396,6 +1654,15 @@ pub fn run() {
             offline_auth::clear_offline_identity_command,
             db_upsert,
             cache_team_vault_metadata,
+            local_teams,
+            team_cache_imported,
+            import_legacy_team_cache,
+            local_team_members,
+            local_team_invites,
+            local_team_vaults,
+            queue_team_operation,
+            team_sync_now,
+            lookup_team_recipient_key,
             is_team_vault,
             team_vault_recovery_status,
             revoke_cached_team_vault_command,

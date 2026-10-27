@@ -346,6 +346,85 @@ pub fn import_team_grant(
     )
 }
 
+pub(crate) fn import_team_grant_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    session: &crate::crypto::KeySession,
+    expected_user_id: &str,
+    envelope: &TeamKeyEnvelope,
+) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
+    if !session.unlocked {
+        return Err("Vault is locked".into());
+    }
+    if envelope.context.recipient_user_id != expected_user_id {
+        return Err("team key recipient mismatch".into());
+    }
+    let context = &envelope.context;
+    let existing_meta: Option<(String, u32, String)> = tx
+        .query_row(
+            "SELECT team_id,epoch,rotation_state FROM team_vaults WHERE vault_id=?1",
+            [&context.vault_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some((team_id, epoch, state)) = existing_meta {
+        if team_id != context.team_id || context.epoch < epoch {
+            return Err("team vault identity or epoch rollback".into());
+        }
+        if state == "revoked" && context.epoch == epoch {
+            return Err("revoked team vault requires a newer key epoch".into());
+        }
+    }
+
+    let key = open_key_bytes(envelope, &session.private_key)?;
+    let wrapped: Option<(String, String)> = tx
+        .query_row(
+            "SELECT team_id,wrapped_key FROM team_vault_keys WHERE vault_id=?1 AND epoch=?2",
+            rusqlite::params![context.vault_id, context.epoch],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some((stored_team, wrapped_key)) = wrapped {
+        if stored_team != context.team_id {
+            return Err("team vault identity mismatch".into());
+        }
+        let cached = crate::crypto::unwrap_team_key(
+            &wrapped_key,
+            &context.team_id,
+            &context.vault_id,
+            context.epoch,
+            session,
+        )?;
+        if *cached != *key {
+            return Err("team vault key changed at same epoch".into());
+        }
+    } else {
+        let wrapped_key = crate::crypto::wrap_team_key(
+            &key,
+            &context.team_id,
+            &context.vault_id,
+            context.epoch,
+            session,
+        )?;
+        tx.execute(
+            "INSERT INTO team_vault_keys (vault_id,team_id,epoch,wrapped_key) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![context.vault_id, context.team_id, context.epoch, wrapped_key],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let changed = tx.execute(
+        "INSERT INTO team_vaults (vault_id,team_id,epoch,rotation_state) VALUES (?1,?2,?3,'ready') ON CONFLICT(vault_id) DO UPDATE SET epoch=excluded.epoch,rotation_state='ready' WHERE team_vaults.team_id=excluded.team_id AND excluded.epoch>=team_vaults.epoch",
+        rusqlite::params![context.vault_id, context.team_id, context.epoch],
+    )
+    .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("team vault identity or epoch rollback".into());
+    }
+    Ok(())
+}
+
 pub struct ResolvedRowKey {
     pub key: Zeroizing<[u8; 32]>,
     pub epoch: Option<u32>,
@@ -936,7 +1015,7 @@ pub struct RotationRow {
     pub data: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PreparedRotation {
     pub operation_id: String,
     pub expected_epoch: u32,
@@ -959,7 +1038,7 @@ pub fn prepare_rotation(
         crate::db::team_vault_meta(db, vault_id)?.ok_or("not a team vault")?;
     if stored_team != team_id
         || local_epoch != expected_epoch
-        || state != "rotation_required"
+        || !matches!(state.as_str(), "rotation_required" | "rotation_pending")
         || expected_revision == 0
         || recipients.is_empty()
     {

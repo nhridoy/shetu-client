@@ -1,13 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
-import {
-  type RotationRowDto,
-  type TeamVaultDto,
-  teamsApi,
-} from "@/lib/api/teams";
 import { useAuthStore } from "@/stores/auth/authStore";
-import { TEAM_ACCESS_REVOKED_EVENT } from "@/stores/sync/syncStore";
+import { notifyTeamMutation } from "@/stores/sync/syncStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import { toServerEnvelope } from "./teamStore";
 
@@ -18,14 +12,8 @@ export interface SharedVault {
   vaultId: string;
   createdAt: string;
   rotationState: string;
-}
-
-interface PreparedRotation {
-  operation_id: string;
-  expected_epoch: number;
-  expected_revision: number;
-  rows: RotationRowDto[];
-  envelopes: TauriEnvelope[];
+  keyEpoch?: number;
+  revision?: number;
 }
 
 interface TauriEnvelope {
@@ -42,36 +30,8 @@ interface TauriEnvelope {
   ciphertext: string;
 }
 
-const toSharedVault = (vault: TeamVaultDto): SharedVault => ({
-  id: vault.id,
-  vaultId: vault.id,
-  teamId: vault.team_id,
-  name: vault.name,
-  createdAt: vault.created_at,
-  rotationState: vault.rotation_state,
-});
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
-const cacheKey = (teamId: string) =>
-  `vaults:${useAuthStore.getState().user?.id ?? ""}:${teamId}`;
-async function saveCache(teamId: string, vaults: SharedVault[]): Promise<void> {
-  try {
-    const store = await load("team-cache.json", { autoSave: false });
-    await store.set(cacheKey(teamId), vaults);
-    await store.save();
-  } catch {
-    /* Insensitive metadata is best-effort. */
-  }
-}
-async function readCache(teamId: string): Promise<SharedVault[]> {
-  try {
-    const store = await load("team-cache.json", { autoSave: false });
-    return (await store.get<SharedVault[]>(cacheKey(teamId))) ?? [];
-  } catch {
-    return [];
-  }
-}
-
 interface SharedVaultState {
   sharedVaults: SharedVault[];
   selectedSharedVault: SharedVault | null;
@@ -103,37 +63,29 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
   fetchSharedVaults: async (teamId) => {
     set({ isLoading: true, error: null });
     try {
-      const vaults = await teamsApi.listVaults(teamId);
       const userId = useAuthStore.getState().user?.id;
       if (!userId) throw new Error("Sign in to access team vaults.");
-      for (const vault of vaults) {
-        const envelope = await teamsApi.keyEnvelope(vault.id);
-        await invoke("import_team_key_envelope", {
-          userId,
-          envelope: {
-            version: envelope.version,
-            context: {
-              team_id: envelope.team_id,
-              vault_id: envelope.vault_id,
-              epoch: envelope.epoch,
-              recipient_user_id: envelope.recipient_user_id,
-              recipient_fingerprint: envelope.recipient_fingerprint,
-            },
-            ephemeral_public_key: envelope.ephemeral_public_key,
-            nonce: envelope.nonce,
-            ciphertext: envelope.ciphertext,
-          },
-        });
-        await invoke("cache_team_vault_metadata", {
-          vaultId: vault.id,
-          teamId,
-          ownerId: vault.owner_id,
-          name: vault.name,
-          epoch: vault.key_epoch,
-          rotationState: vault.rotation_state,
-        });
-      }
-      const sharedVaults = vaults.map(toSharedVault);
+      const vaults = await invoke<
+        Array<{
+          id: string;
+          teamId: string;
+          name: string;
+          createdAt: string;
+          rotationState: string;
+          keyEpoch: number;
+          revision: number;
+        }>
+      >("local_team_vaults", { accountId: userId, teamId });
+      const sharedVaults = vaults.map((vault) => ({
+        id: vault.id,
+        vaultId: vault.id,
+        teamId: vault.teamId,
+        name: vault.name,
+        createdAt: vault.createdAt,
+        rotationState: vault.rotationState,
+        keyEpoch: vault.keyEpoch,
+        revision: vault.revision,
+      }));
       set({
         sharedVaults,
         selectedSharedVault:
@@ -144,16 +96,9 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
           null,
         isLoading: false,
       });
-      await saveCache(teamId, sharedVaults);
       await useVaultStore.getState().fetchVaults();
     } catch (error) {
-      const cached = await readCache(teamId);
       set({
-        sharedVaults: cached,
-        selectedSharedVault:
-          cached.find((vault) => vault.id === get().selectedSharedVault?.id) ??
-          cached[0] ??
-          null,
         error: errorText(error),
         isLoading: false,
       });
@@ -164,18 +109,26 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
     try {
       const id = vaultId || crypto.randomUUID();
       const vaultName = name?.trim() || "Shared vault";
-      const members = await teamsApi.listMembers(teamId);
+      const accountId = useAuthStore.getState().user?.id;
+      if (!accountId) throw new Error("Sign in to create a team vault.");
+      const members = await invoke<
+        Array<{
+          userId: string;
+          publicKey: string;
+          fingerprint: string;
+        }>
+      >("local_team_members", { accountId, teamId });
       if (
         members.length === 0 ||
-        members.some((member) => !member.public_key || !member.fingerprint)
+        members.some((member) => !member.publicKey || !member.fingerprint)
       ) {
         throw new Error(
           "Every active member needs an identity key before creating a shared vault.",
         );
       }
       const recipients = members.map((member) => ({
-        user_id: member.user_id,
-        public_key: member.public_key,
+        user_id: member.userId,
+        public_key: member.publicKey,
         fingerprint: member.fingerprint,
       }));
       const grants = await invoke<TauriEnvelope[]>("create_team_vault_key", {
@@ -185,45 +138,49 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
       });
       if (grants.length !== recipients.length)
         throw new Error("Some member key grants were not created.");
-      let created: TeamVaultDto;
-      try {
-        created = await teamsApi.createVault(teamId, {
-          id,
+      await invoke("queue_team_operation", {
+        accountId,
+        operationType: "vault.create",
+        payload: JSON.stringify({
+          vault_id: id,
+          team_id: teamId,
           name: vaultName,
           envelopes: grants.map(toServerEnvelope),
-        });
-      } catch (error) {
-        // A lost response can follow a successful server commit. Recover by ID
-        // using the original local key instead of creating a second vault.
-        const existing = (await teamsApi.listVaults(teamId)).find(
-          (vault) => vault.id === id,
-        );
-        if (!existing) throw error;
-        created = existing;
-      }
-      await invoke("cache_team_vault_metadata", {
-        vaultId: created.id,
-        teamId,
-        ownerId: created.owner_id,
-        name: created.name,
-        epoch: created.key_epoch,
-        rotationState: created.rotation_state,
+        }),
       });
-      const shared = toSharedVault(created);
+      notifyTeamMutation();
+      const shared: SharedVault = {
+        id,
+        vaultId: id,
+        teamId,
+        name: vaultName,
+        createdAt: new Date().toISOString(),
+        rotationState: "ready",
+        keyEpoch: 1,
+        revision: 1,
+      };
       const sharedVaults = [...get().sharedVaults, shared];
       set({ sharedVaults, selectedSharedVault: shared, isLoading: false });
-      await saveCache(teamId, sharedVaults);
       await useVaultStore.getState().fetchVaults();
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
     }
   },
-  renameSharedVault: async (teamId, vaultId, name) => {
+  renameSharedVault: async (_teamId, vaultId, name) => {
     set({ isLoading: true, error: null });
     try {
-      const renamedDto = await teamsApi.renameVault(teamId, vaultId, name);
-      const renamed = toSharedVault(renamedDto);
+      const accountId = useAuthStore.getState().user?.id;
+      if (!accountId) throw new Error("Sign in to rename a team vault.");
+      await invoke("queue_team_operation", {
+        accountId,
+        operationType: "vault.rename",
+        payload: JSON.stringify({ vault_id: vaultId, name: name.trim() }),
+      });
+      notifyTeamMutation();
+      const existing = get().sharedVaults.find((vault) => vault.id === vaultId);
+      if (!existing) throw new Error("Team vault not found locally.");
+      const renamed = { ...existing, name: name.trim() };
       const sharedVaults = get().sharedVaults.map((vault) =>
         vault.id === vaultId ? renamed : vault,
       );
@@ -235,25 +192,23 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
             : get().selectedSharedVault,
         isLoading: false,
       });
-      await saveCache(teamId, sharedVaults);
-      await invoke("cache_team_vault_metadata", {
-        vaultId,
-        teamId,
-        ownerId: renamedDto.owner_id,
-        name: renamed.name,
-        epoch: renamedDto.key_epoch,
-        rotationState: renamed.rotationState,
-      });
       await useVaultStore.getState().fetchVaults();
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
     }
   },
-  deleteSharedVault: async (teamId, vaultId) => {
+  deleteSharedVault: async (_teamId, vaultId) => {
     set({ isLoading: true, error: null });
     try {
-      await teamsApi.deleteVault(teamId, vaultId);
+      const accountId = useAuthStore.getState().user?.id;
+      if (!accountId) throw new Error("Sign in to delete a team vault.");
+      await invoke("queue_team_operation", {
+        accountId,
+        operationType: "vault.delete",
+        payload: JSON.stringify({ vault_id: vaultId }),
+      });
+      notifyTeamMutation();
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
@@ -269,108 +224,40 @@ export const useSharedVaultStore = create<SharedVaultState>((set, get) => ({
           : get().selectedSharedVault,
       isLoading: false,
     });
-    await saveCache(teamId, sharedVaults);
-    try {
-      await invoke("revoke_cached_team_vault_command", { vaultId });
-      window.dispatchEvent(
-        new CustomEvent(TEAM_ACCESS_REVOKED_EVENT, { detail: { vaultId } }),
-      );
-      await useVaultStore.getState().fetchVaults();
-    } catch (error) {
-      set({
-        error: `Shared vault deleted on the server, but its local access state could not be updated: ${errorText(error)}`,
-      });
-    }
+    await useVaultStore.getState().fetchVaults();
   },
   rotateSharedVault: async (teamId, vaultId) => {
     set({ isLoading: true, error: null });
     try {
-      const vault = (await teamsApi.listVaults(teamId)).find(
-        (item) => item.id === vaultId,
-      );
-      if (vault?.rotation_state !== "rotation_required") {
+      const accountId = useAuthStore.getState().user?.id;
+      if (!accountId) throw new Error("Sign in to rotate a team vault.");
+      const vaults = await invoke<
+        Array<{
+          id: string;
+          keyEpoch: number;
+          revision: number;
+          rotationState: string;
+        }>
+      >("local_team_vaults", { accountId, teamId });
+      const vault = vaults.find((item) => item.id === vaultId);
+      if (vault?.rotationState !== "rotation_required") {
         throw new Error("This shared vault no longer needs rotation.");
       }
-      const members = await teamsApi.listMembers(teamId);
-      if (
-        members.length === 0 ||
-        members.some((member) => !member.public_key || !member.fingerprint)
-      ) {
-        throw new Error(
-          "Every remaining member needs a verified identity key.",
-        );
-      }
-      const recipients = members.map((member) => ({
-        user_id: member.user_id,
-        public_key: member.public_key,
-        fingerprint: member.fingerprint,
-      }));
-      const rows: RotationRowDto[] = [];
-      let after = "";
-      let hasMore = true;
-      while (hasMore) {
-        const page = await teamsApi.rotationSnapshot(vaultId, after);
-        if (
-          page.vault_id !== vaultId ||
-          page.team_id !== teamId ||
-          page.epoch !== vault.key_epoch ||
-          page.revision !== vault.revision
-        ) {
-          throw new Error(
-            "The shared vault changed during rotation. Refresh and retry.",
-          );
-        }
-        rows.push(...(page.rows ?? []));
-        hasMore = page.has_more;
-        if (!hasMore) break;
-        if (!page.next || page.next === after)
-          throw new Error("Rotation snapshot did not advance.");
-        after = page.next;
-      }
-      const prepared = await invoke<PreparedRotation>("prepare_team_rotation", {
-        teamId,
-        vaultId,
-        expectedEpoch: vault.key_epoch,
-        expectedRevision: vault.revision,
-        rows,
-        recipients,
+      await invoke("queue_team_operation", {
+        accountId,
+        operationType: "vault.rotate",
+        payload: JSON.stringify({ team_id: teamId, vault_id: vaultId }),
       });
-      const envelopes = prepared.envelopes.map(toServerEnvelope);
-      for (
-        let offset = 0;
-        offset < prepared.rows.length || offset === 0;
-        offset += 100
-      ) {
-        await teamsApi.stageRotation(vaultId, {
-          operation_id: prepared.operation_id,
-          expected_epoch: prepared.expected_epoch,
-          expected_revision: prepared.expected_revision,
-          rows: prepared.rows.slice(offset, offset + 100),
-          envelopes,
-        });
-      }
-      await teamsApi.commitRotation(vaultId, prepared.operation_id);
-      await get().fetchSharedVaults(teamId);
-      if (get().error)
-        throw new Error(get().error ?? "Could not load the new team key.");
-      set({ isLoading: false });
+      notifyTeamMutation();
+      const sharedVaults = get().sharedVaults.map((item) =>
+        item.id === vaultId
+          ? { ...item, rotationState: "rotation_pending" }
+          : item,
+      );
+      const selectedSharedVault =
+        sharedVaults.find((item) => item.id === vaultId) ?? null;
+      set({ sharedVaults, selectedSharedVault, isLoading: false });
     } catch (error) {
-      // A response can be lost after the atomic commit. Discover the committed
-      // epoch and self envelope before reporting a failed rotation.
-      try {
-        const current = (await teamsApi.listVaults(teamId)).find(
-          (vault) => vault.id === vaultId,
-        );
-        if (current?.rotation_state === "ready") {
-          await get().fetchSharedVaults(teamId);
-          if (!get().error) {
-            set({ isLoading: false });
-            return;
-          }
-        }
-      } catch {
-        /* Preserve the original failure. */
-      }
       set({ error: errorText(error), isLoading: false });
       throw error;
     }

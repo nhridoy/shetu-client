@@ -1,17 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import { BaseDirectory, exists } from "@tauri-apps/plugin-fs";
 import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
-import {
-  type TeamDto,
-  type TeamInviteDto,
-  type TeamKeyEnvelopeDto,
-  type TeamMemberDto,
-  type TeamRole,
-  teamsApi,
+import type {
+  TeamInviteDto,
+  TeamKeyEnvelopeDto,
+  TeamRole,
 } from "@/lib/api/teams";
 import { useAuthStore } from "@/stores/auth/authStore";
-import { TEAM_ACCESS_REVOKED_EVENT } from "@/stores/sync/syncStore";
-import { useVaultStore } from "@/stores/vault/vaultStore";
+import { notifyTeamMutation } from "@/stores/sync/syncStore";
 
 export interface TeamMember {
   id: string;
@@ -32,6 +29,8 @@ export interface Team {
   members?: TeamMember[];
   createdAt: string;
   updatedAt: string;
+  syncStatus: "pending" | "synced" | "rejected";
+  syncError?: string | null;
 }
 
 interface RecipientKey {
@@ -67,62 +66,58 @@ export function toServerEnvelope(envelope: TauriEnvelope): TeamKeyEnvelopeDto {
   };
 }
 
-function toTauriEnvelope(envelope: TeamKeyEnvelopeDto): TauriEnvelope {
-  return {
-    version: envelope.version,
-    context: {
-      team_id: envelope.team_id,
-      vault_id: envelope.vault_id,
-      epoch: envelope.epoch,
-      recipient_user_id: envelope.recipient_user_id,
-      recipient_fingerprint: envelope.recipient_fingerprint,
-    },
-    ephemeral_public_key: envelope.ephemeral_public_key,
-    nonce: envelope.nonce,
-    ciphertext: envelope.ciphertext,
-  };
-}
-
-const toTeam = (team: TeamDto): Team => ({
-  id: team.id,
-  name: team.name,
-  ownerId: team.owner_id,
-  createdAt: team.created_at,
-  updatedAt: team.updated_at,
-});
-const toMember = (member: TeamMemberDto): TeamMember => ({
-  id: member.id,
-  userId: member.user_id,
-  username: member.username,
-  email: member.email,
-  role: member.role,
-  joinedAt: member.joined_at,
-  publicKey: member.public_key,
-  fingerprint: member.fingerprint,
-});
 const accountId = () => useAuthStore.getState().user?.id ?? "";
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
-async function saveCache(userId: string, teams: Team[]): Promise<void> {
-  if (!userId) return;
+async function importLegacyTeamCacheOnce(userId: string): Promise<void> {
+  if (await invoke<boolean>("team_cache_imported", { accountId: userId }))
+    return;
+  let teams: Array<Record<string, unknown>> = [];
+  const vaults: Array<Record<string, unknown>> = [];
   try {
+    if (
+      !(await exists("team-cache.json", { baseDir: BaseDirectory.AppData }))
+    ) {
+      await invoke("import_legacy_team_cache", {
+        accountId: userId,
+        teams,
+        vaults,
+      });
+      return;
+    }
     const store = await load("team-cache.json", { autoSave: false });
-    await store.set(`teams:${userId}`, teams);
-    await store.save();
+    teams =
+      (await store.get<Array<Record<string, unknown>>>(`teams:${userId}`)) ??
+      [];
+    for (const team of teams) {
+      const teamId = typeof team.id === "string" ? team.id : "";
+      if (!teamId) continue;
+      const cachedVaults =
+        (await store.get<Array<Record<string, unknown>>>(
+          `vaults:${userId}:${teamId}`,
+        )) ?? [];
+      vaults.push(...cachedVaults.map((vault) => ({ ...vault, teamId })));
+    }
   } catch {
-    /* Insensitive metadata cache is best-effort. */
+    // A missing legacy cache is a normal first-run case.
   }
+  await invoke("import_legacy_team_cache", {
+    accountId: userId,
+    teams,
+    vaults,
+  });
 }
 
-async function readCache(userId: string): Promise<Team[]> {
-  if (!userId) return [];
-  try {
-    const store = await load("team-cache.json", { autoSave: false });
-    return (await store.get<Team[]>(`teams:${userId}`)) ?? [];
-  } catch {
-    return [];
-  }
+async function queueOperation(type: string, payload: Record<string, unknown>) {
+  const userId = accountId();
+  if (!userId) throw new Error("Sign in to make team changes.");
+  await invoke("queue_team_operation", {
+    accountId: userId,
+    operationType: type,
+    payload: JSON.stringify(payload),
+  });
+  notifyTeamMutation();
 }
 
 interface TeamState {
@@ -175,7 +170,31 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       });
     set({ isLoading: true, error: null });
     try {
-      const teams = (await teamsApi.listTeams()).map(toTeam);
+      if (userId) await importLegacyTeamCacheOnce(userId);
+      const rows = await invoke<
+        Array<{
+          id: string;
+          name: string;
+          ownerId: string;
+          createdAt: string;
+          updatedAt: string;
+          syncStatus: "pending" | "synced" | "rejected";
+          syncError: string | null;
+        }>
+      >("local_teams", { accountId: userId });
+      const membersByTeam = new Map(
+        get().teams.map((team) => [team.id, team.members]),
+      );
+      const teams = rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        ownerId: row.ownerId,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        syncStatus: row.syncStatus,
+        syncError: row.syncError,
+        members: membersByTeam.get(row.id),
+      }));
       const selectedId = get().selectedTeam?.id;
       set({
         teams,
@@ -183,15 +202,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
           teams.find((team) => team.id === selectedId) ?? teams[0] ?? null,
         isLoading: false,
       });
-      await saveCache(userId, teams);
     } catch (error) {
-      const cached = await readCache(userId);
       set({
-        teams: cached,
-        selectedTeam:
-          cached.find((team) => team.id === get().selectedTeam?.id) ??
-          cached[0] ??
-          null,
         error: errorText(error),
         isLoading: false,
       });
@@ -200,10 +212,14 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   createTeam: async (team) => {
     set({ isLoading: true, error: null });
     try {
-      const created = toTeam(await teamsApi.createTeam(team.name ?? ""));
-      const teams = [...get().teams, created];
-      set({ teams, selectedTeam: created, isLoading: false });
-      await saveCache(accountId(), teams);
+      const teamId = crypto.randomUUID();
+      await queueOperation("team.create", {
+        team_id: teamId,
+        name: team.name?.trim() ?? "",
+      });
+      await get().fetchTeams();
+      const created = get().teams.find((item) => item.id === teamId) ?? null;
+      set({ selectedTeam: created, isLoading: false });
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
@@ -212,10 +228,12 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   updateTeam: async (id, team) => {
     set({ isLoading: true, error: null });
     try {
-      const updated = toTeam(await teamsApi.updateTeam(id, team.name ?? ""));
-      const teams = get().teams.map((item) =>
-        item.id === id ? { ...item, ...updated } : item,
-      );
+      await queueOperation("team.rename", {
+        team_id: id,
+        name: team.name?.trim() ?? "",
+      });
+      await get().fetchTeams();
+      const teams = get().teams;
       set({
         teams,
         selectedTeam:
@@ -224,7 +242,6 @@ export const useTeamStore = create<TeamState>((set, get) => ({
             : get().selectedTeam,
         isLoading: false,
       });
-      await saveCache(accountId(), teams);
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
@@ -233,7 +250,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   deleteTeam: async (id) => {
     set({ isLoading: true, error: null });
     try {
-      await teamsApi.deleteTeam(id);
+      await queueOperation("team.delete", { team_id: id });
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
@@ -245,22 +262,33 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         get().selectedTeam?.id === id ? (teams[0] ?? null) : get().selectedTeam,
       isLoading: false,
     });
-    await saveCache(accountId(), teams);
-    try {
-      await invoke("revoke_cached_team_command", { teamId: id });
-      window.dispatchEvent(new CustomEvent(TEAM_ACCESS_REVOKED_EVENT));
-      await useVaultStore.getState().fetchVaults();
-    } catch (error) {
-      set({
-        error: `Team deleted on the server, but its local access state could not be updated: ${errorText(error)}`,
-      });
-    }
   },
   selectTeam: (team) => set({ selectedTeam: team }),
   fetchTeamDetails: async (teamId) => {
     set({ isLoading: true, error: null });
     try {
-      const members = (await teamsApi.listMembers(teamId)).map(toMember);
+      const rows = await invoke<
+        Array<{
+          id: string;
+          userId: string;
+          email: string;
+          fullName: string;
+          role: TeamRole;
+          createdAt: string;
+          publicKey: string;
+          fingerprint: string;
+        }>
+      >("local_team_members", { accountId: accountId(), teamId });
+      const members = rows.map((member) => ({
+        id: member.id,
+        userId: member.userId,
+        username: member.fullName,
+        email: member.email,
+        role: member.role,
+        joinedAt: member.createdAt,
+        publicKey: member.publicKey,
+        fingerprint: member.fingerprint,
+      }));
       const teams = get().teams.map((team) =>
         team.id === teamId ? { ...team, members } : team,
       );
@@ -269,7 +297,6 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         selectedTeam: teams.find((team) => team.id === teamId) ?? null,
         isLoading: false,
       });
-      await saveCache(accountId(), teams);
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
       throw error;
@@ -280,9 +307,12 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     try {
       if (role !== "member" && role !== "admin")
         throw new Error("Invalid team role.");
-      const recipient = await teamsApi.recipientKey(
-        teamId,
-        email.trim().toLowerCase(),
+      const recipient = await invoke<RecipientKey>(
+        "lookup_team_recipient_key",
+        {
+          teamId,
+          email: email.trim().toLowerCase(),
+        },
       );
       if (
         !confirmedFingerprint ||
@@ -291,22 +321,22 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         throw new Error(
           "Compare the recipient key fingerprint with them before inviting.",
         );
-      const vaults = await teamsApi.listVaults(teamId);
-      const recipientKey: RecipientKey = {
-        user_id: recipient.user_id,
-        public_key: recipient.public_key,
-        fingerprint: recipient.fingerprint,
-      };
+      const vaults = await invoke<Array<{ id: string }>>("local_team_vaults", {
+        accountId: accountId(),
+        teamId,
+      });
       const envelopes: TeamKeyEnvelopeDto[] = [];
       for (const vault of vaults) {
         const envelope = await invoke<TauriEnvelope>("grant_team_vault_key", {
           vaultId: vault.id,
-          recipient: recipientKey,
+          recipient,
         });
         envelopes.push(toServerEnvelope(envelope));
       }
-      await teamsApi.invite(teamId, {
-        email,
+      await queueOperation("invite.create", {
+        invite_id: crypto.randomUUID(),
+        team_id: teamId,
+        email: email.trim().toLowerCase(),
         role,
         recipient_fingerprint: recipient.fingerprint,
         envelopes,
@@ -320,7 +350,10 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   removeMember: async (teamId, userId) => {
     set({ isLoading: true, error: null });
     try {
-      await teamsApi.removeMember(teamId, userId);
+      await queueOperation("member.remove", {
+        team_id: teamId,
+        user_id: userId,
+      });
       await get().fetchTeamDetails(teamId);
       const { useSharedVaultStore } = await import("./sharedVaultStore");
       await useSharedVaultStore.getState().fetchSharedVaults(teamId);
@@ -334,7 +367,11 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     try {
       if (role !== "admin" && role !== "member")
         throw new Error("Invalid team role.");
-      await teamsApi.updateMemberRole(teamId, userId, role);
+      await queueOperation("member.role", {
+        team_id: teamId,
+        user_id: userId,
+        role,
+      });
       await get().fetchTeamDetails(teamId);
     } catch (error) {
       set({ error: errorText(error), isLoading: false });
@@ -343,7 +380,32 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
   fetchMyInvites: async () => {
     try {
-      set({ pendingInvites: await teamsApi.myInvites(), error: null });
+      const rows = await invoke<
+        Array<{
+          id: string;
+          teamId: string;
+          email: string;
+          role: TeamRole;
+          status: string;
+          createdAt: string;
+          expiresAt: string;
+        }>
+      >("local_team_invites", { accountId: accountId() });
+      set({
+        pendingInvites: rows.map(
+          (invite) =>
+            ({
+              id: invite.id,
+              team_id: invite.teamId,
+              recipient_email: invite.email,
+              role: invite.role,
+              state: invite.status,
+              created_at: invite.createdAt,
+              expires_at: invite.expiresAt || invite.createdAt,
+            }) as TeamInviteDto,
+        ),
+        error: null,
+      });
     } catch (error) {
       set({ error: errorText(error) });
     }
@@ -353,25 +415,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     try {
       const userId = accountId();
       if (!userId) throw new Error("Sign in before accepting an invitation.");
-      const invite = await teamsApi.acceptInvite(inviteId);
-      const vaults = await teamsApi.listVaults(invite.team_id);
-      for (const vault of vaults) {
-        const envelope = await teamsApi.keyEnvelope(vault.id);
-        await invoke("import_team_key_envelope", {
-          envelope: toTauriEnvelope(envelope),
-          userId,
-        });
-        await invoke("cache_team_vault_metadata", {
-          vaultId: vault.id,
-          teamId: invite.team_id,
-          ownerId: vault.owner_id,
-          name: vault.name,
-          epoch: vault.key_epoch,
-          rotationState: vault.rotation_state,
-        });
-      }
-      await get().fetchTeams();
-      await useVaultStore.getState().fetchVaults();
+      await queueOperation("invite.accept", { invite_id: inviteId });
       set({
         pendingInvites: get().pendingInvites.filter(
           (item) => item.id !== inviteId,
@@ -386,7 +430,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   declineInvite: async (inviteId) => {
     set({ isLoading: true, error: null });
     try {
-      await teamsApi.declineInvite(inviteId);
+      await queueOperation("invite.decline", { invite_id: inviteId });
       set({
         pendingInvites: get().pendingInvites.filter(
           (item) => item.id !== inviteId,

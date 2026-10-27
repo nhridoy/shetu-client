@@ -1,10 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
-import { teamsApi } from "@/lib/api/teams";
 import {
   type InviteMemberFormSchema,
   inviteMemberFormDefaultValues,
@@ -45,7 +45,14 @@ export default function InviteMemberForm({
     try {
       const normalizedEmail = data.email.trim().toLowerCase();
       if (!activeLookup) {
-        const recipient = await teamsApi.recipientKey(teamId, normalizedEmail);
+        const recipient = await invoke<{
+          user_id: string;
+          public_key: string;
+          fingerprint: string;
+        }>("lookup_team_recipient_key", {
+          teamId,
+          email: normalizedEmail,
+        });
         setLookup({
           email: normalizedEmail,
           fingerprint: recipient.fingerprint,
