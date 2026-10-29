@@ -5,7 +5,12 @@ vi.mock("@/lib/api/teams", () => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/stores/auth/authStore", () => ({
-  useAuthStore: { getState: () => ({ user: { id: "account-1" } }) },
+  useAuthStore: {
+    getState: () => ({
+      user: { id: "account-1" },
+      retryServerSession: vi.fn().mockResolvedValue("connected"),
+    }),
+  },
 }));
 
 import { teamsApi } from "@/lib/api/teams";
@@ -48,13 +53,19 @@ describe("team store", () => {
   });
 
   it("keeps create errors visible and does not add a fake team", async () => {
-    vi.mocked(teamsApi.createTeam).mockRejectedValue(
-      new Error("server unavailable"),
-    );
+    vi.mocked(invoke).mockRejectedValue(new Error("local database unavailable"));
     await expect(
       useTeamStore.getState().createTeam({ name: "Ops" }),
-    ).rejects.toThrow("server unavailable");
+    ).rejects.toThrow("local database unavailable");
+    expect(invoke).toHaveBeenCalledWith(
+      "queue_team_operation",
+      expect.objectContaining({
+        accountId: "account-1",
+        operationType: "team.create",
+      }),
+    );
+    expect(teamsApi.createTeam).not.toHaveBeenCalled();
     expect(useTeamStore.getState().teams).toEqual([]);
-    expect(useTeamStore.getState().error).toBe("server unavailable");
+    expect(useTeamStore.getState().error).toBe("local database unavailable");
   });
 });

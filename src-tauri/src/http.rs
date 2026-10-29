@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_keyring_store::KeyringExt;
 
-pub const DEFAULT_BASE_URL: &str = "http://localhost:8080";
 pub const REFRESH_TOKEN_ACCOUNT: &str = "auth.refresh_token";
 pub const SESSION_REVOKED_EVENT: &str = "http://session-revoked";
 pub const NETWORK_ERROR_MESSAGE: &str =

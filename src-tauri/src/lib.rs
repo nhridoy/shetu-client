@@ -268,7 +268,7 @@ fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let guard = state.api_url.lock().map_err(|e| e.to_string())?;
     Ok(guard
         .clone()
-        .unwrap_or_else(|| "http://localhost:8080".to_string()))
+        .unwrap_or_default())
 }
 
 #[tauri::command]
@@ -1616,7 +1616,7 @@ pub fn run() {
         .manage(CryptoState {
             session: std::sync::Mutex::new(crypto::KeySession::new()),
         })
-        .manage(http::HttpState::new(http::DEFAULT_BASE_URL.to_string()))
+        .manage(http::HttpState::new(String::new()))
         .manage(sync::SyncLocks::default())
         .manage(git::GitLock(std::sync::Arc::new(Mutex::new(()))))
         .manage(LocalSessions {

@@ -733,7 +733,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         try {
           await setBaseUrl(getApiUrl());
         } catch {
-          /* use compiled default */
+          /* Local/offline session restore can continue without a server URL. */
         }
         const identity = await loadOfflineIdentity();
         if (identity) {

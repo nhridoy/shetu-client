@@ -3,7 +3,12 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
-import { setApiUrl } from "@/lib/api/auth";
+import {
+  clearApiUrlOverride,
+  getDefaultApiUrl,
+  setApiUrl,
+} from "@/lib/api/auth";
+import { setBaseUrl } from "@/lib/crypto/crypto";
 import {
   type ServerUrlSchema,
   serverUrlDefaultValues,
@@ -38,7 +43,13 @@ export default function ServerConfig() {
         <div className="mt-4 p-3 bg-dark-800 rounded-lg">
           <form
             onSubmit={handleSubmit(async (data) => {
-              await setApiUrl(data.serverUrl || "http://localhost:8080");
+              const serverUrl = data.serverUrl?.trim();
+              if (serverUrl) {
+                await setApiUrl(serverUrl);
+              } else {
+                await clearApiUrlOverride();
+              }
+              await setBaseUrl(serverUrl || getDefaultApiUrl());
             })}
             className="space-y-2"
           >
@@ -48,7 +59,7 @@ export default function ServerConfig() {
                   control={control}
                   name="serverUrl"
                   label="Server URL"
-                  placeholder="http://localhost:8080"
+                  placeholder="Value from client/.env (VITE_API_URL)"
                 />
               </div>
               <Button
@@ -62,7 +73,7 @@ export default function ServerConfig() {
               </Button>
             </div>
             <p className="text-dark-500 text-xs">
-              Leave empty for default server. Changes take effect on next login.
+              Leave empty to use VITE_API_URL from client/.env. Changes take effect immediately.
             </p>
           </form>
         </div>

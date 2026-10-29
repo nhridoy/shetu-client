@@ -3,7 +3,6 @@ import { HttpError, httpRequest } from "./http";
 
 const AUTH_SETTINGS_FILE = "auth.json";
 const API_URL_KEY = "apiUrl";
-const DEFAULT_API_URL = "http://localhost:8080";
 
 // API URL lives in the tauri store (auth.json) so Rust/other processes could
 // read it too; a memory cache keeps per-request reads synchronous.
@@ -21,8 +20,12 @@ export async function loadApiUrl(): Promise<void> {
 
 export function getApiUrl(): string {
   if (cachedApiUrl !== null) return cachedApiUrl;
+  return getDefaultApiUrl();
+}
+
+export function getDefaultApiUrl(): string {
   const env = import.meta.env.VITE_API_URL;
-  return typeof env === "string" && env.trim() !== "" ? env : DEFAULT_API_URL;
+  return typeof env === "string" ? env.trim() : "";
 }
 
 export async function setApiUrl(url: string): Promise<void> {
@@ -33,6 +36,17 @@ export async function setApiUrl(url: string): Promise<void> {
     await store.save();
   } catch {
     // best-effort: the in-memory value still applies for this session
+  }
+}
+
+export async function clearApiUrlOverride(): Promise<void> {
+  cachedApiUrl = null;
+  try {
+    const store = await load(AUTH_SETTINGS_FILE, { autoSave: false });
+    await store.delete(API_URL_KEY);
+    await store.save();
+  } catch {
+    // best-effort: the build-time default still applies for this session
   }
 }
 
