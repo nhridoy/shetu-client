@@ -44,7 +44,7 @@
     "@dnd-kit/dom": "^0.5.0",
     "@dnd-kit/helpers": "^0.5.0",
     "@dnd-kit/react": "^0.5.0",
-    "@hookform/resolvers": "^5.4.0",
+    "@hookform/resolvers": "^6.0.1",
     "@lezer/highlight": "^1.2.3",
     "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2.0.0",
@@ -66,7 +66,7 @@
     "libsodium-wrappers": "^0.8.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-dropzone": "^19.1.1",
+    "react-dropzone": "^20.1.4",
     "react-hook-form": "^7.82.0",
     "react-markdown": "^10.1.0",
     "react-material-icon-theme": "^1.2.0",
@@ -93,6 +93,6 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.5"
   }
 }

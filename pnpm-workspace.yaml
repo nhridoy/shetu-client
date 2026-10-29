@@ -1,2 +1,2 @@
-allowBuilds:
-  esbuild: true
+minimumReleaseAgeExclude:
+  - '@hookform/resolvers@6.0.1'
