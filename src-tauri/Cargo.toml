@@ -27,7 +27,7 @@ dirs = "6"
 tauri-plugin-opener = "2.7"
 tauri-plugin-process = "2.4"
 tauri-plugin-updater = "2.14"
-tauri-plugin-prevent-default = { version = "5", features = ["platform-windows"] }
+tauri-plugin-prevent-default = { version = "6", features = ["platform-windows"] }
 tokio = { version = "1.53.1", features = ["full"] }
 argon2 = "0.5"
 chacha20poly1305 = "0.9"
