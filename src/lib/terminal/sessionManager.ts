@@ -447,6 +447,8 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
   }
 }
 
+export const getSession = (paneId: string) => sessions.get(paneId);
+
 export function getOrCreateSession(params: SessionParams): Session {
   const existing = sessions.get(params.paneId);
   if (existing) {
