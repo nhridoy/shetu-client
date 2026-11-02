@@ -92,12 +92,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   downloadUpdate: async () => {
-    if (get().status !== "available") return;
-    if (get().installationKind === "package") {
-      await get().openReleasePage();
-      return;
-    }
-    if (!pendingUpdate) return;
+    if (get().status !== "available" || !pendingUpdate) return;
     set({ status: "downloading", error: null, downloadProgress: null });
     let downloaded = 0;
     let total: number | undefined;

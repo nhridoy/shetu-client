@@ -84,13 +84,14 @@ describe("updateStore", () => {
     expect(service.check).not.toHaveBeenCalled();
   });
 
-  it("opens the release page instead of downloading on package installs", async () => {
+  it("downloads in-app on .deb package installs", async () => {
     service.installationKind.mockResolvedValue("package");
     service.check.mockResolvedValue(update);
     await useUpdateStore.getState().checkForUpdates(true);
     await useUpdateStore.getState().downloadUpdate();
-    expect(service.download).not.toHaveBeenCalled();
-    expect(service.openReleasePage).toHaveBeenCalledTimes(1);
+    expect(service.download).toHaveBeenCalledTimes(1);
+    expect(service.openReleasePage).not.toHaveBeenCalled();
+    expect(useUpdateStore.getState().status).toBe("ready");
   });
 
   it("tracks download progress and installs only after a verified download", async () => {
