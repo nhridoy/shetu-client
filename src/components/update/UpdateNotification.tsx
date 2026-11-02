@@ -1,103 +1,82 @@
-import { Button } from "@/components/ui/Button";
-import Modal from "@/components/ui/Modal";
-import { useUpdateStore } from "@/stores/update/updateStore";
+import { useEffect } from "react";
+import { toast } from "sonner";
+import { type UpdateState, useUpdateStore } from "@/stores/update/updateStore";
+
+export const UPDATE_TOAST_ID = "app-update";
+
+// A button that keeps the toast open, so the next step replaces it in place.
+const keepOpen = (label: string, run: () => Promise<void>) => ({
+  label,
+  onClick: (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    void run();
+  },
+});
+
+// Drives one persistent, non-blocking toast through the update flow. Sonner
+// merges updates into an existing toast, so every call sets each field.
+export function syncUpdateToast(state: UpdateState) {
+  const { status, error, promptDismissed, dismissUpdate } = state;
+  const version = state.updateInfo?.version ?? "";
+  const later = { label: "Later", onClick: dismissUpdate };
+  const base = {
+    id: UPDATE_TOAST_ID,
+    duration: Number.POSITIVE_INFINITY,
+    onDismiss: dismissUpdate,
+    dismissible: true,
+    action: undefined,
+    cancel: undefined,
+    description: undefined as string | undefined,
+  };
+  if (promptDismissed) {
+    toast.dismiss(UPDATE_TOAST_ID);
+    return;
+  }
+  switch (status) {
+    case "available":
+      toast(`Terra ${version} is available`, {
+        ...base,
+        description: error ?? "It downloads in the background while you work.",
+        action: keepOpen(error ? "Retry" : "Download", state.downloadUpdate),
+        cancel: later,
+      });
+      return;
+    case "downloading":
+      toast.loading(`Downloading Terra ${version}…`, {
+        ...base,
+        dismissible: false,
+        description:
+          state.downloadProgress === null
+            ? undefined
+            : `${state.downloadProgress}%`,
+      });
+      return;
+    case "ready":
+      toast.success(`Terra ${version} is ready`, {
+        ...base,
+        description: error ?? "Restart to finish installing.",
+        action: keepOpen("Restart & install", state.installUpdate),
+        cancel: later,
+      });
+      return;
+    case "installing":
+      toast.loading("Installing update…", { ...base, dismissible: false });
+      return;
+    case "restart_required":
+      toast.success("Update installed", {
+        ...base,
+        description: error ?? "Restart Terra to finish.",
+        action: keepOpen("Restart now", state.restartApp),
+        cancel: later,
+      });
+      return;
+    default:
+      toast.dismiss(UPDATE_TOAST_ID);
+  }
+}
 
 export default function UpdateNotification() {
-  const status = useUpdateStore((state) => state.status);
-  const updateInfo = useUpdateStore((state) => state.updateInfo);
-  const progress = useUpdateStore((state) => state.downloadProgress);
-  const error = useUpdateStore((state) => state.error);
-  const promptDismissed = useUpdateStore((state) => state.promptDismissed);
-  const downloadUpdate = useUpdateStore((state) => state.downloadUpdate);
-  const installUpdate = useUpdateStore((state) => state.installUpdate);
-  const restartApp = useUpdateStore((state) => state.restartApp);
-  const dismissUpdate = useUpdateStore((state) => state.dismissUpdate);
-  const open =
-    !promptDismissed &&
-    [
-      "available",
-      "downloading",
-      "ready",
-      "installing",
-      "restart_required",
-    ].includes(status);
-  const busy = status === "downloading" || status === "installing";
-
-  return (
-    <Modal open={open} onClose={() => !busy && dismissUpdate()}>
-      <div className="p-6">
-        <h2 className="mb-4 text-xl font-bold text-white">Update available</h2>
-        <p className="mb-2 text-lg text-primary-400">
-          Version {updateInfo?.version}
-        </p>
-        {updateInfo?.date && (
-          <p className="mb-2 text-xs text-dark-400">
-            Released {new Date(updateInfo.date).toLocaleDateString()}
-          </p>
-        )}
-        {updateInfo?.notes && (
-          <p className="mb-5 whitespace-pre-wrap text-sm text-dark-400">
-            {updateInfo.notes}
-          </p>
-        )}
-        {status === "downloading" && (
-          <div className="mb-5">
-            <div className="h-2 w-full rounded-full bg-dark-700">
-              <div
-                className="h-2 rounded-full bg-primary-500 transition-all"
-                style={{ width: `${progress ?? 0}%` }}
-              />
-            </div>
-            <p className="mt-2 text-center text-xs text-dark-400">
-              {progress === null ? "Downloading…" : `${progress}%`}
-            </p>
-          </div>
-        )}
-        {status === "installing" && (
-          <p className="mb-5 text-sm text-dark-400">Installing update…</p>
-        )}
-        {status === "restart_required" && (
-          <p className="mb-5 text-sm text-dark-400">
-            Update installed. Restart the app to finish.
-          </p>
-        )}
-        {error && (
-          <p role="alert" className="mb-5 text-sm text-red-400">
-            {error}
-          </p>
-        )}
-
-        <div className="flex justify-end gap-3">
-          {!busy && (
-            <Button type="button" variant="ghost" onClick={dismissUpdate}>
-              Later
-            </Button>
-          )}
-          {status === "available" && (
-            <Button type="button" onClick={() => void downloadUpdate()}>
-              Download update
-            </Button>
-          )}
-          {status === "ready" && (
-            <Button
-              type="button"
-              variant="success"
-              onClick={() => void installUpdate()}
-            >
-              Restart &amp; install
-            </Button>
-          )}
-          {status === "restart_required" && (
-            <Button
-              type="button"
-              variant="success"
-              onClick={() => void restartApp()}
-            >
-              Restart now
-            </Button>
-          )}
-        </div>
-      </div>
-    </Modal>
-  );
+  const state = useUpdateStore();
+  useEffect(() => syncUpdateToast(state), [state]);
+  return null;
 }
