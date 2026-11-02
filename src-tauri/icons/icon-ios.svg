@@ -2,8 +2,8 @@
   <!-- Full-bleed iOS variant: iOS masks icons itself, so no squircle or margin. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#38b6f5"/>
-      <stop offset="1" stop-color="#0a4fb0"/>
+      <stop offset="0" stop-color="#f7f9fc"/>
+      <stop offset="1" stop-color="#cfd8e4"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity="0.22"/>
@@ -45,7 +45,7 @@
   </defs>
   <rect width="1024" height="1024" fill="url(#bg)"/>
   <g>
-    <g transform="translate(512 512) scale(1.243) translate(-512 -512)"><g transform="translate(0 22)"><rect x="300" y="196" width="520" height="430" rx="58" fill="#fff" fill-opacity="0.28"/><rect x="256" y="240" width="540" height="450" rx="60" fill="#fff" fill-opacity="0.45" filter="url(#glyphShadow)"/>
+    <g transform="translate(512 512) scale(1.243) translate(-512 -512)"><g transform="translate(0 22)"><rect x="300" y="196" width="520" height="430" rx="58" fill="#7dd3fc" fill-opacity="0.55"/><rect x="256" y="240" width="540" height="450" rx="60" fill="#38bdf8" fill-opacity="0.75" filter="url(#glyphShadow)"/>
     <g filter="url(#glyphShadow)">
       <rect x="204" y="300" width="560" height="470" rx="60" fill="url(#screen)"/>
       <path d="M204 378 V360 A60 60 0 0 1 264 300 H704 A60 60 0 0 1 764 360 V378 Z" fill="url(#bar)"/>
