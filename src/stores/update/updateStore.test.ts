@@ -11,7 +11,7 @@ const service = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/update/updateService", () => ({
-  RELEASE_URL: "https://github.com/nhridoy/terra/releases/latest",
+  RELEASE_URL: "https://github.com/nhridoy/terra-client/releases/latest",
   updateService: service,
 }));
 
