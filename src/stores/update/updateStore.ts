@@ -18,7 +18,7 @@ export type UpdateStatus =
   | "error"
   | "development";
 
-interface UpdateState {
+export interface UpdateState {
   status: UpdateStatus;
   installationKind: InstallationKind | null;
   updateInfo: { version: string; notes: string; date: string | null } | null;

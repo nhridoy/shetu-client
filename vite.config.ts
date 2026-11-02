@@ -34,5 +34,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // scripts/*.test.mjs use node:test and run with `node --test`.
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 })
