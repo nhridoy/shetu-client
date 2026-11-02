@@ -1,6 +1,6 @@
 [package]
 name = "terra"
-version = "0.0.3"
+version = "0.0.4"
 description = "Terra - Self-hosted SSH client"
 edition = "2021"
 
