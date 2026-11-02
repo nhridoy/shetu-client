@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "icons": "tauri icon src-tauri/icons/icon.svg --ios-color \"#0ea5e9\" && tauri icon src-tauri/icons/icon-ios.svg -o /tmp/terra-ios-icons && rm -rf src-tauri/icons/ios && cp -r /tmp/terra-ios-icons/ios src-tauri/icons/ios"
+    "icons": "tauri icon src-tauri/icons/icon.svg --ios-color \"#0a4fb0\" && tauri icon src-tauri/icons/icon-ios.svg -o /tmp/terra-ios-icons && rm -rf src-tauri/icons/ios && cp -r /tmp/terra-ios-icons/ios src-tauri/icons/ios"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
