@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Source of truth for all app icons. Regenerate everything: pnpm icons (see package.json) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#0369a1"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS-style rounded square with 100px transparent margin -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <!-- back layer: planet (Terra) -->
+  <circle cx="512" cy="512" r="330" fill="#fff" fill-opacity="0.16"/>
+  <!-- front layer: shell prompt chevron + block cursor -->
+  <path d="M330 330 L512 512 L330 694" fill="none" stroke="#fff" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="588" y="402" width="118" height="220" rx="36" fill="#fff"/>
+</svg>
