@@ -9,10 +9,13 @@ import { buildUpdateManifest } from './build-update-manifest.mjs';
 
 const bundles = {
   'linux-x86_64': 'Terra.AppImage',
+  'linux-aarch64': 'Terra.AppImage',
   'windows-x86_64': 'Terra-setup.exe',
+  'windows-aarch64': 'Terra-setup.exe',
   'darwin-x86_64': 'Terra.app.tar.gz',
   'darwin-aarch64': 'Terra.app.tar.gz',
 };
+const debPlatforms = ['linux-x86_64', 'linux-aarch64'];
 const execFileAsync = promisify(execFile);
 const signature = (platform) => Buffer.from([
   'untrusted comment: signature from tauri secret key',
@@ -32,8 +35,10 @@ async function fixture() {
     await writeFile(join(dir, name), platform);
     await writeFile(join(dir, `${name}.sig`), signature(platform));
   }
-  await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.deb'), 'package');
-  await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.deb.sig'), signature('linux-x86_64-deb'));
+  for (const platform of debPlatforms) {
+    await writeFile(join(assetsDir, platform, 'Terra.deb'), 'package');
+    await writeFile(join(assetsDir, platform, 'Terra.deb.sig'), signature(`${platform}-deb`));
+  }
   return { assetsDir, outputDir };
 }
 
@@ -42,7 +47,18 @@ test('builds a complete manifest with literal signatures and unique URLs', async
   await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
   const manifest = JSON.parse(await readFile(join(outputDir, 'terra-latest.json'), 'utf8'));
   assert.equal(manifest.version, '1.0.1');
-  assert.deepEqual(Object.keys(manifest.platforms).sort(), [...Object.keys(bundles), 'linux-x86_64-deb'].sort());
+  assert.deepEqual(
+    Object.keys(manifest.platforms).sort(),
+    [...Object.keys(bundles), ...debPlatforms.map((p) => `${p}-deb`)].sort(),
+  );
+  assert.equal(
+    manifest.platforms['linux-aarch64-deb'].url,
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/linux-aarch64-Terra.deb',
+  );
+  assert.equal(
+    manifest.platforms['windows-aarch64'].url,
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/windows-aarch64-Terra-setup.exe',
+  );
   assert.equal(manifest.platforms['linux-x86_64-deb'].signature, signature('linux-x86_64-deb'));
   assert.equal(
     manifest.platforms['linux-x86_64-deb'].url,

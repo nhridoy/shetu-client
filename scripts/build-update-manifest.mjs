@@ -13,7 +13,10 @@ const execFileAsync = promisify(execFile);
 const REQUIRED = [
   ['linux-x86_64', 'linux-x86_64', '.AppImage'],
   ['linux-x86_64-deb', 'linux-x86_64', '.deb'],
+  ['linux-aarch64', 'linux-aarch64', '.AppImage'],
+  ['linux-aarch64-deb', 'linux-aarch64', '.deb'],
   ['windows-x86_64', 'windows-x86_64', '.exe'],
+  ['windows-aarch64', 'windows-aarch64', '.exe'],
   ['darwin-x86_64', 'darwin-x86_64', '.app.tar.gz'],
   ['darwin-aarch64', 'darwin-aarch64', '.app.tar.gz'],
 ];
