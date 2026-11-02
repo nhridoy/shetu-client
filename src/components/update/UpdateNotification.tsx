@@ -4,7 +4,6 @@ import { useUpdateStore } from "@/stores/update/updateStore";
 
 export default function UpdateNotification() {
   const status = useUpdateStore((state) => state.status);
-  const installationKind = useUpdateStore((state) => state.installationKind);
   const updateInfo = useUpdateStore((state) => state.updateInfo);
   const progress = useUpdateStore((state) => state.downloadProgress);
   const error = useUpdateStore((state) => state.error);
@@ -12,7 +11,6 @@ export default function UpdateNotification() {
   const downloadUpdate = useUpdateStore((state) => state.downloadUpdate);
   const installUpdate = useUpdateStore((state) => state.installUpdate);
   const restartApp = useUpdateStore((state) => state.restartApp);
-  const openReleasePage = useUpdateStore((state) => state.openReleasePage);
   const dismissUpdate = useUpdateStore((state) => state.dismissUpdate);
   const open =
     !promptDismissed &&
@@ -40,12 +38,6 @@ export default function UpdateNotification() {
         {updateInfo?.notes && (
           <p className="mb-5 whitespace-pre-wrap text-sm text-dark-400">
             {updateInfo.notes}
-          </p>
-        )}
-        {installationKind === "package" && (
-          <p className="mb-5 text-sm text-dark-400">
-            This Linux package is updated through your package installer. Open
-            the release page to download the new version.
           </p>
         )}
         {status === "downloading" && (
@@ -81,12 +73,7 @@ export default function UpdateNotification() {
               Later
             </Button>
           )}
-          {installationKind === "package" && status === "available" && (
-            <Button type="button" onClick={() => void openReleasePage()}>
-              Open release page
-            </Button>
-          )}
-          {installationKind !== "package" && status === "available" && (
+          {status === "available" && (
             <Button type="button" onClick={() => void downloadUpdate()}>
               Download update
             </Button>
