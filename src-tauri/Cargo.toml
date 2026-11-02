@@ -47,6 +47,7 @@ russh = { version = "0.62", default-features = false, features = ["ring", "rsa",
 ssh-key = { version = "=0.7.0-rc.11", features = ["getrandom"] }
 russh-sftp = "2.4"
 tokio-util = "0.7"
+tauri-plugin-clipboard-manager = "2"
 
 [features]
 default = ["custom-protocol"]

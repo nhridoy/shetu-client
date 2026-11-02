@@ -2,9 +2,7 @@ import { useCallback, useState } from "react";
 import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
-import QuickConnect from "@/components/terminal/views/QuickConnect";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import type { Host } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 
 interface TerminalViewProps {
@@ -12,8 +10,7 @@ interface TerminalViewProps {
 }
 
 export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
-  const { tabs, activeTabId, connectActivePane, splitPane, removePane } =
-    useTerminalStore();
+  const { tabs, activeTabId, splitPane, removePane } = useTerminalStore();
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -63,58 +60,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     console.log("Execute command:", command);
     setShowCommandPalette(false);
   }, []);
-
-  const handleQuickConnectHost = useCallback(
-    (host: Host) => {
-      const { activeTabId: atId } = useTerminalStore.getState();
-      if (!atId) {
-        const newTabId = useTerminalStore.getState().addEmptyTab();
-        onSetActiveView?.(newTabId);
-        useTerminalStore
-          .getState()
-          .connectActivePane(newTabId, host.id, host.name, {
-            hostAddress: host.address,
-            hostPort: host.port,
-            hostUsername: host.username,
-            authType: host.authType,
-            keyId: host.keyId,
-          });
-        return;
-      }
-      connectActivePane(atId, host.id, host.name, {
-        hostAddress: host.address,
-        hostPort: host.port,
-        hostUsername: host.username,
-        authType: host.authType,
-        keyId: host.keyId,
-      });
-      onSetActiveView?.(atId);
-    },
-    [connectActivePane, onSetActiveView],
-  );
-
-  const handleQuickConnectLocal = useCallback(
-    (shell: string) => {
-      const { activeTabId: atId } = useTerminalStore.getState();
-      if (!atId) {
-        const newTabId = useTerminalStore.getState().addEmptyTab();
-        onSetActiveView?.(newTabId);
-        useTerminalStore
-          .getState()
-          .connectActivePane(newTabId, `local_${Date.now()}`, "Local", {
-            connectionType: "local",
-            shell,
-          });
-        return;
-      }
-      connectActivePane(atId, `local_${Date.now()}`, "Local", {
-        connectionType: "local",
-        shell,
-      });
-      onSetActiveView?.(atId);
-    },
-    [connectActivePane, onSetActiveView],
-  );
 
   const handleSplit = useCallback(
     (direction: "horizontal" | "vertical") => {
@@ -182,11 +127,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
             </div>
           ))}
         </div>
-
-        <QuickConnect
-          onConnect={handleQuickConnectHost}
-          onConnectLocal={handleQuickConnectLocal}
-        />
 
         <CommandAutocomplete
           isVisible={showCommandPalette}

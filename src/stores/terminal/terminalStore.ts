@@ -207,6 +207,12 @@ interface TerminalState {
 
   addTab: (hostId: string, hostName: string, options?: ConnectOptions) => void;
   addEmptyTab: () => string;
+  /** Connects in the active pane if it is empty, else in a new tab. Returns the tab id. */
+  openConnection: (
+    hostId: string,
+    hostName: string,
+    options?: ConnectOptions,
+  ) => string;
   connectPane: (
     tabId: string,
     paneId: string,
@@ -366,6 +372,20 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       activeTabId: tabId,
     }));
     return tabId;
+  },
+
+  openConnection: (hostId, hostName, options) => {
+    const { tabs, activeTabId } = get();
+    const tab = activeTabId ? findTab(tabs, activeTabId) : undefined;
+    const pane = tab?.activePaneId
+      ? findLeafUtil(tab.root, tab.activePaneId)
+      : null;
+    if (tab && pane && !pane.hostId) {
+      get().connectActivePane(tab.id, hostId, hostName, options);
+      return tab.id;
+    }
+    get().addTab(hostId, hostName, options);
+    return get().activeTabId as string;
   },
 
   connectPane: (tabId, paneId, hostId, hostName, options) => {

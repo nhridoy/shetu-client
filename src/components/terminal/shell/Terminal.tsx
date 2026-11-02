@@ -1,13 +1,17 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import ContextMenu from "@/components/ui/ContextMenu";
 import {
   attachSession,
   destroySession,
   detachSession,
   fitSession,
   getOrCreateSession,
+  getSession,
   type Session,
 } from "@/lib/terminal/sessionManager";
+import { terminalContextMenuItems } from "@/lib/terminal/terminalContextMenu";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
   findLeaf,
@@ -63,6 +67,20 @@ export default function Terminal({
   isActive,
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Right-click opens the terminal menu instead of the webview's.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const open = (event: MouseEvent) => {
+      if (!getSession(paneId)) return;
+      event.preventDefault();
+      setMenu({ x: event.clientX, y: event.clientY });
+    };
+    el.addEventListener("contextmenu", open);
+    return () => el.removeEventListener("contextmenu", open);
+  }, [paneId]);
   const [reconnectState, setReconnectState] = useState<ReconnectState | null>(
     null,
   );
@@ -208,6 +226,25 @@ export default function Terminal({
 
   return (
     <div ref={containerRef} className="w-full h-full relative">
+      {menu &&
+        createPortal(
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={(() => {
+              const session = getSession(paneId);
+              return session
+                ? terminalContextMenuItems(session.xterm, (direction) =>
+                    useTerminalStore
+                      .getState()
+                      .splitPane(tabId, paneId, direction),
+                  )
+                : [];
+            })()}
+          />,
+          document.body,
+        )}
       {connStep !== null && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/90 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">

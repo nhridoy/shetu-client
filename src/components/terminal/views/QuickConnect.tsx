@@ -141,18 +141,27 @@ export default function QuickConnect({
 
   if (!isOpen) {
     return (
-      <Button
-        variant="secondary"
-        onClick={() => {
-          setIsOpen(true);
-          setTimeout(() => inputRef.current?.focus(), 100);
-        }}
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 text-dark-400 shadow-lg"
-      >
-        <MagnifyingGlassIcon className="w-4 h-4" weight="bold" />
-        Quick Connect
-        <Badge>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+K</Badge>
-      </Button>
+      // Tabs keep priority in the title bar: this shrinks first (shrink-[20])
+      // and collapses to the search icon when space runs out.
+      <div className="@container flex w-72 min-w-8 shrink-[20]">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setIsOpen(true);
+            setTimeout(() => inputRef.current?.focus(), 100);
+          }}
+          title="Quick Connect"
+          aria-label="Quick Connect"
+          className="h-7 w-full min-w-0 justify-center gap-2 rounded-md border border-dark-700 bg-dark-800/60 px-2 py-0 hover:border-dark-600 @[8rem]:justify-start"
+        >
+          <MagnifyingGlassIcon className="w-3.5 h-3.5 shrink-0" weight="bold" />
+          <span className="hidden truncate @[8rem]:inline">Quick Connect</span>
+          <Badge className="ml-auto hidden shrink-0 py-0 @[13rem]:inline-flex">
+            {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+K
+          </Badge>
+        </Button>
+      </div>
     );
   }
 
