@@ -94,7 +94,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/nhridoy/terra/releases/latest/download/terra-latest.json"
+        "https://github.com/nhridoy/terra-client/releases/latest/download/terra-latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3N0MzQkUzQUREREQ3MDQKUldRRTE5MnQ0enQ4dHpxbUJzL1RiYmRodjY5MXFtb0hmU3lOWWJ1eEhLWnlDZ3k0SzRFZnFEdnIK"
     }
