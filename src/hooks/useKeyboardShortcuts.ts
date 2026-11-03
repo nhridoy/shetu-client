@@ -16,7 +16,6 @@ interface UseKeyboardShortcutsProps {
   onSplitHorizontal?: () => void;
   onSplitVertical?: () => void;
   onFocusMode?: () => void;
-  onQuickConnect?: () => void;
   onCommandPalette?: () => void;
   onSaveWorkspace?: () => void;
   onToggleSidebar?: () => void;
@@ -30,7 +29,6 @@ export function useKeyboardShortcuts({
   onSplitHorizontal,
   onSplitVertical,
   onFocusMode,
-  onQuickConnect,
   onCommandPalette,
   onSaveWorkspace,
   onToggleSidebar,
@@ -86,12 +84,6 @@ export function useKeyboardShortcuts({
         onFocusMode();
       }
 
-      // Quick connect: Ctrl+K / Cmd+K
-      if (modifier && e.key === "k" && onQuickConnect) {
-        e.preventDefault();
-        onQuickConnect();
-      }
-
       // Command palette: Ctrl+Shift+P / Cmd+Shift+P
       if (modifier && e.shiftKey && e.key === "P" && onCommandPalette) {
         e.preventDefault();
@@ -118,7 +110,6 @@ export function useKeyboardShortcuts({
       onSplitHorizontal,
       onSplitVertical,
       onFocusMode,
-      onQuickConnect,
       onCommandPalette,
       onSaveWorkspace,
       onToggleSidebar,
@@ -172,7 +163,7 @@ export const defaultShortcuts: Omit<KeyboardShortcut, "action">[] = [
   },
   {
     id: "quick-connect",
-    keys: "Ctrl+K",
+    keys: "Ctrl+P",
     description: "Quick connect",
     category: "Connection",
   },

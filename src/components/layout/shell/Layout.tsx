@@ -1,12 +1,13 @@
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
 import { useEffect, useState } from "react";
-import { Outlet, useLocation } from "react-router";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
 import Header from "@/components/layout/shell/Header";
 
 import SettingsModal from "@/components/settings/modal/SettingsModal";
+import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
@@ -34,6 +35,7 @@ import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
 export default function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { fetchHosts, fetchGroups } = useHostStore();
   const { currentVaultId, fetchVaults } = useVaultStore();
   const defaultPersonalVaultId = useVaultStore(
@@ -50,6 +52,10 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [activeView, setActiveView] = useState("vault");
+  const showTerminalTab = (tabId: string) => {
+    setActiveView(tabId);
+    navigate("/terminal");
+  };
 
   const workspaceModal = useModal();
   const presetModal = useModal();
@@ -321,6 +327,30 @@ export default function Layout() {
           <SettingsModal onClose={() => settingsModal.hide()} />
         )}
       </div>
+      {/* Opened with Ctrl/Cmd+P from any view; no on-screen trigger. */}
+      <QuickConnect
+        onConnect={(host) =>
+          showTerminalTab(
+            useTerminalStore.getState().openConnection(host.id, host.name, {
+              hostAddress: host.address,
+              hostPort: host.port,
+              hostUsername: host.username,
+              authType: host.authType,
+              keyId: host.keyId,
+            }),
+          )
+        }
+        onConnectLocal={(shell) =>
+          showTerminalTab(
+            useTerminalStore
+              .getState()
+              .openConnection(`local_${Date.now()}`, "Local", {
+                connectionType: "local",
+                shell,
+              }),
+          )
+        }
+      />
     </DragDropProvider>
   );
 }
