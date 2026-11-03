@@ -4,11 +4,16 @@ import {
   MagnifyingGlassIcon,
   TerminalIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { ShellInfo } from "@/lib/terminal/shellDetection";
+import {
+  hasMacMenu,
+  isMenuOwnedShortcut,
+  listenAppActions,
+} from "@/lib/window/menuActions";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 
@@ -28,6 +33,11 @@ export default function QuickConnect({
   const shells = useShellStore((s) => s.shells);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const open = useCallback(() => {
+    setIsOpen(true);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, []);
 
   const filteredHosts = hosts.filter(
     (host) =>
@@ -52,8 +62,8 @@ export default function QuickConnect({
         // Capture phase + stopPropagation: the terminal must not also receive it.
         e.preventDefault();
         e.stopPropagation();
-        setIsOpen(true);
-        setTimeout(() => inputRef.current?.focus(), 100);
+        // On macOS the menu bar owns ⌘K and opens the panel via an app action.
+        if (!isMenuOwnedShortcut(e, hasMacMenu())) open();
       }
       // Escape to close
       if (e.key === "Escape" && isOpen) {
@@ -64,11 +74,19 @@ export default function QuickConnect({
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen]);
+  }, [isOpen, open]);
 
   useEffect(() => {
     setSelectedIndex(0);
   }, []);
+
+  useEffect(
+    () =>
+      listenAppActions((id) => {
+        if (id === "quick-connect") open();
+      }),
+    [open],
+  );
 
   const noExactHost = !hosts.some(
     (h) =>

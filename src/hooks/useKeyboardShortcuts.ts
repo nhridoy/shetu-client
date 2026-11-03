@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { hasMacMenu, isMenuOwnedShortcut } from "@/lib/window/menuActions";
 
 export interface KeyboardShortcut {
   id: string;
@@ -35,6 +36,8 @@ export function useKeyboardShortcuts({
 }: UseKeyboardShortcutsProps) {
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // The macOS menu bar handles these keys itself.
+      if (isMenuOwnedShortcut(e, hasMacMenu())) return;
       const isMac = navigator.platform.includes("Mac");
       const modifier = isMac ? e.metaKey : e.ctrlKey;
 
