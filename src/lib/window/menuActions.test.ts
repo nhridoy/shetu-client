@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import menuRs from "../../../src-tauri/src/menu.rs?raw";
 import {
   isMenuActionId,
   isMenuOwnedShortcut,
@@ -32,5 +33,10 @@ describe("menu actions", () => {
     expect(MENU_ACTION_IDS.every(isMenuActionId)).toBe(true);
     expect(isMenuActionId("quit")).toBe(false);
     expect(isMenuActionId(undefined)).toBe(false);
+  });
+
+  it("every frontend id is emitted by the Rust menu", () => {
+    expect(menuRs).toContain(`"${"menu-action"}"`);
+    for (const id of MENU_ACTION_IDS) expect(menuRs).toContain(`"${id}"`);
   });
 });

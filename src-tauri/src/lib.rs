@@ -6,6 +6,8 @@ mod forwarding;
 mod git;
 mod http;
 mod keys;
+#[cfg(target_os = "macos")]
+mod menu;
 mod oauth;
 mod offline_auth;
 mod session_history;
@@ -1587,6 +1589,8 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
             window.set_title("Terra")?;
+            #[cfg(target_os = "macos")]
+            menu::install(app)?;
 
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let db_path = data_dir.join(db::DB_FILE_NAME);
