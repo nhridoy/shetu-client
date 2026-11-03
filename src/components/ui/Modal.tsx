@@ -1,3 +1,4 @@
+import { XIcon } from "@phosphor-icons/react";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/Button";
 
@@ -120,7 +121,7 @@ export default function Modal({
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
       onMouseDown={(e) => {
         if (closeOnBackdrop && e.target === overlayRef.current)
           onCloseRef.current();
@@ -129,25 +130,25 @@ export default function Modal({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`bg-dark-900 rounded-xl shadow-xl w-full ${maxWidth} max-h-[90vh] flex flex-col outline-none`}
+        className={`bg-dark-900 rounded-[10px] border border-dark-700/60 shadow-2xl shadow-black/40 w-full ${maxWidth} max-h-[90vh] flex flex-col outline-none`}
       >
         {title && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-dark-700 shrink-0">
-            <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <div className="flex items-center justify-between h-11 px-4 border-b border-dark-700 shrink-0">
+            <h2 className="text-sm font-semibold text-white">{title}</h2>
             {!hideClose && (
               <Button
                 type="button"
                 onClick={() => onCloseRef.current()}
                 variant="ghost"
-                size="icon"
-                className="text-xl leading-none"
+                size="icon-xs"
+                aria-label="Close"
               >
-                &times;
+                <XIcon size={12} weight="bold" aria-hidden="true" />
               </Button>
             )}
           </div>
         )}
-        <div ref={bodyRef} className="overflow-y-auto p-6">
+        <div ref={bodyRef} className="overflow-y-auto p-5">
           {children}
         </div>
       </div>

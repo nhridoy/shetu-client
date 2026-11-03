@@ -90,7 +90,7 @@ export default function ContextMenu({
     <div
       ref={menuRef}
       role="menu"
-      className="fixed z-[100] min-w-[180px] py-1 bg-dark-800 border border-dark-600 rounded-lg shadow-xl"
+      className="fixed z-[100] min-w-[180px] p-[5px] bg-dark-900 border border-dark-700/60 rounded-md shadow-xl shadow-black/40"
       style={{ left: x, top: y }}
       onKeyDown={handleKeyDown}
       onMouseDown={(e) => e.stopPropagation()}
@@ -103,7 +103,7 @@ export default function ContextMenu({
           return (
             <div
               key={`sep-${sepKey}`}
-              className="my-1 border-t border-dark-600"
+              className="my-1 mx-2 border-t border-dark-700"
             />
           );
         }
@@ -119,20 +119,24 @@ export default function ContextMenu({
               }
             }}
             onMouseEnter={() => !item.disabled && setSelectedIndex(index)}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left ${
+            className={`w-full h-[22px] flex items-center gap-2 px-2 rounded-[4px] text-sm text-left cursor-default ${
               item.disabled
                 ? "text-dark-500 cursor-not-allowed"
                 : item.danger
-                  ? "text-red-400 hover:bg-red-500/10"
+                  ? index === selectedIndex
+                    ? "text-white bg-danger-600"
+                    : "text-danger-400"
                   : index === selectedIndex
-                    ? "text-white bg-dark-700"
-                    : "text-dark-300 hover:bg-dark-700"
+                    ? "text-white bg-primary-600"
+                    : "text-dark-300"
             }`}
           >
-            {item.icon && <span className="w-4 h-4 shrink-0">{item.icon}</span>}
+            {item.icon && (
+              <span className="w-3.5 h-3.5 shrink-0">{item.icon}</span>
+            )}
             <span className="flex-1">{item.label}</span>
             {item.shortcut && (
-              <span className="text-xs text-dark-500 ml-4">
+              <span className="text-xs text-dark-400 ml-4">
                 {item.shortcut}
               </span>
             )}
