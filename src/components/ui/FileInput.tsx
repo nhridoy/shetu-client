@@ -43,7 +43,7 @@ export default function FileInput({
       <div
         {...getRootProps()}
         className={cn(
-          "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
+          "border-2 border-dashed rounded-md p-6 text-center cursor-default transition-colors",
           isDragActive
             ? "border-primary-500 bg-primary-500/10"
             : "border-dark-600 hover:border-dark-500 hover:bg-dark-800",

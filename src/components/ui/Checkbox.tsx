@@ -36,16 +36,16 @@ export default function Checkbox({
       disabled={disabled}
       onClick={() => onCheckedChange?.(!checked)}
       className={cn(
-        "peer shrink-0 w-4 h-4 rounded-sm border transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+        "peer shrink-0 w-3.5 h-3.5 rounded-[4px] border transition-colors cursor-default",
+        "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-primary-500/50",
         "disabled:cursor-not-allowed disabled:opacity-50",
         checked
           ? "bg-primary-600 border-primary-600 text-white"
-          : "bg-dark-800 border-dark-600",
+          : "bg-dark-900 border-dark-600",
         className,
       )}
     >
-      {checked && <CheckIcon className="w-3 h-3" weight="bold" />}
+      {checked && <CheckIcon className="w-2.5 h-2.5" weight="bold" />}
     </button>
   );
 }
