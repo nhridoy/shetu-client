@@ -242,7 +242,7 @@ export function WindowDragArea({
 
 export default function TitleBar() {
   return (
-    <div className="fixed inset-x-0 top-0 z-[60] flex h-9 select-none items-center border-b border-dark-800 bg-dark-900 text-xs text-dark-300">
+    <div className="chrome fixed inset-x-0 top-0 z-[60] flex h-[var(--toolbar-height)] items-center border-b border-dark-800 bg-dark-900 text-sm text-dark-300">
       {isMac && <WindowControls />}
       <WindowDragArea showBrand className="flex-1" />
       {!isMac && <WindowControls />}

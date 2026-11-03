@@ -284,13 +284,13 @@ export default function Layout() {
           <button
             type="button"
             aria-label="Close sidebar"
-            className="fixed bottom-0 left-0 right-0 z-30 top-10 bg-black/50 lg:hidden"
+            className="fixed bottom-0 left-0 right-0 z-30 top-[var(--toolbar-height)] bg-black/50 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
 
         <main
-          className={`pt-10 h-screen flex flex-col ${
+          className={`pt-[var(--toolbar-height)] h-screen flex flex-col ${
             isVaultPage ? "lg:ml-72" : ""
           } ${isVaultPage && isMobile && sidebarOpen ? "ml-72" : ""}`}
         >

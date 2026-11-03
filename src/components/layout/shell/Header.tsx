@@ -22,6 +22,12 @@ import {
   workspaceLayoutSnapshot,
 } from "@/stores/terminal/terminalStore";
 
+const VIEWS = [
+  { id: "vault", path: "/hosts", label: "Vaults", Icon: FolderIcon },
+  { id: "sftp", path: "/sftp", label: "SFTP", Icon: FolderIcon },
+  { id: "editor", path: "/editor", label: "Editor", Icon: CodeIcon },
+] as const;
+
 interface HeaderProps {
   activeView: string;
   setActiveView: (view: string) => void;
@@ -68,7 +74,9 @@ export default function Header({
   };
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 h-10 bg-dark-900 border-b border-dark-800 flex items-center pl-2 gap-0.5">
+    <header
+      className={`chrome fixed top-0 left-0 right-0 z-50 h-[var(--toolbar-height)] bg-dark-900 border-b border-dark-800 flex items-center gap-1 ${isMac ? "pr-2" : "pl-2"}`}
+    >
       {isMac && <WindowControls />}
       {/* Mobile menu toggle */}
       <Button
@@ -76,70 +84,46 @@ export default function Header({
         variant="ghost"
         size="icon"
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="lg:hidden shrink-0 mr-1 rounded"
+        className="lg:hidden shrink-0 mr-1"
+        aria-label="Toggle sidebar"
       >
         <ListIcon className="w-4 h-4" />
       </Button>
 
-      {/* Vaults Tab */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          setActiveView("vault");
-          navigate("/hosts");
-        }}
-        className={`shrink-0 rounded ${
-          activeView === "vault"
-            ? "bg-dark-800 text-white"
-            : "hover:bg-dark-800/50"
-        }`}
+      <div
+        role="radiogroup"
+        aria-label="View"
+        className="flex h-7 shrink-0 items-center rounded-md bg-dark-800 p-0.5"
       >
-        <FolderIcon className="w-3.5 h-3.5" />
-        Vaults
-      </Button>
+        {VIEWS.map(({ id, path, label, Icon }) => {
+          const selected = activeView === id;
+          return (
+            <Button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setActiveView(id);
+                navigate(path);
+              }}
+              className={`h-6 rounded-[5px] ${
+                selected
+                  ? "bg-dark-600 text-white shadow-sm hover:bg-dark-600"
+                  : "text-dark-400 hover:bg-transparent"
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </Button>
+          );
+        })}
+      </div>
       {activeView === "vault" && <VaultSelector compact />}
 
-      <div className="flex min-w-0 max-w-full items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {/* SFTP Tab */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setActiveView("sftp");
-            navigate("/sftp");
-          }}
-          className={`shrink-0 rounded ${
-            activeView === "sftp"
-              ? "bg-dark-800 text-white"
-              : "hover:bg-dark-800/50"
-          }`}
-        >
-          <FolderIcon className="w-3.5 h-3.5" />
-          SFTP
-        </Button>
-
-        {/* Editor Tab */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setActiveView("editor");
-            navigate("/editor");
-          }}
-          className={`shrink-0 rounded ${
-            activeView === "editor"
-              ? "bg-dark-800 text-white"
-              : "hover:bg-dark-800/50"
-          }`}
-        >
-          <CodeIcon className="w-3.5 h-3.5" />
-          Editor
-        </Button>
-
+      <div className="flex min-w-0 max-w-full items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {/* Separator */}
         {tabs.length > 0 && (
           <div className="shrink-0 w-px h-4 mx-1 bg-dark-700" />
@@ -191,8 +175,9 @@ export default function Header({
             setActiveView(newTabId);
             navigate("/terminal");
           }}
-          className="shrink-0 rounded"
-          title="New Tab"
+          className="shrink-0"
+          title="New tab"
+          aria-label="New tab"
         >
           <PlusIcon className="w-3.5 h-3.5" />
         </Button>
@@ -206,7 +191,7 @@ export default function Header({
         {/* Workspace save group (far right) */}
         {activeWorkspaceId && (
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="flex items-center gap-1.5 max-w-35 px-2 py-0.5 text-xs text-dark-300 bg-dark-800 rounded">
+            <span className="flex items-center gap-1.5 max-w-35 h-6 px-2 text-xs text-dark-300 bg-dark-800 rounded-md">
               <span className="truncate">{activeWorkspaceName}</span>
               {isDirty && (
                 <span
@@ -224,7 +209,8 @@ export default function Header({
               title={
                 isDirty ? "Save workspace (overwrite)" : "No unsaved changes"
               }
-              className={`rounded ${
+              aria-label="Save workspace"
+              className={`${
                 isDirty
                   ? "text-primary-400 hover:text-white hover:bg-dark-800"
                   : "text-dark-600 cursor-default"
@@ -243,7 +229,8 @@ export default function Header({
                   ? "Delete the current workspace to create a new one"
                   : "Save as new workspace"
               }
-              className={`rounded ${
+              aria-label="Save as new workspace"
+              className={`${
                 activeWorkspaceId
                   ? "text-dark-600 cursor-default"
                   : "hover:text-white hover:bg-dark-800"
@@ -262,8 +249,9 @@ export default function Header({
             variant="ghost"
             size="icon"
             onClick={onSaveWorkspace}
-            className="shrink-0 rounded"
+            className="shrink-0"
             title="Save workspace"
+            aria-label="Save workspace"
           >
             <FloppyDiskIcon className="w-3.5 h-3.5" />
           </Button>
@@ -279,8 +267,8 @@ export default function Header({
           variant="ghost"
           size="icon"
           onClick={onOpenSettings}
-          className="rounded"
           title="Settings"
+          aria-label="Settings"
         >
           <GearSixIcon className="w-4 h-4" />
         </Button>

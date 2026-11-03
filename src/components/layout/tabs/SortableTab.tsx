@@ -57,10 +57,10 @@ export default function SortableTab({
       tabIndex={0}
       onClick={onActivate}
       onKeyDown={accessibleClickHandler(onActivate)}
-      className={`relative flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded rounded-b-none cursor-grab active:cursor-grabbing transition-opacity duration-150 max-w-35 shrink-0 select-none ${
+      className={`group relative flex h-7 items-center gap-1.5 px-2.5 text-sm rounded-md cursor-default transition-opacity duration-150 max-w-40 shrink-0 select-none ${
         isActive
           ? "bg-dark-800 text-white"
-          : "text-dark-400 hover:text-white hover:bg-dark-800/50"
+          : "text-dark-400 hover:bg-dark-800/60"
       } ${isDragging ? "opacity-40" : ""}`}
       style={{ touchAction: "none" }}
     >
@@ -126,8 +126,11 @@ export default function SortableTab({
           e.stopPropagation();
           onClose();
         }}
-        className="ml-0.5 text-dark-500 hover:text-white shrink-0"
+        className={`ml-0.5 text-dark-500 hover:text-white shrink-0 focus-visible:opacity-100 ${
+          isActive ? "" : "opacity-0 group-hover:opacity-100"
+        }`}
         aria-label="Close tab"
+        title="Close tab"
       >
         <XIcon className="w-3 h-3" />
       </Button>
