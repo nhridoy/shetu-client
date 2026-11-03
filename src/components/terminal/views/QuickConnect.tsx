@@ -5,7 +5,6 @@ import {
   TerminalIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -28,7 +27,6 @@ export default function QuickConnect({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const shells = useShellStore((s) => s.shells);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { pathname } = useLocation();
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const filteredHosts = hosts.filter(
@@ -49,14 +47,8 @@ export default function QuickConnect({
       const modifier = navigator.platform.includes("Mac")
         ? e.metaKey
         : e.ctrlKey;
-      // Ctrl/Cmd+P opens the panel, except in the editor, where it is file quick open.
-      if (
-        modifier &&
-        !e.shiftKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === "p" &&
-        pathname !== "/editor"
-      ) {
+      // Ctrl/Cmd+K opens the panel from any view.
+      if (modifier && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         // Capture phase + stopPropagation: the terminal must not also receive it.
         e.preventDefault();
         e.stopPropagation();
@@ -72,7 +64,7 @@ export default function QuickConnect({
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen, pathname]);
+  }, [isOpen]);
 
   useEffect(() => {
     setSelectedIndex(0);

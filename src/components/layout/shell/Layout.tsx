@@ -327,7 +327,7 @@ export default function Layout() {
           <SettingsModal onClose={() => settingsModal.hide()} />
         )}
       </div>
-      {/* Opened with Ctrl/Cmd+P from any view; no on-screen trigger. */}
+      {/* Opened with Ctrl/Cmd+K from any view; no on-screen trigger. */}
       <QuickConnect
         onConnect={(host) =>
           showTerminalTab(

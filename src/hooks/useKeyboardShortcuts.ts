@@ -163,7 +163,7 @@ export const defaultShortcuts: Omit<KeyboardShortcut, "action">[] = [
   },
   {
     id: "quick-connect",
-    keys: "Ctrl+P",
+    keys: "Ctrl+K",
     description: "Quick connect",
     category: "Connection",
   },
