@@ -213,7 +213,7 @@ export default function Select({
                   option.disabled
                     ? "text-dark-600 cursor-not-allowed"
                     : isActive
-                      ? "bg-primary-600 text-white"
+                      ? "bg-primary-600 text-primary-text"
                       : "text-dark-300",
                 )}
               >

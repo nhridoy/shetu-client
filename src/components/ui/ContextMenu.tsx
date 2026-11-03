@@ -124,10 +124,10 @@ export default function ContextMenu({
                 ? "text-dark-500 cursor-not-allowed"
                 : item.danger
                   ? index === selectedIndex
-                    ? "text-white bg-danger-600"
+                    ? "bg-danger-600 text-danger-text"
                     : "text-danger-400"
                   : index === selectedIndex
-                    ? "text-white bg-primary-600"
+                    ? "bg-primary-600 text-primary-text"
                     : "text-dark-300"
             }`}
           >

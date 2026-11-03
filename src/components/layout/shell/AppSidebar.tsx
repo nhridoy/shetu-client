@@ -55,7 +55,7 @@ export default function AppSidebar({
       }`}
     >
       <nav aria-label="Vault" className="flex-1 px-2 pb-2 overflow-y-auto">
-        <p className="px-2 pt-3 pb-1 text-[11px] font-semibold text-dark-500">
+        <p className="px-2 pt-3 pb-1 text-[11px] font-semibold text-dark-400">
           Vault
         </p>
         <div className="space-y-px">
