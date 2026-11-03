@@ -11,7 +11,11 @@ import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
-import { listenAppActions, type MenuActionId } from "@/lib/window/menuActions";
+import {
+  isModalOpen,
+  listenAppActions,
+  type MenuActionId,
+} from "@/lib/window/menuActions";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
@@ -193,7 +197,12 @@ export default function Layout() {
     if (id === "settings") settingsModal.show();
     else if (id === "new-tab")
       showTerminalTab(useTerminalStore.getState().addEmptyTab());
-    else if (id === "close-tab" && location.pathname === "/terminal") {
+    else if (
+      id === "close-tab" &&
+      location.pathname === "/terminal" &&
+      // Never close a live session hidden behind a dialog.
+      !isModalOpen()
+    ) {
       const next = useTerminalStore.getState().closeActivePane();
       if (next) showTerminalTab(next);
       else {

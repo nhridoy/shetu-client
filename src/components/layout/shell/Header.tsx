@@ -90,10 +90,9 @@ export default function Header({
         <ListIcon className="w-4 h-4" />
       </Button>
 
-      <div
-        role="radiogroup"
+      <fieldset
         aria-label="View"
-        className="flex h-7 shrink-0 items-center rounded-md bg-dark-800 p-0.5"
+        className="m-0 flex h-7 min-w-0 shrink-0 items-center rounded-md border-0 bg-dark-800 p-0.5"
       >
         {VIEWS.map(({ id, path, label, Icon }) => {
           const selected = activeView === id;
@@ -101,8 +100,7 @@ export default function Header({
             <Button
               key={id}
               type="button"
-              role="radio"
-              aria-checked={selected}
+              aria-pressed={selected}
               variant="ghost"
               size="sm"
               onClick={() => {
@@ -120,7 +118,7 @@ export default function Header({
             </Button>
           );
         })}
-      </div>
+      </fieldset>
       {activeView === "vault" && <VaultSelector compact />}
 
       <div className="flex min-w-0 max-w-full items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

@@ -185,7 +185,7 @@ export default function CommandAutocomplete({
                     onSelect(cmd.command);
                     onClose();
                   }}
-                  className={`w-full px-4 py-2 justify-start ${
+                  className={`w-full h-auto px-4 py-2 justify-start ${
                     index === selectedIndex ? "bg-dark-800" : ""
                   }`}
                 >

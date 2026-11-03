@@ -10,8 +10,8 @@ import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { ShellInfo } from "@/lib/terminal/shellDetection";
 import {
+  classifyQuickConnectKey,
   hasMacMenu,
-  isMenuOwnedShortcut,
   listenAppActions,
 } from "@/lib/window/menuActions";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
@@ -54,16 +54,18 @@ export default function QuickConnect({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const modifier = navigator.platform.includes("Mac")
-        ? e.metaKey
-        : e.ctrlKey;
-      // Ctrl/Cmd+K opens the panel from any view.
-      if (modifier && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+      // Ctrl/Cmd+K opens the panel from any view. On macOS the menu bar owns
+      // ⌘K and opens it via an app action, so the event is left untouched.
+      const quickKey = classifyQuickConnectKey(
+        e,
+        navigator.platform.includes("Mac"),
+        hasMacMenu(),
+      );
+      if (quickKey === "open") {
         // Capture phase + stopPropagation: the terminal must not also receive it.
         e.preventDefault();
         e.stopPropagation();
-        // On macOS the menu bar owns ⌘K and opens the panel via an app action.
-        if (!isMenuOwnedShortcut(e, hasMacMenu())) open();
+        open();
       }
       // Escape to close
       if (e.key === "Escape" && isOpen) {

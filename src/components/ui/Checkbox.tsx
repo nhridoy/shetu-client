@@ -41,7 +41,7 @@ export default function Checkbox({
         "disabled:cursor-not-allowed disabled:opacity-50",
         checked
           ? "bg-primary-600 border-primary-600 text-white"
-          : "bg-dark-900 border-dark-600",
+          : "bg-dark-900 border-dark-500",
         className,
       )}
     >

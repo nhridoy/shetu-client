@@ -82,3 +82,26 @@ export function isMenuOwnedShortcut(
     MENU_OWNED_KEYS.has(e.key.toLowerCase())
   );
 }
+
+/**
+ * Ctrl/Cmd+K handling for Quick Connect. "menu": macOS menu bar owns it, so the
+ * page must not touch the event (preventDefault would stop the menu firing).
+ * "open": the page opens the panel itself. null: not the Quick Connect key.
+ */
+export function classifyQuickConnectKey(
+  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
+  mac: boolean,
+  macMenu: boolean,
+): "menu" | "open" | null {
+  const modifier = mac ? e.metaKey : e.ctrlKey;
+  if (!modifier || e.shiftKey || e.altKey || e.key.toLowerCase() !== "k")
+    return null;
+  return isMenuOwnedShortcut(e, macMenu) ? "menu" : "open";
+}
+
+/** True while a modal dialog (Modal, Settings, Quick Connect…) is on screen. */
+export function isModalOpen(
+  doc: Pick<Document, "querySelector"> = document,
+): boolean {
+  return doc.querySelector('[aria-modal="true"]') !== null;
+}
