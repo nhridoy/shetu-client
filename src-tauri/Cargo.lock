@@ -6177,7 +6177,7 @@ dependencies = [
 
 [[package]]
 name = "terra"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
