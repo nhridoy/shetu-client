@@ -3,6 +3,7 @@ import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { dispatchAppAction } from "@/lib/window/menuActions";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 
 interface TerminalViewProps {
@@ -10,7 +11,7 @@ interface TerminalViewProps {
 }
 
 export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
-  const { tabs, activeTabId, splitPane, removePane } = useTerminalStore();
+  const { tabs, activeTabId, splitPane } = useTerminalStore();
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -72,14 +73,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     [splitPane],
   );
 
-  const handleCloseTab = useCallback(() => {
-    const { activeTabId: atId, tabs: currentTabs } =
-      useTerminalStore.getState();
-    const tab = currentTabs.find((t) => t.id === atId);
-    if (!atId || !tab?.activePaneId) return;
-    removePane(atId, tab.activePaneId);
-  }, [removePane]);
-
   const handleRestorePreset = useCallback(
     (preset: { id?: string; name?: string; layout: string }, tabId: string) => {
       useTerminalStore.getState().restorePreset(preset, tabId);
@@ -89,11 +82,9 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   );
 
   useKeyboardShortcuts({
-    onNewTab: () => {
-      const newTabId = useTerminalStore.getState().addEmptyTab();
-      onSetActiveView?.(newTabId);
-    },
-    onCloseTab: handleCloseTab,
+    // Routed through Layout so the toolbar and routing stay in sync.
+    onNewTab: () => dispatchAppAction("new-tab"),
+    onCloseTab: () => dispatchAppAction("close-tab"),
     onNextTab: handleNextTab,
     onPrevTab: handlePrevTab,
     onSplitHorizontal: () => handleSplit("horizontal"),

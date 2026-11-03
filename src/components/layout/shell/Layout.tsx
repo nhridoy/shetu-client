@@ -1,6 +1,6 @@
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
@@ -11,6 +11,7 @@ import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
+import { listenAppActions, type MenuActionId } from "@/lib/window/menuActions";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
@@ -185,6 +186,24 @@ export default function Layout() {
     return () =>
       window.removeEventListener(TEAM_ACCESS_REVOKED_EVENT, onRevoked);
   }, [fetchVaults]);
+
+  // One handler for the macOS menu bar and in-app shortcuts (see menuActions).
+  const appActionRef = useRef<(id: MenuActionId) => void>(() => {});
+  appActionRef.current = (id) => {
+    if (id === "settings") settingsModal.show();
+    else if (id === "new-tab")
+      showTerminalTab(useTerminalStore.getState().addEmptyTab());
+    else if (id === "close-tab" && location.pathname === "/terminal") {
+      const next = useTerminalStore.getState().closeActivePane();
+      if (next) showTerminalTab(next);
+      else {
+        setActiveView("vault");
+        navigate("/hosts");
+      }
+    }
+    // "quick-connect" is handled by QuickConnect itself.
+  };
+  useEffect(() => listenAppActions((id) => appActionRef.current(id)), []);
 
   const { handleDragStart, handleDragOver, handleDragEnd } = useLayoutDragDrop({
     setActiveView,
