@@ -1,3 +1,5 @@
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const toast = vi.hoisted(() =>
@@ -52,22 +54,26 @@ describe("syncUpdateToast", () => {
     expect(s.downloadUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("shows download progress without buttons and cannot be swiped away", () => {
+  it("shows a progress bar without buttons and cannot be swiped away", () => {
     syncUpdateToast(state({ status: "downloading", downloadProgress: 40 }));
     const [, options] = toast.loading.mock.calls[0];
     expect(options).toMatchObject({
       id: UPDATE_TOAST_ID,
-      description: "40%",
       dismissible: false,
       action: undefined,
       cancel: undefined,
     });
+    const html = renderToStaticMarkup(options.description as ReactElement);
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-valuenow="40"');
+    expect(html).toContain("width:40%");
+    expect(html).toContain("40%");
   });
 
   it("asks to restart once the update is downloaded", () => {
     const s = state({ status: "ready", downloadProgress: 100 });
     syncUpdateToast(s);
-    const [, options] = toast.success.mock.calls[0];
+    const [, options] = toast.mock.calls[0];
     expect(options).toMatchObject({
       id: UPDATE_TOAST_ID,
       action: { label: "Restart & install" },
