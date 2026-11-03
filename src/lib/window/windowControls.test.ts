@@ -7,6 +7,9 @@ const windowMock = vi.hoisted(() => ({
   startDragging: vi.fn(),
   isMaximized: vi.fn(),
   onResized: vi.fn(),
+  isFullscreen: vi.fn(),
+  setFullscreen: vi.fn(),
+  onFocusChanged: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -43,5 +46,23 @@ describe("window controls", () => {
     );
     await vi.waitFor(() => expect(states).toEqual([false, true]));
     unlisten();
+  });
+
+  it("toggles fullscreen from the current state", async () => {
+    windowMock.isFullscreen.mockResolvedValueOnce(false);
+    await windowControls.toggleFullscreen();
+    expect(windowMock.setFullscreen).toHaveBeenCalledWith(true);
+  });
+
+  it("reports focus changes", async () => {
+    windowMock.onFocusChanged.mockImplementation(
+      async (handler: (event: { payload: boolean }) => void) => {
+        handler({ payload: false });
+        return vi.fn();
+      },
+    );
+    const seen: boolean[] = [];
+    await windowControls.watchFocus((focused) => seen.push(focused));
+    expect(seen).toEqual([false]);
   });
 });
