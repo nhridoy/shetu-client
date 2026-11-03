@@ -291,8 +291,8 @@ export default function Layout() {
 
         <main
           className={`pt-[var(--toolbar-height)] h-screen flex flex-col ${
-            isVaultPage ? "lg:ml-72" : ""
-          } ${isVaultPage && isMobile && sidebarOpen ? "ml-72" : ""}`}
+            isVaultPage ? "lg:ml-56" : ""
+          } ${isVaultPage && isMobile && sidebarOpen ? "ml-56" : ""}`}
         >
           <Outlet />
         </main>
