@@ -39,30 +39,27 @@ export default function Slider({
         disabled={disabled}
         onChange={(e) => onValueChange(Number(e.target.value))}
         className={cn(
-          "w-full h-1.5 rounded-full appearance-none cursor-pointer",
+          "w-full h-1 rounded-full appearance-none cursor-default",
           "bg-dark-700",
           "disabled:cursor-not-allowed disabled:opacity-50",
           "[&::-webkit-slider-thumb]:appearance-none",
           "[&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4",
           "[&::-webkit-slider-thumb]:rounded-full",
-          "[&::-webkit-slider-thumb]:bg-primary-500",
+          "[&::-webkit-slider-thumb]:bg-white",
           "[&::-webkit-slider-thumb]:shadow-md",
           "[&::-webkit-slider-thumb]:transition-transform",
           "[&::-webkit-slider-thumb]:duration-150",
-          "[&::-webkit-slider-thumb]:hover:scale-110",
           "[&::-webkit-slider-thumb]:focus-visible:outline-none",
-          "[&::-webkit-slider-thumb]:focus-visible:ring-2",
-          "[&::-webkit-slider-thumb]:focus-visible:ring-primary-500",
-          "[&::-webkit-slider-thumb]:focus-visible:ring-offset-2",
-          "[&::-webkit-slider-thumb]:focus-visible:ring-offset-dark-900",
+          "[&::-webkit-slider-thumb]:focus-visible:ring-[3px]",
+          "[&::-webkit-slider-thumb]:focus-visible:ring-primary-500/50",
           "[&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4",
           "[&::-moz-range-thumb]:rounded-full",
-          "[&::-moz-range-thumb]:bg-primary-500",
+          "[&::-moz-range-thumb]:bg-white",
           "[&::-moz-range-thumb]:border-0",
           "[&::-moz-range-thumb]:shadow-md",
         )}
         style={{
-          background: `linear-gradient(to right, rgb(124 58 237) 0%, rgb(124 58 237) ${percentage}%, rgb(30 33 41) ${percentage}%, rgb(30 33 41) 100%)`,
+          background: `linear-gradient(to right, var(--color-primary-500) 0%, var(--color-primary-500) ${percentage}%, var(--color-dark-700) ${percentage}%, var(--color-dark-700) 100%)`,
         }}
       />
     </div>

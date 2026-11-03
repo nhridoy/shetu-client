@@ -185,7 +185,7 @@ export default function QuickConnect({
               <Button
                 variant="ghost"
                 onClick={handleDirectConnect}
-                className="w-full px-4 py-3 justify-start"
+                className="w-full h-auto px-3 py-2 justify-start"
               >
                 <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
                   <LightningIcon className="w-4 h-4 text-white" weight="bold" />
@@ -213,7 +213,7 @@ export default function QuickConnect({
                       if (onConnectLocal) onConnectLocal(shell.path);
                       close();
                     }}
-                    className={`w-full px-4 py-3 justify-start ${
+                    className={`w-full h-auto px-3 py-2 justify-start ${
                       flatIdx === selectedIndex ? "bg-dark-800" : ""
                     }`}
                   >
@@ -254,7 +254,7 @@ export default function QuickConnect({
                       onConnect(host);
                       close();
                     }}
-                    className={`w-full px-4 py-3 justify-start ${
+                    className={`w-full h-auto px-3 py-2 justify-start ${
                       flatIdx === selectedIndex ? "bg-dark-800" : ""
                     }`}
                   >

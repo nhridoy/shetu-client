@@ -42,10 +42,10 @@ function InputOTPSlot({
     <div
       data-active={isActive}
       className={cn(
-        "relative flex size-11 items-center justify-center rounded-lg border border-dark-700",
-        "bg-dark-800 text-white text-base font-semibold transition-all outline-none",
+        "relative flex size-11 items-center justify-center rounded-md border border-dark-700",
+        "bg-dark-900 text-white text-base font-semibold transition-all outline-none",
         "aria-invalid:border-danger-600",
-        "data-[active=true]:z-10 data-[active=true]:border-primary-500 data-[active=true]:ring-2 data-[active=true]:ring-primary-500/30",
+        "data-[active=true]:z-10 data-[active=true]:border-primary-500 data-[active=true]:ring-[3px] data-[active=true]:ring-primary-500/30",
         "data-[active=true]:aria-invalid:border-danger-600 data-[active=true]:aria-invalid:ring-danger-500/30",
         className,
       )}

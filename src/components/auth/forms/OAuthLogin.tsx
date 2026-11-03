@@ -38,7 +38,7 @@ export default function OAuthLogin() {
         onClick={() => handleOAuthLogin("github")}
         disabled={isLoading}
         variant="secondary"
-        className="w-full py-3"
+        className="w-full h-8"
       >
         <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
           <title>GitHub</title>
@@ -52,7 +52,7 @@ export default function OAuthLogin() {
         onClick={() => handleOAuthLogin("google")}
         disabled={isLoading}
         variant="secondary"
-        className="w-full py-3"
+        className="w-full h-8"
       >
         <svg className="w-5 h-5" viewBox="0 0 24 24">
           <title>Google</title>

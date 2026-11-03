@@ -233,7 +233,7 @@ export default function HostBrowser({
               type="button"
               variant="ghost"
               onClick={handleDirectConnect}
-              className="w-full gap-3 px-4 py-3 text-left justify-start"
+              className="w-full h-auto gap-3 px-3 py-2 text-left justify-start"
             >
               <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary-600">
                 <LightningIcon className="w-4 h-4 text-white" weight="bold" />
@@ -275,7 +275,7 @@ export default function HostBrowser({
                     tabIndex={0}
                     onClick={() => onRestorePreset(g)}
                     onKeyDown={accessibleClickHandler(() => onRestorePreset(g))}
-                    className="group relative flex items-center w-full gap-3 px-4 py-3 text-left cursor-pointer hover:bg-dark-800"
+                    className="group relative flex items-center w-full h-auto gap-3 px-3 py-2 text-left cursor-pointer hover:bg-dark-800"
                   >
                     <div className="flex items-center justify-center shrink-0 w-8 h-8 rounded-lg bg-primary-600">
                       <FileIcon className="w-4 h-4 text-white" weight="bold" />
@@ -339,7 +339,7 @@ export default function HostBrowser({
                   type="button"
                   variant="ghost"
                   onClick={() => onConnectLocal(shell.path)}
-                  className="w-full px-4 py-3 gap-3 text-left justify-start border border-dark-700"
+                  className="w-full h-auto px-3 py-2 gap-3 text-left justify-start border border-dark-700"
                 >
                   <div className="flex items-center justify-center shrink-0 w-8 h-8 rounded-lg bg-green-600">
                     <DesktopIcon className="w-4 h-4 text-white" weight="bold" />
@@ -374,7 +374,7 @@ export default function HostBrowser({
                     type="button"
                     variant="ghost"
                     onClick={() => onConnect(host)}
-                    className={`w-full px-4 py-3 gap-3 text-left justify-start border border-dark-700 ${
+                    className={`w-full h-auto px-3 py-2 gap-3 text-left justify-start border border-dark-700 ${
                       index === selectedIndex ? "bg-dark-800" : ""
                     }`}
                   >
