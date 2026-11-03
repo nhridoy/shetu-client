@@ -5,6 +5,7 @@ import {
   TerminalIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -27,6 +28,7 @@ export default function QuickConnect({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const shells = useShellStore((s) => s.shells);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { pathname } = useLocation();
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const filteredHosts = hosts.filter(
@@ -44,9 +46,20 @@ export default function QuickConnect({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+K or Cmd+K to open
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      const modifier = navigator.platform.includes("Mac")
+        ? e.metaKey
+        : e.ctrlKey;
+      // Ctrl/Cmd+P opens the panel, except in the editor, where it is file quick open.
+      if (
+        modifier &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "p" &&
+        pathname !== "/editor"
+      ) {
+        // Capture phase + stopPropagation: the terminal must not also receive it.
         e.preventDefault();
+        e.stopPropagation();
         setIsOpen(true);
         setTimeout(() => inputRef.current?.focus(), 100);
       }
@@ -57,9 +70,9 @@ export default function QuickConnect({
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen]);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [isOpen, pathname]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -139,31 +152,7 @@ export default function QuickConnect({
     }
   };
 
-  if (!isOpen) {
-    return (
-      // Tabs keep priority in the title bar: this shrinks first (shrink-[20])
-      // and collapses to the search icon when space runs out.
-      <div className="@container flex w-72 min-w-8 shrink-[20]">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setIsOpen(true);
-            setTimeout(() => inputRef.current?.focus(), 100);
-          }}
-          title="Quick Connect"
-          aria-label="Quick Connect"
-          className="h-7 w-full min-w-0 justify-center gap-2 rounded-md border border-dark-700 bg-dark-800/60 px-2 py-0 hover:border-dark-600 @[8rem]:justify-start"
-        >
-          <MagnifyingGlassIcon className="w-3.5 h-3.5 shrink-0" weight="bold" />
-          <span className="hidden truncate @[8rem]:inline">Quick Connect</span>
-          <Badge className="ml-auto hidden shrink-0 py-0 @[13rem]:inline-flex">
-            {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+K
-          </Badge>
-        </Button>
-      </div>
-    );
-  }
+  if (!isOpen) return null;
 
   return (
     <Modal

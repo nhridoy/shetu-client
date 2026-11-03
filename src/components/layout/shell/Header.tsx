@@ -15,7 +15,6 @@ import {
   WindowDragArea,
 } from "@/components/layout/shell/TitleBar";
 import SortableTab from "@/components/layout/tabs/SortableTab";
-import QuickConnect from "@/components/terminal/views/QuickConnect";
 import { Button } from "@/components/ui/Button";
 import VaultSelector from "@/components/vault/selector/VaultSelector";
 import {
@@ -49,7 +48,6 @@ export default function Header({
   const addEmptyTab = useTerminalStore((s) => s.addEmptyTab);
   const removeTab = useTerminalStore((s) => s.removeTab);
   const setActiveTab = useTerminalStore((s) => s.setActiveTab);
-  const connect = useTerminalStore((s) => s.openConnection);
   const activeWorkspaceId = useTerminalStore((s) => s.activeWorkspaceId);
   const isDirty = useTerminalStore(
     (s) =>
@@ -57,12 +55,6 @@ export default function Header({
       workspaceLayoutSnapshot(s.tabs) !== s.savedSnapshot,
   );
   const activeWorkspaceName = useTerminalStore((s) => s.activeWorkspaceName);
-
-  const openConnection = (...args: Parameters<typeof connect>) => {
-    const tabId = connect(...args);
-    setActiveView(tabId);
-    navigate("/terminal");
-  };
 
   const handleSaveCurrentWorkspace = () => {
     void useTerminalStore
@@ -206,25 +198,7 @@ export default function Header({
         </Button>
       </div>
 
-      {/* Quick Connect, centered in the free space; the drag areas keep the bar draggable. */}
-      <WindowDragArea className="min-w-6 flex-1 px-0" />
-      <QuickConnect
-        onConnect={(host) =>
-          openConnection(host.id, host.name, {
-            hostAddress: host.address,
-            hostPort: host.port,
-            hostUsername: host.username,
-            authType: host.authType,
-            keyId: host.keyId,
-          })
-        }
-        onConnectLocal={(shell) =>
-          openConnection(`local_${Date.now()}`, "Local", {
-            connectionType: "local",
-            shell,
-          })
-        }
-      />
+      {/* Spacer */}
       <WindowDragArea className="min-w-6 flex-1 px-0" />
 
       {/* Right-side actions */}

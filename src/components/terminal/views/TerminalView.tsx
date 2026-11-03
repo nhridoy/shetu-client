@@ -99,7 +99,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onSplitHorizontal: () => handleSplit("horizontal"),
     onSplitVertical: () => handleSplit("vertical"),
     onFocusMode: handleFocusMode,
-    onQuickConnect: () => {},
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
     onSaveWorkspace: () => console.log("Save workspace"),
     onToggleSidebar: handleToggleSidebar,
