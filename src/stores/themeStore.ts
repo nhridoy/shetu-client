@@ -1772,6 +1772,15 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
   dangerText: "--color-danger-text",
 };
 
+// Themes carry no light/dark flag, so judge by the background's brightness.
+export function isLightTheme(theme: Theme): boolean {
+  const hex = themes[theme]?.colors.background ?? "#000000";
+  const [r, g, b] = [1, 3, 5].map((i) =>
+    Number.parseInt(hex.slice(i, i + 2), 16),
+  );
+  return 0.299 * r + 0.587 * g + 0.114 * b > 128;
+}
+
 export function applyTheme(theme: Theme) {
   const themeData = themes[theme];
   if (!themeData) return;

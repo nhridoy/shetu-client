@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 import { toast } from "sonner";
 import { type UpdateState, useUpdateStore } from "@/stores/update/updateStore";
 
@@ -26,7 +26,7 @@ export function syncUpdateToast(state: UpdateState) {
     dismissible: true,
     action: undefined,
     cancel: undefined,
-    description: undefined as string | undefined,
+    description: undefined as ReactNode,
   };
   if (promptDismissed) {
     toast.dismiss(UPDATE_TOAST_ID);
@@ -45,14 +45,11 @@ export function syncUpdateToast(state: UpdateState) {
       toast.loading(`Downloading Terra ${version}…`, {
         ...base,
         dismissible: false,
-        description:
-          state.downloadProgress === null
-            ? undefined
-            : `${state.downloadProgress}%`,
+        description: <DownloadProgress value={state.downloadProgress} />,
       });
       return;
     case "ready":
-      toast.success(`Terra ${version} is ready`, {
+      toast(`Terra ${version} is ready`, {
         ...base,
         description: error ?? "Restart to finish installing.",
         action: keepOpen("Restart & install", state.installUpdate),
@@ -63,7 +60,7 @@ export function syncUpdateToast(state: UpdateState) {
       toast.loading("Installing update…", { ...base, dismissible: false });
       return;
     case "restart_required":
-      toast.success("Update installed", {
+      toast("Update installed", {
         ...base,
         description: error ?? "Restart Terra to finish.",
         action: keepOpen("Restart now", state.restartApp),
@@ -73,6 +70,29 @@ export function syncUpdateToast(state: UpdateState) {
     default:
       toast.dismiss(UPDATE_TOAST_ID);
   }
+}
+
+function DownloadProgress({ value }: { value: number | null }) {
+  return (
+    <div className="mt-1.5 w-full">
+      <div
+        role="progressbar"
+        aria-label="Download progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={value ?? undefined}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-dark-700"
+      >
+        <div
+          className="h-full rounded-full bg-primary-500 transition-[width]"
+          style={{ width: `${value ?? 0}%` }}
+        />
+      </div>
+      <p className="mt-1 text-xs">
+        {value === null ? "Starting…" : `${value}%`}
+      </p>
+    </div>
+  );
 }
 
 export default function UpdateNotification() {

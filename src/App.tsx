@@ -1,5 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { type CSSProperties, useEffect } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router";
 import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
@@ -24,8 +24,17 @@ import WorkspacesPage from "@/pages/WorkspacesPage";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
-import { useThemeStore } from "@/stores/themeStore";
+import { isLightTheme, useThemeStore } from "@/stores/themeStore";
 import { useUpdateStore } from "@/stores/update/updateStore";
+
+// Sonner reads these for neutral toasts; the active theme sets the --color-* values.
+const TOAST_THEME_VARS = {
+  "--normal-bg": "var(--color-dark-900)",
+  "--normal-bg-hover": "var(--color-dark-800)",
+  "--normal-border": "var(--color-dark-700)",
+  "--normal-border-hover": "var(--color-dark-600)",
+  "--normal-text": "var(--color-white)",
+} as CSSProperties;
 
 function App() {
   const restoreSession = useAuthStore((s) => s.restoreSession);
@@ -34,6 +43,7 @@ function App() {
   const clearRecoveryCode = useAuthStore((s) => s.clearRecoveryCode);
   const initSettings = useSettingsStore((s) => s.initSettings);
   const initTheme = useThemeStore((s) => s.initTheme);
+  const currentTheme = useThemeStore((s) => s.currentTheme);
   const detectShells = useShellStore((s) => s.detect);
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
@@ -88,7 +98,12 @@ function App() {
       />
       <UnlockDialog />
       <UpdateNotification />
-      <Toaster richColors />
+      <Toaster
+        richColors
+        theme={isLightTheme(currentTheme) ? "light" : "dark"}
+        style={TOAST_THEME_VARS}
+        toastOptions={{ classNames: { description: "!text-dark-300" } }}
+      />
     </BrowserRouter>
   );
 }
