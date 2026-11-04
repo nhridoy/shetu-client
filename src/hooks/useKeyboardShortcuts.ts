@@ -47,7 +47,7 @@ export function useKeyboardShortcuts({
         onNewTab();
       }
 
-      // Close tab: Ctrl+W / Cmd+W
+      // Close pane, then tab: Ctrl+W / Cmd+W
       if (modifier && e.key === "w" && onCloseTab) {
         e.preventDefault();
         onCloseTab();
@@ -131,7 +131,7 @@ export const defaultShortcuts: Omit<KeyboardShortcut, "action">[] = [
   {
     id: "close-tab",
     keys: "Ctrl+W",
-    description: "Close tab",
+    description: "Close pane (closes the tab after its last pane)",
     category: "Tabs",
   },
   {

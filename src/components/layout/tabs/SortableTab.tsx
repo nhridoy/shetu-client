@@ -127,7 +127,9 @@ export default function SortableTab({
           onClose();
         }}
         className={`ml-0.5 text-dark-500 hover:text-white shrink-0 focus-visible:opacity-100 ${
-          isActive ? "" : "opacity-0 group-hover:opacity-100"
+          isActive
+            ? ""
+            : "[@media(hover:hover)]:opacity-0 group-hover:opacity-100"
         }`}
         aria-label="Close tab"
         title="Close tab"

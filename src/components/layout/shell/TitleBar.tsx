@@ -120,7 +120,7 @@ function TrafficLights() {
             aria-label={action.label}
             title={action.label}
             onClick={() => runWindowAction(action.run)}
-            className="grid h-5 w-5 cursor-default place-items-center rounded-full focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-primary-500/50"
+            className="grid h-5 w-5 cursor-default place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
           >
             <span
               className={`grid h-3 w-3 place-items-center rounded-full ${focused ? light.focused : light.blurred}`}

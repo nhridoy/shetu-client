@@ -156,7 +156,7 @@ export default function Select({
         className={cn(
           "w-full h-7 bg-dark-900 text-white px-2 text-sm rounded-md border border-dark-700 cursor-default",
           "flex items-center justify-between gap-2",
-          "focus:outline-none focus:ring-[3px] focus:ring-primary-500/50 focus:border-primary-500",
+          "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           "text-left truncate",
           !selected && "text-dark-500",
@@ -219,7 +219,12 @@ export default function Select({
               >
                 <span className="truncate">{option.label}</span>
                 {isSelected && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-primary-500 shrink-0 ml-2" />
+                  <div
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full shrink-0 ml-2",
+                      isActive ? "bg-current" : "bg-primary-500",
+                    )}
+                  />
                 )}
               </div>
             );
