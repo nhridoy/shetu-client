@@ -53,21 +53,21 @@ test('builds a complete manifest with literal signatures and unique URLs', async
   );
   assert.equal(
     manifest.platforms['linux-aarch64-deb'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/linux-aarch64-Terra.deb',
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Linux-ARM64.deb',
   );
   assert.equal(
     manifest.platforms['windows-aarch64'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/windows-aarch64-Terra-setup.exe',
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Windows-ARM64-Setup.exe',
   );
   assert.equal(manifest.platforms['linux-x86_64-deb'].signature, signature('linux-x86_64-deb'));
   assert.equal(
     manifest.platforms['linux-x86_64-deb'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/linux-x86_64-Terra.deb',
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Linux-x64.deb',
   );
   assert.equal(manifest.platforms['linux-x86_64'].signature, signature('linux-x86_64'));
   assert.equal(
     manifest.platforms['darwin-aarch64'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/darwin-aarch64-Terra.app.tar.gz',
+    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz',
   );
 });
 
@@ -131,6 +131,27 @@ test('CLI creates the manifest when invoked by a relative script path', async ()
   assert.equal(manifest.notes, 'Fixed terminal rendering.\n');
 });
 
+test('names release assets by OS and a CPU name people recognise', async () => {
+  const { assetsDir, outputDir } = await fixture();
+  await writeFile(join(assetsDir, 'darwin-aarch64', 'Terra_1.0.1_aarch64.dmg'), 'disk');
+  await writeFile(join(assetsDir, 'darwin-x86_64', 'Terra_1.0.1_x64.dmg'), 'disk');
+  await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
+  const published = (await readdir(outputDir)).sort();
+  assert.deepEqual(published, [
+    'Terra-1.0.1-Linux-ARM64.AppImage', 'Terra-1.0.1-Linux-ARM64.AppImage.sig',
+    'Terra-1.0.1-Linux-ARM64.deb', 'Terra-1.0.1-Linux-ARM64.deb.sig',
+    'Terra-1.0.1-Linux-x64.AppImage', 'Terra-1.0.1-Linux-x64.AppImage.sig',
+    'Terra-1.0.1-Linux-x64.deb', 'Terra-1.0.1-Linux-x64.deb.sig',
+    'Terra-1.0.1-Windows-ARM64-Setup.exe', 'Terra-1.0.1-Windows-ARM64-Setup.exe.sig',
+    'Terra-1.0.1-Windows-x64-Setup.exe', 'Terra-1.0.1-Windows-x64-Setup.exe.sig',
+    'Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz', 'Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz.sig',
+    'Terra-1.0.1-macOS-Apple-Silicon.dmg',
+    'Terra-1.0.1-macOS-Intel.app.tar.gz', 'Terra-1.0.1-macOS-Intel.app.tar.gz.sig',
+    'Terra-1.0.1-macOS-Intel.dmg',
+    'terra-latest.json',
+  ].sort());
+});
+
 test('stages distributable bundles but excludes unpacked app internals', async () => {
   const { assetsDir, outputDir } = await fixture();
   const appInternal = join(assetsDir, 'darwin-x86_64', 'Terra.app', 'Contents', 'MacOS');
@@ -139,6 +160,6 @@ test('stages distributable bundles but excludes unpacked app internals', async (
   await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.deb'), 'package');
   await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
   const published = await readdir(outputDir);
-  assert.ok(published.includes('linux-x86_64-Terra.deb'));
-  assert.ok(!published.includes('darwin-x86_64-Terra'));
+  assert.ok(published.includes('Terra-1.0.1-Linux-x64.deb'));
+  assert.ok(!published.some((name) => name.endsWith('Terra')));
 });

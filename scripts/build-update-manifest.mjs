@@ -20,6 +20,15 @@ const REQUIRED = [
   ['darwin-x86_64', 'darwin-x86_64', '.app.tar.gz'],
   ['darwin-aarch64', 'darwin-aarch64', '.app.tar.gz'],
 ];
+// Download names people recognise ("Apple Silicon", not "darwin-aarch64").
+const LABELS = {
+  'linux-x86_64': 'Linux-x64',
+  'linux-aarch64': 'Linux-ARM64',
+  'windows-x86_64': 'Windows-x64',
+  'windows-aarch64': 'Windows-ARM64',
+  'darwin-x86_64': 'macOS-Intel',
+  'darwin-aarch64': 'macOS-Apple-Silicon',
+};
 
 async function filesUnder(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -91,22 +100,16 @@ export async function buildUpdateManifest({ version, tag, assetsDir, outputDir, 
     const signature = (await readFile(signatureFile, 'utf8')).trim();
     const signatureBytes = decodeSignature(signature);
     if (publicKey) await verifyWithMinisign(bundle, signatureBytes, publicKey);
-    const assetName = `${dirName}-${basename(bundle)}`;
+    const assetName = `Terra-${version}-${LABELS[dirName]}${extension === '.exe' ? '-Setup.exe' : extension}`;
     platforms[platform] = {
       signature,
       url: `https://github.com/${REPOSITORY}/releases/download/${tag}/${encodeURIComponent(assetName)}`,
     };
-    const distributable = files.filter((path) =>
-      path === bundle ||
-      path === signatureFile ||
-      (dirName.startsWith('darwin-') && path.endsWith('.dmg')),
-    );
-    for (const path of distributable) {
-      const name = basename(path);
-      if (name === '.' || name === '..' || name.includes('/') || name.includes('\\'))
-        throw new Error(`unsafe asset name: ${name}`);
-      staged.push({ source: path, destination: `${dirName}-${name}` });
-    }
+    staged.push({ source: bundle, destination: assetName });
+    staged.push({ source: signatureFile, destination: `${assetName}.sig` });
+    if (dirName.startsWith('darwin-'))
+      for (const path of files.filter((file) => file.endsWith('.dmg')))
+        staged.push({ source: path, destination: `Terra-${version}-${LABELS[dirName]}.dmg` });
   }
   const names = staged.map((asset) => asset.destination);
   if (new Set(names).size !== names.length) throw new Error('duplicate release asset name');
