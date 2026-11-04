@@ -65,7 +65,8 @@ describe("window controls", () => {
     );
     const seen: boolean[] = [];
     await windowControls.watchFocus((focused) => seen.push(focused));
-    expect(seen).toEqual([false, true]);
+    // The focus event arrived while the initial read was pending: it wins.
+    expect(seen).toEqual([false]);
   });
 
   it("serializes rapid fullscreen toggles so two clicks round-trip", async () => {
@@ -103,5 +104,18 @@ describe("window controls", () => {
     });
     await windowControls.watchFullscreen(() => {});
     expect(order).toEqual(["listen", "read"]);
+  });
+
+  it("keeps a resize-reported fullscreen change over the stale initial read", async () => {
+    windowMock.onResized.mockImplementation(async (handler: () => void) => {
+      handler();
+      return vi.fn();
+    });
+    windowMock.isFullscreen
+      .mockResolvedValueOnce(true) // read triggered by the resize event
+      .mockResolvedValueOnce(false); // stale initial read
+    const seen: boolean[] = [];
+    await windowControls.watchFullscreen((value) => seen.push(value));
+    await vi.waitFor(() => expect(seen).toEqual([true]));
   });
 });

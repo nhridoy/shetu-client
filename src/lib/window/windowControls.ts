@@ -21,22 +21,29 @@ export const windowControls = {
   },
   async watchFullscreen(onChange: (fullscreen: boolean) => void) {
     const current = mainWindow();
-    // Listen first, then read, so a change in between is not missed.
+    // Listen first, then read, so a change in between is not missed; a change
+    // seen while the initial read is pending wins over that (stale) read.
+    let changed = false;
     const unlisten = await current.onResized(() => {
+      changed = true;
       void current
         .isFullscreen()
         .then(onChange)
         .catch(() => {});
     });
-    onChange(await current.isFullscreen());
+    const initial = await current.isFullscreen();
+    if (!changed) onChange(initial);
     return unlisten;
   },
   async watchFocus(onChange: (focused: boolean) => void) {
     const current = mainWindow();
-    const unlisten = await current.onFocusChanged(({ payload }) =>
-      onChange(payload),
-    );
-    onChange(await current.isFocused());
+    let changed = false;
+    const unlisten = await current.onFocusChanged(({ payload }) => {
+      changed = true;
+      onChange(payload);
+    });
+    const initial = await current.isFocused();
+    if (!changed) onChange(initial);
     return unlisten;
   },
   async watchMaximized(onChange: (maximized: boolean) => void) {

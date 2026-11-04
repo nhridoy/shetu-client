@@ -136,7 +136,13 @@ export default function ContextMenu({
             )}
             <span className="flex-1">{item.label}</span>
             {item.shortcut && (
-              <span className="text-xs text-dark-400 ml-4">
+              <span
+                className={`text-xs ml-4 ${
+                  index === selectedIndex && !item.disabled
+                    ? "opacity-80"
+                    : "text-dark-400"
+                }`}
+              >
                 {item.shortcut}
               </span>
             )}

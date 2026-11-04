@@ -20,4 +20,16 @@ describe("ContextMenu highlight", () => {
     expect(render(true)).toContain("bg-danger-600 text-danger-text");
     expect(render(false)).not.toContain("text-white bg-primary-600");
   });
+
+  it("keeps the shortcut readable on the highlighted row", () => {
+    const html = renderToStaticMarkup(
+      <ContextMenu
+        items={[{ label: "Rename", shortcut: "F2", onClick: () => {} }]}
+        x={0}
+        y={0}
+        onClose={() => {}}
+      />,
+    );
+    expect(html).not.toContain("text-dark-400");
+  });
 });
