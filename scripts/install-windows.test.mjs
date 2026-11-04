@@ -4,10 +4,11 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const script = new URL('../install.ps1', import.meta.url).pathname;
+const script = fileURLToPath(new URL('../install.ps1', import.meta.url));
 let pwsh = true;
 try {
   execFileSync('pwsh', ['-Version']);
@@ -27,7 +28,7 @@ async function run(exitCode) {
   const command = `
 function Invoke-WebRequest { param([switch]$UseBasicParsing, [Parameter(Position = 0)]$Uri, $OutFile)
   Add-Content '${log}' "download $Uri"
-  if ($OutFile) { Set-Content $OutFile 'exe' } else { [pscustomobject]@{ Content = '${manifest}' } } }
+  if ($OutFile) { Set-Content $OutFile 'exe' } else { [pscustomobject]@{ Content = [Text.Encoding]::UTF8.GetBytes('${manifest}') } } }
 function Start-Process { param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru)
   Add-Content '${log}' "run $FilePath $ArgumentList"; [pscustomobject]@{ ExitCode = ${exitCode} } }
 . '${script}'

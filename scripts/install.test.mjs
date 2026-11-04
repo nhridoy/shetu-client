@@ -4,10 +4,11 @@ import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const script = new URL('../install.sh', import.meta.url).pathname;
+const script = fileURLToPath(new URL('../install.sh', import.meta.url));
 const base = 'https://github.com/nhridoy/terra-client/releases/download/v1.0.0/Terra-1.0.0';
 const manifest = (notes = '') => JSON.stringify({
   notes,

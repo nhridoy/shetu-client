@@ -12,7 +12,10 @@
     'Arm64' { 'windows-aarch64', 'ARM64' }
     default { throw "Terra install failed: no Windows build for $_ CPUs" }
   }
-  $manifest = (Invoke-WebRequest -UseBasicParsing 'https://github.com/nhridoy/terra-client/releases/latest/download/terra-latest.json').Content | ConvertFrom-Json
+  # GitHub serves the manifest as application/octet-stream, so Content arrives as bytes.
+  $content = (Invoke-WebRequest -UseBasicParsing 'https://github.com/nhridoy/terra-client/releases/latest/download/terra-latest.json').Content
+  if ($content -is [byte[]]) { $content = [System.Text.Encoding]::UTF8.GetString($content) }
+  $manifest = $content | ConvertFrom-Json
   $url = [string]$manifest.platforms.$platform.url
   if (-not $url.StartsWith('https://github.com/nhridoy/terra-client/releases/download/')) {
     throw "Terra install failed: no Windows $arch build in the latest release"

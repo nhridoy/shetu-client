@@ -51,6 +51,7 @@ case "$ext" in
     tar -xzf "$tmp/terra$ext" -C "$tmp"
     [ -d "$tmp/Terra.app" ] || fail 'the download did not contain Terra.app'
     [ -w "$INSTALL_DIR" ] || sudo='sudo'
+    $sudo mkdir -p "$INSTALL_DIR"
     $sudo rm -rf "$INSTALL_DIR/Terra.app"
     $sudo mv "$tmp/Terra.app" "$INSTALL_DIR/"
     echo "Terra installed to $INSTALL_DIR/Terra.app"
