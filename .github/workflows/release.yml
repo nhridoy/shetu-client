@@ -135,7 +135,7 @@ jobs:
         run: |
           node scripts/build-update-manifest.mjs --version "${GITHUB_REF_NAME#v}" --tag "$GITHUB_REF_NAME" --assets release-assets --output publish-assets --notes-file release-notes.md --pubkey-config src-tauri/tauri.conf.json
           # After the manifest so the in-app update dialog doesn't show first-install help.
-          cat .github/macos-install-note.md >> release-notes.md
+          cat .github/install-note.md >> release-notes.md
       - name: Create draft release with validated artifacts
         uses: softprops/action-gh-release@v2
         with:

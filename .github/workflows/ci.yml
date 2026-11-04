@@ -20,4 +20,4 @@ jobs:
       - run: bun run tsc
       - run: bun run vitest run
       - run: node --test scripts/build-update-manifest.test.mjs
-      - run: node --test scripts/install.test.mjs
+      - run: node --test scripts/install.test.mjs scripts/install-windows.test.mjs
