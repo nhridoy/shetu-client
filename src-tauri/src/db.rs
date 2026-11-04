@@ -1307,6 +1307,16 @@ pub fn load_wrapped_team_key(
 
 /// Open (or create) the local SQLite database and ensure all tables exist.
 pub fn open(path: &str) -> Result<LocalDb, String> {
+    // SQLite won't create parent folders; the app data dir doesn't exist on a first launch.
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let mut dir = std::fs::DirBuilder::new();
+        dir.recursive(true);
+        // Owner-only: the DB caches account and team details.
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+        dir.create(parent)
+            .map_err(|e| format!("Failed to create DB folder: {e}"))?;
+    }
     let conn = Connection::open(path).map_err(|e| format!("Failed to open DB: {e}"))?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("Failed to set pragmas: {e}"))?;
@@ -2573,6 +2583,32 @@ mod tests {
     #[test]
     fn desktop_database_filename_uses_terra_identity() {
         assert_eq!(DB_FILE_NAME, "terra.db");
+    }
+
+    #[test]
+    fn open_creates_missing_data_dir_on_first_launch() {
+        let dir = std::env::temp_dir().join(format!("terra-first-launch-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("app-data").join(DB_FILE_NAME);
+        open(path.to_str().unwrap()).unwrap();
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_creates_the_data_dir_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("terra-perms-{}", uuid::Uuid::new_v4()));
+        let data_dir = dir.join("app-data");
+        open(data_dir.join(DB_FILE_NAME).to_str().unwrap()).unwrap();
+        let mode = std::fs::metadata(&data_dir).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn open_accepts_paths_without_a_parent_folder() {
+        open(":memory:").unwrap();
     }
 
     #[test]
