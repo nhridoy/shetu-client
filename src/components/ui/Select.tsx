@@ -182,7 +182,7 @@ export default function Select({
             "max-h-60 overflow-y-auto p-[5px]",
           )}
         >
-          {options.map((option, index) => {
+          {options.map((option) => {
             const isActive =
               option.value ===
               (activeIndex >= 0
@@ -201,7 +201,13 @@ export default function Select({
                 aria-selected={isSelected}
                 aria-disabled={option.disabled}
                 onMouseEnter={() => {
-                  if (!option.disabled) setActiveIndex(index);
+                  // activeIndex indexes enabledOptions(), not options.
+                  if (!option.disabled)
+                    setActiveIndex(
+                      enabledOptions().findIndex(
+                        (o) => o.value === option.value,
+                      ),
+                    );
                 }}
                 onMouseDown={(e) => {
                   e.preventDefault();
