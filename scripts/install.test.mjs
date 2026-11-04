@@ -99,6 +99,14 @@ test('ignores matching URLs in the release notes that point elsewhere', async ()
   assert.match(log, /releases\/download\/v1\.0\.0\/Terra-1\.0\.0-macOS-Apple-Silicon/);
 });
 
+test('rejects look-alike hosts where the dot in github.com is swapped', async () => {
+  const { log } = await run({
+    notes: 'https://githubXcom/nhridoy/terra-client/releases/download/v9/x-macOS-Apple-Silicon.app.tar.gz',
+  });
+  assert.doesNotMatch(log, /githubXcom/);
+  assert.match(log, /github\.com\/nhridoy\/terra-client\/releases\/download\/v1\.0\.0\//);
+});
+
 test('explains when the latest release has no build for this computer', async () => {
   const { result } = await run({ platforms: '{"platforms":{}}' });
   assert.notEqual(result.code ?? 0, 0);

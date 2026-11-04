@@ -38,7 +38,7 @@ case "$(uname -s)" in
 esac
 
 # Only this repo's release downloads count, so a URL inside the release notes can't redirect the install.
-url="$(curl -fsSL "$RELEASES/download/terra-latest.json" | grep -o "$DOWNLOADS[^\"]*-$label${ext//./\\.}" | head -n 1)" ||
+url="$(curl -fsSL "$RELEASES/download/terra-latest.json" | grep -o "${DOWNLOADS//./\\.}[^\"]*-$label${ext//./\\.}" | head -n 1)" ||
   fail "could not find a $label build in the latest release"
 
 tmp="$(mktemp -d)"
