@@ -154,9 +154,9 @@ export default function Select({
         onClick={() => setOpen((o) => !o)}
         onKeyDown={handleKeyDown}
         className={cn(
-          "w-full bg-dark-800 text-white px-3 py-2 text-sm rounded-lg",
+          "w-full h-7 bg-dark-900 text-white px-2 text-sm rounded-md border border-dark-700 cursor-default",
           "flex items-center justify-between gap-2",
-          "focus:outline-none focus:ring-2 focus:ring-primary-500",
+          "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           "text-left truncate",
           !selected && "text-dark-500",
@@ -166,7 +166,7 @@ export default function Select({
         <span className="truncate">{selected?.label ?? placeholder}</span>
         <CaretDownIcon
           className={cn(
-            "w-4 h-4 text-dark-400 shrink-0 transition-transform duration-200",
+            "w-3.5 h-3.5 text-dark-400 shrink-0 transition-transform duration-200",
             open && "rotate-180",
           )}
         />
@@ -178,11 +178,11 @@ export default function Select({
           role="listbox"
           className={cn(
             "absolute z-50 mt-1 w-full",
-            "bg-dark-800 border border-dark-600 rounded-lg shadow-xl",
-            "max-h-60 overflow-y-auto py-1",
+            "bg-dark-900 border border-dark-700/60 rounded-md shadow-xl",
+            "max-h-60 overflow-y-auto p-[5px]",
           )}
         >
-          {options.map((option, index) => {
+          {options.map((option) => {
             const isActive =
               option.value ===
               (activeIndex >= 0
@@ -201,31 +201,44 @@ export default function Select({
                 aria-selected={isSelected}
                 aria-disabled={option.disabled}
                 onMouseEnter={() => {
-                  if (!option.disabled) setActiveIndex(index);
+                  // activeIndex indexes enabledOptions(), not options.
+                  if (!option.disabled)
+                    setActiveIndex(
+                      enabledOptions().findIndex(
+                        (o) => o.value === option.value,
+                      ),
+                    );
                 }}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   selectOption(option);
                 }}
                 className={cn(
-                  "px-4 py-2.5 cursor-pointer flex items-center justify-between",
+                  "h-[22px] px-2 rounded-[4px] cursor-default flex items-center justify-between",
                   "text-sm transition-colors",
                   option.disabled
                     ? "text-dark-600 cursor-not-allowed"
                     : isActive
-                      ? "bg-dark-700 text-white"
-                      : "text-dark-300 hover:bg-dark-700",
+                      ? "bg-primary-600 text-primary-text"
+                      : "text-dark-300",
                 )}
               >
                 <span className="truncate">{option.label}</span>
                 {isSelected && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-primary-500 shrink-0 ml-2" />
+                  <div
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full shrink-0 ml-2",
+                      isActive ? "bg-current" : "bg-primary-500",
+                    )}
+                  />
                 )}
               </div>
             );
           })}
           {options.length === 0 && (
-            <div className="px-4 py-2.5 text-sm text-dark-500">No options</div>
+            <div className="h-[22px] px-2 text-sm text-dark-500">
+              No options
+            </div>
           )}
         </div>
       )}

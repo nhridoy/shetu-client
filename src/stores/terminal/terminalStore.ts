@@ -232,6 +232,8 @@ interface TerminalState {
     direction: "horizontal" | "vertical",
   ) => string;
   removePane: (tabId: string, paneId: string) => void;
+  /** Closes the active tab's active pane (the tab too, if it was the last pane). Returns the new active tab id. */
+  closeActivePane: () => string | null;
   setActivePane: (tabId: string, paneId: string) => void;
   setFocusedPane: (tabId: string, paneId: string | null) => void;
   setActiveTab: (id: string) => void;
@@ -460,6 +462,13 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     return newPaneId;
   },
 
+  closeActivePane: () => {
+    const { activeTabId, tabs } = get();
+    const paneId = tabs.find((t) => t.id === activeTabId)?.activePaneId;
+    if (!activeTabId || !paneId) return null;
+    get().removePane(activeTabId, paneId);
+    return get().activeTabId;
+  },
   removePane: (tabId, paneId) => {
     set((s) => {
       const tab = findTab(s.tabs, tabId);

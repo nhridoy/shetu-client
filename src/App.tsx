@@ -112,7 +112,7 @@ function PublicChrome() {
   return (
     <>
       <TitleBar />
-      <div className="pt-9">
+      <div className="pt-[var(--toolbar-height)]">
         <Outlet />
       </div>
     </>

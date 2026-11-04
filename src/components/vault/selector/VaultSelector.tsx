@@ -188,7 +188,7 @@ export function VaultSelector({ compact = false }: { compact?: boolean }) {
                       switchVault(vault.id);
                       setOpen(false);
                     }}
-                    className={`w-full px-2.5 py-2 justify-start rounded-lg ${
+                    className={`w-full h-auto px-2.5 py-2 justify-start rounded-md ${
                       active ? "bg-primary-600/15" : ""
                     }`}
                   >

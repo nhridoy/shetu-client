@@ -106,7 +106,7 @@ export default function SftpHostPicker({
           <Button
             variant="ghost"
             onClick={handleDirectConnect}
-            className="flex items-center w-full gap-3 px-4 py-3 text-left justify-start hover:bg-dark-800"
+            className="flex items-center w-full h-auto gap-3 px-3 py-2 text-left justify-start hover:bg-dark-800"
           >
             <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary-600">
               <LightningIcon className="w-4 h-4 text-white" weight="bold" />
@@ -135,7 +135,7 @@ export default function SftpHostPicker({
                   onConnect(host);
                   onClose();
                 }}
-                className={`w-full px-4 py-3 flex items-center gap-3 text-left justify-start ${
+                className={`w-full h-auto px-3 py-2 flex items-center gap-3 text-left justify-start ${
                   index === selectedIndex ? "bg-dark-800" : "hover:bg-dark-800"
                 }`}
               >

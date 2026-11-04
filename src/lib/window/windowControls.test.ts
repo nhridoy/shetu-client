@@ -7,6 +7,10 @@ const windowMock = vi.hoisted(() => ({
   startDragging: vi.fn(),
   isMaximized: vi.fn(),
   onResized: vi.fn(),
+  isFullscreen: vi.fn(),
+  setFullscreen: vi.fn(),
+  onFocusChanged: vi.fn(),
+  isFocused: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -43,5 +47,75 @@ describe("window controls", () => {
     );
     await vi.waitFor(() => expect(states).toEqual([false, true]));
     unlisten();
+  });
+
+  it("toggles fullscreen from the current state", async () => {
+    windowMock.isFullscreen.mockResolvedValueOnce(false);
+    await windowControls.toggleFullscreen();
+    expect(windowMock.setFullscreen).toHaveBeenCalledWith(true);
+  });
+
+  it("reports focus changes", async () => {
+    windowMock.isFocused.mockResolvedValueOnce(true);
+    windowMock.onFocusChanged.mockImplementation(
+      async (handler: (event: { payload: boolean }) => void) => {
+        handler({ payload: false });
+        return vi.fn();
+      },
+    );
+    const seen: boolean[] = [];
+    await windowControls.watchFocus((focused) => seen.push(focused));
+    // The focus event arrived while the initial read was pending: it wins.
+    expect(seen).toEqual([false]);
+  });
+
+  it("serializes rapid fullscreen toggles so two clicks round-trip", async () => {
+    let fullscreen = false;
+    windowMock.isFullscreen.mockImplementation(async () => fullscreen);
+    windowMock.setFullscreen.mockImplementation(async (next: boolean) => {
+      await new Promise((r) => setTimeout(r, 5));
+      fullscreen = next;
+    });
+    await Promise.all([
+      windowControls.toggleFullscreen(),
+      windowControls.toggleFullscreen(),
+    ]);
+    expect(windowMock.setFullscreen.mock.calls).toEqual([[true], [false]]);
+    expect(fullscreen).toBe(false);
+  });
+
+  it("reports the current focus state on subscribe", async () => {
+    windowMock.onFocusChanged.mockResolvedValue(vi.fn());
+    windowMock.isFocused.mockResolvedValue(false);
+    const seen: boolean[] = [];
+    await windowControls.watchFocus((focused) => seen.push(focused));
+    expect(seen).toEqual([false]);
+  });
+
+  it("subscribes to resizes before reading fullscreen state", async () => {
+    const order: string[] = [];
+    windowMock.onResized.mockImplementation(async () => {
+      order.push("listen");
+      return vi.fn();
+    });
+    windowMock.isFullscreen.mockImplementation(async () => {
+      order.push("read");
+      return false;
+    });
+    await windowControls.watchFullscreen(() => {});
+    expect(order).toEqual(["listen", "read"]);
+  });
+
+  it("keeps a resize-reported fullscreen change over the stale initial read", async () => {
+    windowMock.onResized.mockImplementation(async (handler: () => void) => {
+      handler();
+      return vi.fn();
+    });
+    windowMock.isFullscreen
+      .mockResolvedValueOnce(true) // read triggered by the resize event
+      .mockResolvedValueOnce(false); // stale initial read
+    const seen: boolean[] = [];
+    await windowControls.watchFullscreen((value) => seen.push(value));
+    await vi.waitFor(() => expect(seen).toEqual([true]));
   });
 });

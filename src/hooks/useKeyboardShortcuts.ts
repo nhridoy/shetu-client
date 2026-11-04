@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { hasMacMenu, isMenuOwnedShortcut } from "@/lib/window/menuActions";
 
 export interface KeyboardShortcut {
   id: string;
@@ -35,6 +36,8 @@ export function useKeyboardShortcuts({
 }: UseKeyboardShortcutsProps) {
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // The macOS menu bar handles these keys itself.
+      if (isMenuOwnedShortcut(e, hasMacMenu())) return;
       const isMac = navigator.platform.includes("Mac");
       const modifier = isMac ? e.metaKey : e.ctrlKey;
 
@@ -44,7 +47,7 @@ export function useKeyboardShortcuts({
         onNewTab();
       }
 
-      // Close tab: Ctrl+W / Cmd+W
+      // Close pane, then tab: Ctrl+W / Cmd+W
       if (modifier && e.key === "w" && onCloseTab) {
         e.preventDefault();
         onCloseTab();
@@ -128,7 +131,7 @@ export const defaultShortcuts: Omit<KeyboardShortcut, "action">[] = [
   {
     id: "close-tab",
     keys: "Ctrl+W",
-    description: "Close tab",
+    description: "Close pane (closes the tab after its last pane)",
     category: "Tabs",
   },
   {

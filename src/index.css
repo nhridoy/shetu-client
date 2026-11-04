@@ -27,13 +27,21 @@
   --color-dark-300: #cbd5e1;
   --color-dark-400: #94a3b8;
   --color-dark-500: #64748b;
-  --color-dark-600: #475569;
+  /* Themes don't set dark-600 (see CSS_VAR_MAP in themeStore), so derive it. */
+  --color-dark-600: color-mix(
+    in oklab,
+    var(--color-dark-500),
+    var(--color-dark-700)
+  );
   --color-dark-700: #334155;
   --color-dark-800: #1e293b;
   --color-dark-900: #0f172a;
   --color-dark-950: #020617;
 
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  /* macOS body text size. */
+  --text-sm: 0.8125rem;
 
   --animate-caret-blink: caret-blink 1s ease-in-out infinite;
 
@@ -64,11 +72,34 @@
   overflow: auto;
 }
 
+:root {
+  --toolbar-height: 44px;
+}
+
+/* Window chrome (toolbar, sidebar): not text-selectable, arrow cursor. */
+.chrome {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 body {
   margin: 0;
+  font-size: 13px;
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu",
-    "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI",
+    "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
+    "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -91,21 +122,25 @@ code {
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
-::-webkit-scrollbar-track {
-  background: #1e293b;
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 4px;
+  background: var(--color-dark-600);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: var(--color-dark-500);
+  background-clip: padding-box;
 }
 
 /* Terminal: force xterm to fill the container height. The fit addon rounds

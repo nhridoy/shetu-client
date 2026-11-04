@@ -4,11 +4,16 @@ import {
   MagnifyingGlassIcon,
   TerminalIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { ShellInfo } from "@/lib/terminal/shellDetection";
+import {
+  classifyQuickConnectKey,
+  hasMacMenu,
+  listenAppActions,
+} from "@/lib/window/menuActions";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 
@@ -29,6 +34,11 @@ export default function QuickConnect({
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  const open = useCallback(() => {
+    setIsOpen(true);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, []);
+
   const filteredHosts = hosts.filter(
     (host) =>
       host.name.toLowerCase().includes(query.toLowerCase()) ||
@@ -44,16 +54,18 @@ export default function QuickConnect({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const modifier = navigator.platform.includes("Mac")
-        ? e.metaKey
-        : e.ctrlKey;
-      // Ctrl/Cmd+K opens the panel from any view.
-      if (modifier && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+      // Ctrl/Cmd+K opens the panel from any view. On macOS the menu bar owns
+      // ⌘K and opens it via an app action, so the event is left untouched.
+      const quickKey = classifyQuickConnectKey(
+        e,
+        navigator.platform.includes("Mac"),
+        hasMacMenu(),
+      );
+      if (quickKey === "open") {
         // Capture phase + stopPropagation: the terminal must not also receive it.
         e.preventDefault();
         e.stopPropagation();
-        setIsOpen(true);
-        setTimeout(() => inputRef.current?.focus(), 100);
+        open();
       }
       // Escape to close
       if (e.key === "Escape" && isOpen) {
@@ -64,11 +76,19 @@ export default function QuickConnect({
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen]);
+  }, [isOpen, open]);
 
   useEffect(() => {
     setSelectedIndex(0);
   }, []);
+
+  useEffect(
+    () =>
+      listenAppActions((id) => {
+        if (id === "quick-connect") open();
+      }),
+    [open],
+  );
 
   const noExactHost = !hosts.some(
     (h) =>
@@ -185,7 +205,7 @@ export default function QuickConnect({
               <Button
                 variant="ghost"
                 onClick={handleDirectConnect}
-                className="w-full px-4 py-3 justify-start"
+                className="w-full h-auto px-3 py-2 justify-start"
               >
                 <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
                   <LightningIcon className="w-4 h-4 text-white" weight="bold" />
@@ -213,7 +233,7 @@ export default function QuickConnect({
                       if (onConnectLocal) onConnectLocal(shell.path);
                       close();
                     }}
-                    className={`w-full px-4 py-3 justify-start ${
+                    className={`w-full h-auto px-3 py-2 justify-start ${
                       flatIdx === selectedIndex ? "bg-dark-800" : ""
                     }`}
                   >
@@ -254,7 +274,7 @@ export default function QuickConnect({
                       onConnect(host);
                       close();
                     }}
-                    className={`w-full px-4 py-3 justify-start ${
+                    className={`w-full h-auto px-3 py-2 justify-start ${
                       flatIdx === selectedIndex ? "bg-dark-800" : ""
                     }`}
                   >

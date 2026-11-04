@@ -13,17 +13,23 @@ export const isMac =
   typeof navigator !== "undefined" &&
   /Macintosh|Mac OS X/.test(navigator.userAgent);
 
-export function WindowControls() {
-  const [maximized, setMaximized] = useState(false);
+const runWindowAction = (action: () => Promise<void>) => {
+  void action().catch(() => toast.error("Window action failed. Try again."));
+};
 
+/** Subscribes to a boolean window state (maximized, fullscreen, focus). */
+function useWindowState(
+  watch: (onChange: (value: boolean) => void) => Promise<() => void>,
+  initial: boolean,
+) {
+  const [value, setValue] = useState(initial);
   useEffect(() => {
     if (!isTauriAvailable()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void windowControls
-      .watchMaximized((value) => {
-        if (!disposed) setMaximized(value);
-      })
+    void watch((next) => {
+      if (!disposed) setValue(next);
+    })
       .then((stop) => {
         if (disposed) stop();
         else unlisten = stop;
@@ -33,11 +39,109 @@ export function WindowControls() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [watch]);
+  return value;
+}
 
-  const run = (action: () => Promise<void>) => {
-    void action().catch(() => toast.error("Window action failed. Try again."));
+const glyphClass =
+  "h-2 w-2 opacity-0 group-hover/tl:opacity-100 group-focus-within/tl:opacity-100";
+
+// Fixed macOS colors (not themed). Unfocused windows show gray until hovered.
+const TRAFFIC_LIGHTS = [
+  {
+    key: "close",
+    focused: "bg-[#FF5F57] shadow-[inset_0_0_0_0.5px_#E0443E]",
+    blurred:
+      "bg-dark-600 group-hover/tl:bg-[#FF5F57] group-hover/tl:shadow-[inset_0_0_0_0.5px_#E0443E]",
+    glyph: (
+      <svg viewBox="0 0 8 8" className={glyphClass} aria-hidden="true">
+        <path
+          d="M2 2l4 4M6 2L2 6"
+          stroke="rgba(0,0,0,0.55)"
+          strokeWidth="1.1"
+          strokeLinecap="round"
+        />
+      </svg>
+    ),
+  },
+  {
+    key: "minimize",
+    focused: "bg-[#FEBC2E] shadow-[inset_0_0_0_0.5px_#DEA123]",
+    blurred:
+      "bg-dark-600 group-hover/tl:bg-[#FEBC2E] group-hover/tl:shadow-[inset_0_0_0_0.5px_#DEA123]",
+    glyph: (
+      <svg viewBox="0 0 8 8" className={glyphClass} aria-hidden="true">
+        <path
+          d="M1.5 4h5"
+          stroke="rgba(0,0,0,0.55)"
+          strokeWidth="1.1"
+          strokeLinecap="round"
+        />
+      </svg>
+    ),
+  },
+  {
+    key: "zoom",
+    focused: "bg-[#28C840] shadow-[inset_0_0_0_0.5px_#1AAB29]",
+    blurred:
+      "bg-dark-600 group-hover/tl:bg-[#28C840] group-hover/tl:shadow-[inset_0_0_0_0.5px_#1AAB29]",
+    glyph: (
+      <svg viewBox="0 0 8 8" className={glyphClass} aria-hidden="true">
+        <path d="M2.5 1.5h4v4zM1.5 2.5v4h4z" fill="rgba(0,0,0,0.55)" />
+      </svg>
+    ),
+  },
+] as const;
+
+function TrafficLights() {
+  const focused = useWindowState(windowControls.watchFocus, true);
+  const fullscreen = useWindowState(windowControls.watchFullscreen, false);
+  const actions = {
+    close: { label: "Close window", run: windowControls.close },
+    minimize: { label: "Minimize window", run: windowControls.minimize },
+    zoom: {
+      label: fullscreen ? "Exit full screen" : "Enter full screen",
+      run: windowControls.toggleFullscreen,
+    },
   };
+
+  return (
+    <fieldset
+      data-traffic-lights
+      className="group/tl m-0 flex h-full shrink-0 items-center border-0 py-0 pl-2 pr-1"
+      aria-label="Window controls"
+    >
+      {TRAFFIC_LIGHTS.map((light) => {
+        const action = actions[light.key];
+        return (
+          <button
+            key={light.key}
+            type="button"
+            aria-label={action.label}
+            title={action.label}
+            onClick={() => runWindowAction(action.run)}
+            className="grid h-5 w-5 cursor-default place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+          >
+            <span
+              className={`grid h-3 w-3 place-items-center rounded-full ${focused ? light.focused : light.blurred}`}
+            >
+              {light.glyph}
+            </span>
+          </button>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+/** macOS: drawn traffic lights. Windows/Linux: minimize, maximize, close on the right. */
+export function WindowControls({ mac = isMac }: { mac?: boolean }) {
+  return mac ? <TrafficLights /> : <StandardWindowControls />;
+}
+
+function StandardWindowControls() {
+  const maximized = useWindowState(windowControls.watchMaximized, false);
+  const run = runWindowAction;
 
   return (
     <fieldset
@@ -87,9 +191,7 @@ export function WindowDragArea({
   className?: string;
 }) {
   const dragStart = useRef<{ x: number; y: number } | null>(null);
-  const run = (action: () => Promise<void>) => {
-    void action().catch(() => toast.error("Window action failed. Try again."));
-  };
+  const run = runWindowAction;
 
   return (
     <button
@@ -140,7 +242,7 @@ export function WindowDragArea({
 
 export default function TitleBar() {
   return (
-    <div className="fixed inset-x-0 top-0 z-[60] flex h-9 select-none items-center border-b border-dark-800 bg-dark-900 text-xs text-dark-300">
+    <div className="chrome fixed inset-x-0 top-0 z-[60] flex h-[var(--toolbar-height)] items-center border-b border-dark-800 bg-dark-900 text-sm text-dark-300">
       {isMac && <WindowControls />}
       <WindowDragArea showBrand className="flex-1" />
       {!isMac && <WindowControls />}

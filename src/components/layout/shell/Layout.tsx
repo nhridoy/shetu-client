@@ -1,6 +1,6 @@
 import { PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
@@ -11,6 +11,11 @@ import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
+import {
+  isModalOpen,
+  listenAppActions,
+  type MenuActionId,
+} from "@/lib/window/menuActions";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
@@ -186,6 +191,32 @@ export default function Layout() {
       window.removeEventListener(TEAM_ACCESS_REVOKED_EVENT, onRevoked);
   }, [fetchVaults]);
 
+  // One handler for the macOS menu bar and in-app shortcuts (see menuActions).
+  const appActionRef = useRef<(id: MenuActionId) => void>(() => {});
+  // Updated after commit so the menu only ever sees committed route state.
+  useLayoutEffect(() => {
+    appActionRef.current = (id) => {
+      if (id === "settings") settingsModal.show();
+      else if (id === "new-tab")
+        showTerminalTab(useTerminalStore.getState().addEmptyTab());
+      else if (
+        id === "close-tab" &&
+        location.pathname === "/terminal" &&
+        // Never close a live session hidden behind a dialog.
+        !isModalOpen()
+      ) {
+        const next = useTerminalStore.getState().closeActivePane();
+        if (next) showTerminalTab(next);
+        else {
+          setActiveView("vault");
+          navigate("/hosts");
+        }
+      }
+      // "quick-connect" is handled by QuickConnect itself.
+    };
+  });
+  useEffect(() => listenAppActions((id) => appActionRef.current(id)), []);
+
   const { handleDragStart, handleDragOver, handleDragEnd } = useLayoutDragDrop({
     setActiveView,
   });
@@ -284,15 +315,15 @@ export default function Layout() {
           <button
             type="button"
             aria-label="Close sidebar"
-            className="fixed bottom-0 left-0 right-0 z-30 top-10 bg-black/50 lg:hidden"
+            className="fixed bottom-0 left-0 right-0 z-30 top-[var(--toolbar-height)] bg-black/50 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
 
         <main
-          className={`pt-10 h-screen flex flex-col ${
-            isVaultPage ? "lg:ml-72" : ""
-          } ${isVaultPage && isMobile && sidebarOpen ? "ml-72" : ""}`}
+          className={`pt-[var(--toolbar-height)] h-screen flex flex-col ${
+            isVaultPage ? "lg:ml-56" : ""
+          } ${isVaultPage && isMobile && sidebarOpen ? "ml-56" : ""}`}
         >
           <Outlet />
         </main>
