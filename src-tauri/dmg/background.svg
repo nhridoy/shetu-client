@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="800" viewBox="0 0 660 400">
+  <!-- DMG window background (660x400 pt). Icons sit at x=180 and x=480, y=170 (tauri.conf.json).
+       background.png is this file rendered at 2x (1320x800) and tagged 144 dpi so Finder shows it sharp on Retina. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8fafd"/>
+      <stop offset="1" stop-color="#e3e9f1"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.5">
+      <stop offset="0" stop-color="#38bdf8" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset="1" stop-color="#0284c7"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="660" height="400" fill="url(#bg)"/>
+  <ellipse cx="330" cy="168" rx="300" ry="150" fill="url(#glow)"/>
+
+  <text x="330" y="58" text-anchor="middle" font-family="Noto Sans, Ubuntu Sans, sans-serif"
+        font-size="21" font-weight="600" fill="#0f172a" letter-spacing="-0.2">Install Terra</text>
+  <text x="330" y="82" text-anchor="middle" font-family="Noto Sans, Ubuntu Sans, sans-serif"
+        font-size="13" fill="#64748b">Drag the app onto the Applications folder</text>
+
+  <!-- Arrow from the app icon to Applications -->
+  <path d="M268 174 Q328 146 382 168" fill="none" stroke="url(#arrow)" stroke-width="4"
+        stroke-linecap="round" stroke-dasharray="0.1 11"/>
+  <path d="M377 158 L391 174 L370 178" fill="none" stroke="#0284c7" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- First-launch help for the Gatekeeper warning (the app is not notarized) -->
+  <rect x="96" y="304" width="468" height="62" rx="12" fill="#ffffff" fill-opacity="0.65"
+        stroke="#cbd5e1" stroke-opacity="0.7"/>
+  <text x="330" y="330" text-anchor="middle" font-family="Noto Sans, Ubuntu Sans, sans-serif"
+        font-size="11.5" fill="#475569">If macOS says it can’t verify Terra the first time you open it,</text>
+  <text x="330" y="348" text-anchor="middle" font-family="Noto Sans, Ubuntu Sans, sans-serif"
+        font-size="11.5" fill="#475569">go to <tspan font-weight="600" fill="#0f172a">System Settings → Privacy &amp; Security</tspan>
+    and click <tspan font-weight="600" fill="#0f172a">Open Anyway</tspan>.</text>
+</svg>
