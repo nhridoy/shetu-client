@@ -6,6 +6,7 @@
 set -euo pipefail
 
 RELEASES='https://github.com/nhridoy/terra-client/releases/latest'
+DOWNLOADS='https://github.com/nhridoy/terra-client/releases/download/'
 
 fail() { echo "Terra install failed: $*" >&2; exit 1; }
 
@@ -36,8 +37,9 @@ case "$(uname -s)" in
   *) fail "this installer is for macOS and Linux. Download Terra from $RELEASES" ;;
 esac
 
-url="$(curl -fsSL "$RELEASES/download/terra-latest.json" | grep -o "https://[^\"]*-$label${ext//./\\.}" | head -n 1)"
-[ -n "$url" ] || fail "could not find a $label build in the latest release"
+# Only this repo's release downloads count, so a URL inside the release notes can't redirect the install.
+url="$(curl -fsSL "$RELEASES/download/terra-latest.json" | grep -o "$DOWNLOADS[^\"]*-$label${ext//./\\.}" | head -n 1)" ||
+  fail "could not find a $label build in the latest release"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -54,14 +56,16 @@ case "$ext" in
     echo "Terra installed to $INSTALL_DIR/Terra.app"
     ;;
   .deb)
-    chmod 755 "$tmp" # lets apt's _apt user read the file
+    chmod 755 "$tmp" && chmod 644 "$tmp/terra.deb" # lets apt's _apt user read it under any umask
     as_root apt-get install -y "$tmp/terra.deb"
     echo 'Terra installed. Open it from your app menu or run: Terra'
     ;;
   .AppImage)
     mkdir -p "$INSTALL_DIR"
-    mv "$tmp/terra.AppImage" "$INSTALL_DIR/terra"
-    chmod 755 "$INSTALL_DIR/terra"
+    # Stage next to the target so the final rename is atomic and an old copy survives a failed copy.
+    cp "$tmp/terra.AppImage" "$INSTALL_DIR/.terra.new"
+    chmod 755 "$INSTALL_DIR/.terra.new"
+    mv -f "$INSTALL_DIR/.terra.new" "$INSTALL_DIR/terra"
     echo "Terra installed to $INSTALL_DIR/terra (the AppImage needs libfuse2)"
     case ":$PATH:" in *":$INSTALL_DIR:"*) ;; *) echo "Add $INSTALL_DIR to your PATH to run it as: terra" ;; esac
     ;;

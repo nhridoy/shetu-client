@@ -8,8 +8,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const script = new URL('../install.sh', import.meta.url).pathname;
-const base = 'https://example.test/Terra-1.0.0';
-const manifest = JSON.stringify({
+const base = 'https://github.com/nhridoy/terra-client/releases/download/v1.0.0/Terra-1.0.0';
+const manifest = (notes = '') => JSON.stringify({
+  notes,
   platforms: Object.fromEntries(
     ['macOS-Intel.app.tar.gz', 'macOS-Apple-Silicon.app.tar.gz', 'Linux-x64.AppImage', 'Linux-x64.deb',
       'Linux-ARM64.AppImage', 'Linux-ARM64.deb'].map((name) => [name, { url: `${base}-${name}` }]),
@@ -19,7 +20,7 @@ const manifest = JSON.stringify({
 const tools = ['cat', 'chmod', 'cp', 'grep', 'gzip', 'head', 'id', 'mkdir', 'mktemp', 'mv', 'rm', 'tar'];
 
 // Runs install.sh against stubbed uname/sysctl/curl/apt-get so it can be tested anywhere.
-async function run({ os = 'Darwin', arch = 'arm64', translated = '0', apt = false } = {}) {
+async function run({ os = 'Darwin', arch = 'arm64', translated = '0', apt = false, notes, platforms } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'terra-install-test-'));
   const bin = join(root, 'bin');
   const dest = join(root, 'dest');
@@ -28,7 +29,7 @@ async function run({ os = 'Darwin', arch = 'arm64', translated = '0', apt = fals
   await execFileAsync('tar', ['-czf', join(root, 'download'), '-C', root, 'Terra.app']);
   await mkdir(join(dest, 'Terra.app'), { recursive: true });
   await writeFile(join(dest, 'Terra.app', 'old'), 'old');
-  await writeFile(join(root, 'manifest.json'), manifest);
+  await writeFile(join(root, 'manifest.json'), platforms ?? manifest(notes));
   await mkdir(bin);
   for (const tool of tools)
     await symlink(execFileSync('sh', ['-c', `command -v ${tool}`]).toString().trim(), join(bin, tool));
@@ -89,4 +90,16 @@ test('refuses to run on other systems and unsupported CPUs', async () => {
     assert.notEqual(result.code ?? 0, 0);
     assert.equal(log, '');
   }
+});
+
+test('ignores matching URLs in the release notes that point elsewhere', async () => {
+  const { log } = await run({ notes: 'see https://evil.test/x-macOS-Apple-Silicon.app.tar.gz' });
+  assert.doesNotMatch(log, /evil\.test/);
+  assert.match(log, /releases\/download\/v1\.0\.0\/Terra-1\.0\.0-macOS-Apple-Silicon/);
+});
+
+test('explains when the latest release has no build for this computer', async () => {
+  const { result } = await run({ platforms: '{"platforms":{}}' });
+  assert.notEqual(result.code ?? 0, 0);
+  assert.match(result.stderr, /could not find a macOS-Apple-Silicon build/);
 });

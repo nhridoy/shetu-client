@@ -9,7 +9,7 @@ The quickest way is one command. It picks the right file for your computer and s
   ```
   curl -fsSL https://raw.githubusercontent.com/nhridoy/terra-client/main/install.sh | bash
   ```
-  On Debian/Ubuntu it installs the `.deb`. Elsewhere it puts the AppImage at `~/.local/bin/terra`.
+  On Debian/Ubuntu it installs the `.deb`. Elsewhere it puts the AppImage at `~/.local/bin/terra`, which needs `libfuse2` (most distributions have it; otherwise install it with your package manager).
 - **Windows** (PowerShell):
   ```
   irm https://raw.githubusercontent.com/nhridoy/terra-client/main/install.ps1 | iex
