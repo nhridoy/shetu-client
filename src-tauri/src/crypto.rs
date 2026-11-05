@@ -241,6 +241,7 @@ pub fn encrypt_secret(
     if !session.unlocked {
         return Err("Vault is locked".into());
     }
+    crate::logging::hide_record(plaintext);
     let payload = encrypt_bytes(&session.dek, plaintext.as_bytes(), record_type.as_bytes())?;
     Ok(payload)
 }
@@ -250,7 +251,9 @@ pub fn decrypt_secret(payload_b64: &str, session: &KeySession) -> Result<String,
         return Err("Vault is locked".into());
     }
     let plaintext = decrypt_bytes(payload_b64, &session.dek)?;
-    String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8: {e}"))
+    let plaintext = String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8: {e}"))?;
+    crate::logging::hide_record(&plaintext);
+    Ok(plaintext)
 }
 
 pub fn unwrap_dek(
@@ -497,6 +500,7 @@ pub fn encrypt_team_secret(
     if !session.unlocked {
         return Err("Vault is locked".into());
     }
+    crate::logging::hide_record(plaintext);
     let aad = team_record_aad(record_type, vault_id, epoch)?;
     let mut nonce = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
@@ -562,7 +566,9 @@ pub fn decrypt_team_secret(
             },
         )
         .map_err(|_| "team record authentication failed".to_string())?;
-    String::from_utf8(plaintext).map_err(|_| "invalid team record text".into())
+    let plaintext = String::from_utf8(plaintext).map_err(|_| "invalid team record text")?;
+    crate::logging::hide_record(&plaintext);
+    Ok(plaintext)
 }
 
 #[cfg(test)]
@@ -832,6 +838,22 @@ mod tests {
         let encrypted = encrypt_secret(plaintext, record_type, &session).unwrap();
         let decrypted = decrypt_secret(&encrypted, &session).unwrap();
         assert_eq!(plaintext, decrypted);
+    }
+
+    #[test]
+    fn decrypted_host_records_are_hidden_from_logs() {
+        let mut session = KeySession::new();
+        generate_account_material(&mut session).unwrap();
+        let record = r#"{"address":"decrypted-host.internal","username":"decrypted-user"}"#;
+        // Encrypt without encrypt_secret, so only decryption can register the values.
+        let payload = encrypt_bytes(&session.dek, record.as_bytes(), b"hosts").unwrap();
+        decrypt_secret(&payload, &session).unwrap();
+        assert_eq!(
+            crate::logging::scrub("decrypted-host.internal as decrypted-user"),
+            "[redacted] as [redacted]"
+        );
+        encrypt_secret(r#"{"address":"new-host.internal"}"#, "hosts", &session).unwrap();
+        assert_eq!(crate::logging::scrub("new-host.internal"), "[redacted]");
     }
 
     #[test]

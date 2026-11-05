@@ -63,6 +63,15 @@ const SOURCE_EXTENSIONS: &[&str] = &[
 // Hostnames and usernames this session has used, matched as whole words.
 static HIDDEN: RwLock<(Vec<String>, Option<Regex>)> = RwLock::new((Vec::new(), None));
 
+// Defaults shared by millions of machines identify no one; hiding them would
+// turn "root cause" into "[redacted] cause".
+const DEFAULT_NAMES: &[&str] = &[
+    "root", "admin", "administrator", "ubuntu", "debian", "centos", "fedora", "ec2-user",
+    "azureuser", "opc", "user", "guest", "git", "pi", "vagrant", "localhost",
+];
+// Fields of decrypted records that name a machine or account.
+const RECORD_FIELDS: &[&str] = &["address", "username", "destination_host"];
+
 /// Never show `value` (a hostname or username) in the log, wherever it appears.
 /// Values under 3 characters are skipped: they would shred ordinary words.
 pub fn hide(value: &str) {
@@ -71,7 +80,10 @@ pub fn hide(value: &str) {
     let Ok(mut hidden) = HIDDEN.write() else {
         return;
     };
-    if value.chars().count() < 3 || hidden.0.iter().any(|v| v == value) {
+    if value.chars().count() < 3
+        || DEFAULT_NAMES.iter().any(|d| d.eq_ignore_ascii_case(value))
+        || hidden.0.iter().any(|v| v == value)
+    {
         return;
     }
     let mut values = hidden.0.clone();
@@ -92,6 +104,22 @@ pub fn hide(value: &str) {
     // On failure (regex size limit) keep the old regex rather than dropping all redaction.
     if let Ok(re) = Regex::new(&format!("(?i)(?:{pattern})")) {
         *hidden = (values, Some(re));
+    }
+}
+
+/// Hides the host fields of a decrypted or about-to-be-encrypted record. Every
+/// saved host passes through here before Terra can use it, so before it can be logged.
+pub fn hide_record(plaintext: &str) {
+    if !plaintext.trim_start().starts_with('{') {
+        return;
+    }
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(plaintext) else {
+        return;
+    };
+    for field in RECORD_FIELDS {
+        if let Some(value) = record.get(field).and_then(|v| v.as_str()) {
+            hide(value);
+        }
     }
 }
 
@@ -342,6 +370,29 @@ mod tests {
             "failed to connect to [redacted] as [redacted] on pi"
         );
         assert_eq!(scrub("bare-prod-dbx"), "bare-prod-dbx");
+    }
+
+    #[test]
+    fn hide_record_hides_host_fields_only() {
+        hide_record(
+            r#"{"address":"rec-host.internal","username":"rec-user","destination_host":"fwd-target","name":"Production"}"#,
+        );
+        hide_record("not json rec-other");
+        assert_eq!(
+            scrub("rec-host.internal rec-user fwd-target Production rec-other"),
+            "[redacted] [redacted] [redacted] Production rec-other"
+        );
+    }
+
+    #[test]
+    fn default_names_stay_readable() {
+        hide("root");
+        hide("localhost");
+        hide("Ubuntu");
+        assert_eq!(
+            scrub("root cause on localhost running ubuntu"),
+            "root cause on localhost running ubuntu"
+        );
     }
 
     #[test]

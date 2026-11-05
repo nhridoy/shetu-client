@@ -1075,8 +1075,6 @@ pub fn load_host_config(
         passphrase: None,
         detect_os: false,
     };
-    crate::logging::hide(&config.host);
-    crate::logging::hide(&config.username);
     let auth_type = row.auth_type.as_deref().unwrap_or("password");
     // Load password when auth_type is "password" or "both"
     if auth_type == "password" || auth_type == "both" {
