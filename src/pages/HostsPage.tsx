@@ -4,14 +4,16 @@ import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
+import { openGroupId } from "@/lib/hosts/helpers";
 import { type Group, type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 export default function HostsPage() {
-  const { deleteHost, deleteGroup } = useHostStore();
+  const { groups, deleteHost, deleteGroup } = useHostStore();
   const { addTab } = useTerminalStore();
   const navigate = useNavigate();
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const openGroup = openGroupId(groups, selectedGroupId);
   const [editingHost, setEditingHost] = useState<Host | null>(null);
   const [defaultGroupId, setDefaultGroupId] = useState<string | undefined>();
   const [editingGroup, setEditingGroup] = useState<Group | null>(null);
@@ -34,7 +36,7 @@ export default function HostsPage() {
   return (
     <div className="flex-1 p-4 overflow-y-auto">
       <HostsPanel
-        selectedGroupId={selectedGroupId}
+        selectedGroupId={openGroup}
         onSelectGroup={setSelectedGroupId}
         onNewGroup={(parentId) => {
           setEditingGroup(null);

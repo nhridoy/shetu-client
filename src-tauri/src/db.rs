@@ -2138,6 +2138,49 @@ pub fn upsert_sync_row(db: &LocalDb, table: Table, row: &SyncRow) -> Result<Sync
 }
 
 /// Save a local edit and its durable operation in the same SQLite transaction.
+/// Moves live groups and hosts out of deleted or missing groups, to the nearest
+/// live ancestor or the top level, as ordinary local edits. Deleting a group (here
+/// or on another device) leaves its children pointing at it, and the server rejects
+/// any push that links to a deleted group, so one such child blocks the vault's sync.
+/// Run after pulling, so links to groups the server still has are present locally.
+pub fn reattach_orphans(db: &LocalDb, vault_id: &str, device_id: &str) -> Result<usize, String> {
+    use std::collections::HashMap;
+    let groups = list_sync_rows(db, Table::Groups, vault_id, true)?;
+    let by_id: HashMap<&str, &SyncRow> = groups.iter().map(|g| (g.id.as_str(), g)).collect();
+    let live = |id: &str| by_id.get(id).is_some_and(|g| g.deleted_at.is_none());
+    // Walk up from a dead link to the first live group; bounded in case of a cycle.
+    let nearest_live = |start: &str| {
+        let mut current = Some(start);
+        for _ in 0..=groups.len() {
+            let id = current?;
+            if live(id) {
+                return Some(id.to_owned());
+            }
+            current = by_id.get(id).and_then(|g| g.parent_id.as_deref());
+        }
+        None
+    };
+    let mut moves = Vec::new();
+    for group in groups.iter().filter(|g| g.deleted_at.is_none()) {
+        if let Some(parent) = group.parent_id.as_deref().filter(|p| !live(p)) {
+            let mut row = group.clone();
+            row.parent_id = nearest_live(parent).filter(|p| *p != group.id);
+            moves.push((Table::Groups, row));
+        }
+    }
+    for host in list_sync_rows(db, Table::Hosts, vault_id, false)? {
+        if let Some(group) = host.group_id.as_deref().filter(|g| !live(g)) {
+            let mut row = host.clone();
+            row.group_id = nearest_live(group);
+            moves.push((Table::Hosts, row));
+        }
+    }
+    for (table, row) in &moves {
+        local_mutate(db, *table, row, device_id)?;
+    }
+    Ok(moves.len())
+}
+
 pub fn local_mutate(
     db: &LocalDb,
     table: Table,
@@ -2710,6 +2753,56 @@ mod tests {
 
     fn test_db() -> LocalDb {
         open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn reattach_orphans_moves_children_out_of_deleted_groups() {
+        let db = test_db();
+        let device = "00000000-0000-4000-8000-0000000000d1";
+        let row = |table: Table, id: &str, parent: Option<&str>| {
+            let mut r = SyncRow {
+                id: id.into(),
+                vault_id: "v1".into(),
+                name: Some(id.into()),
+                data: "{}".into(),
+                ..Default::default()
+            };
+            match table {
+                Table::Hosts => r.group_id = parent.map(Into::into),
+                _ => r.parent_id = parent.map(Into::into),
+            }
+            upsert_sync_row(&db, table, &r).unwrap()
+        };
+        row(Table::Groups, "keep", None);
+        row(Table::Groups, "kept-child", Some("keep"));
+        row(Table::Groups, "gone", Some("keep"));
+        row(Table::Groups, "gone-top", None);
+        let child = row(Table::Groups, "child", Some("gone"));
+        row(Table::Groups, "child-of-top", Some("gone-top"));
+        row(Table::Hosts, "host", Some("gone"));
+        row(Table::Hosts, "host-missing", Some("never-synced"));
+        row(Table::Hosts, "host-kept", Some("keep"));
+        tombstone_sync_row(&db, Table::Groups, "gone").unwrap();
+        tombstone_sync_row(&db, Table::Groups, "gone-top").unwrap();
+
+        assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 4);
+
+        let get = |table, id| get_sync_row(&db, table, id).unwrap().unwrap();
+        // Nearest live ancestor, else the top level.
+        assert_eq!(get(Table::Groups, "child").parent_id.as_deref(), Some("keep"));
+        assert_eq!(get(Table::Groups, "child-of-top").parent_id, None);
+        assert_eq!(get(Table::Hosts, "host").group_id.as_deref(), Some("keep"));
+        assert_eq!(get(Table::Hosts, "host-missing").group_id, None);
+        // Untouched: healthy links and the deleted groups themselves.
+        assert_eq!(get(Table::Groups, "kept-child").parent_id.as_deref(), Some("keep"));
+        assert_eq!(get(Table::Hosts, "host-kept").group_id.as_deref(), Some("keep"));
+        assert_eq!(get(Table::Groups, "gone").parent_id.as_deref(), Some("keep"));
+        // The move is a new local edit, so it is queued for push.
+        let moved = get(Table::Groups, "child");
+        assert!(moved.revision > child.revision);
+        assert_ne!(moved.operation_id, child.operation_id);
+        assert_eq!(moved.device_id, device);
+        assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 0, "second run is a no-op");
     }
 
     #[test]
