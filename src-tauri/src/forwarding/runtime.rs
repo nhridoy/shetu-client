@@ -177,6 +177,9 @@ impl ForwardingState {
     {
         let route = crate::ssh_route::resolve_saved_route(db, crypto, &definition.host_id)?;
         let config = &route.target;
+        if let Some(destination) = &definition.destination_host {
+            crate::logging::hide(destination);
+        }
         let listener = if definition.mode != ForwardMode::Remote {
             let port = definition.local_port.ok_or("Local port missing")?;
             Some(

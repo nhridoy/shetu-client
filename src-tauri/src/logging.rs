@@ -5,7 +5,7 @@
 use regex::Regex;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use tauri::plugin::TauriPlugin;
 use tauri::{Manager, Runtime};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
@@ -60,10 +60,39 @@ const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "mjs", "go", "json", "toml", "html", "css",
 ];
 
+// Hostnames and usernames this session has used, matched as whole words.
+static HIDDEN: RwLock<(Vec<String>, Option<Regex>)> = RwLock::new((Vec::new(), None));
+
+/// Never show `value` (a hostname or username) in the log, wherever it appears.
+/// Values under 3 characters are skipped: they would shred ordinary words.
+pub fn hide(value: &str) {
+    let value = value.trim();
+    let Ok(mut hidden) = HIDDEN.write() else {
+        return;
+    };
+    if value.len() < 3 || hidden.0.iter().any(|v| v == value) {
+        return;
+    }
+    hidden.0.push(value.to_owned());
+    // Longest first, so `db.example.com` wins over a hidden `db.example`.
+    hidden.0.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    let pattern = hidden
+        .0
+        .iter()
+        .map(|v| regex::escape(v))
+        .collect::<Vec<_>>()
+        .join("|");
+    hidden.1 = Regex::new(&format!(r"(?i)\b(?:{pattern})\b")).ok();
+}
+
 /// Removes secrets and identifying values (IPs, user@host, URL hosts) from a log line.
-/// shortcut: a bare hostname without `:port`, scheme or `user@` is not caught; log host IDs, never names.
+/// Bare hostnames are caught only once registered with [`hide`].
 pub fn scrub(text: &str) -> String {
-    let scrubbed = SCRUBBERS.iter().fold(text.to_owned(), |acc, (re, rep)| {
+    let text = match HIDDEN.read().ok().and_then(|h| h.1.clone()) {
+        Some(re) => re.replace_all(text, "[redacted]").into_owned(),
+        None => text.to_owned(),
+    };
+    let scrubbed = SCRUBBERS.iter().fold(text, |acc, (re, rep)| {
         re.replace_all(&acc, *rep).into_owned()
     });
     HOST_PORT
@@ -285,6 +314,18 @@ mod tests {
     fn scrub_keeps_ordinary_text() {
         let text = "app_lib::db::open failed at src/db.rs:42:5 and logging.ts:21 in v0.0.11 after 12:30:05";
         assert_eq!(scrub(text), text);
+    }
+
+    #[test]
+    fn scrub_redacts_hidden_values_as_whole_words() {
+        hide("bare-prod-db");
+        hide("deploy-user");
+        hide("pi"); // too short to hide safely
+        assert_eq!(
+            scrub("failed to connect to bare-prod-db as deploy-user on pi"),
+            "failed to connect to [redacted] as [redacted] on pi"
+        );
+        assert_eq!(scrub("bare-prod-dbx"), "bare-prod-dbx");
     }
 
     #[test]
