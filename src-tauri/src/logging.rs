@@ -53,7 +53,7 @@ static SCRUBBERS: LazyLock<Vec<(Regex, &'static str)>> =
 
 // `name.tld:port`, e.g. `dns lookup prod.example.com:22`.
 static HOST_PORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:[a-zA-Z0-9-]+\.)+([a-zA-Z]{2,})\.?:(\d{1,5})\b").expect("valid host regex")
+    Regex::new(r"\b(?:[a-zA-Z0-9_-]+\.)+([a-zA-Z]{2,})\.?:(\d{1,5})\b").expect("valid host regex")
 });
 // `file.ext:line` in panics and stack traces looks like `host:port`; keep it.
 const SOURCE_EXTENSIONS: &[&str] = &[
@@ -414,6 +414,8 @@ mod tests {
             "as [redacted] via [redacted] to [redacted]. or [host]:22 éé"
         );
         assert_eq!(scrub("dns other.example.org.:22"), "dns [host]:22");
+        assert_eq!(scrub("dns ops_host.example.com:22"), "dns [host]:22");
+        assert_eq!(scrub("at src/my_file.rs:12"), "at src/my_file.rs:12");
     }
 
     #[test]
