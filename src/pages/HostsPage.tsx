@@ -106,7 +106,8 @@ export default function HostsPage() {
                 }
               : undefined
           }
-          defaultParentId={newGroupParentId || undefined}
+          // Re-checked on every render: the parent can be deleted while the form is open.
+          defaultParentId={openGroupId(groups, newGroupParentId) ?? undefined}
           onClose={() => {
             groupModal.hide();
             setEditingGroup(null);

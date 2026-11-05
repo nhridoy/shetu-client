@@ -2160,25 +2160,49 @@ pub fn reattach_orphans(db: &LocalDb, vault_id: &str, device_id: &str) -> Result
         }
         None
     };
-    let mut moves = Vec::new();
+    // Concurrent moves on two devices can leave a loop; never pick a group's own descendant.
+    let is_within = |candidate: &str, group: &str| {
+        let mut current = Some(candidate);
+        for _ in 0..=groups.len() {
+            match current {
+                Some(id) if id == group => return true,
+                Some(id) => current = by_id.get(id).and_then(|g| g.parent_id.as_deref()),
+                None => return false,
+            }
+        }
+        true
+    };
+    // (table, id, operation_id seen in the scan, new link)
+    let mut moves: Vec<(Table, String, String, Option<String>)> = Vec::new();
     for group in groups.iter().filter(|g| g.deleted_at.is_none()) {
         if let Some(parent) = group.parent_id.as_deref().filter(|p| !live(p)) {
-            let mut row = group.clone();
-            row.parent_id = nearest_live(parent).filter(|p| *p != group.id);
-            moves.push((Table::Groups, row));
+            let target = nearest_live(parent).filter(|p| !is_within(p, &group.id));
+            moves.push((Table::Groups, group.id.clone(), group.operation_id.clone(), target));
         }
     }
     for host in list_sync_rows(db, Table::Hosts, vault_id, false)? {
         if let Some(group) = host.group_id.as_deref().filter(|g| !live(g)) {
-            let mut row = host.clone();
-            row.group_id = nearest_live(group);
-            moves.push((Table::Hosts, row));
+            moves.push((Table::Hosts, host.id.clone(), host.operation_id.clone(), nearest_live(group)));
         }
     }
-    for (table, row) in &moves {
-        local_mutate(db, *table, row, device_id)?;
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut moved = 0;
+    for (table, id, scanned_operation, target) in moves {
+        // Re-read under the lock: skip rows edited or deleted since the scan, and
+        // change only the link so no other field is overwritten.
+        let Some(mut row) = get_sync_row_unlocked(&conn, table, &id)? else { continue };
+        if row.deleted_at.is_some() || row.operation_id != scanned_operation {
+            continue;
+        }
+        match table {
+            Table::Hosts => row.group_id = target,
+            _ => row.parent_id = target,
+        }
+        local_mutate_locked(&mut conn, table, &row, device_id)?;
+        moved += 1;
     }
-    Ok(moves.len())
+    Ok(moved)
 }
 
 pub fn local_mutate(
@@ -2189,6 +2213,15 @@ pub fn local_mutate(
 ) -> Result<SyncRow, String> {
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    local_mutate_locked(&mut conn, table, row, device_id)
+}
+
+fn local_mutate_locked(
+    conn: &mut Connection,
+    table: Table,
+    row: &SyncRow,
+    device_id: &str,
+) -> Result<SyncRow, String> {
     if matches!(
         table,
         Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences
@@ -2202,7 +2235,7 @@ pub fn local_mutate(
             return Err("history requires default personal vault".into());
         }
     }
-    let existing = get_sync_row_unlocked(&conn, table, &row.id)?;
+    let existing = get_sync_row_unlocked(conn, table, &row.id)?;
     let mut out = row.clone();
     out.revision = existing.as_ref().map_or(1, |r| r.revision + 1);
     let now = now_iso();
@@ -2782,10 +2815,15 @@ mod tests {
         row(Table::Hosts, "host", Some("gone"));
         row(Table::Hosts, "host-missing", Some("never-synced"));
         row(Table::Hosts, "host-kept", Some("keep"));
+        // A loop from concurrent moves: loop-a's dead parent sits under its own child.
+        row(Table::Groups, "loop-a", Some("loop-dead"));
+        row(Table::Groups, "loop-child", Some("loop-a"));
+        row(Table::Groups, "loop-dead", Some("loop-child"));
         tombstone_sync_row(&db, Table::Groups, "gone").unwrap();
         tombstone_sync_row(&db, Table::Groups, "gone-top").unwrap();
+        tombstone_sync_row(&db, Table::Groups, "loop-dead").unwrap();
 
-        assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 4);
+        assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 5);
 
         let get = |table, id| get_sync_row(&db, table, id).unwrap().unwrap();
         // Nearest live ancestor, else the top level.
@@ -2793,6 +2831,7 @@ mod tests {
         assert_eq!(get(Table::Groups, "child-of-top").parent_id, None);
         assert_eq!(get(Table::Hosts, "host").group_id.as_deref(), Some("keep"));
         assert_eq!(get(Table::Hosts, "host-missing").group_id, None);
+        assert_eq!(get(Table::Groups, "loop-a").parent_id, None, "never under its own child");
         // Untouched: healthy links and the deleted groups themselves.
         assert_eq!(get(Table::Groups, "kept-child").parent_id.as_deref(), Some("keep"));
         assert_eq!(get(Table::Hosts, "host-kept").group_id.as_deref(), Some("keep"));
@@ -2802,6 +2841,11 @@ mod tests {
         assert!(moved.revision > child.revision);
         assert_ne!(moved.operation_id, child.operation_id);
         assert_eq!(moved.device_id, device);
+        let queued = outbox_pending(&db).unwrap();
+        assert!(
+            queued.iter().any(|e| e.record_id == "child" && e.operation_id == moved.operation_id),
+            "the move is queued for push"
+        );
         assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 0, "second run is a no-op");
     }
 
