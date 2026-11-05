@@ -1065,9 +1065,10 @@ pub fn team_sync_cursor(db: &LocalDb, account_id: &str) -> Result<Option<String>
     conn.query_row(
         "SELECT cursor FROM team_sync_state WHERE account_id=?1",
         [account_id],
-        |r| r.get(0),
+        |r| r.get::<_, Option<String>>(0),
     )
     .optional()
+    .map(Option::flatten)
     .map_err(|e| e.to_string())
 }
 
@@ -2709,6 +2710,16 @@ mod tests {
 
     fn test_db() -> LocalDb {
         open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn team_sync_cursor_reads_a_null_cursor_as_none() {
+        let db = test_db();
+        let account = "00000000-0000-4000-8000-000000000001";
+        store_team_sync_cursor(&db, account, None).unwrap();
+        assert_eq!(team_sync_cursor(&db, account).unwrap(), None);
+        store_team_sync_cursor(&db, account, Some("c1")).unwrap();
+        assert_eq!(team_sync_cursor(&db, account).unwrap().as_deref(), Some("c1"));
     }
 
     #[test]

@@ -385,9 +385,54 @@ pub fn get_request_log(
     Ok(state.request_log())
 }
 
+/// The short reason a Terra server gives with an error status, for the log.
+/// Terra's server only fills in schema field names, never record values; the logger still scrubs it.
+pub fn server_reason(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let error = value.get("error")?;
+    let reason = match (error.as_str(), error.get("code"), error.get("message")) {
+        (Some(text), _, _) => text.to_owned(),
+        (None, Some(code), Some(message)) => {
+            format!("{}: {}", code.as_str()?, message.as_str()?)
+        }
+        (None, _, Some(message)) => message.as_str()?.to_owned(),
+        _ => return None,
+    };
+    // Control characters would let a response start fake log lines.
+    Some(
+        reason
+            .chars()
+            .take(200)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_reason_reads_both_error_shapes() {
+        assert_eq!(server_reason(r#"{"error":"device mismatch"}"#).as_deref(), Some("device mismatch"));
+        assert_eq!(
+            server_reason(r#"{"error":{"code":"VALIDATION_ERROR","message":"invalid team operation"}}"#).as_deref(),
+            Some("VALIDATION_ERROR: invalid team operation")
+        );
+        assert_eq!(server_reason("<html>502 Bad Gateway</html>"), None);
+        let text: String = (0..500).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let long = serde_json::json!({ "error": text }).to_string();
+        assert_eq!(server_reason(&long).unwrap(), text.chars().take(200).collect::<String>());
+    }
+
+    #[test]
+    fn server_reason_cannot_add_log_lines() {
+        let forged = r#"{"error":"bad request\n2026-11-05 10:00:00.000 INFO  [app_lib] fake\r\tline"}"#;
+        assert_eq!(
+            server_reason(forged).as_deref(),
+            Some("bad request 2026-11-05 10:00:00.000 INFO  [app_lib] fake  line")
+        );
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
