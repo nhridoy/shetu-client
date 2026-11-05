@@ -29,11 +29,11 @@ body:
     attributes:
       label: Logs
       description: |
-        Drag the log file here. Logs never contain passwords, keys, hostnames or terminal output.
+        Drag the log file here. Terra never logs passwords, keys or terminal output, and removes IP addresses and hostnames from error messages.
 
         **If Terra opens:** Settings → Advanced → **Export logs**.
 
         **If Terra crashes before it opens,** attach the newest `terra*.log` from:
         - macOS: `~/Library/Logs/com.nhridoy.terra/`
         - Windows: `%LOCALAPPDATA%\com.nhridoy.terra\logs\`
-        - Linux: `~/.local/share/com.nhridoy.terra/logs/`
+        - Linux: `~/.local/share/com.nhridoy.terra/logs/` (or `$XDG_DATA_HOME/com.nhridoy.terra/logs/` if you set `XDG_DATA_HOME`)

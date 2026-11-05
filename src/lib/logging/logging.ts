@@ -77,9 +77,9 @@ export async function notifyIfPreviousCrash() {
     action: {
       label: "Export logs",
       onClick: () =>
-        void exportLogs().then((saved) => {
-          if (saved) void reportProblem();
-        }),
+        void exportLogs()
+          .then((saved) => (saved ? reportProblem() : undefined))
+          .catch((err) => toast.error(`Could not export logs: ${err}`)),
     },
     cancel: { label: "Dismiss", onClick: () => {} },
   });

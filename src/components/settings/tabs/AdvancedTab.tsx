@@ -189,8 +189,8 @@ export default function AdvancedTab({
         <h3 className="mb-3 text-sm font-medium text-white">Troubleshooting</h3>
         <p className="mb-3 text-xs text-dark-400">
           Something not working? Export the logs and attach them to a bug
-          report. Logs never contain passwords, keys, hostnames or terminal
-          output.
+          report. Terra never logs passwords, keys or terminal output, and
+          removes IP addresses and hostnames from error messages.
         </p>
         <div className="flex gap-2">
           <Button

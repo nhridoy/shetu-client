@@ -7,7 +7,19 @@ const pluginLog = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/plugin-log", () => pluginLog);
 
-import { formatLogArgs, installLogForwarding } from "./logging";
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  save: vi.fn(() => Promise.resolve("/tmp/terra-logs.txt")),
+}));
+const toast = vi.hoisted(() => ({ error: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
+
+import {
+  formatLogArgs,
+  installLogForwarding,
+  notifyIfPreviousCrash,
+} from "./logging";
 
 describe("formatLogArgs", () => {
   it("joins strings, errors with stack, and objects as JSON", () => {
@@ -36,5 +48,23 @@ describe("installLogForwarding", () => {
     console.error("Sync failed:", "network");
     expect(original).toHaveBeenCalledWith("Sync failed:", "network");
     expect(pluginLog.error).toHaveBeenCalledWith("Sync failed: network");
+  });
+});
+
+describe("notifyIfPreviousCrash", () => {
+  it("tells the user when exporting from the crash toast fails", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "take_crash_marker"
+        ? Promise.resolve(true)
+        : Promise.reject("disk full"),
+    );
+    await notifyIfPreviousCrash();
+    const [, options] = toast.error.mock.calls[0];
+    options.action.onClick();
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenLastCalledWith(
+        "Could not export logs: disk full",
+      ),
+    );
   });
 });

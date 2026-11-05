@@ -15,38 +15,66 @@ const CRASH_MARKER: &str = "crash.marker";
 
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+// Any key that names a credential, e.g. `password`, `refresh_token`, `private_key`.
+const SECRET_KEY: &str = r#"(?i)("?[\w-]*(?:password|passphrase|secret|token|private_?key|api_?key|credential)[\w-]*"?\s*[:=]\s*)"#;
+
 // Order matters: whole tokens and URLs first, so the IP/email rules don't split them.
-static SCRUBBERS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    [
-        (
-            r#"(?i)((?:password|passphrase|secret|token)"?\s*[:=]\s*"?)[^\s",}]+"#,
-            "${1}[redacted]",
-        ),
+static SCRUBBERS: LazyLock<Vec<(Regex, &'static str)>> =
+    LazyLock::new(|| {
+        let quoted_secret = format!(r#"{SECRET_KEY}"(?:[^"\\]|\\.)*""#);
+        let bare_secret = format!(r#"{SECRET_KEY}[^\s",}}]+"#);
+        [
+        (quoted_secret.as_str(), r#"${1}"[redacted]""#),
+        (bare_secret.as_str(), "${1}[redacted]"),
         (r#"(?i)(bearer)\s+[^\s"']+"#, "${1} [redacted]"),
         (r"eyJ[\w-]*\.[\w-]+\.[\w-]*", "[token]"),
+        // URL query strings can carry emails or tokens (e.g. `?email=`).
+        (r#"(://[^\s?#)"]*)[?#][^\s)"]*"#, "${1}?[redacted]"),
         (
             r"\b([a-z][a-z0-9+.-]*://)(?:[^/\s@]*@)?[^/\s:?#)]+",
             "${1}[host]",
         ),
-        (r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[user@host]"),
+        (r"[\w.+-]+(?:@|%40)[\w-]+(?:\.[\w-]+)+", "[user@host]"),
         (
             r"\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*::(?:[0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}\b",
             "[ip]",
         ),
+        // Leading `::` (e.g. `::1`) and trailing `::` (e.g. `2001:db8::`); the
+        // neighbour checks keep Rust paths like `app_lib::db` intact.
+        (r"(^|[^\w:])::(?:[0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}\b", "${1}[ip]"),
+        (r"\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})+::([^\w:]|$)", "[ip]${1}"),
         (r"\b(?:[0-9a-fA-F]{1,4}:){3,7}[0-9a-fA-F]{1,4}\b", "[ip]"),
         (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[ip]"),
     ]
     .into_iter()
     .map(|(pattern, replacement)| (Regex::new(pattern).expect("valid scrub regex"), replacement))
     .collect()
+    });
+
+// `name.tld:port`, e.g. `dns lookup prod.example.com:22`.
+static HOST_PORT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:[a-zA-Z0-9-]+\.)+([a-zA-Z]{2,}):(\d{1,5})\b").expect("valid host regex")
 });
+// `file.ext:line` in panics and stack traces looks like `host:port`; keep it.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "go", "json", "toml", "html", "css",
+];
 
 /// Removes secrets and identifying values (IPs, user@host, URL hosts) from a log line.
-/// shortcut: bare hostnames (no scheme, no user@) are not caught; log host IDs, never names.
+/// shortcut: a bare hostname without `:port`, scheme or `user@` is not caught; log host IDs, never names.
 pub fn scrub(text: &str) -> String {
-    SCRUBBERS.iter().fold(text.to_owned(), |acc, (re, rep)| {
+    let scrubbed = SCRUBBERS.iter().fold(text.to_owned(), |acc, (re, rep)| {
         re.replace_all(&acc, *rep).into_owned()
-    })
+    });
+    HOST_PORT
+        .replace_all(&scrubbed, |c: &regex::Captures| {
+            if SOURCE_EXTENSIONS.contains(&c[1].to_ascii_lowercase().as_str()) {
+                c[0].to_owned()
+            } else {
+                format!("[host]:{}", &c[2])
+            }
+        })
+        .into_owned()
 }
 
 pub fn plugin<R: Runtime>() -> TauriPlugin<R> {
@@ -91,15 +119,21 @@ fn system_summary(version: impl std::fmt::Display) -> String {
     )
 }
 
-/// Call first thing in `setup`, after the log plugin is registered.
-pub fn init<R: Runtime>(app: &tauri::App<R>) {
-    if let Ok(dir) = app.path().app_log_dir() {
-        let _ = LOG_DIR.set(dir);
-    }
-    log::info!(
-        "--- {} started ---",
-        system_summary(&app.package_info().version)
-    );
+/// Register right after [`plugin`], so the crash-marker folder is known
+/// before any later plugin or `setup` can fail.
+pub fn init_plugin<R: Runtime>() -> TauriPlugin<R> {
+    tauri::plugin::Builder::new("terra-logging")
+        .setup(|app, _api| {
+            if let Ok(dir) = app.path().app_log_dir() {
+                let _ = LOG_DIR.set(dir);
+            }
+            log::info!(
+                "--- {} started ---",
+                system_summary(&app.package_info().version)
+            );
+            Ok(())
+        })
+        .build()
 }
 
 pub fn install_panic_hook() {
@@ -110,8 +144,11 @@ pub fn install_panic_hook() {
             std::backtrace::Backtrace::force_capture()
         );
         log::logger().flush();
-        if let Some(dir) = LOG_DIR.get() {
-            write_crash_marker_in(dir);
+        // Worker-thread panics (e.g. a tokio task) are logged but don't end the app.
+        if std::thread::current().name() == Some("main") {
+            if let Some(dir) = LOG_DIR.get() {
+                write_crash_marker_in(dir);
+            }
         }
         default_hook(info);
     }));
@@ -149,15 +186,25 @@ fn export_logs_in(dir: &Path, out: &Path, header: &str) -> std::io::Result<()> {
             .into_owned();
         (name == active, name)
     });
+    // Read everything before creating `out`: it may be one of the source logs.
+    let mut parts = Vec::new();
+    for file in files {
+        match std::fs::read(&file) {
+            Ok(bytes) => parts.push((file, bytes)),
+            // Rotation removed it between listing and reading.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
     let mut writer = std::io::BufWriter::new(std::fs::File::create(out)?);
     writeln!(writer, "{header}")?;
-    for file in files {
+    for (file, bytes) in parts {
         writeln!(
             writer,
             "\n===== {} =====",
             file.file_name().unwrap_or_default().to_string_lossy()
         )?;
-        writer.write_all(&std::fs::read(&file)?)?;
+        writer.write_all(&bytes)?;
     }
     writer.flush()
 }
@@ -208,6 +255,26 @@ mod tests {
                 r#"{"refresh_token":"r1-xyz","password": "hunter2"}"#,
                 r#"{"refresh_token":"[redacted]","password": "[redacted]"}"#,
             ),
+            (
+                r#"{"private_key":"secret material","api_key":"k1"}"#,
+                r#"{"private_key":"[redacted]","api_key":"[redacted]"}"#,
+            ),
+            (
+                r#"password: "correct horse battery""#,
+                r#"password: "[redacted]""#,
+            ),
+            ("listen ::1 failed", "listen [ip] failed"),
+            ("bind [::1]:22", "bind [[ip]]:22"),
+            ("prefix 2001:db8:: end", "prefix [ip] end"),
+            (
+                "url (http://h.example.com:8080/api/v1/users/lookup?email=a%40b.com)",
+                "url (http://[host]:8080/api/v1/users/lookup?[redacted])",
+            ),
+            ("user a%40b.com", "user [user@host]"),
+            (
+                "dns lookup prod.example.com:22: failed",
+                "dns lookup [host]:22: failed",
+            ),
         ];
         for (input, expected) in cases {
             assert_eq!(scrub(input), expected, "input: {input}");
@@ -216,7 +283,7 @@ mod tests {
 
     #[test]
     fn scrub_keeps_ordinary_text() {
-        let text = "app_lib::db::open failed at src/db.rs:42 in v0.0.11 after 12:30:05";
+        let text = "app_lib::db::open failed at src/db.rs:42:5 and logging.ts:21 in v0.0.11 after 12:30:05";
         assert_eq!(scrub(text), text);
     }
 
@@ -244,6 +311,17 @@ mod tests {
         assert!(text.starts_with("header"));
         assert!(text.find("old").unwrap() < text.find("new").unwrap());
         assert!(!text.contains("skip"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn export_onto_a_source_log_keeps_its_contents() {
+        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active = dir.join("terra.log");
+        std::fs::write(&active, "new\n").unwrap();
+        export_logs_in(&dir, &active, "header").unwrap();
+        assert!(std::fs::read_to_string(&active).unwrap().contains("new"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

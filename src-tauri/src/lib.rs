@@ -1571,6 +1571,7 @@ pub fn run() {
     logging::install_panic_hook();
     tauri::Builder::default()
         .plugin(logging::plugin())
+        .plugin(logging::init_plugin())
         .plugin(tauri_plugin_keyring_store::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1588,7 +1589,6 @@ pub fn run() {
             builder.build()
         })
         .setup(|app| {
-            logging::init(app);
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;

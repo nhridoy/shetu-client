@@ -36,13 +36,13 @@ You only do this once. In-app updates install without the warning.
 
 ## Reporting a problem
 
-[Open a bug report](https://github.com/nhridoy/terra-client/issues/new?template=bug_report.yml) and attach your log file. Logs never contain passwords, keys, hostnames or terminal output.
+[Open a bug report](https://github.com/nhridoy/terra-client/issues/new?template=bug_report.yml) and attach your log file. Terra never logs passwords, keys or terminal output, and removes IP addresses and hostnames from error messages.
 
 - **If Terra opens:** Settings → Advanced → **Export logs** (or **Report a problem**).
 - **If Terra crashes before it opens,** attach the newest `terra*.log` from:
   - macOS: `~/Library/Logs/com.nhridoy.terra/`
   - Windows: `%LOCALAPPDATA%\com.nhridoy.terra\logs\`
-  - Linux: `~/.local/share/com.nhridoy.terra/logs/`
+  - Linux: `~/.local/share/com.nhridoy.terra/logs/` (or `$XDG_DATA_HOME/com.nhridoy.terra/logs/` if you set `XDG_DATA_HOME`)
 
 # Install (development):
 `bun install`
