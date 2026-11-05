@@ -48,6 +48,9 @@ ssh-key = { version = "=0.7.0-rc.11", features = ["getrandom"] }
 russh-sftp = "2.4"
 tokio-util = "0.7"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-log = "2"
+log = "0.4"
+regex = "1"
 
 [features]
 default = ["custom-protocol"]

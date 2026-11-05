@@ -288,7 +288,7 @@ impl ForwardingState {
                                 },
                                 Err(error) => {
                                     if definition.mode == ForwardMode::Dynamic { let _ = socks::reply(&mut stream, socks::SocksError::ConnectFailed.reply_code()).await; }
-                                    eprintln!("forward channel open failed: {error}");
+                                    log::warn!("forward channel open failed: {error}");
                                 },
                             }
                         }

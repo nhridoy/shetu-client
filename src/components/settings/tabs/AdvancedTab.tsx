@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { exportLogs, reportProblem } from "@/lib/logging/logging";
 import { useUpdateStore } from "@/stores/update/updateStore";
 import type { AdvancedTabProps } from "@/types/settings/types";
 
@@ -73,6 +74,18 @@ export default function AdvancedTab({
     };
     reader.readAsText(file);
     e.target.value = "";
+  };
+
+  const handleExportLogs = async () => {
+    try {
+      if (await exportLogs()) {
+        setSuccess("Logs exported. Attach the file to your bug report.");
+        setError(null);
+      }
+    } catch (err) {
+      setError(`Could not export logs: ${err}`);
+      setSuccess(null);
+    }
   };
 
   return (
@@ -170,6 +183,33 @@ export default function AdvancedTab({
             </Button>
           </div>
         )}
+      </div>
+
+      <div className="border-t border-dark-700 pt-6">
+        <h3 className="mb-3 text-sm font-medium text-white">Troubleshooting</h3>
+        <p className="mb-3 text-xs text-dark-400">
+          Something not working? Export the logs and attach them to a bug
+          report. Logs never contain passwords, keys, hostnames or terminal
+          output.
+        </p>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void handleExportLogs()}
+          >
+            Export logs
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void reportProblem()}
+          >
+            Report a problem
+          </Button>
+        </div>
       </div>
 
       <div className="border-t border-dark-700 pt-6">

@@ -236,7 +236,10 @@ impl HttpClient {
     }
 
     async fn send(&self, req: reqwest::Request) -> Result<(u16, String), HttpErrorKind> {
-        let res = self.client.execute(req).await.map_err(|_| HttpErrorKind::Network)?;
+        let res = self.client.execute(req).await.map_err(|e| {
+            log::warn!("http: request failed: {e}");
+            HttpErrorKind::Network
+        })?;
         let status = res.status().as_u16();
         let text = res.text().await.unwrap_or_default();
         Ok((status, text))

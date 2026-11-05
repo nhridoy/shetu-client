@@ -40,6 +40,9 @@ pub async fn sync_now(
             crate::db::store_team_vault_meta(&db, &vault_id, &team_id, epoch, "revoked")?;
         }
     }
+    if let Err(err) = &outcome {
+        log::warn!("sync: vault {vault_id} failed: {err:?}");
+    }
     outcome.map_err(|err| match err {
         HttpErrorKind::Network => "network:Cannot reach the sync server".into(),
         HttpErrorKind::SessionExpired => "auth:Sign in again to sync pending changes".into(),

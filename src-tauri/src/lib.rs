@@ -6,6 +6,7 @@ mod forwarding;
 mod git;
 mod http;
 mod keys;
+mod logging;
 #[cfg(target_os = "macos")]
 mod menu;
 mod oauth;
@@ -1567,7 +1568,9 @@ fn wrap_dek(state: tauri::State<'_, CryptoState>) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logging::install_panic_hook();
     tauri::Builder::default()
+        .plugin(logging::plugin())
         .plugin(tauri_plugin_keyring_store::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1585,6 +1588,7 @@ pub fn run() {
             builder.build()
         })
         .setup(|app| {
+            logging::init(app);
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
@@ -1786,9 +1790,12 @@ pub fn run() {
             http::clear_auth_tokens,
             http::set_base_url,
             http::get_request_log,
+            logging::take_crash_marker,
+            logging::export_logs,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
+            logging::fatal(&e);
             eprintln!("Failed to run Terra: {e}");
             std::process::exit(1);
         });

@@ -162,6 +162,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
           error: null,
         });
       } catch (error) {
+        console.warn(`Sync failed for vault ${vaultId}:`, error);
         if (
           typeof window !== "undefined" &&
           String(error).includes("server-error-403")
