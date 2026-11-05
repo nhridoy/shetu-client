@@ -170,6 +170,11 @@ pub async fn run_sync_cycle(
         crate::team_keys::rebase_pending_team_rows(db, &session, vault_id, device_id)
             .map_err(local_error)?;
     }
+    // After the pull, so deletions from other devices are known before we push.
+    let moved = crate::db::reattach_orphans(db, vault_id, device_id).map_err(local_error)?;
+    if moved > 0 {
+        log::warn!("sync: moved {moved} item(s) out of deleted groups in vault {vault_id}");
+    }
     let pending = pending_batch(db, vault_id, PAGE_SIZE).map_err(local_error)?;
     if !pending.is_empty() {
         let response = http

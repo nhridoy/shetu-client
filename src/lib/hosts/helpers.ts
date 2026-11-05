@@ -17,3 +17,14 @@ export function getAncestors(groups: Group[], groupId: string): Group[] {
   }
   return ancestors;
 }
+
+/** The group to show, or null for the top level if it no longer exists, e.g.
+ * deleted on another device. Otherwise new groups would be created inside it. */
+export function openGroupId(
+  groups: Group[],
+  selectedGroupId: string | null,
+): string | null {
+  return selectedGroupId && groups.some((g) => g.id === selectedGroupId)
+    ? selectedGroupId
+    : null;
+}
