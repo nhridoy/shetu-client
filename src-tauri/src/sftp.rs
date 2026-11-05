@@ -100,6 +100,7 @@ pub async fn sftp_connect(
     sftp_sessions: tauri::State<'_, SftpSessions>,
     app_handle: tauri::AppHandle,
 ) -> Result<SftpConnectResult, String> {
+    crate::logging::hide(&config.username);
     // Check if we already have an SFTP session for this session_id
     {
         let sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;

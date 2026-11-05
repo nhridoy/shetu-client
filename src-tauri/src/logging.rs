@@ -5,7 +5,7 @@
 use regex::Regex;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use tauri::plugin::TauriPlugin;
 use tauri::{Manager, Runtime};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
@@ -53,20 +53,91 @@ static SCRUBBERS: LazyLock<Vec<(Regex, &'static str)>> =
 
 // `name.tld:port`, e.g. `dns lookup prod.example.com:22`.
 static HOST_PORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:[a-zA-Z0-9-]+\.)+([a-zA-Z]{2,}):(\d{1,5})\b").expect("valid host regex")
+    Regex::new(r"\b(?:[a-zA-Z0-9_-]+\.)+([a-zA-Z]{2,})\.?:(\d{1,5})\b").expect("valid host regex")
 });
 // `file.ext:line` in panics and stack traces looks like `host:port`; keep it.
 const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "mjs", "go", "json", "toml", "html", "css",
 ];
 
+// Hostnames and usernames this session has used, matched as whole words.
+static HIDDEN: RwLock<(Vec<String>, Option<Regex>)> = RwLock::new((Vec::new(), None));
+
+// Defaults shared by millions of machines identify no one; hiding them would
+// turn "root cause" into "[redacted] cause".
+const DEFAULT_NAMES: &[&str] = &[
+    "root", "admin", "administrator", "ubuntu", "debian", "centos", "fedora", "ec2-user",
+    "azureuser", "opc", "user", "guest", "git", "pi", "vagrant", "localhost",
+];
+// Fields of decrypted records that name a machine or account.
+const RECORD_FIELDS: &[&str] = &["address", "username", "destination_host"];
+
+/// Never show `value` (a hostname or username) in the log, wherever it appears.
+/// Values under 3 characters are skipped: they would shred ordinary words.
+pub fn hide(value: &str) {
+    // `host.example.` (fully qualified) is logged both with and without the dot.
+    let value = value.trim().trim_end_matches('.');
+    let Ok(mut hidden) = HIDDEN.write() else {
+        return;
+    };
+    if value.chars().count() < 3
+        || DEFAULT_NAMES.iter().any(|d| d.eq_ignore_ascii_case(value))
+        || hidden.0.iter().any(|v| v == value)
+    {
+        return;
+    }
+    let mut values = hidden.0.clone();
+    values.push(value.to_owned());
+    // Longest first, so `db.example.com` wins over a hidden `db.example`.
+    values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let pattern = values
+        .iter()
+        .map(|v| {
+            // `\b` only where the value's edge is a word character, e.g. not for `-edge-`.
+            let start = if word(v.chars().next()) { r"\b" } else { "" };
+            let end = if word(v.chars().last()) { r"\b" } else { "" };
+            format!("{start}{}{end}", regex::escape(v))
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    // On failure (regex size limit) keep the old regex rather than dropping all redaction.
+    if let Ok(re) = Regex::new(&format!("(?i)(?:{pattern})")) {
+        *hidden = (values, Some(re));
+    }
+}
+
+/// Hides the host fields of a decrypted or about-to-be-encrypted record. Every
+/// saved host passes through here before Terra can use it, so before it can be logged.
+pub fn hide_record(plaintext: &str) {
+    if !plaintext.trim_start().starts_with('{') {
+        return;
+    }
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(plaintext) else {
+        return;
+    };
+    for field in RECORD_FIELDS {
+        if let Some(value) = record.get(field).and_then(|v| v.as_str()) {
+            hide(value);
+        }
+    }
+}
+
+fn redact_hidden(text: &str) -> String {
+    match HIDDEN.read().ok().and_then(|h| h.1.clone()) {
+        Some(re) => re.replace_all(text, "[redacted]").into_owned(),
+        None => text.to_owned(),
+    }
+}
+
 /// Removes secrets and identifying values (IPs, user@host, URL hosts) from a log line.
-/// shortcut: a bare hostname without `:port`, scheme or `user@` is not caught; log host IDs, never names.
+/// Bare hostnames are caught only once registered with [`hide`].
 pub fn scrub(text: &str) -> String {
+    // Hidden values go last: masking them first would hide keys and emails from SCRUBBERS.
     let scrubbed = SCRUBBERS.iter().fold(text.to_owned(), |acc, (re, rep)| {
         re.replace_all(&acc, *rep).into_owned()
     });
-    HOST_PORT
+    let scrubbed = HOST_PORT
         .replace_all(&scrubbed, |c: &regex::Captures| {
             if SOURCE_EXTENSIONS.contains(&c[1].to_ascii_lowercase().as_str()) {
                 c[0].to_owned()
@@ -74,7 +145,8 @@ pub fn scrub(text: &str) -> String {
                 format!("[host]:{}", &c[2])
             }
         })
-        .into_owned()
+        .into_owned();
+    redact_hidden(&scrubbed)
 }
 
 pub fn plugin<R: Runtime>() -> TauriPlugin<R> {
@@ -190,7 +262,8 @@ fn export_logs_in(dir: &Path, out: &Path, header: &str) -> std::io::Result<()> {
     let mut parts = Vec::new();
     for file in files {
         match std::fs::read(&file) {
-            Ok(bytes) => parts.push((file, bytes)),
+            // Lines written before a host was hidden still name it.
+            Ok(bytes) => parts.push((file, redact_hidden(&String::from_utf8_lossy(&bytes)))),
             // Rotation removed it between listing and reading.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
@@ -198,13 +271,13 @@ fn export_logs_in(dir: &Path, out: &Path, header: &str) -> std::io::Result<()> {
     }
     let mut writer = std::io::BufWriter::new(std::fs::File::create(out)?);
     writeln!(writer, "{header}")?;
-    for (file, bytes) in parts {
+    for (file, text) in parts {
         writeln!(
             writer,
             "\n===== {} =====",
             file.file_name().unwrap_or_default().to_string_lossy()
         )?;
-        writer.write_all(&bytes)?;
+        writer.write_all(text.as_bytes())?;
     }
     writer.flush()
 }
@@ -285,6 +358,81 @@ mod tests {
     fn scrub_keeps_ordinary_text() {
         let text = "app_lib::db::open failed at src/db.rs:42:5 and logging.ts:21 in v0.0.11 after 12:30:05";
         assert_eq!(scrub(text), text);
+    }
+
+    #[test]
+    fn scrub_redacts_hidden_values_as_whole_words() {
+        hide("bare-prod-db");
+        hide("deploy-user");
+        hide("pi"); // too short to hide safely
+        assert_eq!(
+            scrub("failed to connect to bare-prod-db as deploy-user on pi"),
+            "failed to connect to [redacted] as [redacted] on pi"
+        );
+        assert_eq!(scrub("bare-prod-dbx"), "bare-prod-dbx");
+    }
+
+    #[test]
+    fn hide_record_hides_host_fields_only() {
+        hide_record(
+            r#"{"address":"rec-host.internal","username":"rec-user","destination_host":"fwd-target","name":"Production"}"#,
+        );
+        hide_record("not json rec-other");
+        assert_eq!(
+            scrub("rec-host.internal rec-user fwd-target Production rec-other"),
+            "[redacted] [redacted] [redacted] Production rec-other"
+        );
+    }
+
+    #[test]
+    fn default_names_stay_readable() {
+        hide("root");
+        hide("localhost");
+        hide("Ubuntu");
+        assert_eq!(
+            scrub("root cause on localhost running ubuntu"),
+            "root cause on localhost running ubuntu"
+        );
+    }
+
+    #[test]
+    fn hidden_values_do_not_shield_secrets() {
+        hide("apitoken");
+        hide("mail.hidden-corp.com");
+        assert_eq!(scrub("apitoken=abc123"), "[redacted]=[redacted]");
+        assert_eq!(scrub("from ops@mail.hidden-corp.com"), "from [user@host]");
+    }
+
+    #[test]
+    fn hidden_values_match_at_any_edge() {
+        hide("_svc_");
+        hide("-edge-");
+        hide("fqdn.hidden.example.");
+        hide("éé"); // 2 characters, 4 bytes: too short
+        assert_eq!(
+            scrub("as _svc_ via -edge- to fqdn.hidden.example. or fqdn.hidden.example.:22 éé"),
+            "as [redacted] via [redacted] to [redacted]. or [host]:22 éé"
+        );
+        assert_eq!(scrub("dns other.example.org.:22"), "dns [host]:22");
+        assert_eq!(scrub("dns ops_host.example.com:22"), "dns [host]:22");
+        assert_eq!(scrub("at src/my_file.rs:12"), "at src/my_file.rs:12");
+    }
+
+    #[test]
+    fn export_redacts_hidden_values_logged_before_hiding() {
+        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("terra.log"),
+            "connect to late-hidden-host failed\n",
+        )
+        .unwrap();
+        hide("late-hidden-host");
+        let out = dir.join("out.txt");
+        export_logs_in(&dir, &out, "header").unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.contains("connect to [redacted] failed"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

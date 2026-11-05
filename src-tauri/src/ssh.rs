@@ -364,6 +364,8 @@ impl SshHandler {
         pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
         auto_accept: bool,
     ) -> Self {
+        // Every SSH, SFTP, forward and bastion connection builds a handler first.
+        crate::logging::hide(&host);
         Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
     }
     pub(crate) fn with_forwarded_channels(
@@ -498,6 +500,7 @@ pub(crate) async fn connect_authenticated(
     config: &SshConfig,
     progress: Option<(&tauri::AppHandle, &str)>,
 ) -> Result<russh::client::Handle<SshHandler>, String> {
+    crate::logging::hide(&config.username);
     if let Some((app, sid)) = progress {
         emit_progress(app, sid, "resolving");
     }
