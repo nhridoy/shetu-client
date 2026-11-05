@@ -120,13 +120,17 @@ jobs:
         run: bun tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci
       - name: Check macOS signature
         if: runner.os == 'macOS'
+        env:
+          # SHA-1 of the "Terra Self-Signed" certificate (public). Every release must match it, or
+          # macOS sees a new app and asks for keychain access again. Change only on purpose.
+          EXPECTED_CERTIFICATE: 6d94d0caa9096f660174e80b9bc22b96ea16824c
         run: |
           APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Terra.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
           REQUIREMENT="$(codesign -d -r- "$APP" 2>&1)"
           echo "$REQUIREMENT"
-          # A requirement pinned to the build's hash means ad-hoc signing: the keychain would prompt after every update.
-          if grep -q 'cdhash' <<< "$REQUIREMENT"; then echo 'Terra.app is ad-hoc signed'; exit 1; fi
+          grep -q "identifier \"com.nhridoy.terra\" and certificate root = H\"$EXPECTED_CERTIFICATE\"" <<< "$REQUIREMENT" \
+            || { echo "Terra.app is not signed with certificate $EXPECTED_CERTIFICATE"; exit 1; }
       # The bundler only signs the AppImage; .deb installs need their own signature to update in-app.
       - name: Sign .deb for in-app updates
         if: runner.os == 'Linux'
