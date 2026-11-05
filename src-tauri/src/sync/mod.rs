@@ -41,13 +41,14 @@ pub async fn sync_now(
         }
     }
     match &outcome {
-        // Status 0 carries our own message; server bodies are never logged.
+        // Status 0 carries our own message; for server errors only the server's short reason is logged.
         Err(HttpErrorKind::Http(0, message)) => {
             log::warn!("sync: vault {vault_id} failed: {message}")
         }
-        Err(HttpErrorKind::Http(status, _)) => {
-            log::warn!("sync: vault {vault_id} failed: HTTP {status}")
-        }
+        Err(HttpErrorKind::Http(status, body)) => match crate::http::server_reason(body) {
+            Some(reason) => log::warn!("sync: vault {vault_id} failed: HTTP {status} ({reason})"),
+            None => log::warn!("sync: vault {vault_id} failed: HTTP {status}"),
+        },
         Err(err) => log::warn!("sync: vault {vault_id} failed: {err:?}"),
         Ok(_) => {}
     }

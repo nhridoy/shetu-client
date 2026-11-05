@@ -1308,9 +1308,17 @@ async fn team_sync_now(
         http.inner().clone(),
         Arc::new(http::KeyringRefreshProvider { app }),
     );
-    team_sync::run_team_sync(&account_id, &db, &crypto.session, &client)
-        .await
-        .map_err(|error| match error {
+    let outcome = team_sync::run_team_sync(&account_id, &db, &crypto.session, &client).await;
+    match &outcome {
+        Err(http::HttpErrorKind::Http(0, message)) => log::warn!("team sync failed: {message}"),
+        Err(http::HttpErrorKind::Http(status, body)) => match http::server_reason(body) {
+            Some(reason) => log::warn!("team sync failed: HTTP {status} ({reason})"),
+            None => log::warn!("team sync failed: HTTP {status}"),
+        },
+        Err(error) => log::warn!("team sync failed: {error:?}"),
+        Ok(_) => {}
+    }
+    outcome.map_err(|error| match error {
             http::HttpErrorKind::Network => "network:Cannot reach the team sync server".into(),
             http::HttpErrorKind::SessionExpired => "auth:Sign in again to sync team changes".into(),
             http::HttpErrorKind::Http(0, message) => format!("team-sync:{message}"),

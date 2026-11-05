@@ -385,9 +385,37 @@ pub fn get_request_log(
     Ok(state.request_log())
 }
 
+/// The short reason a Terra server gives with an error status, for the log.
+/// Server error texts are fixed messages, not user data; the logger still scrubs them.
+pub fn server_reason(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let error = value.get("error")?;
+    let reason = match (error.as_str(), error.get("code"), error.get("message")) {
+        (Some(text), _, _) => text.to_owned(),
+        (None, Some(code), Some(message)) => {
+            format!("{}: {}", code.as_str()?, message.as_str()?)
+        }
+        (None, _, Some(message)) => message.as_str()?.to_owned(),
+        _ => return None,
+    };
+    Some(reason.chars().take(200).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_reason_reads_both_error_shapes() {
+        assert_eq!(server_reason(r#"{"error":"device mismatch"}"#).as_deref(), Some("device mismatch"));
+        assert_eq!(
+            server_reason(r#"{"error":{"code":"VALIDATION_ERROR","message":"invalid team operation"}}"#).as_deref(),
+            Some("VALIDATION_ERROR: invalid team operation")
+        );
+        assert_eq!(server_reason("<html>502 Bad Gateway</html>"), None);
+        let long = format!(r#"{{"error":"{}"}}"#, "x".repeat(500));
+        assert_eq!(server_reason(&long).unwrap().chars().count(), 200);
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
