@@ -8,6 +8,7 @@ import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
 import TeamManager from "@/components/teams/managers/TeamManager";
 import UpdateNotification from "@/components/update/UpdateNotification";
+import { notifyIfPreviousCrash } from "@/lib/logging/logging";
 import LoginPage from "@/pages/auth/LoginPage";
 import RecoveryPage from "@/pages/auth/RecoveryPage";
 import RecoveryRevealModal from "@/pages/auth/RecoveryRevealModal";
@@ -61,6 +62,10 @@ function App() {
   useEffect(() => {
     void checkForUpdates(false);
   }, [checkForUpdates]);
+
+  useEffect(() => {
+    void notifyIfPreviousCrash();
+  }, []);
 
   return (
     <BrowserRouter>

@@ -88,11 +88,11 @@ impl KnownHosts {
         // a genuine key change (MITM window).
         if let Some(parent) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("ssh: failed to create known_hosts dir: {e}");
+                log::error!("ssh: failed to create known_hosts dir: {e}");
             }
         }
         if let Err(e) = std::fs::write(&self.path, contents) {
-            eprintln!("ssh: failed to persist known_hosts: {e}");
+            log::error!("ssh: failed to persist known_hosts: {e}");
         }
     }
 }
