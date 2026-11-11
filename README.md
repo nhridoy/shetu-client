@@ -43,10 +43,10 @@ Not there yet: mobile apps, Mosh, Telnet and serial connections, and importing f
 
 ## Security
 
-- Your account password is turned into a key with **Argon2id** on your device. Vault records are encrypted with **XChaCha20-Poly1305** before they are stored or synced.
-- Each account has an **X25519** key pair. Every shared team vault has its own key, sealed to each member and rotated when someone is removed.
-- The sync server stores ciphertext and never decrypts it. It can see what it needs to sync (record names, tags, timestamps); host addresses, usernames, passwords, private keys and commands stay encrypted.
-- SSH connects directly from your computer to your servers. Nothing is relayed.
+- Your account password is turned into a key with **Argon2id** on your device. Sensitive vault fields are encrypted with **XChaCha20-Poly1305** before they are stored or synced.
+- Each account has an **X25519** key pair. Every shared team vault has its own key, sealed to each member. Removing someone flags the vault for a key rotation, which an owner or admin completes with **Rotate keys**; after that the removed member can't read new changes.
+- The sync server stores ciphertext and never decrypts it. It can see what it needs to sync (record names, tags, timestamps), so keep secrets out of names and tags; host addresses, usernames, passwords, private keys and commands stay encrypted.
+- SSH connects from your computer straight to your servers, or through the jump host you set for a host. Nothing goes through Terra's servers.
 
 Full details: [security reference](https://terra.iamnahid.com/docs/security).
 
