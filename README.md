@@ -39,7 +39,7 @@
 - **Session history:** opt-in, encrypted terminal recordings kept for 7, 30 or 90 days.
 - **Sync and teams:** sign in to a [Terra server](https://github.com/nhridoy/terra-server) (which you can run yourself) to sync your encrypted vault and share team vaults with owner, admin and member roles.
 
-Not there yet: mobile apps, Mosh, Telnet and serial connections, and importing from Termius or `~/.ssh/config`. See how Terra compares on the [Termius alternative page](https://terra.iamnahid.com/termius-alternative).
+Not there yet: mobile apps, Mosh, Telnet and serial connections, and importing from Termius or `~/.ssh/config`. See what's planned in the [roadmap](https://github.com/nhridoy/terra#roadmap), and how Terra compares on the [Termius alternative page](https://terra.iamnahid.com/termius-alternative).
 
 ## Security
 
