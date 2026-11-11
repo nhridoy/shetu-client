@@ -2,8 +2,8 @@
   <!-- Full-bleed iOS variant: iOS masks icons itself, so no squircle or margin. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f7f9fc"/>
-      <stop offset="1" stop-color="#cfd8e4"/>
+      <stop offset="0" stop-color="#f8f8fc"/>
+      <stop offset="1" stop-color="#d4d3e3"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity="0.22"/>
@@ -13,17 +13,17 @@
       <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.30"/>
     </filter>
     <filter id="glyphShadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#041a3d" flood-opacity="0.40"/>
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#160b3d" flood-opacity="0.40"/>
     </filter>
     <clipPath id="bodyClip"><path d="M924.0 376.0 L924.0 339.6 L923.9 324.5 L923.8 312.9 L923.7 303.1 L923.5 294.5 L923.2 286.8 L923.0 279.7 L922.7 273.1 L922.3 266.9 L921.9 261.0 L921.5 255.5 L921.0 250.2 L920.4 245.1 L919.9 240.3 L919.3 235.6 L918.6 231.1 L917.9 226.8 L917.2 222.6 L916.4 218.5 L915.5 214.6 L914.7 210.8 L913.8 207.1 L912.8 203.5 L911.8 200.0 L910.8 196.6 L909.7 193.3 L908.5 190.0 L907.3 186.9 L906.1 183.8 L904.8 180.9 L903.5 177.9 L902.2 175.1 L900.8 172.3 L899.3 169.6 L897.8 167.0 L896.2 164.4 L894.6 161.9 L893.0 159.4 L891.3 157.1 L889.6 154.7 L887.8 152.5 L885.9 150.2 L884.0 148.1 L882.1 146.0 L880.1 143.9 L878.0 141.9 L875.9 140.0 L873.8 138.1 L871.5 136.2 L869.3 134.4 L866.9 132.7 L864.6 131.0 L862.1 129.4 L859.6 127.8 L857.0 126.2 L854.4 124.7 L851.7 123.2 L848.9 121.8 L846.1 120.5 L843.1 119.2 L840.2 117.9 L837.1 116.7 L834.0 115.5 L830.7 114.3 L827.4 113.2 L824.0 112.2 L820.5 111.2 L816.9 110.2 L813.2 109.3 L809.4 108.5 L805.5 107.6 L801.4 106.8 L797.2 106.1 L792.9 105.4 L788.4 104.7 L783.7 104.1 L778.9 103.6 L773.8 103.0 L768.5 102.5 L763.0 102.1 L757.1 101.7 L750.9 101.3 L744.3 101.0 L737.2 100.8 L729.5 100.5 L720.9 100.3 L711.1 100.2 L699.5 100.1 L684.4 100.0 L648.0 100.0 L376.0 100.0 L339.6 100.0 L324.5 100.1 L312.9 100.2 L303.1 100.3 L294.5 100.5 L286.8 100.8 L279.7 101.0 L273.1 101.3 L266.9 101.7 L261.0 102.1 L255.5 102.5 L250.2 103.0 L245.1 103.6 L240.3 104.1 L235.6 104.7 L231.1 105.4 L226.8 106.1 L222.6 106.8 L218.5 107.6 L214.6 108.5 L210.8 109.3 L207.1 110.2 L203.5 111.2 L200.0 112.2 L196.6 113.2 L193.3 114.3 L190.0 115.5 L186.9 116.7 L183.8 117.9 L180.9 119.2 L177.9 120.5 L175.1 121.8 L172.3 123.2 L169.6 124.7 L167.0 126.2 L164.4 127.8 L161.9 129.4 L159.4 131.0 L157.1 132.7 L154.7 134.4 L152.5 136.2 L150.2 138.1 L148.1 140.0 L146.0 141.9 L143.9 143.9 L141.9 146.0 L140.0 148.1 L138.1 150.2 L136.2 152.5 L134.4 154.7 L132.7 157.1 L131.0 159.4 L129.4 161.9 L127.8 164.4 L126.2 167.0 L124.7 169.6 L123.2 172.3 L121.8 175.1 L120.5 177.9 L119.2 180.9 L117.9 183.8 L116.7 186.9 L115.5 190.0 L114.3 193.3 L113.2 196.6 L112.2 200.0 L111.2 203.5 L110.2 207.1 L109.3 210.8 L108.5 214.6 L107.6 218.5 L106.8 222.6 L106.1 226.8 L105.4 231.1 L104.7 235.6 L104.1 240.3 L103.6 245.1 L103.0 250.2 L102.5 255.5 L102.1 261.0 L101.7 266.9 L101.3 273.1 L101.0 279.7 L100.8 286.8 L100.5 294.5 L100.3 303.1 L100.2 312.9 L100.1 324.5 L100.0 339.6 L100.0 376.0 L100.0 648.0 L100.0 684.4 L100.1 699.5 L100.2 711.1 L100.3 720.9 L100.5 729.5 L100.8 737.2 L101.0 744.3 L101.3 750.9 L101.7 757.1 L102.1 763.0 L102.5 768.5 L103.0 773.8 L103.6 778.9 L104.1 783.7 L104.7 788.4 L105.4 792.9 L106.1 797.2 L106.8 801.4 L107.6 805.5 L108.5 809.4 L109.3 813.2 L110.2 816.9 L111.2 820.5 L112.2 824.0 L113.2 827.4 L114.3 830.7 L115.5 834.0 L116.7 837.1 L117.9 840.2 L119.2 843.1 L120.5 846.1 L121.8 848.9 L123.2 851.7 L124.7 854.4 L126.2 857.0 L127.8 859.6 L129.4 862.1 L131.0 864.6 L132.7 866.9 L134.4 869.3 L136.2 871.5 L138.1 873.8 L140.0 875.9 L141.9 878.0 L143.9 880.1 L146.0 882.1 L148.1 884.0 L150.2 885.9 L152.5 887.8 L154.7 889.6 L157.1 891.3 L159.4 893.0 L161.9 894.6 L164.4 896.2 L167.0 897.8 L169.6 899.3 L172.3 900.8 L175.1 902.2 L177.9 903.5 L180.9 904.8 L183.8 906.1 L186.9 907.3 L190.0 908.5 L193.3 909.7 L196.6 910.8 L200.0 911.8 L203.5 912.8 L207.1 913.8 L210.8 914.7 L214.6 915.5 L218.5 916.4 L222.6 917.2 L226.8 917.9 L231.1 918.6 L235.6 919.3 L240.3 919.9 L245.1 920.4 L250.2 921.0 L255.5 921.5 L261.0 921.9 L266.9 922.3 L273.1 922.7 L279.7 923.0 L286.8 923.2 L294.5 923.5 L303.1 923.7 L312.9 923.8 L324.5 923.9 L339.6 924.0 L376.0 924.0 L648.0 924.0 L684.4 924.0 L699.5 923.9 L711.1 923.8 L720.9 923.7 L729.5 923.5 L737.2 923.2 L744.3 923.0 L750.9 922.7 L757.1 922.3 L763.0 921.9 L768.5 921.5 L773.8 921.0 L778.9 920.4 L783.7 919.9 L788.4 919.3 L792.9 918.6 L797.2 917.9 L801.4 917.2 L805.5 916.4 L809.4 915.5 L813.2 914.7 L816.9 913.8 L820.5 912.8 L824.0 911.8 L827.4 910.8 L830.7 909.7 L834.0 908.5 L837.1 907.3 L840.2 906.1 L843.1 904.8 L846.1 903.5 L848.9 902.2 L851.7 900.8 L854.4 899.3 L857.0 897.8 L859.6 896.2 L862.1 894.6 L864.6 893.0 L866.9 891.3 L869.3 889.6 L871.5 887.8 L873.8 885.9 L875.9 884.0 L878.0 882.1 L880.1 880.1 L882.1 878.0 L884.0 875.9 L885.9 873.8 L887.8 871.5 L889.6 869.3 L891.3 866.9 L893.0 864.6 L894.6 862.1 L896.2 859.6 L897.8 857.0 L899.3 854.4 L900.8 851.7 L902.2 848.9 L903.5 846.1 L904.8 843.1 L906.1 840.2 L907.3 837.1 L908.5 834.0 L909.7 830.7 L910.8 827.4 L911.8 824.0 L912.8 820.5 L913.8 816.9 L914.7 813.2 L915.5 809.4 L916.4 805.5 L917.2 801.4 L917.9 797.2 L918.6 792.9 L919.3 788.4 L919.9 783.7 L920.4 778.9 L921.0 773.8 L921.5 768.5 L921.9 763.0 L922.3 757.1 L922.7 750.9 L923.0 744.3 L923.2 737.2 L923.5 729.5 L923.7 720.9 L923.8 711.1 L923.9 699.5 L924.0 684.4 L924.0 648.0 Z"/></clipPath>
     
     <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1c2740"/>
-      <stop offset="1" stop-color="#0a1222"/>
+      <stop offset="0" stop-color="#1b1a26"/>
+      <stop offset="1" stop-color="#0b0b10"/>
     </linearGradient>
     <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3a4a6b"/>
-      <stop offset="1" stop-color="#26324d"/>
+      <stop offset="0" stop-color="#36344a"/>
+      <stop offset="1" stop-color="#24232f"/>
     </linearGradient>
     <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
@@ -35,17 +35,27 @@
     </linearGradient>
     <linearGradient id="glyphW" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#d5e9ff"/>
+      <stop offset="1" stop-color="#e6e2ff"/>
     </linearGradient>
     <filter id="glow" x="-50%" y="-100%" width="200%" height="300%">
       <feGaussianBlur stdDeviation="10" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <clipPath id="win"><rect x="212" y="262" width="600" height="500" rx="64"/></clipPath>
+  
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a99dff"/>
+      <stop offset="0.55" stop-color="#8b7cff"/>
+      <stop offset="1" stop-color="#5b8cff"/>
+    </linearGradient>
+    <linearGradient id="accentSoft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c9c1ff"/>
+      <stop offset="1" stop-color="#9db8ff"/>
+    </linearGradient>
   </defs>
   <rect width="1024" height="1024" fill="url(#bg)"/>
   <g>
-    <g transform="translate(512 512) scale(1.243) translate(-512 -512)"><g transform="translate(0 22)"><rect x="300" y="196" width="520" height="430" rx="58" fill="#7dd3fc" fill-opacity="0.55"/><rect x="256" y="240" width="540" height="450" rx="60" fill="#38bdf8" fill-opacity="0.75" filter="url(#glyphShadow)"/>
+    <g transform="translate(512 512) scale(1.243) translate(-512 -512)"><g transform="translate(0 22)"><rect x="300" y="196" width="520" height="430" rx="58" fill="url(#accentSoft)" fill-opacity="0.7"/><rect x="256" y="240" width="540" height="450" rx="60" fill="url(#accent)" fill-opacity="0.9" filter="url(#glyphShadow)"/>
     <g filter="url(#glyphShadow)">
       <rect x="204" y="300" width="560" height="470" rx="60" fill="url(#screen)"/>
       <path d="M204 378 V360 A60 60 0 0 1 264 300 H704 A60 60 0 0 1 764 360 V378 Z" fill="url(#bar)"/>
@@ -53,7 +63,7 @@
         <circle cx="258" cy="339.0" r="14"/><circle cx="302" cy="339.0" r="14"/><circle cx="346" cy="339.0" r="14"/>
       </g>
       <path d="M286 474 L352 474 L456 578 L352 682 L286 682 L390 578 Z" fill="url(#glyphW)" stroke="url(#glyphW)" stroke-width="14" stroke-linejoin="round"/>
-      <rect x="498" y="630" width="138" height="54" rx="14" fill="#38bdf8" filter="url(#glow)"/>
+      <rect x="498" y="630" width="138" height="54" rx="14" fill="url(#accent)" filter="url(#glow)"/>
     </g></g></g>
     <rect width="1024" height="1024" fill="url(#sheen)"/>
   </g>
