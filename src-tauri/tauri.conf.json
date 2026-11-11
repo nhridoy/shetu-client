@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Terra",
+  "productName": "Shetu",
   "version": "0.0.15",
-  "mainBinaryName": "Terra",
-  "identifier": "com.nhridoy.terra",
+  "mainBinaryName": "Shetu",
+  "identifier": "com.nhridoy.shetu",
   "build": {
     "beforeDevCommand": "bun run dev",
     "beforeBuildCommand": "bun run build",
@@ -25,7 +25,7 @@
       {
         "label": "main",
         "visible": false,
-        "title": "Terra",
+        "title": "Shetu",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -100,7 +100,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/nhridoy/terra-client/releases/latest/download/terra-latest.json"
+        "https://github.com/nhridoy/shetu-client/releases/latest/download/shetu-latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3N0MzQkUzQUREREQ3MDQKUldRRTE5MnQ0enQ4dHpxbUJzL1RiYmRodjY5MXFtb0hmU3lOWWJ1eEhLWnlDZ3k0SzRFZnFEdnIK"
     }

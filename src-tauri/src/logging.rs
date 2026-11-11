@@ -10,7 +10,7 @@ use tauri::plugin::TauriPlugin;
 use tauri::{Manager, Runtime};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
-const LOG_FILE: &str = "terra";
+const LOG_FILE: &str = "shetu";
 const CRASH_MARKER: &str = "crash.marker";
 
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -108,7 +108,7 @@ pub fn hide(value: &str) {
 }
 
 /// Hides the host fields of a decrypted or about-to-be-encrypted record. Every
-/// saved host passes through here before Terra can use it, so before it can be logged.
+/// saved host passes through here before Shetu can use it, so before it can be logged.
 pub fn hide_record(plaintext: &str) {
     if !plaintext.trim_start().starts_with('{') {
         return;
@@ -185,7 +185,7 @@ pub fn plugin<R: Runtime>() -> TauriPlugin<R> {
 
 fn system_summary(version: impl std::fmt::Display) -> String {
     format!(
-        "Terra {version} on {} {}",
+        "Shetu {version} on {} {}",
         std::env::consts::OS,
         std::env::consts::ARCH
     )
@@ -194,7 +194,7 @@ fn system_summary(version: impl std::fmt::Display) -> String {
 /// Register right after [`plugin`], so the crash-marker folder is known
 /// before any later plugin or `setup` can fail.
 pub fn init_plugin<R: Runtime>() -> TauriPlugin<R> {
-    tauri::plugin::Builder::new("terra-logging")
+    tauri::plugin::Builder::new("shetu-logging")
         .setup(|app, _api| {
             if let Ok(dir) = app.path().app_log_dir() {
                 let _ = LOG_DIR.set(dir);
@@ -228,7 +228,7 @@ pub fn install_panic_hook() {
 
 /// Startup failure that ends the process without a panic (e.g. `setup` returned Err).
 pub fn fatal(error: impl std::fmt::Display) {
-    log::error!("fatal: Terra failed to start: {error}");
+    log::error!("fatal: Shetu failed to start: {error}");
     log::logger().flush();
     if let Some(dir) = LOG_DIR.get() {
         write_crash_marker_in(dir);
@@ -420,10 +420,10 @@ mod tests {
 
     #[test]
     fn export_redacts_hidden_values_logged_before_hiding() {
-        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-log-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("terra.log"),
+            dir.join("shetu.log"),
             "connect to late-hidden-host failed\n",
         )
         .unwrap();
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn crash_marker_round_trip() {
-        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-log-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!take_crash_marker_in(&dir));
         write_crash_marker_in(&dir);
@@ -448,10 +448,10 @@ mod tests {
 
     #[test]
     fn export_concatenates_logs_oldest_first() {
-        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-log-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("terra.log"), "new\n").unwrap();
-        std::fs::write(dir.join("terra_2026-11-01_10-00-00.log"), "old\n").unwrap();
+        std::fs::write(dir.join("shetu.log"), "new\n").unwrap();
+        std::fs::write(dir.join("shetu_2026-11-01_10-00-00.log"), "old\n").unwrap();
         std::fs::write(dir.join("unrelated.txt"), "skip\n").unwrap();
         let out = dir.join("out.txt");
         export_logs_in(&dir, &out, "header").unwrap();
@@ -464,9 +464,9 @@ mod tests {
 
     #[test]
     fn export_onto_a_source_log_keeps_its_contents() {
-        let dir = std::env::temp_dir().join(format!("terra-log-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-log-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let active = dir.join("terra.log");
+        let active = dir.join("shetu.log");
         std::fs::write(&active, "new\n").unwrap();
         export_logs_in(&dir, &active, "header").unwrap();
         assert!(std::fs::read_to_string(&active).unwrap().contains("new"));

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { mkdtemp, rm } from 'node:fs/promises';
 
-const REPOSITORY = 'nhridoy/terra-client';
+const REPOSITORY = 'nhridoy/shetu-client';
 const execFileAsync = promisify(execFile);
 // [manifest key, artifact directory, bundle extension]. The updater looks up
 // `{os}-{arch}-{bundle_type}` first, so .deb installs get their own entry.
@@ -65,7 +65,7 @@ function decodeSignature(signature) {
 }
 
 async function verifyWithMinisign(bundle, signatureBytes, publicKey) {
-  const temporary = await mkdtemp(join(tmpdir(), 'terra-update-verify-'));
+  const temporary = await mkdtemp(join(tmpdir(), 'shetu-update-verify-'));
   try {
     const keyPath = join(temporary, 'updater.pub');
     const signaturePath = join(temporary, 'artifact.minisig');
@@ -100,7 +100,7 @@ export async function buildUpdateManifest({ version, tag, assetsDir, outputDir, 
     const signature = (await readFile(signatureFile, 'utf8')).trim();
     const signatureBytes = decodeSignature(signature);
     if (publicKey) await verifyWithMinisign(bundle, signatureBytes, publicKey);
-    const assetName = `Terra-${version}-${LABELS[dirName]}${extension === '.exe' ? '-Setup.exe' : extension}`;
+    const assetName = `Shetu-${version}-${LABELS[dirName]}${extension === '.exe' ? '-Setup.exe' : extension}`;
     platforms[platform] = {
       signature,
       url: `https://github.com/${REPOSITORY}/releases/download/${tag}/${encodeURIComponent(assetName)}`,
@@ -109,7 +109,7 @@ export async function buildUpdateManifest({ version, tag, assetsDir, outputDir, 
     staged.push({ source: signatureFile, destination: `${assetName}.sig` });
     if (dirName.startsWith('darwin-'))
       for (const path of files.filter((file) => file.endsWith('.dmg')))
-        staged.push({ source: path, destination: `Terra-${version}-${LABELS[dirName]}.dmg` });
+        staged.push({ source: path, destination: `Shetu-${version}-${LABELS[dirName]}.dmg` });
   }
   const names = staged.map((asset) => asset.destination);
   if (new Set(names).size !== names.length) throw new Error('duplicate release asset name');
@@ -121,9 +121,9 @@ export async function buildUpdateManifest({ version, tag, assetsDir, outputDir, 
     pub_date: new Date().toISOString(),
     platforms,
   };
-  const temporary = join(outputDir, '.terra-latest.json.tmp');
+  const temporary = join(outputDir, '.shetu-latest.json.tmp');
   await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`);
-  await rename(temporary, join(outputDir, 'terra-latest.json'));
+  await rename(temporary, join(outputDir, 'shetu-latest.json'));
   return manifest;
 }
 

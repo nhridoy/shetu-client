@@ -67,7 +67,7 @@
 /* Diff editor (CodeMirror merge view). The .cm-mergeView wrapper is the
    scroll container — the package forces the inner .cm-scrollers to
    overflow: visible so both panes stay vertically aligned. */
-.terra-diff-view {
+.shetu-diff-view {
   height: 100%;
   overflow: auto;
 }

@@ -9,7 +9,7 @@ const MENU_ACTION_EVENT: &str = "menu-action";
 /// Must match MENU_ACTION_IDS in src/lib/window/menuActions.ts.
 const APP_ACTIONS: [&str; 4] = ["settings", "new-tab", "quick-connect", "close-tab"];
 const HELP_GITHUB: &str = "help-github";
-const REPO_URL: &str = "https://github.com/nhridoy/terra";
+const REPO_URL: &str = "https://github.com/nhridoy/shetu";
 
 pub fn install(app: &App) -> tauri::Result<()> {
     let item = |id: &str, text: &str, accel: &str| {
@@ -18,8 +18,8 @@ pub fn install(app: &App) -> tauri::Result<()> {
             .build(app)
     };
 
-    let terra = SubmenuBuilder::new(app, "Terra")
-        .about_with_text("About Terra", None)
+    let shetu = SubmenuBuilder::new(app, "Shetu")
+        .about_with_text("About Shetu", None)
         .separator()
         .item(&item("settings", "Settings…", "Cmd+,")?)
         .separator()
@@ -60,11 +60,11 @@ pub fn install(app: &App) -> tauri::Result<()> {
         .build()?;
 
     let help = SubmenuBuilder::new(app, "Help")
-        .item(&MenuItemBuilder::with_id(HELP_GITHUB, "Terra on GitHub").build(app)?)
+        .item(&MenuItemBuilder::with_id(HELP_GITHUB, "Shetu on GitHub").build(app)?)
         .build()?;
 
     let menu = MenuBuilder::new(app)
-        .items(&[&terra, &file, &edit, &view, &window, &help])
+        .items(&[&shetu, &file, &edit, &view, &window, &help])
         .build()?;
     app.set_menu(menu)?;
     app.on_menu_event(|handle: &AppHandle, event| {

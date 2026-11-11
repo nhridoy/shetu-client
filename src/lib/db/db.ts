@@ -87,7 +87,7 @@ export async function upsertRow(
 function notifyLocalMutation(table: TableName, vaultId: string): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(
-      new CustomEvent("terra:local-mutation", {
+      new CustomEvent("shetu:local-mutation", {
         detail: { table, vaultId },
       }),
     );

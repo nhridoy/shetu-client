@@ -45,7 +45,7 @@ export default function AdvancedTab({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "terra-settings.json";
+    a.download = "shetu-settings.json";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -189,7 +189,7 @@ export default function AdvancedTab({
         <h3 className="mb-3 text-sm font-medium text-white">Troubleshooting</h3>
         <p className="mb-3 text-xs text-dark-400">
           Something not working? Export the logs and attach them to a bug
-          report. Terra never logs passwords, keys or terminal output, and
+          report. Shetu never logs passwords, keys or terminal output, and
           removes IP addresses and hostnames from error messages.
         </p>
         <div className="flex gap-2">

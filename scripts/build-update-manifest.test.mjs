@@ -8,12 +8,12 @@ import { promisify } from 'node:util';
 import { buildUpdateManifest } from './build-update-manifest.mjs';
 
 const bundles = {
-  'linux-x86_64': 'Terra.AppImage',
-  'linux-aarch64': 'Terra.AppImage',
-  'windows-x86_64': 'Terra-setup.exe',
-  'windows-aarch64': 'Terra-setup.exe',
-  'darwin-x86_64': 'Terra.app.tar.gz',
-  'darwin-aarch64': 'Terra.app.tar.gz',
+  'linux-x86_64': 'Shetu.AppImage',
+  'linux-aarch64': 'Shetu.AppImage',
+  'windows-x86_64': 'Shetu-setup.exe',
+  'windows-aarch64': 'Shetu-setup.exe',
+  'darwin-x86_64': 'Shetu.app.tar.gz',
+  'darwin-aarch64': 'Shetu.app.tar.gz',
 };
 const debPlatforms = ['linux-x86_64', 'linux-aarch64'];
 const execFileAsync = promisify(execFile);
@@ -26,7 +26,7 @@ const signature = (platform) => Buffer.from([
 ].join('\n')).toString('base64');
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'terra-updater-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'shetu-updater-test-'));
   const assetsDir = join(root, 'assets');
   const outputDir = join(root, 'publish');
   for (const [platform, name] of Object.entries(bundles)) {
@@ -36,8 +36,8 @@ async function fixture() {
     await writeFile(join(dir, `${name}.sig`), signature(platform));
   }
   for (const platform of debPlatforms) {
-    await writeFile(join(assetsDir, platform, 'Terra.deb'), 'package');
-    await writeFile(join(assetsDir, platform, 'Terra.deb.sig'), signature(`${platform}-deb`));
+    await writeFile(join(assetsDir, platform, 'Shetu.deb'), 'package');
+    await writeFile(join(assetsDir, platform, 'Shetu.deb.sig'), signature(`${platform}-deb`));
   }
   return { assetsDir, outputDir };
 }
@@ -45,7 +45,7 @@ async function fixture() {
 test('builds a complete manifest with literal signatures and unique URLs', async () => {
   const { assetsDir, outputDir } = await fixture();
   await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
-  const manifest = JSON.parse(await readFile(join(outputDir, 'terra-latest.json'), 'utf8'));
+  const manifest = JSON.parse(await readFile(join(outputDir, 'shetu-latest.json'), 'utf8'));
   assert.equal(manifest.version, '1.0.1');
   assert.deepEqual(
     Object.keys(manifest.platforms).sort(),
@@ -53,37 +53,37 @@ test('builds a complete manifest with literal signatures and unique URLs', async
   );
   assert.equal(
     manifest.platforms['linux-aarch64-deb'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Linux-ARM64.deb',
+    'https://github.com/nhridoy/shetu-client/releases/download/v1.0.1/Shetu-1.0.1-Linux-ARM64.deb',
   );
   assert.equal(
     manifest.platforms['windows-aarch64'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Windows-ARM64-Setup.exe',
+    'https://github.com/nhridoy/shetu-client/releases/download/v1.0.1/Shetu-1.0.1-Windows-ARM64-Setup.exe',
   );
   assert.equal(manifest.platforms['linux-x86_64-deb'].signature, signature('linux-x86_64-deb'));
   assert.equal(
     manifest.platforms['linux-x86_64-deb'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-Linux-x64.deb',
+    'https://github.com/nhridoy/shetu-client/releases/download/v1.0.1/Shetu-1.0.1-Linux-x64.deb',
   );
   assert.equal(manifest.platforms['linux-x86_64'].signature, signature('linux-x86_64'));
   assert.equal(
     manifest.platforms['darwin-aarch64'].url,
-    'https://github.com/nhridoy/terra-client/releases/download/v1.0.1/Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz',
+    'https://github.com/nhridoy/shetu-client/releases/download/v1.0.1/Shetu-1.0.1-macOS-Apple-Silicon.app.tar.gz',
   );
 });
 
 test('rejects a missing required signature without publishing a manifest', async () => {
   const { assetsDir, outputDir } = await fixture();
-  await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.AppImage.sig'), '');
+  await writeFile(join(assetsDir, 'linux-x86_64', 'Shetu.AppImage.sig'), '');
   await assert.rejects(
     buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir }),
     /signature/i,
   );
-  await assert.rejects(readFile(join(outputDir, 'terra-latest.json')));
+  await assert.rejects(readFile(join(outputDir, 'shetu-latest.json')));
 });
 
 test('rejects a .deb without a signature so .deb installs never get an unsigned update', async () => {
   const { assetsDir, outputDir } = await fixture();
-  await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.deb.sig'), '');
+  await writeFile(join(assetsDir, 'linux-x86_64', 'Shetu.deb.sig'), '');
   await assert.rejects(
     buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir }),
     /signature/i,
@@ -92,7 +92,7 @@ test('rejects a .deb without a signature so .deb installs never get an unsigned 
 
 test('rejects non-minisign text and truncated base64 signatures', async () => {
   const { assetsDir, outputDir } = await fixture();
-  const path = join(assetsDir, 'linux-x86_64', 'Terra.AppImage.sig');
+  const path = join(assetsDir, 'linux-x86_64', 'Shetu.AppImage.sig');
   await writeFile(path, 'not a signature');
   await assert.rejects(
     buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir }),
@@ -126,40 +126,40 @@ test('CLI creates the manifest when invoked by a relative script path', async ()
     '--version', '1.0.1', '--tag', 'v1.0.1',
     '--assets', assetsDir, '--output', outputDir, '--notes-file', notesFile,
   ], { cwd: new URL('..', import.meta.url) });
-  const manifest = JSON.parse(await readFile(join(outputDir, 'terra-latest.json'), 'utf8'));
+  const manifest = JSON.parse(await readFile(join(outputDir, 'shetu-latest.json'), 'utf8'));
   assert.equal(manifest.version, '1.0.1');
   assert.equal(manifest.notes, 'Fixed terminal rendering.\n');
 });
 
 test('names release assets by OS and a CPU name people recognise', async () => {
   const { assetsDir, outputDir } = await fixture();
-  await writeFile(join(assetsDir, 'darwin-aarch64', 'Terra_1.0.1_aarch64.dmg'), 'disk');
-  await writeFile(join(assetsDir, 'darwin-x86_64', 'Terra_1.0.1_x64.dmg'), 'disk');
+  await writeFile(join(assetsDir, 'darwin-aarch64', 'Shetu_1.0.1_aarch64.dmg'), 'disk');
+  await writeFile(join(assetsDir, 'darwin-x86_64', 'Shetu_1.0.1_x64.dmg'), 'disk');
   await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
   const published = (await readdir(outputDir)).sort();
   assert.deepEqual(published, [
-    'Terra-1.0.1-Linux-ARM64.AppImage', 'Terra-1.0.1-Linux-ARM64.AppImage.sig',
-    'Terra-1.0.1-Linux-ARM64.deb', 'Terra-1.0.1-Linux-ARM64.deb.sig',
-    'Terra-1.0.1-Linux-x64.AppImage', 'Terra-1.0.1-Linux-x64.AppImage.sig',
-    'Terra-1.0.1-Linux-x64.deb', 'Terra-1.0.1-Linux-x64.deb.sig',
-    'Terra-1.0.1-Windows-ARM64-Setup.exe', 'Terra-1.0.1-Windows-ARM64-Setup.exe.sig',
-    'Terra-1.0.1-Windows-x64-Setup.exe', 'Terra-1.0.1-Windows-x64-Setup.exe.sig',
-    'Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz', 'Terra-1.0.1-macOS-Apple-Silicon.app.tar.gz.sig',
-    'Terra-1.0.1-macOS-Apple-Silicon.dmg',
-    'Terra-1.0.1-macOS-Intel.app.tar.gz', 'Terra-1.0.1-macOS-Intel.app.tar.gz.sig',
-    'Terra-1.0.1-macOS-Intel.dmg',
-    'terra-latest.json',
+    'Shetu-1.0.1-Linux-ARM64.AppImage', 'Shetu-1.0.1-Linux-ARM64.AppImage.sig',
+    'Shetu-1.0.1-Linux-ARM64.deb', 'Shetu-1.0.1-Linux-ARM64.deb.sig',
+    'Shetu-1.0.1-Linux-x64.AppImage', 'Shetu-1.0.1-Linux-x64.AppImage.sig',
+    'Shetu-1.0.1-Linux-x64.deb', 'Shetu-1.0.1-Linux-x64.deb.sig',
+    'Shetu-1.0.1-Windows-ARM64-Setup.exe', 'Shetu-1.0.1-Windows-ARM64-Setup.exe.sig',
+    'Shetu-1.0.1-Windows-x64-Setup.exe', 'Shetu-1.0.1-Windows-x64-Setup.exe.sig',
+    'Shetu-1.0.1-macOS-Apple-Silicon.app.tar.gz', 'Shetu-1.0.1-macOS-Apple-Silicon.app.tar.gz.sig',
+    'Shetu-1.0.1-macOS-Apple-Silicon.dmg',
+    'Shetu-1.0.1-macOS-Intel.app.tar.gz', 'Shetu-1.0.1-macOS-Intel.app.tar.gz.sig',
+    'Shetu-1.0.1-macOS-Intel.dmg',
+    'shetu-latest.json',
   ].sort());
 });
 
 test('stages distributable bundles but excludes unpacked app internals', async () => {
   const { assetsDir, outputDir } = await fixture();
-  const appInternal = join(assetsDir, 'darwin-x86_64', 'Terra.app', 'Contents', 'MacOS');
+  const appInternal = join(assetsDir, 'darwin-x86_64', 'Shetu.app', 'Contents', 'MacOS');
   await mkdir(appInternal, { recursive: true });
-  await writeFile(join(appInternal, 'Terra'), 'binary');
-  await writeFile(join(assetsDir, 'linux-x86_64', 'Terra.deb'), 'package');
+  await writeFile(join(appInternal, 'Shetu'), 'binary');
+  await writeFile(join(assetsDir, 'linux-x86_64', 'Shetu.deb'), 'package');
   await buildUpdateManifest({ version: '1.0.1', tag: 'v1.0.1', assetsDir, outputDir });
   const published = await readdir(outputDir);
-  assert.ok(published.includes('Terra-1.0.1-Linux-x64.deb'));
-  assert.ok(!published.some((name) => name.endsWith('Terra')));
+  assert.ok(published.includes('Shetu-1.0.1-Linux-x64.deb'));
+  assert.ok(!published.some((name) => name.endsWith('Shetu')));
 });

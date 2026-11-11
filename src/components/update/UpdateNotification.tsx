@@ -34,7 +34,7 @@ export function syncUpdateToast(state: UpdateState) {
   }
   switch (status) {
     case "available":
-      toast(`Terra ${version} is available`, {
+      toast(`Shetu ${version} is available`, {
         ...base,
         description: error ?? "It downloads in the background while you work.",
         action: keepOpen(error ? "Retry" : "Download", state.downloadUpdate),
@@ -42,14 +42,14 @@ export function syncUpdateToast(state: UpdateState) {
       });
       return;
     case "downloading":
-      toast.loading(`Downloading Terra ${version}…`, {
+      toast.loading(`Downloading Shetu ${version}…`, {
         ...base,
         dismissible: false,
         description: <DownloadProgress value={state.downloadProgress} />,
       });
       return;
     case "ready":
-      toast(`Terra ${version} is ready`, {
+      toast(`Shetu ${version} is ready`, {
         ...base,
         description: error ?? "Restart to finish installing.",
         action: keepOpen("Restart & install", state.installUpdate),
@@ -62,7 +62,7 @@ export function syncUpdateToast(state: UpdateState) {
     case "restart_required":
       toast("Update installed", {
         ...base,
-        description: error ?? "Restart Terra to finish.",
+        description: error ?? "Restart Shetu to finish.",
         action: keepOpen("Restart now", state.restartApp),
         cancel: later,
       });

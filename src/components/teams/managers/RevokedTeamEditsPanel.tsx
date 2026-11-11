@@ -46,7 +46,7 @@ export default function RevokedTeamEditsPanel() {
     setNotice(null);
     try {
       const path = await saveFilePicker(
-        `terra-unsynced-team-edits-${vault.vault_id}.json`,
+        `shetu-unsynced-team-edits-${vault.vault_id}.json`,
       );
       if (!path) return;
       const edits = await invoke<ExportedEdit[]>("export_revoked_team_edits", {
@@ -54,7 +54,7 @@ export default function RevokedTeamEditsPanel() {
       });
       const content = JSON.stringify(
         {
-          format: "terra-revoked-team-edits-v1",
+          format: "shetu-revoked-team-edits-v1",
           vault_id: vault.vault_id,
           exported_at: new Date().toISOString(),
           edits,

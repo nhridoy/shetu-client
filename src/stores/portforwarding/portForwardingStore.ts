@@ -105,7 +105,7 @@ function signalDefinitionMutation(hostId: string): void {
     .getState()
     .hosts.find((host) => host.id === hostId)?.vaultId;
   window.dispatchEvent(
-    new CustomEvent("terra:local-mutation", {
+    new CustomEvent("shetu:local-mutation", {
       detail: { table: "port_forwards", ...(vaultId ? { vaultId } : {}) },
     }),
   );

@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/plugin-log", () => pluginLog);
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  save: vi.fn(() => Promise.resolve("/tmp/terra-logs.txt")),
+  save: vi.fn(() => Promise.resolve("/tmp/shetu-logs.txt")),
 }));
 const toast = vi.hoisted(() => ({ error: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));

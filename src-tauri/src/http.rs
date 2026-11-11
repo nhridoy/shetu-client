@@ -385,8 +385,8 @@ pub fn get_request_log(
     Ok(state.request_log())
 }
 
-/// The short reason a Terra server gives with an error status, for the log.
-/// Terra's server only fills in schema field names, never record values; the logger still scrubs it.
+/// The short reason a Shetu server gives with an error status, for the log.
+/// Shetu's server only fills in schema field names, never record values; the logger still scrubs it.
 pub fn server_reason(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let error = value.get("error")?;
