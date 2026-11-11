@@ -89,7 +89,7 @@ jobs:
           sudo apt-get install -y dpkg-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2 libssl-dev
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
-      # One certificate for every release keeps Terra's code identity stable, so the macOS
+      # One certificate for every release keeps Shetu's code identity stable, so the macOS
       # keychain keeps trusting it after an update. Ad-hoc signatures change with each build.
       # Imported by hand: Tauri's APPLE_CERTIFICATE import only accepts Apple-trusted certificates.
       - name: Import macOS signing certificate
@@ -98,7 +98,7 @@ jobs:
           MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          KEYCHAIN="$RUNNER_TEMP/terra-signing.keychain-db"
+          KEYCHAIN="$RUNNER_TEMP/shetu-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
           echo "$MACOS_SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -109,7 +109,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security find-identity -p codesigning "$KEYCHAIN"
-          echo "APPLE_SIGNING_IDENTITY=Terra Self-Signed" >> "$GITHUB_ENV"
+          echo "APPLE_SIGNING_IDENTITY=Shetu Self-Signed" >> "$GITHUB_ENV"
       - name: Build signed desktop bundles
         env:
           # Tauri skips the Finder AppleScript that applies the DMG background and layout when CI=true.
@@ -121,16 +121,16 @@ jobs:
       - name: Check macOS signature
         if: runner.os == 'macOS'
         env:
-          # SHA-1 of the "Terra Self-Signed" certificate (public). Every release must match it, or
+          # SHA-1 of the "Shetu Self-Signed" certificate (public). Every release must match it, or
           # macOS sees a new app and asks for keychain access again. Change only on purpose.
-          EXPECTED_CERTIFICATE: 6d94d0caa9096f660174e80b9bc22b96ea16824c
+          EXPECTED_CERTIFICATE: 053a25a0eaace880ed666f82888d5127d1f4cd7a
         run: |
-          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Terra.app"
+          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Shetu.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
           REQUIREMENT="$(codesign -d -r- "$APP" 2>&1)"
           echo "$REQUIREMENT"
-          grep -q "identifier \"com.nhridoy.terra\" and certificate root = H\"$EXPECTED_CERTIFICATE\"" <<< "$REQUIREMENT" \
-            || { echo "Terra.app is not signed with certificate $EXPECTED_CERTIFICATE"; exit 1; }
+          grep -q "identifier \"com.nhridoy.shetu\" and certificate root = H\"$EXPECTED_CERTIFICATE\"" <<< "$REQUIREMENT" \
+            || { echo "Shetu.app is not signed with certificate $EXPECTED_CERTIFICATE"; exit 1; }
       # The bundler only signs the AppImage; .deb installs need their own signature to update in-app.
       - name: Sign .deb for in-app updates
         if: runner.os == 'Linux'

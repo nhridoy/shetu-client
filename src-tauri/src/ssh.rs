@@ -193,7 +193,7 @@ mod tests {
 
     fn tmp_path() -> std::path::PathBuf {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("terra-known-hosts-{stamp}.txt"))
+        std::env::temp_dir().join(format!("shetu-known-hosts-{stamp}.txt"))
     }
 
     #[test]
@@ -603,7 +603,7 @@ async fn probe_os(
         channel
             .exec(
                 true,
-                "uname -s; echo __TERRA_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null",
+                "uname -s; echo __SHETU_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null",
             )
             .await
             .ok()?;
@@ -615,7 +615,7 @@ async fn probe_os(
                 _ => {}
             }
         }
-        let (uname, os_release) = match out.split_once("__TERRA_OS_RELEASE__") {
+        let (uname, os_release) = match out.split_once("__SHETU_OS_RELEASE__") {
             Some((a, b)) => (a, b),
             None => return None,
         };
@@ -642,7 +642,7 @@ async fn probe_os_saved(
     tokio::time::timeout(std::time::Duration::from_secs(12), async {
         let connection = crate::ssh_route::connect_saved_route(route, target_handler, bastion_handler, None).await.ok()?;
         let mut channel = connection.target.channel_open_session().await.ok()?;
-        channel.exec(true, "uname -s; echo __TERRA_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null").await.ok()?;
+        channel.exec(true, "uname -s; echo __SHETU_OS_RELEASE__; cat /etc/os-release 2>/dev/null; cat /usr/lib/os-release 2>/dev/null").await.ok()?;
         let mut out = String::new();
         while let Some(msg) = channel.wait().await {
             match msg {
@@ -651,7 +651,7 @@ async fn probe_os_saved(
                 _ => {}
             }
         }
-        let (uname, os_release) = out.split_once("__TERRA_OS_RELEASE__")?;
+        let (uname, os_release) = out.split_once("__SHETU_OS_RELEASE__")?;
         detect_os(uname, os_release).map(str::to_string)
     }).await.ok().flatten()
 }

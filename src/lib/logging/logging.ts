@@ -5,7 +5,7 @@ import { error, info, warn } from "@tauri-apps/plugin-log";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 
-const ISSUES_URL = "https://github.com/nhridoy/terra-client/issues/new";
+const ISSUES_URL = "https://github.com/nhridoy/shetu-client/issues/new";
 
 export function formatLogArgs(args: unknown[]): string {
   return args
@@ -52,8 +52,8 @@ export function installLogForwarding() {
 export async function exportLogs(): Promise<boolean> {
   const date = new Date().toISOString().slice(0, 10);
   const destination = await save({
-    title: "Export Terra logs",
-    defaultPath: `terra-logs-${date}.txt`,
+    title: "Export Shetu logs",
+    defaultPath: `shetu-logs-${date}.txt`,
     filters: [{ name: "Text", extensions: ["txt"] }],
   });
   if (!destination) return false;
@@ -70,7 +70,7 @@ export async function reportProblem() {
 export async function notifyIfPreviousCrash() {
   const crashed = await invoke<boolean>("take_crash_marker").catch(() => false);
   if (!crashed) return;
-  toast.error("Terra closed unexpectedly last time", {
+  toast.error("Shetu closed unexpectedly last time", {
     description: "Export the logs and attach them to a bug report.",
     id: "previous-crash",
     duration: Number.POSITIVE_INFINITY,

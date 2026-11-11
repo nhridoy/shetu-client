@@ -5,9 +5,9 @@ import { getOutbox } from "../../lib/db/db";
 import { useAuthStore } from "../auth/authStore";
 import { useVaultStore } from "../vault/vaultStore";
 
-export const SYNC_COMPLETED_EVENT = "terra:sync-completed";
-export const TEAM_SYNC_COMPLETED_EVENT = "terra:team-sync-completed";
-export const TEAM_ACCESS_REVOKED_EVENT = "terra:team-access-revoked";
+export const SYNC_COMPLETED_EVENT = "shetu:sync-completed";
+export const TEAM_SYNC_COMPLETED_EVENT = "shetu:team-sync-completed";
+export const TEAM_ACCESS_REVOKED_EVENT = "shetu:team-access-revoked";
 
 export type SyncState =
   | "local-only"
@@ -224,11 +224,11 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       get().notifyLocalMutation(detail?.vaultId || activeVaultId || vaultId);
     };
     const onOnline = () => void get().requestAll();
-    window.addEventListener("terra:local-mutation", onMutation);
+    window.addEventListener("shetu:local-mutation", onMutation);
     window.addEventListener("online", onOnline);
     const interval = setInterval(() => void get().requestAll(), 30_000);
     return () => {
-      window.removeEventListener("terra:local-mutation", onMutation);
+      window.removeEventListener("shetu:local-mutation", onMutation);
       window.removeEventListener("online", onOnline);
       clearInterval(interval);
       if (activeVaultId === vaultId) activeVaultId = null;

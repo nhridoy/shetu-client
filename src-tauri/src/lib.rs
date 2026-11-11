@@ -1090,7 +1090,7 @@ async fn disconnect_local(
 }
 
 fn device_id_path(data_local_dir: &std::path::Path) -> std::path::PathBuf {
-    data_local_dir.join("terra").join("device_id")
+    data_local_dir.join("shetu").join("device_id")
 }
 
 fn get_or_create_device_id() -> String {
@@ -1111,15 +1111,15 @@ fn get_or_create_device_id() -> String {
 }
 
 #[cfg(test)]
-mod terra_identity_tests {
+mod shetu_identity_tests {
     use super::device_id_path;
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn device_id_uses_terra_local_namespace() {
+    fn device_id_uses_shetu_local_namespace() {
         assert_eq!(
             device_id_path(Path::new("/tmp/app-data")),
-            PathBuf::from("/tmp/app-data/terra/device_id")
+            PathBuf::from("/tmp/app-data/shetu/device_id")
         );
     }
 }
@@ -1600,7 +1600,7 @@ pub fn run() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
-            window.set_title("Terra")?;
+            window.set_title("Shetu")?;
             #[cfg(target_os = "macos")]
             menu::install(app)?;
 
@@ -1642,7 +1642,7 @@ pub fn run() {
         .manage(ssh::SshSessions::new(
             dirs::data_local_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("terra"),
+                .join("shetu"),
         ))
         .manage(forwarding::runtime::ForwardingState::new())
         .manage(sftp::SftpSessions::new())
@@ -1804,7 +1804,7 @@ pub fn run() {
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
             logging::fatal(&e);
-            eprintln!("Failed to run Terra: {e}");
+            eprintln!("Failed to run Shetu: {e}");
             std::process::exit(1);
         });
 }

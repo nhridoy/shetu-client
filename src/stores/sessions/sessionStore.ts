@@ -45,7 +45,7 @@ function personalVaultId(): string {
 function notifyMutation(vaultId: string) {
   if (typeof window !== "undefined")
     window.dispatchEvent(
-      new CustomEvent("terra:local-mutation", { detail: { vaultId } }),
+      new CustomEvent("shetu:local-mutation", { detail: { vaultId } }),
     );
 }
 

@@ -98,7 +98,7 @@ describe("portForwardingStore", () => {
     const windowTarget = new EventTarget();
     vi.stubGlobal("window", windowTarget);
     const events: Array<{ table?: string; vaultId?: string }> = [];
-    windowTarget.addEventListener("terra:local-mutation", (event) => {
+    windowTarget.addEventListener("shetu:local-mutation", (event) => {
       events.push(
         (event as CustomEvent<{ table?: string; vaultId?: string }>).detail,
       );

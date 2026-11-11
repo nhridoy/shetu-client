@@ -20,7 +20,7 @@ export function buildRecoveryKitContent(
   account: string,
 ): string {
   return [
-    "Terra Recovery Kit",
+    "Shetu Recovery Kit",
     "=====================",
     "",
     `Account: ${account}`,
@@ -32,7 +32,7 @@ export function buildRecoveryKitContent(
 }
 
 export function buildRecoveryKitFilename(account: string): string {
-  return `terra-recovery-kit-(${sanitizeFileNamePart(account)}).txt`;
+  return `shetu-recovery-kit-(${sanitizeFileNamePart(account)}).txt`;
 }
 
 export async function downloadRecoveryKit(

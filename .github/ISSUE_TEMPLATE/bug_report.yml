@@ -1,5 +1,5 @@
 name: Bug report
-description: Something isn't working, or Terra crashed.
+description: Something isn't working, or Shetu crashed.
 labels: [bug]
 body:
   - type: textarea
@@ -12,7 +12,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Terra version
+      label: Shetu version
       description: Settings → Advanced, or the release you installed.
       placeholder: 0.0.11
     validations:
@@ -29,11 +29,11 @@ body:
     attributes:
       label: Logs
       description: |
-        Drag the log file here. Terra never logs passwords, keys or terminal output, and removes IP addresses and hostnames from error messages.
+        Drag the log file here. Shetu never logs passwords, keys or terminal output, and removes IP addresses and hostnames from error messages.
 
-        **If Terra opens:** Settings → Advanced → **Export logs**.
+        **If Shetu opens:** Settings → Advanced → **Export logs**.
 
-        **If Terra crashes before it opens,** attach the newest `terra*.log` from:
-        - macOS: `~/Library/Logs/com.nhridoy.terra/`
-        - Windows: `%LOCALAPPDATA%\com.nhridoy.terra\logs\`
-        - Linux: `~/.local/share/com.nhridoy.terra/logs/` (or `$XDG_DATA_HOME/com.nhridoy.terra/logs/` if you set `XDG_DATA_HOME`)
+        **If Shetu crashes before it opens,** attach the newest `shetu*.log` from:
+        - macOS: `~/Library/Logs/com.nhridoy.shetu/`
+        - Windows: `%LOCALAPPDATA%\com.nhridoy.shetu\logs\`
+        - Linux: `~/.local/share/com.nhridoy.shetu/logs/` (or `$XDG_DATA_HOME/com.nhridoy.shetu/logs/` if you set `XDG_DATA_HOME`)

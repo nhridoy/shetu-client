@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const script = fileURLToPath(new URL('../install.sh', import.meta.url));
-const base = 'https://github.com/nhridoy/terra-client/releases/download/v1.0.0/Terra-1.0.0';
+const base = 'https://github.com/nhridoy/shetu-client/releases/download/v1.0.0/Shetu-1.0.0';
 const manifest = (notes = '') => JSON.stringify({
   notes,
   platforms: Object.fromEntries(
@@ -22,14 +22,14 @@ const tools = ['cat', 'chmod', 'cp', 'grep', 'gzip', 'head', 'id', 'mkdir', 'mkt
 
 // Runs install.sh against stubbed uname/sysctl/curl/apt-get so it can be tested anywhere.
 async function run({ os = 'Darwin', arch = 'arm64', translated = '0', apt = false, notes, platforms } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'terra-install-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'shetu-install-test-'));
   const bin = join(root, 'bin');
   const dest = join(root, 'dest');
-  await mkdir(join(root, 'Terra.app', 'Contents'), { recursive: true });
-  await writeFile(join(root, 'Terra.app', 'Contents', 'Info.plist'), 'new');
-  await execFileAsync('tar', ['-czf', join(root, 'download'), '-C', root, 'Terra.app']);
-  await mkdir(join(dest, 'Terra.app'), { recursive: true });
-  await writeFile(join(dest, 'Terra.app', 'old'), 'old');
+  await mkdir(join(root, 'Shetu.app', 'Contents'), { recursive: true });
+  await writeFile(join(root, 'Shetu.app', 'Contents', 'Info.plist'), 'new');
+  await execFileAsync('tar', ['-czf', join(root, 'download'), '-C', root, 'Shetu.app']);
+  await mkdir(join(dest, 'Shetu.app'), { recursive: true });
+  await writeFile(join(dest, 'Shetu.app', 'old'), 'old');
   await writeFile(join(root, 'manifest.json'), platforms ?? manifest(notes));
   await mkdir(bin);
   for (const tool of tools)
@@ -39,7 +39,7 @@ async function run({ os = 'Darwin', arch = 'arm64', translated = '0', apt = fals
     sysctl: `echo ${translated}`,
     sudo: `echo "sudo $*" >> '${root}/log'; exec "$@"`,
     curl: `echo "curl $*" >> '${root}/log'
-case "$*" in *terra-latest.json*) cat '${root}/manifest.json'; exit ;; esac
+case "$*" in *shetu-latest.json*) cat '${root}/manifest.json'; exit ;; esac
 while [ $# -gt 0 ]; do [ "$1" = -o ] && cp '${root}/download' "$2"; shift; done`,
     ...(apt ? { 'apt-get': `echo "apt-get $*" >> '${root}/log'` } : {}),
   };
@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do [ "$1" = -o ] && cp '${root}/download' "$2"; shift; done`
     await writeFile(join(bin, name), `#!/bin/sh\n${body}\n`);
     await chmod(join(bin, name), 0o755);
   }
-  const env = { PATH: bin, HOME: root, TERRA_INSTALL_DIR: dest };
+  const env = { PATH: bin, HOME: root, SHETU_INSTALL_DIR: dest };
   const result = await execFileAsync(process.env.BASH ?? '/bin/bash', [script], { env }).catch((error) => error);
   const log = await readFile(join(root, 'log'), 'utf8').catch(() => '');
   return { result, dest, log };
@@ -57,8 +57,8 @@ test('macOS: installs the Apple Silicon build and replaces an existing copy', as
   const { result, dest, log } = await run();
   assert.equal(result.code ?? 0, 0, result.stderr);
   assert.match(log, /macOS-Apple-Silicon\.app\.tar\.gz/);
-  assert.equal(await readFile(join(dest, 'Terra.app', 'Contents', 'Info.plist'), 'utf8'), 'new');
-  await assert.rejects(readFile(join(dest, 'Terra.app', 'old')));
+  assert.equal(await readFile(join(dest, 'Shetu.app', 'Contents', 'Info.plist'), 'utf8'), 'new');
+  await assert.rejects(readFile(join(dest, 'Shetu.app', 'old')));
 });
 
 test('macOS: installs the Intel build on Intel Macs', async () => {
@@ -75,14 +75,14 @@ test('Linux with apt: installs the .deb for the CPU through apt-get', async () =
   const { result, log } = await run({ os: 'Linux', arch: 'aarch64', apt: true });
   assert.equal(result.code ?? 0, 0, result.stderr);
   assert.match(log, /curl .*Linux-ARM64\.deb/);
-  assert.match(log, /apt-get install -y .*terra\.deb/);
+  assert.match(log, /apt-get install -y .*shetu\.deb/);
 });
 
 test('Linux without apt: installs the AppImage as an executable', async () => {
   const { result, dest, log } = await run({ os: 'Linux', arch: 'x86_64' });
   assert.equal(result.code ?? 0, 0, result.stderr);
   assert.match(log, /curl .*Linux-x64\.AppImage/);
-  execFileSync('test', ['-x', join(dest, 'terra')]);
+  execFileSync('test', ['-x', join(dest, 'shetu')]);
 });
 
 test('refuses to run on other systems and unsupported CPUs', async () => {
@@ -96,15 +96,15 @@ test('refuses to run on other systems and unsupported CPUs', async () => {
 test('ignores matching URLs in the release notes that point elsewhere', async () => {
   const { log } = await run({ notes: 'see https://evil.test/x-macOS-Apple-Silicon.app.tar.gz' });
   assert.doesNotMatch(log, /evil\.test/);
-  assert.match(log, /releases\/download\/v1\.0\.0\/Terra-1\.0\.0-macOS-Apple-Silicon/);
+  assert.match(log, /releases\/download\/v1\.0\.0\/Shetu-1\.0\.0-macOS-Apple-Silicon/);
 });
 
 test('rejects look-alike hosts where the dot in github.com is swapped', async () => {
   const { log } = await run({
-    notes: 'https://githubXcom/nhridoy/terra-client/releases/download/v9/x-macOS-Apple-Silicon.app.tar.gz',
+    notes: 'https://githubXcom/nhridoy/shetu-client/releases/download/v9/x-macOS-Apple-Silicon.app.tar.gz',
   });
   assert.doesNotMatch(log, /githubXcom/);
-  assert.match(log, /github\.com\/nhridoy\/terra-client\/releases\/download\/v1\.0\.0\//);
+  assert.match(log, /github\.com\/nhridoy\/shetu-client\/releases\/download\/v1\.0\.0\//);
 });
 
 test('explains when the latest release has no build for this computer', async () => {

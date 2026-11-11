@@ -58,7 +58,7 @@ fn generate_ssh_key_inner(key_type: String) -> Result<GeneratedKey, String> {
         ),
         "rsa" => {
             let pair = RsaKeypair::random(&mut rng, 4096).map_err(|e| e.to_string())?;
-            PrivateKey::new(KeypairData::Rsa(pair), "terra")
+            PrivateKey::new(KeypairData::Rsa(pair), "shetu")
         }
         _ => return Err("Unsupported SSH key type".to_string()),
     }

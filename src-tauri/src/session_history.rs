@@ -339,11 +339,7 @@ pub fn delete_attempt(
 }
 
 fn preference_id(vault_id: &str) -> Result<String, String> {
-    preference_id_with_domain(vault_id, b"terra:session-preferences:")
-}
-
-fn legacy_preference_id(vault_id: &str) -> Result<String, String> {
-    preference_id_with_domain(vault_id, b"termvault:session-preferences:")
+    preference_id_with_domain(vault_id, b"shetu:session-preferences:")
 }
 
 fn preference_id_with_domain(vault_id: &str, domain: &[u8]) -> Result<String, String> {
@@ -366,12 +362,7 @@ struct Preferences {
 
 pub fn get_retention_days(db: &LocalDb, keys: &KeySession, vault_id: &str) -> Result<u32, String> {
     let id = preference_id(vault_id)?;
-    let row = db::get_sync_row(db, Table::SessionPreferences, &id)?.or(db::get_sync_row(
-        db,
-        Table::SessionPreferences,
-        &legacy_preference_id(vault_id)?,
-    )?);
-    let Some(row) = row else {
+    let Some(row) = db::get_sync_row(db, Table::SessionPreferences, &id)? else {
         return Ok(30);
     };
     if row.deleted_at.is_some() {
@@ -439,7 +430,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terra_preference_ids_are_new_but_legacy_preferences_still_load() {
+    fn preferences_under_another_domain_are_not_read() {
         let db = crate::db::open(":memory:").unwrap();
         let vault_id = uuid::Uuid::new_v4().to_string();
         let owner_id = uuid::Uuid::new_v4().to_string();
@@ -448,7 +439,7 @@ mod tests {
         let mut keys = crate::crypto::KeySession::new();
         crate::crypto::generate_account_material(&mut keys).unwrap();
 
-        let legacy_id = legacy_preference_id_for_test(&vault_id);
+        let legacy_id = preference_id_for_test("other:session-preferences:", &vault_id);
         assert_ne!(preference_id(&vault_id).unwrap(), legacy_id);
         let encrypted = crypto::encrypt_secret(
             r#"{"retention_days":7}"#,
@@ -470,11 +461,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(get_retention_days(&db, &keys, &vault_id).unwrap(), 7);
+        assert_eq!(get_retention_days(&db, &keys, &vault_id).unwrap(), 30);
     }
 
-    fn legacy_preference_id_for_test(vault_id: &str) -> String {
-        let digest = Sha256::digest(format!("termvault:session-preferences:{vault_id}").as_bytes());
+    #[test]
+    fn preference_ids_use_the_shetu_domain() {
+        let vault_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            preference_id(&vault_id).unwrap(),
+            preference_id_for_test("shetu:session-preferences:", &vault_id)
+        );
+    }
+
+    fn preference_id_for_test(domain: &str, vault_id: &str) -> String {
+        let digest = Sha256::digest(format!("{domain}{vault_id}").as_bytes());
         let mut bytes = [0u8; 16];
         bytes.copy_from_slice(&digest[..16]);
         bytes[6] = (bytes[6] & 0x0f) | 0x50;

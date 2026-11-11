@@ -180,7 +180,7 @@ export default function DiffEditor({ path, name }: DiffEditorProps) {
       gutter: true,
       collapseUnchanged: { margin: 3 },
     });
-    view.dom.classList.add("terra-diff-view");
+    view.dom.classList.add("shetu-diff-view");
     return () => {
       view.destroy();
     };

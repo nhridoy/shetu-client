@@ -34,8 +34,7 @@ pub struct TeamKeyEnvelope {
     pub ciphertext: String,
 }
 
-const DOMAIN: &[u8] = b"terra-team-vault-key-envelope-v1";
-const LEGACY_DOMAIN: &[u8] = b"termvault-team-vault-key-envelope-v1";
+const DOMAIN: &[u8] = b"shetu-team-vault-key-envelope-v1";
 
 pub fn generate_vault_key() -> Zeroizing<[u8; 32]> {
     let mut key = Zeroizing::new([0u8; 32]);
@@ -172,27 +171,22 @@ pub fn open_key_bytes(
             .to_bytes(),
     );
     let aad = context_bytes(&envelope.context)?;
-    let mut plaintext = None;
-    for domain in [DOMAIN, LEGACY_DOMAIN] {
-        let derived = derive_aead_key(
-            &shared,
-            &ephemeral_bytes,
-            recipient_public.as_bytes(),
-            domain,
-        )?;
-        let cipher = XChaCha20Poly1305::new((&*derived).into());
-        if let Ok(value) = cipher.decrypt(
+    let derived = derive_aead_key(
+        &shared,
+        &ephemeral_bytes,
+        recipient_public.as_bytes(),
+        DOMAIN,
+    )?;
+    let cipher = XChaCha20Poly1305::new((&*derived).into());
+    let plaintext = cipher
+        .decrypt(
             &XNonce::from(nonce),
             Payload {
                 msg: &ciphertext,
                 aad: &aad,
             },
-        ) {
-            plaintext = Some(value);
-            break;
-        }
-    }
-    let plaintext = plaintext.ok_or("team key authentication failed")?;
+        )
+        .map_err(|_| "team key authentication failed")?;
     let key: [u8; 32] = plaintext
         .try_into()
         .map_err(|_| "invalid team key length".to_string())?;
@@ -780,7 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn opens_legacy_termvault_team_envelopes_after_identity_rename() {
+    fn team_envelopes_use_the_shetu_domain() {
+        assert_eq!(DOMAIN, b"shetu-team-vault-key-envelope-v1");
+    }
+
+    #[test]
+    fn rejects_envelopes_sealed_under_another_domain() {
         let recipient = StaticSecret::random_from_rng(rand::rngs::OsRng);
         let public = PublicKey::from(&recipient);
         let public_b64 = BASE64.encode(public.as_bytes());
@@ -792,10 +791,15 @@ mod tests {
             recipient_fingerprint: fingerprint_identity_key(&public_b64).unwrap(),
         };
         let key = generate_vault_key();
-        let legacy =
-            seal_key_bytes_with_domain(&key, &context, public.as_bytes(), LEGACY_DOMAIN).unwrap();
+        let other = seal_key_bytes_with_domain(
+            &key,
+            &context,
+            public.as_bytes(),
+            b"other-team-vault-key-envelope-v1",
+        )
+        .unwrap();
 
-        assert_eq!(*open_key_bytes(&legacy, &recipient).unwrap(), *key);
+        assert!(open_key_bytes(&other, &recipient).is_err());
     }
 
     #[test]

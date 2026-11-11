@@ -7,7 +7,7 @@ import {
   type Update,
 } from "@tauri-apps/plugin-updater";
 
-export const RELEASE_URL = "https://github.com/nhridoy/terra-client/releases/latest";
+export const RELEASE_URL = "https://github.com/nhridoy/shetu-client/releases/latest";
 
 export type InstallationKind =
   | "development"

@@ -18,7 +18,7 @@ export const MENU_ACTION_IDS: readonly MenuActionId[] = [
 /** Tauri event the macOS menu emits (payload: the id). Must match menu.rs. */
 export const MENU_ACTION_EVENT = "menu-action";
 
-const APP_ACTION_DOM_EVENT = "terra:app-action";
+const APP_ACTION_DOM_EVENT = "shetu:app-action";
 
 /** Keys the macOS menu owns; in-app handlers skip them there to avoid firing twice. */
 const MENU_OWNED_KEYS = new Set(["t", "w", "k", ","]);

@@ -364,7 +364,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       )?.vaultId;
       if (vaultId && typeof window !== "undefined") {
         window.dispatchEvent(
-          new CustomEvent("terra:local-mutation", {
+          new CustomEvent("shetu:local-mutation", {
             detail: { table: "hosts", vaultId },
           }),
         );
@@ -419,7 +419,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
       if (vaultId && typeof window !== "undefined") {
         window.dispatchEvent(
-          new CustomEvent("terra:local-mutation", {
+          new CustomEvent("shetu:local-mutation", {
             detail: { table: "hosts", vaultId },
           }),
         );

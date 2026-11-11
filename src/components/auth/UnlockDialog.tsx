@@ -37,7 +37,7 @@ export default function UnlockDialog() {
     <Modal
       open={!!localAccessAccountId && !isUnlocked && !unlockPending}
       onClose={() => {}}
-      title="Unlock Terra"
+      title="Unlock Shetu"
       hideClose
     >
       <form onSubmit={handleSubmit} className="space-y-4">

@@ -5310,6 +5310,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
+name = "shetu"
+version = "0.0.15"
+dependencies = [
+ "argon2 0.5.3",
+ "base64 0.22.1",
+ "chacha20poly1305 0.9.1",
+ "chrono",
+ "cipher 0.4.4",
+ "dirs 6.0.0",
+ "hkdf 0.12.4",
+ "hmac 0.12.1",
+ "log",
+ "portable-pty",
+ "rand 0.10.2",
+ "rand 0.8.7",
+ "rand_core 0.6.4",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-keyring-store",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tauri-plugin-prevent-default",
+ "tauri-plugin-process",
+ "tauri-plugin-pty",
+ "tauri-plugin-shell",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6239,53 +6286,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fed54709c5b3a53d09bb1c113ea4f5ceafd1e772ddcb0030a82e1d56c087b08"
 dependencies = [
  "new_debug_unreachable",
-]
-
-[[package]]
-name = "terra"
-version = "0.0.15"
-dependencies = [
- "argon2 0.5.3",
- "base64 0.22.1",
- "chacha20poly1305 0.9.1",
- "chrono",
- "cipher 0.4.4",
- "dirs 6.0.0",
- "hkdf 0.12.4",
- "hmac 0.12.1",
- "log",
- "portable-pty",
- "rand 0.10.2",
- "rand 0.8.7",
- "rand_core 0.6.4",
- "regex",
- "reqwest 0.12.28",
- "rusqlite",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "ssh-key",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-keyring-store",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tauri-plugin-prevent-default",
- "tauri-plugin-process",
- "tauri-plugin-pty",
- "tauri-plugin-shell",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tokio",
- "tokio-util",
- "uuid",
- "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]

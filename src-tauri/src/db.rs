@@ -5,7 +5,7 @@ use std::sync::Mutex;
 #[path = "sync_db.rs"]
 pub mod sync_db;
 
-pub const DB_FILE_NAME: &str = "terra.db";
+pub const DB_FILE_NAME: &str = "shetu.db";
 
 /// Reset the local database contents to pristine state. Row-deletion is used
 /// instead of file removal because the managed connection holds the DB file
@@ -2658,13 +2658,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_database_filename_uses_terra_identity() {
-        assert_eq!(DB_FILE_NAME, "terra.db");
+    fn desktop_database_filename_uses_shetu_identity() {
+        assert_eq!(DB_FILE_NAME, "shetu.db");
     }
 
     #[test]
     fn open_creates_missing_data_dir_on_first_launch() {
-        let dir = std::env::temp_dir().join(format!("terra-first-launch-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-first-launch-{}", uuid::Uuid::new_v4()));
         let path = dir.join("app-data").join(DB_FILE_NAME);
         open(path.to_str().unwrap()).unwrap();
         assert!(path.exists());
@@ -2675,7 +2675,7 @@ mod tests {
     #[test]
     fn open_creates_the_data_dir_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("terra-perms-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("shetu-perms-{}", uuid::Uuid::new_v4()));
         let data_dir = dir.join("app-data");
         open(data_dir.join(DB_FILE_NAME).to_str().unwrap()).unwrap();
         let mode = std::fs::metadata(&data_dir).unwrap().permissions().mode() & 0o777;
@@ -2691,7 +2691,7 @@ mod tests {
     #[test]
     fn sync_db_migrates_legacy_outbox_to_stable_iso_operation() {
         let path =
-            std::env::temp_dir().join(format!("terra-sync-migration-{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("shetu-sync-migration-{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_str().unwrap();
         let host_id = uuid::Uuid::new_v4().to_string();
         let vault_id = uuid::Uuid::new_v4().to_string();
