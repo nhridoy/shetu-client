@@ -205,6 +205,21 @@ export interface RecoveryPrefetchResponse {
 }
 
 export const authApi = {
+  /** True when the configured server answers its root with the Shetu banner. */
+  async isShetuServer(): Promise<boolean> {
+    try {
+      const res = await apiFetch<{ message?: string } | null>(
+        "GET",
+        "/",
+        undefined,
+        { auth: false },
+      );
+      return res?.message === "Shetu API";
+    } catch {
+      return false;
+    }
+  },
+
   async prelogin(email: string): Promise<PreloginResponse> {
     return apiFetch("POST", "/api/v1/auth/prelogin", { email });
   },

@@ -1,42 +1,39 @@
 import { type ReactNode, useEffect, useState } from "react";
 
-type Line = { cmd: string } | { out: ReactNode };
+const HOST = "deploy@prod-eu-1";
 
-const Ok = () => <span className="text-green-400">✓</span>;
+type Line = { prompt: "local" | "remote"; cmd: string } | { out: ReactNode };
+
+const Dim = ({ children }: { children: ReactNode }) => (
+  <span className="text-dark-500">{children}</span>
+);
+
+const Active = () => <span className="text-green-400">active</span>;
 
 const LINES: Line[] = [
-  { cmd: "shetu login" },
-  {
-    out: (
-      <>
-        <Ok /> vault unlocked
-      </>
-    ),
-  },
-  { cmd: "shetu sync" },
-  { out: <span className="text-dark-500">↻ pulling 12 hosts, 4 keys…</span> },
-  {
-    out: (
-      <>
-        <Ok /> synced{" "}
-        <span className="text-dark-500">· end-to-end encrypted</span>
-      </>
-    ),
-  },
-  { cmd: "ssh deploy@prod-eu-1" },
-  { out: <span className="text-dark-500">Welcome to Ubuntu 24.04 LTS</span> },
+  { prompt: "local", cmd: `ssh ${HOST}` },
+  { out: "Welcome to Ubuntu 24.04.1 LTS" },
+  { out: <Dim>Last login: Thu Nov 13 09:12:44 2026 from 10.0.4.2</Dim> },
+  { prompt: "remote", cmd: "uptime -p" },
+  { out: "up 41 days, 3 hours, 7 minutes" },
+  { prompt: "remote", cmd: "systemctl is-active nginx postgresql" },
+  { out: <Active /> },
+  { out: <Active /> },
 ];
 
 const Cursor = () => (
   <span className="inline-block w-2 h-4 align-[-2px] bg-primary-400 motion-safe:animate-caret-blink" />
 );
 
-const Prompt = ({ text }: { text: string }) => (
-  <>
-    <span className="text-primary-400">❯</span>{" "}
-    <span className="text-white">{text}</span>
-  </>
-);
+const Prompt = ({ kind }: { kind: "local" | "remote" }) =>
+  kind === "local" ? (
+    <span className="text-primary-400">~ $ </span>
+  ) : (
+    <>
+      <span className="text-green-400">{HOST}</span>:
+      <span className="text-primary-400">~</span>${" "}
+    </>
+  );
 
 const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -53,7 +50,7 @@ export default function TerminalDemo() {
     if (reducedMotion()) return;
     const cur = LINES[line];
     const typing = cur && "cmd" in cur && chars < cur.cmd.length;
-    const delay = !cur ? 4000 : typing ? 55 : "cmd" in cur ? 350 : 450;
+    const delay = !cur ? 4000 : typing ? 45 : "cmd" in cur ? 400 : 120;
     const t = setTimeout(() => {
       setPos(
         !cur
@@ -68,6 +65,8 @@ export default function TerminalDemo() {
 
   const cur = LINES[line];
   const done = line >= LINES.length;
+  // Like a real terminal, the title follows the shell you're in.
+  const title = line > 0 ? `${HOST}: ~` : "zsh";
 
   return (
     <div
@@ -78,23 +77,32 @@ export default function TerminalDemo() {
         <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
         <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
         <span className="w-2.5 h-2.5 rounded-full bg-green-400" />
-        <span className="ml-2 font-mono text-xs text-dark-500">~ — zsh</span>
+        <span className="ml-2 font-mono text-xs text-dark-500">{title}</span>
       </div>
-      <pre className="font-mono text-[13px] leading-7 text-dark-300 px-4 pt-3.5 pb-4 min-h-60 whitespace-pre-wrap">
+      <pre className="font-mono text-[12.5px] leading-6 text-dark-300 px-4 pt-3 pb-4 min-h-[17rem] whitespace-pre-wrap">
         {LINES.slice(0, line).map((l, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: static list
-          <div key={i}>{"cmd" in l ? <Prompt text={l.cmd} /> : l.out}</div>
+          <div key={i}>
+            {"cmd" in l ? (
+              <>
+                <Prompt kind={l.prompt} />
+                <span className="text-white">{l.cmd}</span>
+              </>
+            ) : (
+              l.out
+            )}
+          </div>
         ))}
         {cur && "cmd" in cur && (
           <div>
-            <Prompt text={cur.cmd.slice(0, chars)} />
+            <Prompt kind={cur.prompt} />
+            <span className="text-white">{cur.cmd.slice(0, chars)}</span>
             <Cursor />
           </div>
         )}
-        {cur && "out" in cur && <Cursor />}
         {done && (
           <div>
-            <span className="text-primary-400">deploy@prod-eu-1</span>:~${" "}
+            <Prompt kind="remote" />
             <Cursor />
           </div>
         )}

@@ -86,7 +86,6 @@ export default function EmailVerification({ password }: { password?: string }) {
 
   return (
     <AuthLayout
-      command="verify"
       title="Verify your email"
       subtitle={
         <>
