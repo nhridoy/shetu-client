@@ -2,6 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Navigate, useNavigate } from "react-router";
+import AuthLayout from "@/components/auth/AuthLayout";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -49,62 +50,45 @@ export default function SetupPage() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-var(--toolbar-height))] bg-dark-950 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <span className="text-white font-bold text-2xl">TV</span>
-          </div>
-          <h1 className="text-3xl font-bold text-white">Shetu</h1>
-          <p className="text-dark-400 mt-2">Self-hosted SSH client</p>
+    <AuthLayout
+      command="setup"
+      title="Set your password"
+      subtitle="This password signs you in and encrypts your SSH keys and secrets. It never leaves your device."
+    >
+      {error && (
+        <div className="mb-4">
+          <Alert variant="error">{error}</Alert>
         </div>
+      )}
 
-        <div className="bg-dark-900 rounded-xl p-6 shadow-xl">
-          <h2 className="text-xl font-semibold text-white mb-2">
-            Set Your Password
-          </h2>
-          <p className="text-dark-400 text-sm mb-6">
-            This password signs you in and encrypts your SSH keys and secrets.
-            It never leaves your device.
-          </p>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <FormInput
+          control={control}
+          name="password"
+          label="Password"
+          type="password"
+          placeholder="••••••••"
+          required
+        />
 
-          {error && (
-            <div className="mb-4">
-              <Alert variant="error">{error}</Alert>
-            </div>
-          )}
+        <FormInput
+          control={control}
+          name="confirmPassword"
+          label="Confirm Password"
+          type="password"
+          placeholder="••••••••"
+          required
+        />
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <FormInput
-              control={control}
-              name="password"
-              label="Password"
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-
-            <FormInput
-              control={control}
-              name="confirmPassword"
-              label="Confirm Password"
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-
-            <Button
-              type="submit"
-              disabled={isLoading}
-              variant="default"
-              size="sm"
-              className="w-full"
-            >
-              {isLoading ? "Setting up..." : "Complete Setup"}
-            </Button>
-          </form>
-        </div>
-      </div>
-    </div>
+        <Button
+          type="submit"
+          disabled={isLoading}
+          variant="default"
+          className="w-full"
+        >
+          {isLoading ? "Setting up..." : "Complete setup"}
+        </Button>
+      </form>
+    </AuthLayout>
   );
 }

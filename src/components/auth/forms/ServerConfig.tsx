@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { HardDrivesIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
@@ -28,19 +29,20 @@ export default function ServerConfig() {
 
   return (
     <>
-      <div className="mt-4 text-center">
+      <div className="mt-6 pt-4 border-t border-dark-900 flex justify-center">
         <Button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
           variant="ghost"
-          className="text-dark-500 hover:text-dark-300 text-xs"
+          className="text-dark-500 hover:text-dark-300 font-mono text-xs"
         >
+          <HardDrivesIcon className="w-3.5 h-3.5" />
           {isOpen ? "Hide server settings" : "Connect to custom server"}
         </Button>
       </div>
 
       {isOpen && (
-        <div className="mt-4 p-3 bg-dark-800 rounded-lg">
+        <div className="mt-3">
           <form
             onSubmit={handleSubmit(async (data) => {
               const serverUrl = data.serverUrl?.trim();
@@ -51,30 +53,22 @@ export default function ServerConfig() {
               }
               await setBaseUrl(serverUrl || getDefaultApiUrl());
             })}
-            className="space-y-2"
+            className="space-y-3"
           >
-            <div className="flex gap-2 items-end">
-              <div className="flex-1">
-                <FormInput
-                  control={control}
-                  name="serverUrl"
-                  label="Server URL"
-                  placeholder="Value from client/.env (VITE_API_URL)"
-                />
-              </div>
-              <Button
-                type="submit"
-                disabled={!isValid}
-                variant="default"
-                size="sm"
-                className="h-12"
-              >
+            <FormInput
+              control={control}
+              name="serverUrl"
+              label="Sync server URL"
+              placeholder="https://sync.example.com"
+            />
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-dark-500 text-xs">
+                Leave empty to use the default server.
+              </p>
+              <Button type="submit" disabled={!isValid} variant="default">
                 Save
               </Button>
             </div>
-            <p className="text-dark-500 text-xs">
-              Leave empty to use VITE_API_URL from client/.env. Changes take effect immediately.
-            </p>
           </form>
         </div>
       )}
