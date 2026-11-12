@@ -54,6 +54,7 @@ pub async fn sync_now(
     }
     outcome.map_err(|err| match err {
         HttpErrorKind::Network => "network:Cannot reach the sync server".into(),
+        HttpErrorKind::InvalidUrl => format!("network:{}", crate::http::INVALID_URL_MESSAGE),
         HttpErrorKind::SessionExpired => "auth:Sign in again to sync pending changes".into(),
         HttpErrorKind::Http(0, message) => format!("sync:{message}"),
         HttpErrorKind::Http(status, _) if status == 401 => {

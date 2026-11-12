@@ -9,6 +9,8 @@ pub const REFRESH_TOKEN_ACCOUNT: &str = "auth.refresh_token";
 pub const SESSION_REVOKED_EVENT: &str = "http://session-revoked";
 pub const NETWORK_ERROR_MESSAGE: &str =
     "Cannot reach the server. Check that it is running and your connection is online.";
+pub const INVALID_URL_MESSAGE: &str =
+    "The server URL is missing or invalid. Set it under \"Connect to custom server\".";
 const REFRESH_WAIT_MS: u64 = 50;
 const REFRESH_WAIT_MAX_STEPS: u32 = 160;
 
@@ -108,6 +110,8 @@ impl RefreshProvider for KeyringRefreshProvider {
 #[derive(Debug, PartialEq)]
 pub enum HttpErrorKind {
     Network,
+    /// The server URL is empty or malformed, so no request can be built.
+    InvalidUrl,
     SessionExpired,
     /// 4xx/5xx — carries the server body so 409/400 error envelopes reach the forms.
     Http(u16, String),
@@ -168,18 +172,23 @@ impl HttpClient {
             b
         };
 
-        let first = self
-            .send(builder(self.state.token().as_ref()).build().expect("request builds"))
-            .await?;
+        // A bad server URL must surface as an error: a panic never answers the webview.
+        let build = |token: Option<&String>| {
+            builder(token).build().map_err(|e| {
+                // The URL itself stays out of the log: it may carry credentials.
+                log::warn!("http: cannot build request: {e}");
+                HttpErrorKind::InvalidUrl
+            })
+        };
+
+        let first = self.send(build(self.state.token().as_ref())?).await?;
         let (mut status, mut text) = first;
 
         if auth && status == 401 && self.has_session() {
             match self.refresh_once().await {
                 RefreshOutcome::Ok => {
                     if let Some(token) = self.state.token() {
-                        let second = self
-                            .send(builder(Some(&token)).build().expect("request builds"))
-                            .await?;
+                        let second = self.send(build(Some(&token))?).await?;
                         (status, text) = second;
                         if status == 401 {
                             // retried with a fresh access token and STILL 401:
@@ -323,8 +332,9 @@ fn now_ms() -> u64 {
 ///   carries the server error envelope the forms surface). A 401 on a machine
 ///   with no session (login/recovery screens) is passed through verbatim —
 ///   it is the server's verdict, not ours.
-/// - `Err("network:...")` — offline classification (connection refused,
-///   timeout, DNS).
+/// - `Err("network:...")` — the server can't be used: connection refused,
+///   timeout, DNS, or an empty/malformed server URL (`INVALID_URL_MESSAGE`).
+///   Other prefixes would read as a revoked session in the webview.
 /// - `Err("auth:...")` — the SESSION was revoked: we held tokens, refreshed,
 ///   and the refresh token itself was rejected. Emits `http://session-revoked`
 ///   so the webview tears the session down.
@@ -344,6 +354,7 @@ pub async fn http_request(
     match client.request(&method, &path, body, auth.unwrap_or(true)).await {
         Ok(res) => Ok((res.status, res.body)),
         Err(HttpErrorKind::Network) => Err(format!("network:{NETWORK_ERROR_MESSAGE}")),
+        Err(HttpErrorKind::InvalidUrl) => Err(format!("network:{INVALID_URL_MESSAGE}")),
         Err(HttpErrorKind::SessionExpired) => {
             let _ = app.emit(SESSION_REVOKED_EVENT, ());
             Err("auth:session-expired. Please sign in again.".to_string())
@@ -495,6 +506,16 @@ mod tests {
             }
         });
         (format!("http://{addr}"), hits)
+    }
+
+    #[tokio::test]
+    async fn invalid_base_url_returns_error_instead_of_panicking() {
+        // A panic here never answers the webview: auth buttons stayed in their loading state forever.
+        for base in ["", "not a url", "localhost:8080"] {
+            let client = HttpClient::new(HttpState::new(base.into()), mem_refresh(None));
+            let res = client.request("POST", "/api/v1/auth/prelogin", None, false).await;
+            assert!(matches!(res, Err(HttpErrorKind::InvalidUrl)), "base {base:?}: {res:?}");
+        }
     }
 
     #[tokio::test]
