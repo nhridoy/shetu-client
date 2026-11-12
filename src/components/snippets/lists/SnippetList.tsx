@@ -145,7 +145,7 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                   </span>
                 </div>
                 <p className="text-dark-500 text-xs mt-1 ml-[22px]">
-                  {formatRelativeTime(Number(snippet.createdAt))}
+                  {formatRelativeTime(snippet.createdAt)}
                 </p>
                 {snippet.tags.length > 0 && (
                   <div className="flex gap-1 mt-2 ml-[22px]">

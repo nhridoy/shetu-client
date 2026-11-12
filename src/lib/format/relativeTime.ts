@@ -1,6 +1,8 @@
-export function formatRelativeTime(epochMs: number): string {
-  const now = Date.now();
-  const diff = Math.max(0, now - epochMs);
+/** `timestamp` is an ISO-8601 string, the format the local database stores. */
+export function formatRelativeTime(timestamp: string): string {
+  const epochMs = Date.parse(timestamp);
+  if (Number.isNaN(epochMs)) return "";
+  const diff = Math.max(0, Date.now() - epochMs);
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return "just now";
   const minutes = Math.floor(seconds / 60);

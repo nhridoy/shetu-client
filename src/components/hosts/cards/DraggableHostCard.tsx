@@ -42,6 +42,7 @@ export function DraggableHostCard({
 
   const initial = host.name?.charAt(0)?.toUpperCase() || "?";
   const hostColor = host.color || "#64748b";
+  const age = formatRelativeTime(host.createdAt);
 
   return (
     <>
@@ -80,10 +81,12 @@ export function DraggableHostCard({
           <span className="capitalize">{osMeta(host.os).name}</span>
           <span className="text-dark-600">•</span>
           <span>SSH</span>
-          <span className="text-dark-600">•</span>
-          <span className="shrink-0">
-            {formatRelativeTime(Number(host.createdAt))}
-          </span>
+          {age && (
+            <>
+              <span className="text-dark-600">•</span>
+              <span className="shrink-0">{age}</span>
+            </>
+          )}
         </p>
 
         <p className="relative z-10 flex items-center gap-1.5 text-xs mt-1">
