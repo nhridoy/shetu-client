@@ -119,3 +119,23 @@ describe("AuthApiError", () => {
     expect(err.apiError.code).toBe("X");
   });
 });
+
+describe("isShetuServer", () => {
+  it("is true when the root answers with the Shetu banner", async () => {
+    mockHttpRequest.mockResolvedValue({
+      status: 200,
+      body: '{"message":"Shetu API"}',
+    });
+    await expect(authApi.isShetuServer()).resolves.toBe(true);
+    expect(mockHttpRequest).toHaveBeenCalledWith("GET", "/", undefined, {
+      auth: false,
+    });
+  });
+
+  it("is false for a non-Shetu response or an unreachable server", async () => {
+    mockHttpRequest.mockResolvedValueOnce({ status: 200, body: "<html>" });
+    await expect(authApi.isShetuServer()).resolves.toBe(false);
+    mockHttpRequest.mockRejectedValueOnce(new HttpError("network", "down"));
+    await expect(authApi.isShetuServer()).resolves.toBe(false);
+  });
+});

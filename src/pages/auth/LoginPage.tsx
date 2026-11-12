@@ -42,7 +42,6 @@ export default function LoginPage() {
 
   return (
     <AuthLayout
-      command="login"
       title="Welcome back"
       subtitle="Sign in to sync your hosts and keys."
     >

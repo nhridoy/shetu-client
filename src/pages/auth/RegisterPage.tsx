@@ -38,7 +38,6 @@ export default function RegisterPage() {
 
   return (
     <AuthLayout
-      command="register"
       title="Create your account"
       subtitle="Sync your hosts and keys across every device."
     >
