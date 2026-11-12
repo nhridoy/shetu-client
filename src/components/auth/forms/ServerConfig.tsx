@@ -2,9 +2,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { HardDrivesIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import {
+  authApi,
   clearApiUrlOverride,
   getDefaultApiUrl,
   setApiUrl,
@@ -18,6 +20,7 @@ import {
 
 export default function ServerConfig() {
   const [isOpen, setIsOpen] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
   const {
     control,
     handleSubmit,
@@ -46,29 +49,53 @@ export default function ServerConfig() {
           <form
             onSubmit={handleSubmit(async (data) => {
               const serverUrl = data.serverUrl?.trim();
-              if (serverUrl) {
-                await setApiUrl(serverUrl);
-              } else {
-                await clearApiUrlOverride();
+              setIsChecking(true);
+              try {
+                if (serverUrl) {
+                  await setApiUrl(serverUrl);
+                } else {
+                  await clearApiUrlOverride();
+                }
+                await setBaseUrl(serverUrl || getDefaultApiUrl());
+                const label = serverUrl
+                  ? new URL(serverUrl).host
+                  : "the default server";
+                if (await authApi.isShetuServer()) {
+                  toast.success(`Connected to ${label}`);
+                  setIsOpen(false);
+                } else {
+                  toast.warning(
+                    `Saved, but no Shetu server answered at ${label}`,
+                  );
+                }
+              } catch {
+                toast.error("Couldn't save the server URL. Try again.");
+              } finally {
+                setIsChecking(false);
               }
-              await setBaseUrl(serverUrl || getDefaultApiUrl());
             })}
-            className="space-y-3"
           >
-            <FormInput
-              control={control}
-              name="serverUrl"
-              label="Sync server URL"
-              placeholder="https://sync.example.com"
-            />
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-dark-500 text-xs">
-                Leave empty to use the default server.
-              </p>
-              <Button type="submit" disabled={!isValid} variant="default">
-                Save
-              </Button>
-            </div>
+            {/* Locked while checking so an edit can't be lost when the panel closes. */}
+            <fieldset disabled={isChecking} className="space-y-3">
+              <FormInput
+                control={control}
+                name="serverUrl"
+                label="Sync server URL"
+                placeholder="https://sync.example.com"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-dark-500 text-xs">
+                  Leave empty to use the default server.
+                </p>
+                <Button
+                  type="submit"
+                  disabled={!isValid || isChecking}
+                  variant="default"
+                >
+                  {isChecking ? "Checking..." : "Save"}
+                </Button>
+              </div>
+            </fieldset>
           </form>
         </div>
       )}

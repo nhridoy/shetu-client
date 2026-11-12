@@ -181,7 +181,9 @@ impl HttpClient {
             })
         };
 
-        let first = self.send(build(self.state.token().as_ref())?).await?;
+        // Unauthenticated calls (login, refresh, server checks) never carry the session token.
+        let token = if auth { self.state.token() } else { None };
+        let first = self.send(build(token.as_ref())?).await?;
         let (mut status, mut text) = first;
 
         if auth && status == 401 && self.has_session() {
@@ -516,6 +518,31 @@ mod tests {
             let res = client.request("POST", "/api/v1/auth/prelogin", None, false).await;
             assert!(matches!(res, Err(HttpErrorKind::InvalidUrl)), "base {base:?}: {res:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_request_does_not_send_the_stored_token() {
+        // The server check probes a newly entered host; it must not receive the session token.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let body = if req.contains("authorization:") { "sent" } else { "none" };
+                let _ = s.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{body}")
+                        .as_bytes(),
+                );
+            }
+        });
+        let state = HttpState::new(format!("http://{addr}"));
+        state.set_token(Some("secret-access-token".into()));
+        let client = HttpClient::new(state, mem_refresh(None));
+        assert_eq!(client.request("GET", "/", None, false).await.unwrap().body, "none");
+        assert_eq!(client.request("GET", "/", None, true).await.unwrap().body, "sent");
     }
 
     #[tokio::test]

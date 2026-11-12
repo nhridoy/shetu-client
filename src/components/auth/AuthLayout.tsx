@@ -12,8 +12,6 @@ const Logo = ({ className = "" }: { className?: string }) => (
 );
 
 interface AuthLayoutProps {
-  /** Shown as `$ shetu <command>` above the title. */
-  command: string;
   title: string;
   subtitle?: ReactNode;
   children: ReactNode;
@@ -21,7 +19,6 @@ interface AuthLayoutProps {
 
 /** Split-screen shell shared by every auth page: brand panel left, form right. */
 export default function AuthLayout({
-  command,
   title,
   subtitle,
   children,
@@ -53,9 +50,6 @@ export default function AuthLayout({
       <main className="flex items-center justify-center p-8 overflow-auto">
         <div className="w-full max-w-sm">
           <Logo className="lg:hidden mb-6" />
-          <p className="font-mono text-xs text-primary-400 mb-2.5">
-            $ shetu {command}
-          </p>
           <h1 className="text-2xl font-semibold tracking-tight text-white">
             {title}
           </h1>

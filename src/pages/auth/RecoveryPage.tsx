@@ -39,7 +39,6 @@ export default function RecoveryPage() {
   if (success) {
     return (
       <AuthLayout
-        command="recover"
         title="Account recovered"
         subtitle="Your password has been reset. You can now sign in with your new password."
       >
@@ -57,7 +56,6 @@ export default function RecoveryPage() {
 
   return (
     <AuthLayout
-      command="recover"
       title="Recover your account"
       subtitle="Enter your recovery code and set a new password."
     >

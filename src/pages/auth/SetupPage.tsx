@@ -51,7 +51,6 @@ export default function SetupPage() {
 
   return (
     <AuthLayout
-      command="setup"
       title="Set your password"
       subtitle="This password signs you in and encrypts your SSH keys and secrets. It never leaves your device."
     >

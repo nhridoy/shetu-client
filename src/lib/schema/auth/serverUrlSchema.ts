@@ -1,7 +1,13 @@
 import { z } from "zod";
 
 export const serverUrlSchema = z.object({
-  serverUrl: z.url("Please enter a valid URL").optional().or(z.literal("")),
+  serverUrl: z
+    .url({
+      protocol: /^https?$/,
+      error: "Enter a full http:// or https:// URL",
+    })
+    .optional()
+    .or(z.literal("")),
 });
 
 export type ServerUrlSchema = z.infer<typeof serverUrlSchema>;
