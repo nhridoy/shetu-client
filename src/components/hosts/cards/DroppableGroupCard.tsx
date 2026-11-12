@@ -10,6 +10,7 @@ export function DroppableGroupCard({
   group,
   hostCount,
   childCount,
+  colors = [],
   onClick,
   onEdit,
   onDelete,
@@ -17,6 +18,8 @@ export function DroppableGroupCard({
   group: Group;
   hostCount: number;
   childCount: number;
+  /** Colours of the group's hosts, shown as a small dot stack. */
+  colors?: string[];
   onClick: () => void;
   onEdit: (group: Group) => void;
   onDelete: (groupId: string) => void;
@@ -55,18 +58,32 @@ export function DroppableGroupCard({
         }`}
       >
         <div className="flex items-center gap-2">
-          <FolderIcon
-            className="w-4 h-4 text-primary-400 shrink-0"
-            weight="bold"
-          />
+          <span className="flex items-center justify-center w-7 h-7 rounded-full shrink-0 bg-primary-500/10 border border-primary-500/40">
+            <FolderIcon
+              className="w-3.5 h-3.5 text-primary-400"
+              weight="bold"
+            />
+          </span>
           <span className="flex-1 text-sm font-medium text-white truncate">
             {group.name}
           </span>
         </div>
-        <p className="mt-1 ml-6 text-xs text-dark-500">
+        <p className="flex items-center mt-1.5 text-xs text-dark-500">
           {hostCount} host{hostCount === 1 ? "" : "s"}
           {childCount > 0 &&
             ` · ${childCount} sub-group${childCount === 1 ? "" : "s"}`}
+          {colors.length > 0 && (
+            <span className="flex ml-auto pl-2">
+              {colors.slice(0, 5).map((color, i) => (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: colours repeat
+                  key={i}
+                  className="w-3 h-3 -ml-1 rounded-full border-2 border-dark-900"
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </span>
+          )}
         </p>
         <div className="absolute flex items-center gap-1 transition-opacity opacity-0 top-2 right-2 group-hover:opacity-100">
           <Button
