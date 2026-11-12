@@ -82,7 +82,7 @@ export function DraggableHostCard({
           <span>SSH</span>
           <span className="text-dark-600">•</span>
           <span className="shrink-0">
-            {formatRelativeTime(Number(host.createdAt))}
+            {formatRelativeTime(host.createdAt)}
           </span>
         </p>
 

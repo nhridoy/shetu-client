@@ -391,7 +391,7 @@ export default function HostBrowser({
                       <div className="text-sm text-white">{host.name}</div>
                       <div className="text-xs text-dark-400 capitalize">
                         SSH • {host.os || "unknown"} •{" "}
-                        {formatRelativeTime(Number(host.createdAt))}
+                        {formatRelativeTime(host.createdAt)}
                       </div>
                     </div>
                     {host.tags && host.tags.length > 0 && (

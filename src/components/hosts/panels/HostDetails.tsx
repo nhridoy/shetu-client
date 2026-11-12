@@ -64,7 +64,7 @@ export default function HostDetails({
               <OsIcon os={host.os} className="w-3.5 h-3.5" />
               {osMeta(host.os).name}
             </span>{" "}
-            • {formatRelativeTime(Number(host.createdAt))}
+            • {formatRelativeTime(host.createdAt)}
           </p>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
