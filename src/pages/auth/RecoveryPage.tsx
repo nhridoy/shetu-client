@@ -3,6 +3,7 @@ import { ArrowLeftIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router";
+import AuthLayout from "@/components/auth/AuthLayout";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -37,112 +38,79 @@ export default function RecoveryPage() {
 
   if (success) {
     return (
-      <div className="min-h-[calc(100vh-var(--toolbar-height))] bg-dark-950 flex items-center justify-center p-4">
-        <div className="w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <span className="text-white font-bold text-2xl">TV</span>
-            </div>
-            <h1 className="text-3xl font-bold text-white">Shetu</h1>
-          </div>
-
-          <div className="bg-dark-900 rounded-xl p-6 shadow-xl text-center">
-            <div className="w-12 h-12 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-green-500 text-xl">&#10003;</span>
-            </div>
-            <h2 className="text-xl font-semibold text-white mb-2">
-              Account recovered
-            </h2>
-            <p className="text-dark-400 text-sm mb-6">
-              Your password has been reset. You can now sign in with your new
-              password.
-            </p>
-            <Button
-              type="button"
-              onClick={() => navigate("/login")}
-              variant="default"
-              size="sm"
-              className="w-full"
-            >
-              Sign In
-            </Button>
-          </div>
-        </div>
-      </div>
+      <AuthLayout
+        command="recover"
+        title="Account recovered"
+        subtitle="Your password has been reset. You can now sign in with your new password."
+      >
+        <Button
+          type="button"
+          onClick={() => navigate("/login")}
+          variant="default"
+          className="w-full"
+        >
+          Sign in
+        </Button>
+      </AuthLayout>
     );
   }
 
   return (
-    <div className="min-h-[calc(100vh-var(--toolbar-height))] bg-dark-950 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-primary-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <span className="text-white font-bold text-2xl">TV</span>
-          </div>
-          <h1 className="text-3xl font-bold text-white">Shetu</h1>
+    <AuthLayout
+      command="recover"
+      title="Recover your account"
+      subtitle="Enter your recovery code and set a new password."
+    >
+      {error && (
+        <div className="mb-4">
+          <Alert variant="error">{error}</Alert>
         </div>
+      )}
 
-        <div className="bg-dark-900 rounded-xl p-6 shadow-xl">
-          <Link
-            to="/login"
-            className="flex items-center gap-1.5 text-dark-400 hover:text-white text-sm mb-4 transition-colors"
-          >
-            <ArrowLeftIcon className="w-4 h-4" />
-            Back to sign in
-          </Link>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <FormInput
+          name="recoveryCode"
+          label="Recovery Code"
+          control={control}
+          placeholder="Enter your recovery code"
+          required
+        />
 
-          <h2 className="text-xl font-semibold text-white mb-2">
-            Recover Account
-          </h2>
-          <p className="text-dark-400 text-sm mb-6">
-            Enter your recovery code and set a new password.
-          </p>
+        <FormInput
+          name="newPassword"
+          label="New Password"
+          control={control}
+          type="password"
+          placeholder="••••••••"
+          required
+        />
 
-          {error && (
-            <div className="mb-4">
-              <Alert variant="error">{error}</Alert>
-            </div>
-          )}
+        <FormInput
+          name="confirmPassword"
+          label="Confirm Password"
+          control={control}
+          type="password"
+          placeholder="••••••••"
+          required
+        />
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <FormInput
-              name="recoveryCode"
-              label="Recovery Code"
-              control={control}
-              placeholder="Enter your recovery code"
-              required
-            />
+        <Button
+          type="submit"
+          disabled={isLoading}
+          variant="default"
+          className="w-full"
+        >
+          {isLoading ? "Recovering..." : "Recover account"}
+        </Button>
+      </form>
 
-            <FormInput
-              name="newPassword"
-              label="New Password"
-              control={control}
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-
-            <FormInput
-              name="confirmPassword"
-              label="Confirm Password"
-              control={control}
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-
-            <Button
-              type="submit"
-              disabled={isLoading}
-              variant="default"
-              size="sm"
-              className="w-full"
-            >
-              {isLoading ? "Recovering..." : "Recover Account"}
-            </Button>
-          </form>
-        </div>
-      </div>
-    </div>
+      <Link
+        to="/login"
+        className="mt-6 flex items-center justify-center gap-1.5 text-dark-400 hover:text-white text-sm transition-colors"
+      >
+        <ArrowLeftIcon className="w-4 h-4" />
+        Back to sign in
+      </Link>
+    </AuthLayout>
   );
 }
