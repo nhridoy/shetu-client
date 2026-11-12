@@ -36,6 +36,8 @@ export default function HostDetails({
     deleteDialog.show();
   };
 
+  const age = formatRelativeTime(host.createdAt);
+
   return (
     <>
       <Button
@@ -63,8 +65,8 @@ export default function HostDetails({
             <span className="inline-flex items-center gap-1">
               <OsIcon os={host.os} className="w-3.5 h-3.5" />
               {osMeta(host.os).name}
-            </span>{" "}
-            • {formatRelativeTime(host.createdAt)}
+            </span>
+            {age && ` • ${age}`}
           </p>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
