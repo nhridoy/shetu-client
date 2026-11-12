@@ -1,6 +1,7 @@
 import { UsersIcon, XIcon } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { Avatar } from "@/components/common/Avatar";
 import InviteMemberForm from "@/components/teams/forms/InviteMemberForm";
 import TeamForm from "@/components/teams/forms/TeamForm";
 import RevokedTeamEditsPanel from "@/components/teams/managers/RevokedTeamEditsPanel";
@@ -377,12 +378,13 @@ export default function TeamManager() {
                       className="flex items-center justify-between p-3 bg-dark-700 rounded-lg"
                     >
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-dark-600 rounded-full flex items-center justify-center">
-                          <span className="text-white">
-                            {member.username?.charAt(0).toUpperCase() ||
-                              member.email.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
+                        <Avatar
+                          id={member.userId}
+                          name={member.username}
+                          email={member.email}
+                          avatarUrl={member.avatarUrl}
+                          size={40}
+                        />
                         <div>
                           <div className="text-white">
                             {member.username || member.email}

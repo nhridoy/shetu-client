@@ -137,6 +137,8 @@ export interface User {
   id: string;
   email: string;
   full_name?: string;
+  /** Google/GitHub profile picture (https), when signed in with one. */
+  avatar_url?: string;
   public_key?: string;
   initialized: boolean;
   auth_provider: string;

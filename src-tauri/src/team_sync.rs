@@ -102,6 +102,8 @@ pub(crate) struct MemberWire {
     pub(crate) public_key: String,
     #[serde(default)]
     pub(crate) fingerprint: String,
+    #[serde(default)]
+    pub(crate) avatar_url: String,
 }
 #[derive(Deserialize)]
 pub(crate) struct InviteWire {
@@ -561,5 +563,16 @@ mod tests {
     fn parses_server_team_sync_snapshot_contract() {
         let response: EnvelopeResponse = serde_json::from_value(json!({ "data": { "results": [], "snapshot": {"teams": [], "members": [], "invites": [], "vaults": [], "revoked_team_ids": []}, "envelopes": [], "next_cursor": null, "has_more": false } })).unwrap();
         assert!(!response.data.has_more);
+    }
+
+    #[test]
+    fn member_wire_reads_avatar_url_and_defaults_when_absent() {
+        let base = json!({"id": "m", "team_id": "t", "user_id": "u", "email": "a@b.c", "full_name": "A", "role": "member", "created_at": ""});
+        let old: MemberWire = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(old.avatar_url, "");
+        let mut with = base;
+        with["avatar_url"] = json!("https://avatars.example.com/a.png");
+        let new: MemberWire = serde_json::from_value(with).unwrap();
+        assert_eq!(new.avatar_url, "https://avatars.example.com/a.png");
     }
 }

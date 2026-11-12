@@ -88,6 +88,8 @@ pub struct TeamMemberRecord {
     pub created_at: String,
     pub public_key: String,
     pub fingerprint: String,
+    #[serde(default)]
+    pub avatar_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -159,8 +161,8 @@ pub fn apply_team_sync_page(
                 uuid::Uuid::parse_str(id).map_err(|_| "invalid team member ID")?;
             }
             tx.execute(
-                "INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                rusqlite::params![account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint],
+                "INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint,avatar_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                rusqlite::params![account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint, member.avatar_url],
             ).map_err(|e| e.to_string())?;
         }
     }
@@ -539,8 +541,8 @@ pub fn replace_team_members(
         }
         uuid::Uuid::parse_str(&member.user_id).map_err(|_| "invalid member ID")?;
         uuid::Uuid::parse_str(&member.id).map_err(|_| "invalid team membership ID")?;
-        tx.execute("INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            rusqlite::params![member.account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO team_members (account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint,avatar_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![member.account_id, member.team_id, member.id, member.user_id, member.email, member.full_name, member.role, member.created_at, member.public_key, member.fingerprint, member.avatar_url]).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
 }
@@ -553,7 +555,7 @@ pub fn list_team_members(
     validate_team_account_id(account_id)?;
     uuid::Uuid::parse_str(team_id).map_err(|_| "invalid team ID")?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint FROM team_members WHERE account_id=?1 AND team_id=?2 ORDER BY email COLLATE NOCASE,user_id").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT account_id,team_id,id,user_id,email,full_name,role,created_at,public_key,fingerprint,avatar_url FROM team_members WHERE account_id=?1 AND team_id=?2 ORDER BY email COLLATE NOCASE,user_id").map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params![account_id, team_id], |r| {
             Ok(TeamMemberRecord {
@@ -567,6 +569,7 @@ pub fn list_team_members(
                 created_at: r.get(7)?,
                 public_key: r.get(8)?,
                 fingerprint: r.get(9)?,
+                avatar_url: r.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1374,6 +1377,7 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
             account_id TEXT NOT NULL, team_id TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
             email TEXT NOT NULL DEFAULT '', full_name TEXT NOT NULL DEFAULT '',
             role TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', public_key TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL DEFAULT '',
+            avatar_url TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(account_id, team_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS team_invites (
@@ -1632,6 +1636,7 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
         ("team_members", "id", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "public_key", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("team_members", "avatar_url", "TEXT NOT NULL DEFAULT ''"),
         ("team_invites", "expires_at", "TEXT NOT NULL DEFAULT ''"),
         ("hosts", "tags", "TEXT NOT NULL DEFAULT '[]'"),
         ("hosts", "color", "TEXT"),
@@ -3794,6 +3799,7 @@ mod team_sync_tests {
             created_at: "2026-10-04T00:00:00.000Z".into(),
             public_key: "".into(),
             fingerprint: "".into(),
+            avatar_url: "https://avatars.example.com/m.png".into(),
         };
         replace_team_members(&db, account_id, team_id, &[member.clone()]).unwrap();
         assert_eq!(
