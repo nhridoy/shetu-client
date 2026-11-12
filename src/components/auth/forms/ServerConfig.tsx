@@ -74,26 +74,28 @@ export default function ServerConfig() {
                 setIsChecking(false);
               }
             })}
-            className="space-y-3"
           >
-            <FormInput
-              control={control}
-              name="serverUrl"
-              label="Sync server URL"
-              placeholder="https://sync.example.com"
-            />
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-dark-500 text-xs">
-                Leave empty to use the default server.
-              </p>
-              <Button
-                type="submit"
-                disabled={!isValid || isChecking}
-                variant="default"
-              >
-                {isChecking ? "Checking..." : "Save"}
-              </Button>
-            </div>
+            {/* Locked while checking so an edit can't be lost when the panel closes. */}
+            <fieldset disabled={isChecking} className="space-y-3">
+              <FormInput
+                control={control}
+                name="serverUrl"
+                label="Sync server URL"
+                placeholder="https://sync.example.com"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-dark-500 text-xs">
+                  Leave empty to use the default server.
+                </p>
+                <Button
+                  type="submit"
+                  disabled={!isValid || isChecking}
+                  variant="default"
+                >
+                  {isChecking ? "Checking..." : "Save"}
+                </Button>
+              </div>
+            </fieldset>
           </form>
         </div>
       )}
