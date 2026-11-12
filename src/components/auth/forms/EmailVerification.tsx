@@ -2,6 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router";
+import AuthLayout from "@/components/auth/AuthLayout";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormOTPInput } from "@/components/ui/forms/FormOTPInput";
@@ -84,15 +85,16 @@ export default function EmailVerification({ password }: { password?: string }) {
   };
 
   return (
-    <div className="bg-dark-900 rounded-xl p-6 shadow-xl">
-      <h2 className="text-xl font-semibold text-white mb-2">
-        Verify your email
-      </h2>
-      <p className="text-dark-400 text-sm mb-6">
-        Enter the 6-digit code sent to{" "}
-        <span className="text-white">{email}</span>
-      </p>
-
+    <AuthLayout
+      command="verify"
+      title="Verify your email"
+      subtitle={
+        <>
+          Enter the 6-digit code sent to{" "}
+          <span className="text-white">{email}</span>
+        </>
+      }
+    >
       {error && (
         <div className="mb-4">
           <Alert variant="error">{error}</Alert>
@@ -118,7 +120,6 @@ export default function EmailVerification({ password }: { password?: string }) {
           type="submit"
           disabled={isLoading || otp.length !== 6}
           variant="default"
-          size="sm"
           className="w-full"
         >
           {isLoading ? "Verifying..." : "Verify"}
@@ -147,6 +148,6 @@ export default function EmailVerification({ password }: { password?: string }) {
           Back to sign in
         </Button>
       </div>
-    </div>
+    </AuthLayout>
   );
 }
