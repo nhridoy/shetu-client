@@ -1320,6 +1320,7 @@ async fn team_sync_now(
     }
     outcome.map_err(|error| match error {
             http::HttpErrorKind::Network => "network:Cannot reach the team sync server".into(),
+            http::HttpErrorKind::InvalidUrl => format!("network:{}", http::INVALID_URL_MESSAGE),
             http::HttpErrorKind::SessionExpired => "auth:Sign in again to sync team changes".into(),
             http::HttpErrorKind::Http(0, message) => format!("team-sync:{message}"),
             http::HttpErrorKind::Http(status, _) => format!("team-sync:server-error-{status}"),
@@ -1366,6 +1367,7 @@ async fn lookup_team_recipient_key(
         .await
         .map_err(|error| match error {
             http::HttpErrorKind::Network => "network:Cannot reach the team server".into(),
+            http::HttpErrorKind::InvalidUrl => format!("network:{}", http::INVALID_URL_MESSAGE),
             http::HttpErrorKind::SessionExpired => {
                 "auth:Sign in again to look up a team member".into()
             }
