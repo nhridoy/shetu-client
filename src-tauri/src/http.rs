@@ -175,7 +175,8 @@ impl HttpClient {
         // A bad server URL must surface as an error: a panic never answers the webview.
         let build = |token: Option<&String>| {
             builder(token).build().map_err(|e| {
-                log::warn!("http: cannot build request for {url:?}: {e}");
+                // The URL itself stays out of the log: it may carry credentials.
+                log::warn!("http: cannot build request: {e}");
                 HttpErrorKind::InvalidUrl
             })
         };
@@ -331,8 +332,9 @@ fn now_ms() -> u64 {
 ///   carries the server error envelope the forms surface). A 401 on a machine
 ///   with no session (login/recovery screens) is passed through verbatim —
 ///   it is the server's verdict, not ours.
-/// - `Err("network:...")` — offline classification (connection refused,
-///   timeout, DNS).
+/// - `Err("network:...")` — the server can't be used: connection refused,
+///   timeout, DNS, or an empty/malformed server URL (`INVALID_URL_MESSAGE`).
+///   Other prefixes would read as a revoked session in the webview.
 /// - `Err("auth:...")` — the SESSION was revoked: we held tokens, refreshed,
 ///   and the refresh token itself was rejected. Emits `http://session-revoked`
 ///   so the webview tears the session down.
