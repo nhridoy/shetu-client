@@ -108,6 +108,8 @@ interface AuthState {
     | { kind: "scheduled"; date: string }
     | { kind: "deleted" }
     | null;
+  // Grace-period date of the account just signed into; sign-in is held until Keep or Sign out.
+  pendingDeletion: string | null;
 
   prelogin: (email: string) => Promise<{
     nonce: string;
@@ -145,6 +147,32 @@ interface AuthState {
     existingKeyring?: KeyringRows | null,
   ) => Promise<string | null>;
   setAlwaysAsk: (flag: boolean) => Promise<void>;
+  requestAccountDeletion: (password: string, email: string) => Promise<void>;
+  cancelAccountDeletion: () => Promise<void>;
+}
+
+// The rest of a sign-in held back by pendingDeletion; Keep runs it.
+let resumeAfterKeep: (() => Promise<unknown>) | null = null;
+
+// The server answers every call except GET /me and DELETE /me/deletion with 403
+// during the grace period, so nothing else may run before the user's choice.
+function holdForDeletionChoice(
+  date: string,
+  tokens: TokenPair,
+  resume: () => Promise<unknown>,
+): void {
+  resumeAfterKeep = resume;
+  useAuthStore.setState({ pendingDeletion: date, tokens, isLoading: false });
+}
+
+function deletionRequestError(err: unknown): Error {
+  const status = err instanceof AuthApiError ? err.status : null;
+  if (status === 404)
+    return new Error("Your server doesn't support account deletion yet.");
+  if (status === 403) return new Error("That password is incorrect.");
+  if (status === 400)
+    return new Error("That email doesn't match your account.");
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 async function persistTokens(tokens: TokenPair | null): Promise<void> {
@@ -194,7 +222,9 @@ async function teardownSession(): Promise<void> {
     isUnlocked: false,
     pendingOAuth: null,
     pendingVerificationEmail: null,
+    pendingDeletion: null,
   });
+  resumeAfterKeep = null;
   await persistTokens(null);
   try {
     await clearAuthTokens();
@@ -290,6 +320,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   pendingVerificationEmail: null,
   alwaysAsk: false,
   deletionNotice: null,
+  pendingDeletion: null,
 
   prelogin: async (email: string) => {
     const res = await authApi.prelogin(email);
@@ -513,37 +544,51 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         client_pubkey: "",
       });
 
-      if (res.keyring) {
-        await unwrapDek(res.keyring.dek_wrapped_by_kek);
-      }
-
-      if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
-
       const newTokens = {
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-      set({
-        user: res.user,
-        tokens: newTokens,
-        isAuthenticated: true,
-        serverAuthenticated: true,
-        isUnlocked: true,
-        pendingVerificationEmail: null,
-        isLoading: false,
-      });
-      await persistTokens(newTokens);
-      if (!get().alwaysAsk) {
-        await savePassword(password);
-      }
-      const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
-      if (recoveryCode) {
+      const finish = async () => {
+        if (res.keyring) {
+          await unwrapDek(res.keyring.dek_wrapped_by_kek);
+        }
+
+        if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
+
+        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
         set({
-          pendingRecoveryCode: recoveryCode,
-          pendingRecoveryContext: "signup",
+          user: res.user,
+          tokens: newTokens,
+          isAuthenticated: true,
+          serverAuthenticated: true,
+          isUnlocked: true,
+          pendingVerificationEmail: null,
+          isLoading: false,
         });
+        await persistTokens(newTokens);
+        if (!get().alwaysAsk) {
+          await savePassword(password);
+        }
+        const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
+        if (recoveryCode) {
+          set({
+            pendingRecoveryCode: recoveryCode,
+            pendingRecoveryContext: "signup",
+          });
+        }
+      };
+
+      if (res.user.deletion_scheduled_for) {
+        // Rust needs the session to send DELETE /me/deletion on Keep.
+        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+        holdForDeletionChoice(
+          res.user.deletion_scheduled_for,
+          newTokens,
+          finish,
+        );
+        return;
       }
+      await finish();
     } catch (err) {
       if (
         err instanceof AuthApiError &&
@@ -818,6 +863,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   retryServerSession: async () => {
     if (_serverSessionLock) return _serverSessionLock;
+    // Held for the user's Keep / Sign out choice: no server call until then.
+    if (get().pendingDeletion) return "auth-required";
     _serverSessionLock = (async () => {
       try {
         const refreshToken = await loadRefreshToken();
@@ -830,6 +877,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           throw new Error(
             "Server account differs from enrolled offline account",
           );
+        }
+        if (user.deletion_scheduled_for) {
+          holdForDeletionChoice(user.deletion_scheduled_for, newTokens, () =>
+            get().retryServerSession(),
+          );
+          return "auth-required" as const;
         }
         if (!identity) {
           const { keyring, salt_cl } = await authApi.fetchKeyring();
@@ -891,32 +944,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         refresh_token: result.refreshToken ?? "",
       };
       await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-      set({
-        tokens: newTokens,
-        isAuthenticated: true,
-        serverAuthenticated: true,
-        isUnlocked: false,
-        user: null,
-        isLoading: false,
-      });
       await persistTokens(newTokens);
       const user = await authApi.me();
-      set({ user });
+      const finish = async () => {
+        set({
+          tokens: newTokens,
+          isAuthenticated: true,
+          serverAuthenticated: true,
+          isUnlocked: false,
+          user,
+          isLoading: false,
+        });
 
-      // Enroll an OAuth-authenticated account for later offline unlock.
-      const { keyring, salt_cl } = await authApi.fetchKeyring();
-      await enroll(user, salt_cl, keyring);
-      if (!get().alwaysAsk) {
-        try {
-          const savedPassword = await loadPassword();
-          if (savedPassword) {
-            await deriveKek(savedPassword, salt_cl);
-            await unwrapDek(keyring.dek_wrapped_by_kek);
-            set({ isUnlocked: true });
+        // Enroll an OAuth-authenticated account for later offline unlock.
+        const { keyring, salt_cl } = await authApi.fetchKeyring();
+        await enroll(user, salt_cl, keyring);
+        if (!get().alwaysAsk) {
+          try {
+            const savedPassword = await loadPassword();
+            if (savedPassword) {
+              await deriveKek(savedPassword, salt_cl);
+              await unwrapDek(keyring.dek_wrapped_by_kek);
+              set({ isUnlocked: true });
+            }
+          } catch {
+            // Wrong or expired password: prompt for manual unlock.
           }
-        } catch {
-          // Wrong or expired password: prompt for manual unlock.
         }
+      };
+      if (user.deletion_scheduled_for) {
+        holdForDeletionChoice(user.deletion_scheduled_for, newTokens, finish);
+      } else {
+        await finish();
       }
       return { needsSetup: false };
     } catch (err) {
@@ -995,6 +1054,50 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ error: message, isLoading: false });
       throw err;
     }
+  },
+
+  requestAccountDeletion: async (password: string, email: string) => {
+    const { user } = get();
+    if (!user) throw new Error("Not authenticated");
+    let date: string;
+    try {
+      // Same proof flow as changePassword.
+      const prelogin = await authApi.prelogin(user.email);
+      await deriveKek(password, prelogin.salt_cl);
+      const proof = await computeLoginProof(
+        prelogin.server_salt,
+        prelogin.nonce,
+      );
+      const res = await authApi.requestAccountDeletion({
+        proof: proof.proof,
+        nonce: prelogin.nonce,
+        email,
+      });
+      date = res.deletion_scheduled_for;
+    } catch (err) {
+      throw deletionRequestError(err);
+    }
+    const failures = await resetDevice(teardownSession);
+    if (failures.length) console.warn("device reset incomplete:", failures);
+    set({ deletionNotice: { kind: "scheduled", date } });
+  },
+
+  cancelAccountDeletion: async () => {
+    try {
+      await authApi.cancelAccountDeletion();
+    } catch (err) {
+      if (!(err instanceof AuthApiError && err.status === 410)) throw err;
+      // Purged during the grace period.
+      resumeAfterKeep = null;
+      const failures = await resetDevice(teardownSession);
+      if (failures.length) console.warn("device reset incomplete:", failures);
+      set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
+      return;
+    }
+    const resume = resumeAfterKeep;
+    resumeAfterKeep = null;
+    set({ pendingDeletion: null, deletionNotice: null });
+    await resume?.();
   },
 
   setAlwaysAsk: async (flag: boolean) => {
