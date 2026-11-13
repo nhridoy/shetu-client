@@ -14,6 +14,7 @@ mod offline_auth;
 mod session_history;
 mod sftp;
 mod ssh;
+mod ssh_config_import;
 mod ssh_route;
 mod sync;
 mod team_keys;
