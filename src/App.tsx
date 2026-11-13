@@ -9,6 +9,7 @@ import TitleBar from "@/components/layout/shell/TitleBar";
 import TeamManager from "@/components/teams/managers/TeamManager";
 import UpdateNotification from "@/components/update/UpdateNotification";
 import { notifyIfPreviousCrash } from "@/lib/logging/logging";
+import { watchMacMenu } from "@/lib/shortcuts/macMenu";
 import LoginPage from "@/pages/auth/LoginPage";
 import RecoveryPage from "@/pages/auth/RecoveryPage";
 import RecoveryRevealModal from "@/pages/auth/RecoveryRevealModal";
@@ -54,7 +55,7 @@ function App() {
     const init = async () => {
       initTheme();
       initSettings();
-      initShortcuts();
+      initShortcuts().then(watchMacMenu);
       restoreSession();
       await detectShells();
       emit("main-ready");
