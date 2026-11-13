@@ -129,7 +129,7 @@ export default function HostsPanel({
           </kbd>
         </label>
       </header>
-      <div className="p-4 space-y-6">
+      <div className="@container p-4 space-y-6">
         {/* Breadcrumb — only in group detail */}
         {selectedGroup &&
           selectedGroupId &&
@@ -191,7 +191,7 @@ export default function HostsPanel({
               onClick={() => onNewGroup(selectedGroupId ?? undefined)}
             />
           ) : (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 @md:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4 gap-2">
               {displayGroups.map((group) => (
                 <DroppableGroupCard
                   key={group.id}
@@ -281,7 +281,7 @@ export default function HostsPanel({
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 @md:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4 gap-2">
               {shownHosts.map((host, index) => (
                 <DraggableHostCard
                   key={host.id}
