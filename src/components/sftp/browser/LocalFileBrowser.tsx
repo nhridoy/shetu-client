@@ -43,6 +43,7 @@ import {
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
+import { shortcutLabel } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface LocalFileBrowserProps {
@@ -680,7 +681,7 @@ export default function LocalFileBrowser({
             { type: "separator" as const },
             {
               label: "Refresh",
-              shortcut: "F5",
+              shortcut: shortcutLabel("files.refresh"),
               onClick: handleRefresh,
             },
           ],

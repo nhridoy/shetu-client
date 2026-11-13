@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
+
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 import { buildExplorerMenuItems } from "./explorerMenu";
 
@@ -134,5 +140,23 @@ describe("buildExplorerMenuItems", () => {
     const del = findItem(items, "Delete");
     del?.onClick?.();
     expect(handlers.setDeletePath).toHaveBeenCalledWith("/work/a.ts");
+  });
+
+  it("explorer_labels_follow_bindings", async () => {
+    const menu = () =>
+      buildExplorerMenuItems({
+        file,
+        isDir: false,
+        parent: "/work",
+        rootPath: "/work",
+        isRemote: false,
+        handlers,
+      });
+    expect(findItem(menu(), "Rename")?.shortcut).toBe("F2");
+    await useShortcutStore.getState().setBinding("editor.rename", "ctrl+alt+r");
+    expect(findItem(menu(), "Rename")?.shortcut).toBe("Ctrl+Alt+R");
+    await useShortcutStore.getState().setBinding("editor.delete", "");
+    expect(findItem(menu(), "Delete")?.shortcut).toBeUndefined();
+    useShortcutStore.setState({ overrides: {} });
   });
 });

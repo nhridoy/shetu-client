@@ -1,6 +1,7 @@
 import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import {
+  displayBinding,
   isValidBinding,
   matchesBinding,
   resolveMod,
@@ -172,4 +173,12 @@ export function isShortcutDisabled(id: ShortcutId): boolean {
     // The macOS menu bar fires these itself.
     (!!d.menuItem && hasMacMenu())
   );
+}
+
+/** Menu label for a shortcut's current key; undefined when it has none. */
+export function shortcutLabel(
+  id: ShortcutId,
+  mac = isMac(),
+): string | undefined {
+  return displayBinding(effectiveBinding(id, undefined, mac), mac) || undefined;
 }

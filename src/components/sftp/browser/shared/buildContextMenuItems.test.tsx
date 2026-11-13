@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
+
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 import { buildContextMenuItems } from "./buildContextMenuItems";
 
@@ -112,5 +118,42 @@ describe("buildContextMenuItems", () => {
     const item = findItem(items, "Open in Editor");
     item?.onClick?.();
     expect(onOpenInEditor).toHaveBeenCalledWith(null);
+  });
+
+  describe("shortcut labels", () => {
+    const realPlatform = navigator.platform;
+    afterEach(() => {
+      Object.defineProperty(navigator, "platform", {
+        value: realPlatform,
+        configurable: true,
+      });
+      useShortcutStore.setState({ overrides: {} });
+    });
+
+    it("file_menu_labels_follow_bindings", async () => {
+      Object.defineProperty(navigator, "platform", {
+        value: "Linux x86_64",
+        configurable: true,
+      });
+      const menu = () =>
+        buildContextMenuItems(
+          file,
+          null,
+          baseActions,
+          vi.fn(),
+          new Set(["a.ts"]),
+        );
+      expect(findItem(menu(), "Copy")?.shortcut).toBe("Ctrl+C");
+      expect(findItem(menu(), "New Folder")?.shortcut).toBe("Ctrl+Shift+N");
+      expect(findItem(menu(), "Rename")?.shortcut).toBe("F2");
+      await useShortcutStore.getState().setBinding("files.copy", "ctrl+alt+c");
+      expect(findItem(menu(), "Copy")?.shortcut).toBe("Ctrl+Alt+C");
+      Object.defineProperty(navigator, "platform", {
+        value: "MacIntel",
+        configurable: true,
+      });
+      useShortcutStore.setState({ overrides: {} });
+      expect(findItem(menu(), "Cut")?.shortcut).toBe("⌘X");
+    });
   });
 });

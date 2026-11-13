@@ -1,4 +1,5 @@
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { shortcutLabel } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface ExplorerMenuHandlers {
@@ -64,12 +65,12 @@ export function buildExplorerMenuItems({
       { type: "separator" },
       {
         label: "Rename",
-        shortcut: "F2",
+        shortcut: shortcutLabel("editor.rename"),
         onClick: () => handlers.startRename(file),
       },
       {
         label: "Delete",
-        shortcut: "Del",
+        shortcut: shortcutLabel("editor.delete"),
         danger: true,
         onClick: () => handlers.setDeletePath(file.path),
       },
