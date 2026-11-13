@@ -53,32 +53,19 @@ export function useKeyboardShortcuts({
         onCloseTab();
       }
 
-      // Next tab: Ctrl+Tab / Cmd+Tab
-      if (modifier && e.key === "Tab" && onNextTab) {
+      // Next / previous tab: Ctrl+Tab, Ctrl+Shift+Tab (Cmd on macOS)
+      const switchTab = e.shiftKey ? onPrevTab : onNextTab;
+      if (modifier && e.key === "Tab" && switchTab) {
         e.preventDefault();
-        if (e.shiftKey) {
-          onPrevTab?.();
-        } else {
-          onNextTab();
-        }
+        switchTab();
       }
 
-      // Previous tab: Ctrl+Shift+Tab / Cmd+Shift+Tab
-      if (modifier && e.shiftKey && e.key === "Tab" && onPrevTab) {
+      // Split right / down: Ctrl+\, Ctrl+Shift+\ (Cmd on macOS). By key position:
+      // Shift+\ reads as "|" on US layouts.
+      const split = e.shiftKey ? onSplitVertical : onSplitHorizontal;
+      if (modifier && e.code === "Backslash" && split) {
         e.preventDefault();
-        onPrevTab();
-      }
-
-      // Split horizontal: Ctrl+\ / Cmd+\
-      if (modifier && e.key === "\\" && onSplitHorizontal) {
-        e.preventDefault();
-        onSplitHorizontal();
-      }
-
-      // Split vertical: Ctrl+Shift+\ / Cmd+Shift+\
-      if (modifier && e.shiftKey && e.key === "\\" && onSplitVertical) {
-        e.preventDefault();
-        onSplitVertical();
+        split();
       }
 
       // Focus mode: F11
