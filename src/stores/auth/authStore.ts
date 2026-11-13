@@ -165,6 +165,15 @@ function holdForDeletionChoice(
   useAuthStore.setState({ pendingDeletion: date, tokens, isLoading: false });
 }
 
+// After Keep: Rust may have refreshed while the dialog was open; keep its
+// session and read back the refresh token it persisted.
+async function tokensAfterKeep(held: TokenPair): Promise<TokenPair> {
+  return {
+    ...held,
+    refresh_token: (await loadRefreshToken()) ?? held.refresh_token,
+  };
+}
+
 function deletionRequestError(err: unknown): Error {
   const status = err instanceof AuthApiError ? err.status : null;
   if (status === 404)
@@ -555,15 +564,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
 
-        // On Keep, Rust may have refreshed while the dialog was open: keep its
-        // session and read back the refresh token it persisted.
-        const tokens = resumed
-          ? {
-              ...newTokens,
-              refresh_token:
-                (await loadRefreshToken()) ?? newTokens.refresh_token,
-            }
-          : newTokens;
+        const tokens = resumed ? await tokensAfterKeep(newTokens) : newTokens;
         if (!resumed) {
           await setAuthTokens(tokens.access_token, tokens.refresh_token);
         }
@@ -955,9 +956,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       const user = await authApi.me();
-      const finish = async () => {
+      const finish = async (resumed: boolean) => {
+        const tokens = resumed ? await tokensAfterKeep(newTokens) : newTokens;
+        if (resumed) await persistTokens(tokens);
         set({
-          tokens: newTokens,
+          tokens,
           isAuthenticated: true,
           serverAuthenticated: true,
           isUnlocked: false,
@@ -982,9 +985,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
       };
       if (user.deletion_scheduled_for) {
-        holdForDeletionChoice(user.deletion_scheduled_for, newTokens, finish);
+        holdForDeletionChoice(user.deletion_scheduled_for, newTokens, () =>
+          finish(true),
+        );
       } else {
-        await finish();
+        await finish(false);
       }
       return { needsSetup: false };
     } catch (err) {

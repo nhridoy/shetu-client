@@ -381,6 +381,31 @@ describe("grace-period sign-in", () => {
     expect(useAuthStore.getState().tokens?.refresh_token).toBe("r-rotated");
   });
 
+  it("keep_after_oauth_sign_in_keeps_the_rotated_session", async () => {
+    vi.mocked(startOAuthFlow).mockResolvedValue({
+      dest: "app",
+      accessToken: "a",
+      refreshToken: "r",
+    } as never);
+    vi.mocked(authApi.me).mockResolvedValue(scheduledUser);
+    vi.mocked(authApi.fetchKeyring).mockResolvedValue({
+      keyring,
+      salt_cl: "sc",
+    } as never);
+    await useAuthStore.getState().oauthStartFlow("github");
+    // Only what Keep does counts: the sign-in itself saved the pair once.
+    vi.mocked(setAuthTokens).mockClear();
+    vi.mocked(saveRefreshToken).mockClear();
+    // Rust refreshed (and persisted) a new pair while the dialog was open.
+    vi.mocked(loadRefreshToken).mockResolvedValue("r-rotated");
+    vi.mocked(authApi.cancelAccountDeletion).mockResolvedValue();
+    await useAuthStore.getState().cancelAccountDeletion();
+    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(saveRefreshToken).not.toHaveBeenCalledWith("r");
+    expect(useAuthStore.getState().tokens?.refresh_token).toBe("r-rotated");
+    expect(useAuthStore.getState().serverAuthenticated).toBe(true);
+  });
+
   it("cancel_after_purge_resets_with_deleted_notice", async () => {
     await useAuthStore.getState().login("a@example.com", "pw");
     vi.mocked(authApi.cancelAccountDeletion).mockRejectedValue(
