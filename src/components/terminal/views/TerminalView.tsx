@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useShortcutContext } from "@/hooks/useShortcutContext";
 import {
   onOpenCommandPalette,
   type PaletteItem,
@@ -33,9 +33,7 @@ interface TerminalViewProps {
 
 export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   const { tabs, activeTabId, splitPane } = useTerminalStore();
-  const [isFocusMode, setIsFocusMode] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
-  const [sidebarVisible, setSidebarVisible] = useState(true);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
 
@@ -65,20 +63,8 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     }
   }, [tabs, activeTabId, onSetActiveView]);
 
-  const handleFocusMode = useCallback(() => {
-    setIsFocusMode(!isFocusMode);
-  }, [isFocusMode]);
-
-  const handleToggleSidebar = useCallback(() => {
-    setSidebarVisible(!sidebarVisible);
-    window.dispatchEvent(
-      new CustomEvent("toggle-sidebar", {
-        detail: { visible: !sidebarVisible },
-      }),
-    );
-  }, [sidebarVisible]);
-
   useEffect(() => onOpenCommandPalette(() => setShowCommandPalette(true)), []);
+  useShortcutContext("terminal");
 
   const handleCommandSelect = useCallback(
     async (item: PaletteItem, run: boolean) => {
@@ -143,41 +129,36 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onPrevTab: handlePrevTab,
     onSplitHorizontal: () => handleSplit("horizontal"),
     onSplitVertical: () => handleSplit("vertical"),
-    onFocusMode: handleFocusMode,
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
-    onSaveWorkspace: () => console.log("Save workspace"),
-    onToggleSidebar: handleToggleSidebar,
   });
 
   if (!activeTab) return null;
 
   return (
-    <FocusMode isActive={isFocusMode} onExit={() => setIsFocusMode(false)}>
-      <div className="flex flex-col flex-1 min-h-0">
-        {/* All tabs rendered (kept mounted so SSH sessions persist); only active shown */}
-        <div className="relative flex-1 min-h-0 overflow-hidden bg-dark-950">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={`absolute inset-0 ${tab.id === activeTabId ? "" : "opacity-0 pointer-events-none"}`}
-            >
-              <PaneTree
-                tabId={tab.id}
-                node={tab.root}
-                activePaneId={tab.activePaneId}
-                isActiveTab={tab.id === activeTabId}
-                onRestorePreset={handleRestorePreset}
-              />
-            </div>
-          ))}
-        </div>
-
-        <CommandAutocomplete
-          isVisible={showCommandPalette}
-          onSelect={handleCommandSelect}
-          onClose={() => setShowCommandPalette(false)}
-        />
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* All tabs rendered (kept mounted so SSH sessions persist); only active shown */}
+      <div className="relative flex-1 min-h-0 overflow-hidden bg-dark-950">
+        {tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={`absolute inset-0 ${tab.id === activeTabId ? "" : "opacity-0 pointer-events-none"}`}
+          >
+            <PaneTree
+              tabId={tab.id}
+              node={tab.root}
+              activePaneId={tab.activePaneId}
+              isActiveTab={tab.id === activeTabId}
+              onRestorePreset={handleRestorePreset}
+            />
+          </div>
+        ))}
       </div>
-    </FocusMode>
+
+      <CommandAutocomplete
+        isVisible={showCommandPalette}
+        onSelect={handleCommandSelect}
+        onClose={() => setShowCommandPalette(false)}
+      />
+    </div>
   );
 }

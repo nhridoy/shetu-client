@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useShortcut } from "@/hooks/useShortcut";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface UseFileKeyboardShortcutsOptions {
@@ -61,6 +62,38 @@ export function useFileKeyboardShortcuts({
   onDismissDeleteConfirm,
   onDismissPasteConflicts,
 }: UseFileKeyboardShortcutsOptions) {
+  // Shortcuts pause in another pane and while a dialog owns the keyboard.
+  const enabled =
+    !(activePaneId && paneId && activePaneId !== paneId) &&
+    !deleteConfirm &&
+    !pasteConflicts;
+  const when = (cb?: () => void) =>
+    [() => cb?.(), { enabled: enabled && !!cb }] as const;
+  useShortcut("files.copy", ...when(onCopy));
+  useShortcut("files.cut", ...when(onCut));
+  useShortcut("files.paste", ...when(onPaste));
+  useShortcut("files.newFile", ...when(onNewFile));
+  useShortcut("files.newFolder", ...when(onNewFolder));
+  useShortcut("files.selectAll", ...when(onSelectAll));
+  useShortcut("files.refresh", ...when(onRefresh));
+  useShortcut("files.up", ...when(onNavigateUp));
+  useShortcut(
+    "files.rename",
+    ...when(() => {
+      if (selectedFiles.size !== 1) return;
+      const name = [...selectedFiles][0];
+      const file = files.find((f) => f.name === name);
+      if (file) onRename(file);
+    }),
+  );
+  useShortcut(
+    "files.delete",
+    ...when(() => {
+      if (selectedFiles.size > 0) onDelete();
+    }),
+  );
+
+  // Dialog keys and Escape.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // Active pane gating (remote multi-pane)
@@ -101,70 +134,17 @@ export function useFileKeyboardShortcuts({
         return;
       }
 
-      // Skip when typing in inputs
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-
-      const ctrl = e.ctrlKey || e.metaKey;
-      const shift = e.shiftKey;
-
-      if (ctrl && !shift && e.key === "c") {
-        e.preventDefault();
-        onCopy();
-      } else if (ctrl && !shift && e.key === "x") {
-        e.preventDefault();
-        onCut();
-      } else if (ctrl && !shift && e.key === "v") {
-        e.preventDefault();
-        onPaste();
-      } else if (ctrl && !shift && e.key === "n" && onNewFile) {
-        e.preventDefault();
-        onNewFile();
-      } else if (
-        ctrl &&
-        shift &&
-        (e.key === "N" || e.key === "n") &&
-        onNewFolder
-      ) {
-        e.preventDefault();
-        onNewFolder();
-      } else if (ctrl && e.key === "a" && onSelectAll) {
-        e.preventDefault();
-        onSelectAll();
-      } else if (e.key === "F2" && selectedFiles.size === 1) {
-        e.preventDefault();
-        const name = [...selectedFiles][0];
-        const file = files.find((f) => f.name === name);
-        if (file) onRename(file);
-      } else if (e.key === "F5") {
-        e.preventDefault();
-        onRefresh();
-      } else if (e.key === "Delete" && selectedFiles.size > 0) {
-        e.preventDefault();
-        onDelete();
-      } else if (e.key === "Backspace") {
-        e.preventDefault();
-        onNavigateUp();
-      } else if (e.key === "Escape") {
-        onClearSelection();
+      // Escape clears the selection (not a rebindable shortcut).
+      if (e.key === "Escape") {
+        const target = e.target as HTMLElement;
+        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA")
+          onClearSelection();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [
-    selectedFiles,
-    files,
-    onCopy,
-    onCut,
-    onPaste,
-    onDelete,
-    onRename,
-    onRefresh,
-    onNavigateUp,
     onClearSelection,
-    onNewFile,
-    onNewFolder,
-    onSelectAll,
     activePaneId,
     paneId,
     deleteConfirm,

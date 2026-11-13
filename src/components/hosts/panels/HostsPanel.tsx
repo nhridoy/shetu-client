@@ -5,13 +5,14 @@ import {
   MagnifyingGlassIcon,
   PlusIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { DraggableHostCard } from "@/components/hosts/cards/DraggableHostCard";
 import { DroppableGroupCard } from "@/components/hosts/cards/DroppableGroupCard";
 import { BreadcrumbDropTarget } from "@/components/hosts/panels/BreadcrumbDropTarget";
 import { Button } from "@/components/ui/Button";
 import { EmptyActionState } from "@/components/ui/EmptyActionState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
+import { useShortcut } from "@/hooks/useShortcut";
 import {
   filterHosts,
   getAncestors,
@@ -79,23 +80,9 @@ export default function HostsPanel({
       return next;
     });
 
-  // "/" focuses search, unless the user is already typing somewhere.
+  // Focuses search ("/" by default), unless the user is already typing somewhere.
   const searchRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      if (
-        e.key !== "/" ||
-        el.isContentEditable ||
-        ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)
-      )
-        return;
-      e.preventDefault();
-      searchRef.current?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useShortcut("app.searchHosts", () => searchRef.current?.focus());
 
   return (
     <div>

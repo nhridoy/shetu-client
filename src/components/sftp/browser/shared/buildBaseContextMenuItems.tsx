@@ -8,6 +8,7 @@ import {
   TrashIcon,
 } from "@phosphor-icons/react";
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { shortcutLabel } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface BaseContextMenuActions {
@@ -54,13 +55,13 @@ export function buildBaseContextMenuItems({
     items.push({
       label: "Copy",
       icon: <CopyIcon className="w-4 h-4" />,
-      shortcut: "Ctrl+C",
+      shortcut: shortcutLabel("files.copy"),
       onClick: actions.onCopy,
     });
     items.push({
       label: "Cut",
       icon: <ScissorsIcon className="w-4 h-4" />,
-      shortcut: "Ctrl+X",
+      shortcut: shortcutLabel("files.cut"),
       onClick: actions.onCut,
     });
   }
@@ -68,7 +69,7 @@ export function buildBaseContextMenuItems({
   items.push({
     label: "Paste",
     icon: <ClipboardTextIcon className="w-4 h-4" />,
-    shortcut: "Ctrl+V",
+    shortcut: shortcutLabel("files.paste"),
     disabled: !hasClipboard,
     onClick: actions.onPaste,
   });
@@ -77,13 +78,13 @@ export function buildBaseContextMenuItems({
   items.push({
     label: "New Folder",
     icon: <FolderPlusIcon className="w-4 h-4" />,
-    shortcut: "Ctrl+Shift+N",
+    shortcut: shortcutLabel("files.newFolder"),
     onClick: actions.onNewFolder,
   });
   items.push({
     label: "New File",
     icon: <FilePlusIcon className="w-4 h-4" />,
-    shortcut: "Ctrl+N",
+    shortcut: shortcutLabel("files.newFile"),
     onClick: actions.onNewFile,
   });
 
@@ -92,14 +93,14 @@ export function buildBaseContextMenuItems({
     items.push({
       label: "Rename",
       icon: <PencilSimpleIcon className="w-4 h-4" />,
-      shortcut: "F2",
+      shortcut: shortcutLabel("files.rename"),
       onClick: () => onRename(menuFile),
     });
     items.push({ type: "separator" as const });
     items.push({
       label: "Delete",
       icon: <TrashIcon className="w-4 h-4" />,
-      shortcut: "Del",
+      shortcut: shortcutLabel("files.delete"),
       danger: true,
       onClick: () => {
         // If right-clicked file is part of a multi-selection, delete all selected

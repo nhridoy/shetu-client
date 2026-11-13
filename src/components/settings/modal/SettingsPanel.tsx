@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import settingsTabs from "@/components/settings/modal/SettingsTabs";
 import AdvancedTab from "@/components/settings/tabs/AdvancedTab";
 import AppearanceTab from "@/components/settings/tabs/AppearanceTab";
+import KeyboardTab from "@/components/settings/tabs/KeyboardTab";
 import SecurityTab from "@/components/settings/tabs/SecurityTab";
 import SshTab from "@/components/settings/tabs/SshTab";
 import TerminalTab from "@/components/settings/tabs/TerminalTab";
@@ -25,7 +26,7 @@ export default function SettingsPanel() {
   const tabs = useTerminalStore((s) => s.tabs);
 
   const [activeTab, setActiveTab] = useState<
-    "appearance" | "terminal" | "ssh" | "security" | "advanced"
+    "appearance" | "terminal" | "keyboard" | "ssh" | "security" | "advanced"
   >("appearance");
 
   const [knownHosts, setKnownHosts] = useState<KnownHost[]>([]);
@@ -170,6 +171,7 @@ export default function SettingsPanel() {
             }
           />
         )}
+        {activeTab === "keyboard" && <KeyboardTab />}
         {activeTab === "ssh" && (
           <SshTab
             knownHosts={knownHosts}

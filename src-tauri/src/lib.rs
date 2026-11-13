@@ -9,6 +9,7 @@ mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
 mod menu;
+mod menu_accelerators;
 mod oauth;
 mod offline_auth;
 mod session_history;
@@ -1652,6 +1653,7 @@ pub fn run() {
         .manage(team_sync::TeamSyncLocks::default())
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
+            menu_accelerators::set_menu_accelerators,
             update::update_installation_kind,
             get_device_id,
             history_start_attempt,

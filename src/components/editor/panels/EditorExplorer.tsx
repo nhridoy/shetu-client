@@ -10,7 +10,10 @@ import {
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { buildExplorerMenuItems } from "@/components/editor/panels/explorerMenu";
+import {
+  buildExplorerMenuItems,
+  explorerKeyAction,
+} from "@/components/editor/panels/explorerMenu";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import ContextMenu, { type ContextMenuItem } from "@/components/ui/ContextMenu";
 import PromptDialog from "@/components/ui/PromptDialog";
@@ -576,19 +579,13 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
       if (!selectedPath) return;
       const item = findItem(selectedPath);
       if (!item) return;
-      if (e.key === "F2") {
-        e.preventDefault();
-        startRename(item);
-      } else if (e.key === "Delete") {
-        e.preventDefault();
-        setDeletePath(selectedPath);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        handleRowClick(item);
-      } else if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        copyPath(selectedPath);
-      }
+      const action = explorerKeyAction(e.nativeEvent);
+      if (!action) return;
+      e.preventDefault();
+      if (action === "rename") startRename(item);
+      else if (action === "delete") setDeletePath(selectedPath);
+      else if (action === "copyPath") copyPath(selectedPath);
+      else handleRowClick(item);
     },
     [selectedPath, findItem, startRename, handleRowClick, copyPath],
   );

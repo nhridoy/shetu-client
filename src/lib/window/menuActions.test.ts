@@ -1,36 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { SHORTCUTS } from "@/lib/shortcuts/registry";
 import menuRs from "../../../src-tauri/src/menu.rs?raw";
-import {
-  classifyQuickConnectKey,
-  isMenuActionId,
-  isMenuOwnedShortcut,
-  isModalOpen,
-  MENU_ACTION_IDS,
-} from "./menuActions";
-
-const key = (k: string, mods: Partial<KeyboardEvent> = {}) =>
-  ({
-    key: k,
-    metaKey: false,
-    ctrlKey: false,
-    altKey: false,
-    shiftKey: false,
-    ...mods,
-  }) as KeyboardEvent;
+import { isMenuActionId, isModalOpen, MENU_ACTION_IDS } from "./menuActions";
 
 describe("menu actions", () => {
-  it("claims only ⌘T ⌘W ⌘K ⌘, on mac", () => {
-    for (const k of ["t", "w", "k", ",", "K"]) {
-      expect(isMenuOwnedShortcut(key(k, { metaKey: true }), true)).toBe(true);
-    }
-    expect(isMenuOwnedShortcut(key("t", { metaKey: true }), false)).toBe(false);
-    expect(isMenuOwnedShortcut(key("t", { ctrlKey: true }), true)).toBe(false);
-    expect(
-      isMenuOwnedShortcut(key("t", { metaKey: true, shiftKey: true }), true),
-    ).toBe(false);
-    expect(isMenuOwnedShortcut(key("s", { metaKey: true }), true)).toBe(false);
-  });
-
   it("validates ids", () => {
     expect(MENU_ACTION_IDS.every(isMenuActionId)).toBe(true);
     expect(isMenuActionId("quit")).toBe(false);
@@ -42,30 +15,9 @@ describe("menu actions", () => {
     for (const id of MENU_ACTION_IDS) expect(menuRs).toContain(`"${id}"`);
   });
 
-  it("leaves ⌘K untouched for the macOS menu, claims it elsewhere", () => {
-    // The page must not preventDefault ⌘K on macOS or the menu never sees it.
-    expect(
-      classifyQuickConnectKey(key("k", { metaKey: true }), true, true),
-    ).toBe("menu");
-    expect(
-      classifyQuickConnectKey(key("k", { metaKey: true }), true, false),
-    ).toBe("open");
-    expect(
-      classifyQuickConnectKey(key("k", { ctrlKey: true }), false, false),
-    ).toBe("open");
-    expect(
-      classifyQuickConnectKey(key("k", { ctrlKey: true }), true, true),
-    ).toBeNull();
-    expect(
-      classifyQuickConnectKey(
-        key("k", { ctrlKey: true, shiftKey: true }),
-        false,
-        false,
-      ),
-    ).toBeNull();
-    expect(
-      classifyQuickConnectKey(key("j", { ctrlKey: true }), false, false),
-    ).toBeNull();
+  it("every menu item is a shortcut in the registry", () => {
+    const items = SHORTCUTS.flatMap((d) => (d.menuItem ? [d.menuItem] : []));
+    expect([...items].sort()).toEqual([...MENU_ACTION_IDS].sort());
   });
 
   it("detects an open modal dialog", () => {

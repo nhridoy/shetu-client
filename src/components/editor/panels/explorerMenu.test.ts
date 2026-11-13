@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
+
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
-import { buildExplorerMenuItems } from "./explorerMenu";
+import { buildExplorerMenuItems, explorerKeyAction } from "./explorerMenu";
 
 const file: FileItem = {
   name: "a.ts",
@@ -134,5 +140,63 @@ describe("buildExplorerMenuItems", () => {
     const del = findItem(items, "Delete");
     del?.onClick?.();
     expect(handlers.setDeletePath).toHaveBeenCalledWith("/work/a.ts");
+  });
+
+  it("explorer_labels_follow_bindings", async () => {
+    const menu = () =>
+      buildExplorerMenuItems({
+        file,
+        isDir: false,
+        parent: "/work",
+        rootPath: "/work",
+        isRemote: false,
+        handlers,
+      });
+    expect(findItem(menu(), "Rename")?.shortcut).toBe("F2");
+    await useShortcutStore.getState().setBinding("editor.rename", "ctrl+alt+r");
+    expect(findItem(menu(), "Rename")?.shortcut).toBe("Ctrl+Alt+R");
+    await useShortcutStore.getState().setBinding("editor.delete", "");
+    expect(findItem(menu(), "Delete")?.shortcut).toBeUndefined();
+    useShortcutStore.setState({ overrides: {} });
+  });
+
+  const keyOn = (tagName: string, init: Partial<KeyboardEvent>) =>
+    ({
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+      ...init,
+      target: { tagName },
+    }) as unknown as KeyboardEvent;
+
+  it("keys_typed_in_the_rename_box_are_ignored", () => {
+    expect(
+      explorerKeyAction(keyOn("INPUT", { key: "Delete", code: "Delete" })),
+    ).toBeNull();
+    expect(
+      explorerKeyAction(keyOn("INPUT", { key: "Enter", code: "Enter" })),
+    ).toBeNull();
+    expect(
+      explorerKeyAction(keyOn("DIV", { key: "Delete", code: "Delete" })),
+    ).toBe("delete");
+    expect(explorerKeyAction(keyOn("DIV", { key: "F2", code: "F2" }))).toBe(
+      "rename",
+    );
+  });
+
+  it("copy_path_on_ctrl_enter_beats_open", async () => {
+    await useShortcutStore
+      .getState()
+      .setBinding("editor.copyPath", "ctrl+enter");
+    expect(
+      explorerKeyAction(
+        keyOn("DIV", { key: "Enter", code: "Enter", ctrlKey: true }),
+      ),
+    ).toBe("copyPath");
+    expect(
+      explorerKeyAction(keyOn("DIV", { key: "Enter", code: "Enter" })),
+    ).toBe("open");
+    useShortcutStore.setState({ overrides: {} });
   });
 });

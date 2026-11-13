@@ -12,6 +12,8 @@ import { isSortable } from "@dnd-kit/react/sortable";
 import { useEffect } from "react";
 import QuickOpen from "@/components/editor/panels/QuickOpen";
 import EditorPane from "@/components/editor/views/EditorPane";
+import { useShortcut } from "@/hooks/useShortcut";
+import { useShortcutContext } from "@/hooks/useShortcutContext";
 import type { DropSide } from "@/lib/common/paneLayout";
 import { useDragStore } from "@/stores/dragStore";
 import { useEditorStore } from "@/stores/editor/editorStore";
@@ -56,33 +58,22 @@ export default function EditorLayout() {
   const setEditorViewDrop = useDragStore((s) => s.setEditorViewDrop);
   const quickOpenOpen = useEditorStore((s) => s.quickOpenOpen);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const isMac = navigator.platform.includes("Mac");
-      const modifier = isMac ? e.metaKey : e.ctrlKey;
-      if (modifier && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "p") {
-        // Quick open works from any focus, like VS Code, so no target check
-        e.preventDefault();
-        e.stopPropagation();
-        useEditorStore.getState().setQuickOpenOpen(true);
-        return;
-      }
-      if (modifier && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
-        const target = e.target as HTMLElement | null;
-        if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") {
-          return;
-        }
-        // Capture phase so editors that stopPropagation on keydown
-        // (CodeMirror) cannot swallow the shortcut
-        e.preventDefault();
-        e.stopPropagation();
-        const store = useEditorStore.getState();
-        store.setSidebarVisible(!store.sidebarVisible);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  useShortcutContext("editor");
+  // Capture phase so CodeMirror, which handles keys itself, can't swallow these.
+  // Quick open works from any focus, like VS Code.
+  useShortcut(
+    "editor.quickOpen",
+    () => useEditorStore.getState().setQuickOpenOpen(true),
+    { capture: true },
+  );
+  useShortcut(
+    "editor.toggleFiles",
+    () => {
+      const store = useEditorStore.getState();
+      store.setSidebarVisible(!store.sidebarVisible);
+    },
+    { capture: true, contentEditable: true },
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
     const { source } = event.operation;

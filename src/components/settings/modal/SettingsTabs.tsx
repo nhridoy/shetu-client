@@ -1,5 +1,6 @@
 import {
   GearSixIcon,
+  KeyboardIcon,
   LightningIcon,
   PaletteIcon,
   ShieldCheckIcon,
@@ -23,6 +24,11 @@ const settingsTabs: SettingsTab[] = [
     id: "terminal",
     label: "Terminal",
     icon: <TerminalWindowIcon className="w-4 h-4" />,
+  },
+  {
+    id: "keyboard",
+    label: "Keyboard",
+    icon: <KeyboardIcon className="w-4 h-4" />,
   },
   {
     id: "ssh",

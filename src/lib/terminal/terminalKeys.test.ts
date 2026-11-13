@@ -6,7 +6,11 @@ const clipboard = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboard);
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
 
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import { handleTerminalKey } from "./terminalKeys";
 
 function terminal(selection = "") {
@@ -37,6 +41,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   clipboard.readText.mockResolvedValue("ls -la");
   clipboard.writeText.mockResolvedValue(undefined);
+  useShortcutStore.setState({ overrides: {}, recording: false });
 });
 
 describe("handleTerminalKey", () => {
@@ -85,16 +90,9 @@ describe("handleTerminalKey", () => {
     );
   });
 
-  it("macos_keeps_its_own_keys", () => {
+  it("macos_copy_paste_have_no_binding", () => {
     const t = terminal("x");
-    // Cmd+C/V go through the Edit menu; Ctrl+\ is the shell's on a Mac.
-    expect(
-      handleTerminalKey(
-        key({ key: "\\", code: "Backslash", ctrlKey: true }),
-        t,
-        true,
-      ),
-    ).toBe(true);
+    // Cmd+C/V go through the Edit menu on a Mac.
     expect(
       handleTerminalKey(
         key({ key: "C", code: "KeyC", ctrlKey: true, shiftKey: true }),
@@ -103,5 +101,30 @@ describe("handleTerminalKey", () => {
       ),
     ).toBe(true);
     expect(clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("app_shortcuts_are_held_back", () => {
+    const e = key({ key: "T", code: "KeyT", ctrlKey: true, shiftKey: true });
+    expect(handleTerminalKey(e, terminal(), false)).toBe(false);
+  });
+
+  it("ctrl_w_reaches_the_shell", () => {
+    const e = key({ key: "w", code: "KeyW", ctrlKey: true });
+    expect(handleTerminalKey(e, terminal(), false)).toBe(true);
+  });
+
+  it("rebound_copy_key_copies", async () => {
+    await useShortcutStore.getState().setBinding("terminal.copy", "ctrl+alt+c");
+    const t = terminal("hi");
+    const rebound = key({
+      key: "c",
+      code: "KeyC",
+      ctrlKey: true,
+      altKey: true,
+    });
+    expect(handleTerminalKey(rebound, t, false)).toBe(false);
+    expect(clipboard.writeText).toHaveBeenCalledWith("hi");
+    const old = key({ key: "C", code: "KeyC", ctrlKey: true, shiftKey: true });
+    expect(handleTerminalKey(old, t, false)).toBe(true);
   });
 });

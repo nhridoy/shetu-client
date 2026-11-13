@@ -1,5 +1,5 @@
 import type { Extension } from "@codemirror/state";
-import { EditorView as CodeMirrorView, keymap } from "@codemirror/view";
+import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { CollisionPriority } from "@dnd-kit/abstract";
 import { closestCenter, pointerIntersection } from "@dnd-kit/collision";
 import { useDroppable } from "@dnd-kit/react";
@@ -38,7 +38,12 @@ import {
 } from "@/lib/sftp/fileKind";
 import { useDragStore } from "@/stores/dragStore";
 import { useEditorStore } from "@/stores/editor/editorStore";
+import {
+  effectiveBinding,
+  useShortcutStore,
+} from "@/stores/shortcuts/shortcutStore";
 import { useThemeStore } from "@/stores/themeStore";
+import { saveKeymapFor } from "./editorSaveKey";
 
 interface EditorViewProps {
   viewId: string;
@@ -234,22 +239,17 @@ export default function EditorView({
     }
   }, [activePath, content, reconnectToastOptions]);
 
+  const saveBinding = useShortcutStore((s) =>
+    effectiveBinding("editor.save", s),
+  );
   const saveKeymap = useMemo(
-    () =>
-      keymap.of([
-        {
-          key: "Mod-s",
-          run: () => {
-            void handleSave();
-            return true;
-          },
-        },
-      ]),
-    [handleSave],
+    () => saveKeymapFor(saveBinding, () => void handleSave()),
+    [saveBinding, handleSave],
   );
 
   const extensions = useMemo(() => {
-    const list: Extension[] = [basicSetup(), saveKeymap];
+    const list: Extension[] = [basicSetup()];
+    if (saveKeymap) list.push(saveKeymap);
     const lang = languageFor(activePath ?? "");
     if (lang) list.push(lang);
     list.push(...lintExtensionsFor(activePath ?? ""));

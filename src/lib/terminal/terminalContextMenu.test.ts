@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const clipboard = vi.hoisted(() => ({
   readText: vi.fn(),
@@ -6,8 +6,12 @@ const clipboard = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => clipboard);
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
 
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import { terminalContextMenuItems } from "./terminalContextMenu";
 
 function terminal(selection = "") {
@@ -33,6 +37,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   clipboard.readText.mockResolvedValue("ls -la");
   clipboard.writeText.mockResolvedValue(undefined);
+  useShortcutStore.setState({ overrides: {} });
+});
+const realPlatform = navigator.platform;
+afterEach(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: realPlatform,
+    configurable: true,
+  });
 });
 
 describe("terminalContextMenuItems", () => {
@@ -80,53 +92,53 @@ describe("terminalContextMenuItems", () => {
     expect(openSnippets).toHaveBeenCalled();
   });
 
+  const shortcuts = (platform: string) => {
+    Object.defineProperty(navigator, "platform", {
+      value: platform,
+      configurable: true,
+    });
+    const items = terminalContextMenuItems(terminal(), vi.fn(), vi.fn());
+    return Object.fromEntries(
+      items.flatMap((i) => ("label" in i ? [[i.label, i.shortcut]] : [])),
+    );
+  };
+
   it("shows_shortcuts_that_work_on_each_platform", () => {
-    const real = navigator.platform;
-    const shortcuts = (platform: string) => {
-      Object.defineProperty(navigator, "platform", {
-        value: platform,
-        configurable: true,
-      });
-      const items = terminalContextMenuItems(terminal(), vi.fn(), vi.fn());
-      return Object.fromEntries(
-        items.flatMap((i) => ("label" in i ? [[i.label, i.shortcut]] : [])),
-      );
-    };
     expect(shortcuts("Linux x86_64")).toMatchObject({
       Copy: "Ctrl+Shift+C",
       Paste: "Ctrl+Shift+V",
       "Select All": undefined,
+      "Snippets…": "Ctrl+Shift+P",
       Clear: undefined,
       "Split Right": "Ctrl+\\",
       "Split Down": "Ctrl+Shift+\\",
     });
     expect(shortcuts("MacIntel")).toMatchObject({
-      Copy: "Cmd+C",
-      Paste: "Cmd+V",
-      "Split Right": "Cmd+\\",
-      "Split Down": "Cmd+Shift+\\",
-    });
-    Object.defineProperty(navigator, "platform", {
-      value: real,
-      configurable: true,
+      Copy: "⌘C",
+      Paste: "⌘V",
+      "Snippets…": "⇧⌘P",
+      "Split Right": "⌘\\",
+      "Split Down": "⇧⌘\\",
     });
   });
 
-  it("snippets_shows_the_platform_shortcut", () => {
-    const real = navigator.platform;
-    const label = (platform: string) => {
-      Object.defineProperty(navigator, "platform", {
-        value: platform,
-        configurable: true,
-      });
-      const items = terminalContextMenuItems(terminal(), vi.fn(), vi.fn());
-      return item(items, "Snippets…").shortcut;
-    };
-    expect(label("Linux x86_64")).toBe("Ctrl+Shift+P");
-    expect(label("MacIntel")).toBe("Cmd+Shift+P");
+  it("labels_follow_a_rebinding", async () => {
     Object.defineProperty(navigator, "platform", {
-      value: real,
+      value: "Linux x86_64",
       configurable: true,
     });
+    await useShortcutStore
+      .getState()
+      .setBinding("terminal.palette", "ctrl+alt+p");
+    expect(shortcuts("Linux x86_64")["Snippets…"]).toBe("Ctrl+Alt+P");
+  });
+
+  it("empty_binding_has_no_label", async () => {
+    Object.defineProperty(navigator, "platform", {
+      value: "Linux x86_64",
+      configurable: true,
+    });
+    await useShortcutStore.getState().setBinding("terminal.splitRight", "");
+    expect(shortcuts("Linux x86_64")["Split Right"]).toBeUndefined();
   });
 });

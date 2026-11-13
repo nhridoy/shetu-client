@@ -1,6 +1,7 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { toast } from "sonner";
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
+import { shortcutLabel } from "@/stores/shortcuts/shortcutStore";
 
 /** The slice of an xterm Terminal the menu acts on. */
 export interface TerminalMenuTarget {
@@ -46,26 +47,24 @@ export function terminalContextMenuItems(
     action();
     term.focus();
   };
-  const mac = navigator.platform.includes("Mac");
-  const mod = mac ? "Cmd" : "Ctrl";
   return [
     {
       label: "Copy",
       // Plain Ctrl+C belongs to the shell; macOS copies through the Edit menu.
-      shortcut: mac ? "Cmd+C" : "Ctrl+Shift+C",
+      shortcut: shortcutLabel("terminal.copy"),
       disabled: !term.hasSelection(),
       onClick: () => copySelection(term),
     },
     {
       label: "Paste",
-      shortcut: mac ? "Cmd+V" : "Ctrl+Shift+V",
+      shortcut: shortcutLabel("terminal.paste"),
       onClick: () => pasteClipboard(term),
     },
     { label: "Select All", onClick: then(() => term.selectAll()) },
     { type: "separator" },
     {
       label: "Snippets…",
-      shortcut: `${mod}+Shift+P`,
+      shortcut: shortcutLabel("terminal.palette"),
       onClick: openSnippets,
     },
     { type: "separator" },
@@ -73,12 +72,12 @@ export function terminalContextMenuItems(
     { type: "separator" },
     {
       label: "Split Right",
-      shortcut: `${mod}+\\`,
+      shortcut: shortcutLabel("terminal.splitRight"),
       onClick: () => split("horizontal"),
     },
     {
       label: "Split Down",
-      shortcut: `${mod}+Shift+\\`,
+      shortcut: shortcutLabel("terminal.splitDown"),
       onClick: () => split("vertical"),
     },
   ];
