@@ -1,5 +1,6 @@
 import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
+import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
   authApi,
@@ -44,11 +45,33 @@ import {
 } from "../../lib/keychain/keychain";
 import { cancelOAuthFlow, startOAuthFlow } from "../../lib/oauth/oauth";
 
-// A rejected server session pauses sync and retains encrypted local work.
-// Only an explicit logout clears this device.
+// A rejected server session pauses sync and retains encrypted local work,
+// unless the server confirms the account is being deleted.
 onSessionRevoked(() => {
-  void suspendServerSession();
+  void handleRevokedSession();
 });
+
+export async function handleRevokedSession(): Promise<void> {
+  const s = useAuthStore.getState();
+  const userId = s.user?.id ?? s.localAccessAccountId;
+  if (!userId) return suspendServerSession();
+  let res: Awaited<ReturnType<typeof authApi.accountStatus>>;
+  try {
+    res = await authApi.accountStatus(userId);
+  } catch {
+    // Offline or server error: never wipe on doubt.
+    return suspendServerSession();
+  }
+  if (res.status === "active") return suspendServerSession();
+  const failures = await resetDevice(teardownSession);
+  if (failures.length) console.warn("device reset incomplete:", failures);
+  useAuthStore.setState({
+    deletionNotice:
+      res.status === "deleted"
+        ? { kind: "deleted" }
+        : { kind: "scheduled", date: res.deletion_scheduled_for ?? "" },
+  });
+}
 
 interface AuthState {
   user: User | null;
@@ -64,6 +87,10 @@ interface AuthState {
   pendingOAuth: { provider: string; setupCode: string; userId: string } | null;
   pendingVerificationEmail: string | null;
   alwaysAsk: boolean;
+  deletionNotice:
+    | { kind: "scheduled"; date: string }
+    | { kind: "deleted" }
+    | null;
 
   prelogin: (email: string) => Promise<{
     nonce: string;
@@ -245,6 +272,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   pendingOAuth: null,
   pendingVerificationEmail: null,
   alwaysAsk: false,
+  deletionNotice: null,
 
   prelogin: async (email: string) => {
     const res = await authApi.prelogin(email);
