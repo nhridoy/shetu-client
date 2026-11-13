@@ -449,6 +449,30 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 
 export const getSession = (paneId: string) => sessions.get(paneId);
 
+/** Types `text` at the prompt like a paste; `run` also presses Enter. */
+export function insertIntoTerminal(
+  term: Pick<XTerminal, "paste" | "input" | "focus">,
+  text: string,
+  run: boolean,
+): void {
+  // Trailing newlines would run the command even when the user only inserts.
+  term.paste(text.replace(/[\r\n]+$/, ""));
+  if (run) term.input("\r");
+  term.focus();
+}
+
+/** Inserts into a pane's terminal; false when the pane has no live session. */
+export function insertIntoPane(
+  paneId: string,
+  text: string,
+  run: boolean,
+): boolean {
+  const session = sessions.get(paneId);
+  if (!session) return false;
+  insertIntoTerminal(session.xterm, text, run);
+  return true;
+}
+
 export function getOrCreateSession(params: SessionParams): Session {
   const existing = sessions.get(params.paneId);
   if (existing) {
