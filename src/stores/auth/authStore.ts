@@ -984,6 +984,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
       await persistTokens(newTokens);
       const user = await authApi.me();
+      try {
+        await refuseOtherEnrolledAccount(user.id);
+      } catch (refusal) {
+        // Drop this account's session, but keep the enrolled account's local data.
+        await persistTokens(null);
+        try {
+          await clearAuthTokens();
+        } catch {
+          // best effort
+        }
+        throw refusal;
+      }
       const finish = async (resumed: boolean) => {
         const tokens = resumed ? await tokensAfterKeep(newTokens) : newTokens;
         if (resumed) await persistTokens(tokens);

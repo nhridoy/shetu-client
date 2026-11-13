@@ -69,6 +69,7 @@ import { resetDevice } from "@/lib/account/resetDevice";
 import { AuthApiError, authApi } from "@/lib/api/auth";
 import {
   clearAuthTokens,
+  clearKeychain,
   loadRefreshToken,
   lockSession,
   saveRefreshToken,
@@ -566,6 +567,31 @@ describe("sign-in and sign-out", () => {
     expect(saveRefreshToken).not.toHaveBeenCalled();
     expect(s.pendingDeletion).toBeNull();
     expect(s.error).toMatch("Another account is enrolled on this device");
+    expect(saveOfflineIdentity).not.toHaveBeenCalled();
+    expect(wipeLocalData).not.toHaveBeenCalled();
+    expect(resetDevice).not.toHaveBeenCalled();
+  });
+
+  it("scheduled_oauth_for_a_different_enrolled_account_is_refused", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { ...user, id: "other" },
+      salt_cl: "sc",
+      wrapped_keyring: keyring,
+    } as never);
+    vi.mocked(startOAuthFlow).mockResolvedValue({
+      dest: "app",
+      accessToken: "a",
+      refreshToken: "r",
+    } as never);
+    vi.mocked(authApi.me).mockResolvedValue(scheduledUser);
+    await expect(
+      useAuthStore.getState().oauthStartFlow("github"),
+    ).rejects.toThrow("Another account is enrolled on this device");
+    const s = useAuthStore.getState();
+    expect(s.pendingDeletion).toBeNull();
+    expect(s.error).toMatch("Another account is enrolled on this device");
+    expect(clearAuthTokens).toHaveBeenCalled();
+    expect(clearKeychain).toHaveBeenCalled();
     expect(saveOfflineIdentity).not.toHaveBeenCalled();
     expect(wipeLocalData).not.toHaveBeenCalled();
     expect(resetDevice).not.toHaveBeenCalled();
