@@ -1,4 +1,4 @@
-import type { Group } from "@/stores/hosts/hostStore";
+import type { Group, Host } from "@/stores/hosts/hostStore";
 
 export function getChildren(groups: Group[], parentId: string): Group[] {
   return groups.filter((g) => g.parentId === parentId);
@@ -27,4 +27,30 @@ export function openGroupId(
   return selectedGroupId && groups.some((g) => g.id === selectedGroupId)
     ? selectedGroupId
     : null;
+}
+
+// Address and username stay encrypted in list state (decrypted per host on
+// demand), so search covers only the fields the list actually holds.
+type FilterableHost = Pick<Host, "name" | "tags">;
+
+/** Hosts matching the search text (name or tag) and any of the selected tags. */
+export function filterHosts<T extends FilterableHost>(
+  hosts: T[],
+  query: string,
+  tags: ReadonlySet<string>,
+): T[] {
+  const q = query.trim().toLowerCase();
+  return hosts.filter(
+    (h) =>
+      (tags.size === 0 || h.tags.some((t) => tags.has(t))) &&
+      (!q || [h.name, ...h.tags].some((v) => v.toLowerCase().includes(q))),
+  );
+}
+
+/** Each tag with how many hosts carry it, sorted by tag. */
+export function tagCounts(hosts: FilterableHost[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const h of hosts)
+    for (const t of new Set(h.tags)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => a.localeCompare(b));
 }

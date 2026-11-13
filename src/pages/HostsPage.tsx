@@ -34,8 +34,10 @@ export default function HostsPage() {
   };
 
   return (
-    <div className="flex-1 p-4 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto">
       <HostsPanel
+        // Remount per group so search and tag filters reset.
+        key={openGroup ?? "all"}
         selectedGroupId={openGroup}
         onSelectGroup={setSelectedGroupId}
         onNewGroup={(parentId) => {
