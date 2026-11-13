@@ -319,14 +319,18 @@ pub fn reset_device_files(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::ssh::SshSessions>,
 ) -> Result<Vec<String>, String> {
-    state
+    let hosts_cleared = state
         .known_hosts
         .lock()
         .map_err(|_| "known_hosts lock poisoned".to_string())?
         .clear();
     log::logger().flush();
     let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    Ok(clear_dir_files(&dir))
+    let mut failures = clear_dir_files(&dir);
+    if hosts_cleared.is_err() {
+        failures.push("known_hosts".to_string());
+    }
+    Ok(failures)
 }
 
 #[cfg(test)]
