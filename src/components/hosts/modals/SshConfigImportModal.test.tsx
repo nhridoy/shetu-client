@@ -7,10 +7,19 @@ const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   createHost: vi.fn(),
   importKey: vi.fn(),
+  run: null as null | (() => Promise<never>),
   hosts: [] as { id: string; name: string }[],
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
+vi.mock("@/lib/sshImport/sshImport", async (orig) => {
+  const actual = await orig<typeof import("@/lib/sshImport/sshImport")>();
+  return {
+    ...actual,
+    runSshImport: (...a: Parameters<typeof actual.runSshImport>) =>
+      h.run ? h.run() : actual.runSshImport(...a),
+  };
+});
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
 vi.mock("@/stores/hosts/hostStore", () => ({
   useHostStore: () => ({ hosts: h.hosts, createHost: h.createHost }),
@@ -62,6 +71,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = "";
   h.hosts = [];
+  h.run = null;
   h.createHost.mockImplementation(async (x) => ({ ...x }));
 });
 
@@ -104,5 +114,21 @@ describe("SshConfigImportModal", () => {
     expect(h.createHost).toHaveBeenCalledTimes(2);
     expect(h.createHost.mock.calls[0][1]).toEqual({ probeOs: false });
     expect(toast.success).toHaveBeenCalledWith("Imported 2 hosts and 1 keys");
+  });
+
+  it("unexpected import error keeps the list and marks created hosts as existing", async () => {
+    await mount({ hosts: [host("a"), host("b")], ignoredMatchFiles: [] });
+    h.run = async () => {
+      h.hosts = [{ id: "h1", name: "a" }];
+      throw new Error("boom");
+    };
+    const btn = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Import 2 hosts"),
+    ) as HTMLButtonElement;
+    await act(async () => btn.click());
+    expect(text()).toContain("Import stopped: boom");
+    expect(document.querySelectorAll('[role="checkbox"]')).toHaveLength(2);
+    expect(text()).toContain("already in Shetu");
+    expect(text()).toContain("Import 1 hosts and 0 keys");
   });
 });

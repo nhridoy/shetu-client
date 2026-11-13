@@ -76,6 +76,7 @@ export default function SshConfigImportModal({
 
   const submit = async () => {
     setBusy(true);
+    setError(null);
     try {
       const summary = await runSshImport(
         rows.filter((r) => r.existing || selected.includes(r)),
@@ -96,7 +97,7 @@ export default function SshConfigImportModal({
       if (summary.problems.length) setProblems(summary.problems);
       else onClose();
     } catch (e) {
-      setError(extractError(e, "Import failed"));
+      setError(`Import stopped: ${extractError(e, "Import failed")}`);
     } finally {
       setBusy(false);
     }
@@ -114,7 +115,7 @@ export default function SshConfigImportModal({
         ))}
       </ul>
     );
-  } else if (error) {
+  } else if (error && !preview) {
     body = <p className="text-sm text-red-500">{error}</p>;
   } else if (!preview) {
     body = <p className="text-sm text-dark-500">Reading ~/.ssh/config...</p>;
@@ -125,6 +126,7 @@ export default function SshConfigImportModal({
   } else {
     body = (
       <div className="space-y-4">
+        {error && <p className="text-sm text-red-500">{error}</p>}
         {preview.ignoredMatchFiles.length > 0 && (
           <p className="text-sm text-amber-400">
             Match blocks aren't supported and were ignored in:{" "}
