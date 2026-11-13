@@ -802,6 +802,20 @@ describe("sign-in and sign-out", () => {
     expect(returned).toEqual([expect.stringContaining("db locked")]);
   });
 
+  it("reset_teardown_reports_a_failed_keychain_delete", async () => {
+    // Rust still drops the access token and blocks refresh, then reports the error.
+    useAuthStore.setState({ user, localAccessAccountId: "u1" });
+    vi.mocked(clearAuthTokens).mockRejectedValueOnce("keychain locked");
+    let returned: unknown;
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      returned = await teardown();
+      return [];
+    });
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "deleted" });
+    await handleRevokedSession();
+    expect(returned).toEqual(["session tokens: keychain locked"]);
+  });
+
   it("sign_out_clears_the_native_session_before_the_keychain", async () => {
     // A native refresh finishing after the session clear stores nothing; one
     // finishing before it has its rotated token removed by the keychain clear.

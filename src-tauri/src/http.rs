@@ -30,6 +30,8 @@ pub struct HttpState {
     pub refreshing: Arc<AtomicBool>,
     /// Bumped by every sign-in and sign-out; a refresh started before one can't store tokens.
     pub generation: Arc<AtomicU64>,
+    /// Set by sign-out, cleared by sign-in: no refresh runs, whatever the keychain still holds.
+    pub signed_out: Arc<AtomicBool>,
     pub request_log: Arc<Mutex<Vec<RequestLogEntry>>>,
 }
 
@@ -60,9 +62,12 @@ impl HttpState {
         // Keychain first, as in clear_session; without a new token the old one must not stay.
         match refresh_token {
             Some(rt) => refresh.persist_rotated_token(rt),
-            None => refresh.clear(),
+            None => {
+                let _ = refresh.clear();
+            }
         }
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.signed_out.store(false, Ordering::SeqCst);
         *current = Some(token);
     }
     /// Suspend (and tests): starts a new session generation, keychain untouched.
@@ -73,12 +78,15 @@ impl HttpState {
     }
     /// Sign-out: drops the access token and the keychain refresh token under one
     /// lock, so no refresh can start between the two.
-    pub fn clear_session(&self, refresh: &dyn RefreshProvider) {
+    /// A failed keychain delete is returned, after the access token is gone anyway.
+    pub fn clear_session(&self, refresh: &dyn RefreshProvider) -> Result<(), String> {
         let mut current = self.access_token.lock().unwrap();
         // Keychain first: a refresh that reads the new generation finds no token.
-        refresh.clear();
+        let cleared = refresh.clear();
+        self.signed_out.store(true, Ordering::SeqCst);
         self.generation.fetch_add(1, Ordering::SeqCst);
         *current = None;
+        cleared
     }
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
@@ -115,7 +123,7 @@ impl HttpState {
 pub trait RefreshProvider: Send + Sync {
     fn get_refresh_token(&self) -> Option<String>;
     fn persist_rotated_token(&self, token: &str);
-    fn clear(&self);
+    fn clear(&self) -> Result<(), String>;
 }
 
 /// Production provider: reads/writes the OS keychain via the keyring-store
@@ -141,8 +149,12 @@ impl RefreshProvider for KeyringRefreshProvider {
             .store
             .set_password(REFRESH_TOKEN_ACCOUNT, token);
     }
-    fn clear(&self) {
-        let _ = self.app.keyring().store.delete(REFRESH_TOKEN_ACCOUNT);
+    fn clear(&self) -> Result<(), String> {
+        self.app
+            .keyring()
+            .store
+            .delete(REFRESH_TOKEN_ACCOUNT)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -282,7 +294,8 @@ impl HttpClient {
     /// server's own verdict (bad credentials, bad recovery code…) and must
     /// reach the forms verbatim — never "session expired".
     fn has_session(&self) -> bool {
-        self.state.token().is_some() || self.refresh.get_refresh_token().is_some()
+        !self.state.signed_out.load(Ordering::SeqCst)
+            && (self.state.token().is_some() || self.refresh.get_refresh_token().is_some())
     }
 
     async fn send(&self, req: reqwest::Request) -> Result<(u16, String), HttpErrorKind> {
@@ -323,6 +336,9 @@ impl HttpClient {
 
     async fn do_refresh(&self) -> RefreshOutcome {
         let generation = self.state.generation();
+        if self.state.signed_out.load(Ordering::SeqCst) {
+            return RefreshOutcome::Failed;
+        }
         let Some(refresh_token) = self.refresh.get_refresh_token() else {
             return RefreshOutcome::Failed;
         };
@@ -368,7 +384,7 @@ impl HttpClient {
             return self.current_session();
         }
         if new_access.is_none() {
-            self.refresh.clear();
+            let _ = self.refresh.clear();
             *access = None;
             return RefreshOutcome::Revoked;
         }
@@ -460,8 +476,7 @@ pub fn clear_auth_tokens(
     app: AppHandle,
     state: tauri::State<'_, HttpState>,
 ) -> Result<(), String> {
-    state.clear_session(&KeyringRefreshProvider { app });
-    Ok(())
+    state.clear_session(&KeyringRefreshProvider { app })
 }
 
 /// Suspend after a revoked session: the keychain refresh token may still work.
@@ -562,8 +577,9 @@ pub(crate) mod tests {
         fn persist_rotated_token(&self, t: &str) {
             self.persisted.lock().unwrap().push(t.to_string());
         }
-        fn clear(&self) {
+        fn clear(&self) -> Result<(), String> {
             *self.token.lock().unwrap() = None;
+            Ok(())
         }
     }
 
@@ -729,7 +745,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn keychain_cleared_during_refresh_stores_no_tokens() {
         // The webview writes the keychain itself, outside Rust's lock.
-        let (_, state, refresh) = refresh_in_flight((200, ROTATED), |_, r| r.clear()).await;
+        let (_, state, refresh) =
+            refresh_in_flight((200, ROTATED), |_, r| r.clear().unwrap()).await;
         assert_ne!(state.token().as_deref(), Some("a2"));
         assert!(refresh.persisted.lock().unwrap().is_empty());
     }
@@ -748,7 +765,7 @@ pub(crate) mod tests {
         let state = HttpState::new(url);
         state.set_token(Some("a1".into()));
         let refresh = mem_refresh(Some("r1"));
-        state.clear_session(&*refresh);
+        state.clear_session(&*refresh).unwrap();
         let client = HttpClient::new(state.clone(), refresh.clone());
         let res = client.request("GET", "/api/v1/a", None, true).await;
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
@@ -756,6 +773,39 @@ pub(crate) mod tests {
         assert_eq!(state.token(), None);
         assert_eq!(refresh.get_refresh_token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
+    }
+
+    /// A keychain whose delete fails: the old refresh token stays readable.
+    struct StuckKeychain;
+
+    impl RefreshProvider for StuckKeychain {
+        fn get_refresh_token(&self) -> Option<String> {
+            Some("r1".into())
+        }
+        fn persist_rotated_token(&self, _: &str) {}
+        fn clear(&self) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn no_refresh_after_sign_out_when_the_keychain_delete_fails() {
+        let (url, hits) = spawn_mock(|path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, ROTATED.to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        assert!(state.clear_session(&StuckKeychain).is_err());
+        assert_eq!(state.token(), None);
+        let client = HttpClient::new(state.clone(), Arc::new(StuckKeychain));
+        let res = client.request("GET", "/api/v1/a", None, true).await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
+        assert_eq!(state.token(), None);
     }
 
     /// Records whether the session lock was held at each keychain write.
@@ -780,9 +830,10 @@ pub(crate) mod tests {
             self.note();
             *self.token.lock().unwrap() = Some(t.to_string());
         }
-        fn clear(&self) {
+        fn clear(&self) -> Result<(), String> {
             self.note();
             *self.token.lock().unwrap() = None;
+            Ok(())
         }
     }
 

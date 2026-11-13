@@ -257,7 +257,9 @@ mod cycle_tests {
             None
         }
         fn persist_rotated_token(&self, _: &str) {}
-        fn clear(&self) {}
+        fn clear(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     fn unlocked_crypto() -> CryptoState {
