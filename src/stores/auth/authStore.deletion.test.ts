@@ -503,6 +503,38 @@ describe("restore with a revoked refresh token", () => {
     expect(useAuthStore.getState().localAccessAccountId).toBe("u1");
   });
 
+  it("late_session_retry_after_a_reset_stays_signed_out", async () => {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a2",
+      refresh_token: "r2",
+    });
+    let resolveMe: (u: typeof user) => void = () => {};
+    vi.mocked(authApi.me).mockReturnValueOnce(
+      new Promise((r) => {
+        resolveMe = r;
+      }) as never,
+    );
+    useAuthStore.setState({ user });
+    const retry = useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalled());
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "deleted" });
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      await teardown();
+      return [];
+    });
+    await handleRevokedSession();
+    resolveMe(user);
+    await retry;
+    const s = useAuthStore.getState();
+    expect(s.user).toBeNull();
+    expect(s.tokens).toBeNull();
+    expect(s.isAuthenticated).toBe(false);
+    expect(s.serverAuthenticated).toBe(false);
+    expect(s.localAccessAccountId).toBeNull();
+    expect(saveRefreshToken).not.toHaveBeenCalled();
+  });
+
   it("restore_offline_or_expired_does_not_ask_status", async () => {
     vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
     vi.mocked(authApi.refresh).mockRejectedValueOnce(

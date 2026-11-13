@@ -53,6 +53,14 @@ onSessionRevoked(() => {
 
 let revokedRun: Promise<void> | null = null;
 
+// Bumped by every device reset; a session retry that started before one must not publish.
+let resetGeneration = 0;
+
+function resetThisDevice(): Promise<string[]> {
+  resetGeneration++;
+  return resetDevice(teardownSession);
+}
+
 // Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
 export function handleRevokedSession(): Promise<void> {
   revokedRun ??= runRevokedSession().finally(() => {
@@ -80,7 +88,7 @@ async function runRevokedSession(): Promise<void> {
   if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
   // The account may have changed during the round-trip; don't wipe another one.
   if (currentAccountId() !== userId) return;
-  const failures = await resetDevice(teardownSession);
+  const failures = await resetThisDevice();
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
     deletionNotice:
@@ -886,6 +894,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (get().pendingDeletion) return "auth-required";
     _serverSessionLock = (async () => {
       let refreshing = false;
+      const generation = resetGeneration;
+      const wiped = () => generation !== resetGeneration;
       try {
         const refreshToken = await loadRefreshToken();
         if (!refreshToken) return "auth-required" as const;
@@ -893,8 +903,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         refreshing = true;
         const newTokens = await authApi.refresh(refreshToken);
         refreshing = false;
+        if (wiped()) return "auth-required" as const;
         await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+        // A reset that ran while these were being set may not have cleared them.
+        if (wiped()) {
+          await clearAuthTokens();
+          return "auth-required" as const;
+        }
         const user = await authApi.me();
+        if (wiped()) return "auth-required" as const;
         if (identity && user.id !== identity.profile.id) {
           throw new Error(
             "Server account differs from enrolled offline account",
@@ -908,7 +925,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         if (!identity) {
           const { keyring, salt_cl } = await authApi.fetchKeyring();
+          if (wiped()) return "auth-required" as const;
           await enroll(user, salt_cl, keyring);
+          if (wiped()) return "auth-required" as const;
         }
         set({
           user,
@@ -1125,7 +1144,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (err) {
       throw deletionRequestError(err);
     }
-    const failures = await resetDevice(teardownSession);
+    const failures = await resetThisDevice();
     if (failures.length) console.warn("device reset incomplete:", failures);
     set({ deletionNotice: { kind: "scheduled", date } });
   },
@@ -1137,7 +1156,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (!(err instanceof AuthApiError && err.status === 410)) throw err;
       // Purged during the grace period.
       resumeAfterKeep = null;
-      const failures = await resetDevice(teardownSession);
+      const failures = await resetThisDevice();
       if (failures.length) console.warn("device reset incomplete:", failures);
       set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
       return;
