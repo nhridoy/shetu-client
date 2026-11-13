@@ -50,7 +50,10 @@ interface HostState {
 
   fetchHosts: (vaultId?: string) => Promise<void>;
   fetchGroups: (vaultId?: string) => Promise<void>;
-  createHost: (host: Partial<Host>) => Promise<void>;
+  createHost: (
+    host: Partial<Host>,
+    opts?: { probeOs?: boolean },
+  ) => Promise<Host | null>;
   updateHost: (id: string, host: Partial<Host>) => Promise<void>;
   deleteHost: (id: string) => Promise<void>;
   selectHost: (host: Host | null) => void;
@@ -208,18 +211,18 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  createHost: async (host) => {
+  createHost: async (host, opts) => {
     const vaultId = host.vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vaultId) {
       set({ isLoading: false, error: "No vault selected" });
-      return;
+      return null;
     }
     set({ isLoading: true, error: null });
     try {
       const row = await upsertRow(
         "hosts",
         {
-          id: newId(),
+          id: host.id ?? newId(),
           vault_id: vaultId,
           name: host.name ?? "",
           os: host.os ?? null,
@@ -271,9 +274,11 @@ export const useHostStore = create<HostState>((set, get) => ({
         data: row.data,
       };
       set({ hosts: [created, ...get().hosts], isLoading: false });
-      void probeHostOs(created.id);
+      if (opts?.probeOs !== false) void probeHostOs(created.id);
+      return created;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      return null;
     }
   },
 
