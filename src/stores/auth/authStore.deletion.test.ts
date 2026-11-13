@@ -1114,4 +1114,31 @@ describe("token writes racing a teardown", () => {
     expect(enrolled).toBe("u1");
     expectNewerSignIn();
   });
+
+  it("sign_in_waits_for_an_earlier_sign_out_that_finishes_last", async () => {
+    const wipes: Array<() => void> = [];
+    vi.mocked(wipeLocalData).mockImplementation(
+      () =>
+        new Promise<void>((done) => {
+          wipes.push(() => {
+            enrolled = null;
+            done();
+          });
+        }),
+    );
+    const first = useAuthStore.getState().logout();
+    await vi.waitFor(() => expect(wipes).toHaveLength(1));
+    const second = useAuthStore.getState().logout();
+    await vi.waitFor(() => expect(wipes).toHaveLength(2));
+    wipes[1]();
+    await second;
+    mockSignIn();
+    const signIn = useAuthStore.getState().login("a@example.com", "pw");
+    await settle();
+    expect(authApi.prelogin).not.toHaveBeenCalled();
+    wipes[0]();
+    await Promise.all([first, signIn]);
+    expect(enrolled).toBe("u1");
+    expectNewerSignIn();
+  });
 });

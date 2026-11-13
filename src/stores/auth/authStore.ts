@@ -274,7 +274,8 @@ async function clearVaultSelection(): Promise<void> {
 function teardownSession(): Promise<string[]> {
   sessionOwner++;
   const run = runTeardown();
-  teardownRun = run.catch(() => {});
+  // Settles only after every earlier teardown too, whichever finishes last.
+  teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
   return run;
 }
 
