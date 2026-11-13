@@ -754,3 +754,141 @@ describe("sign-in and sign-out", () => {
     expect(useAuthStore.getState().localAccessAccountId).toBeNull();
   });
 });
+
+describe("token writes racing a teardown", () => {
+  // Stand-ins for Rust's in-memory access token and the keychain refresh token.
+  let access: string | null;
+  let keychain: string | null;
+  let landStaleWrite: () => void;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    access = null;
+    keychain = "r";
+    vi.mocked(resetDevice).mockResolvedValue([]);
+    vi.mocked(loadOfflineIdentity).mockResolvedValue(null);
+    vi.mocked(clearAuthTokens).mockImplementation(async () => {
+      access = null;
+    });
+    vi.mocked(clearKeychain).mockImplementation(async () => {
+      keychain = null;
+    });
+    vi.mocked(saveRefreshToken).mockImplementation(async (token) => {
+      keychain = token;
+    });
+    // Like set_auth_tokens: sets the access token and persists the refresh token.
+    const write = (a: string, r?: string) => {
+      access = a;
+      if (r) keychain = r;
+    };
+    vi.mocked(setAuthTokens).mockImplementation(async (a, r) => write(a, r));
+    useAuthStore.setState({
+      user,
+      tokens: null,
+      isAuthenticated: false,
+      serverAuthenticated: false,
+      localAccessAccountId: "u1",
+      deletionNotice: null,
+      pendingDeletion: null,
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  // A session retry whose setAuthTokens lands only when landStaleWrite() is called.
+  async function retryWithSlowWrite() {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a2",
+      refresh_token: "r2",
+    });
+    vi.mocked(authApi.me).mockResolvedValueOnce(user);
+    const write = vi.mocked(setAuthTokens).getMockImplementation();
+    vi.mocked(setAuthTokens).mockImplementationOnce(
+      (a, r) =>
+        new Promise((done) => {
+          landStaleWrite = () => done(write?.(a, r));
+        }),
+    );
+    const retry = useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(setAuthTokens).toHaveBeenCalledTimes(1));
+    return { retry };
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it("token_write_landing_after_sign_out_leaves_no_session", async () => {
+    const { retry } = await retryWithSlowWrite();
+    const signOut = useAuthStore.getState().logout();
+    await vi.waitFor(() => expect(useAuthStore.getState().user).toBeNull());
+    await settle();
+    landStaleWrite();
+    await Promise.all([signOut, retry]);
+    expect(access).toBeNull();
+    expect(keychain).toBeNull();
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  it("fresh_sign_in_keeps_its_tokens_when_a_stale_write_lands_late", async () => {
+    const { retry } = await retryWithSlowWrite();
+    const signOut = useAuthStore.getState().logout();
+    await vi.waitFor(() => expect(useAuthStore.getState().user).toBeNull());
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
+    });
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "a3",
+      refresh_token: "r3",
+      user,
+      keyring,
+    } as never);
+    const signIn = useAuthStore.getState().login("a@example.com", "pw");
+    await settle();
+    landStaleWrite();
+    await Promise.all([signOut, signIn, retry]);
+    expect(access).toBe("a3");
+    expect(keychain).toBe("r3");
+    expect(useAuthStore.getState().tokens).toEqual({
+      access_token: "a3",
+      refresh_token: "r3",
+    });
+  });
+
+  it("login_and_refresh_write_tokens_once", async () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
+    });
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "a3",
+      refresh_token: "r3",
+      user,
+      keyring,
+    } as never);
+    await useAuthStore.getState().login("a@example.com", "pw");
+    expect(setAuthTokens).toHaveBeenCalledTimes(1);
+    expect(setAuthTokens).toHaveBeenCalledWith("a3", "r3");
+    expect(saveRefreshToken).toHaveBeenCalledTimes(1);
+    expect([access, keychain]).toEqual(["a3", "r3"]);
+
+    vi.mocked(setAuthTokens).mockClear();
+    vi.mocked(saveRefreshToken).mockClear();
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r3");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a4",
+      refresh_token: "r4",
+    });
+    vi.mocked(authApi.me).mockResolvedValueOnce(user);
+    expect(await useAuthStore.getState().retryServerSession()).toBe(
+      "connected",
+    );
+    expect(setAuthTokens).toHaveBeenCalledTimes(1);
+    expect(saveRefreshToken).toHaveBeenCalledTimes(1);
+    expect([access, keychain]).toEqual(["a4", "r4"]);
+  });
+});

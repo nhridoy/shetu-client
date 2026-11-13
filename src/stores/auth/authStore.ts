@@ -20,11 +20,11 @@ import {
   deriveKek,
   generateAccountMaterial,
   generateRecoveryCode,
+  setAuthTokens as handOverTokens,
   loadRefreshToken,
   lockSession,
   recoveryUnwrapDek,
   saveRefreshToken,
-  setAuthTokens,
   setBaseUrl,
   setRefreshToken,
   signChallenge,
@@ -56,6 +56,36 @@ let revokedRun: Promise<void> | null = null;
 // Bumped by every teardown (sign-out or reset); a session retry that started
 // before one must not publish.
 let resetGeneration = 0;
+
+// Token writes and teardown's token clearing run one at a time, so a write in
+// flight can't land after a teardown cleared the keychain.
+let tokenQueue: Promise<unknown> = Promise.resolve();
+function serialTokens<T>(fn: () => Promise<T>): Promise<T> {
+  const run = tokenQueue.then(fn);
+  tokenQueue = run.catch(() => {});
+  return run;
+}
+
+// A write from a flow that began before a sign-out or reset is dropped.
+function writeTokens(
+  fn: () => Promise<void>,
+  generation = resetGeneration,
+): Promise<void> {
+  return serialTokens(async () => {
+    if (generation === resetGeneration) await fn();
+  });
+}
+
+function setAuthTokens(
+  accessToken: string,
+  refreshToken?: string,
+  generation?: number,
+): Promise<void> {
+  return writeTokens(
+    () => handOverTokens(accessToken, refreshToken),
+    generation,
+  );
+}
 
 // Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
 export function handleRevokedSession(): Promise<void> {
@@ -189,7 +219,14 @@ function deletionRequestError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
-async function persistTokens(tokens: TokenPair | null): Promise<void> {
+function persistTokens(
+  tokens: TokenPair | null,
+  generation?: number,
+): Promise<void> {
+  return writeTokens(() => storeTokens(tokens), generation);
+}
+
+async function storeTokens(tokens: TokenPair | null): Promise<void> {
   // In-memory mirror for anything still reading it; Rust owns the operative
   // custody (access token in memory, refresh token in the OS keychain).
   setRefreshToken(tokens?.refresh_token ?? null);
@@ -245,8 +282,11 @@ async function teardownSession(): Promise<string[]> {
     pendingDeletion: null,
   });
   resumeAfterKeep = null;
-  await persistTokens(null);
-  await attempt("session tokens", clearAuthTokens);
+  // Runs after any token write in flight, so it also clears what that wrote.
+  await serialTokens(async () => {
+    await storeTokens(null);
+    await attempt("session tokens", clearAuthTokens);
+  });
   await attempt("local data", wipeLocalData);
   return failures;
 }
@@ -259,12 +299,14 @@ async function suspendServerSession(): Promise<void> {
     isAuthenticated: false,
     serverAuthenticated: false,
   });
-  setRefreshToken(null);
-  try {
-    await clearAuthTokens();
-  } catch {
-    /* best effort */
-  }
+  await serialTokens(async () => {
+    setRefreshToken(null);
+    try {
+      await clearAuthTokens();
+    } catch {
+      /* best effort */
+    }
+  });
 }
 
 async function refuseOtherEnrolledAccount(userId: string): Promise<void> {
@@ -901,12 +943,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const newTokens = await authApi.refresh(refreshToken);
         refreshing = false;
         if (wiped()) return "auth-required" as const;
-        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-        // A reset that ran while these were being set may not have cleared them.
-        if (wiped()) {
-          await clearAuthTokens();
-          return "auth-required" as const;
-        }
+        await setAuthTokens(
+          newTokens.access_token,
+          newTokens.refresh_token,
+          generation,
+        );
+        if (wiped()) return "auth-required" as const;
         const user = await authApi.me();
         if (wiped()) return "auth-required" as const;
         if (identity && user.id !== identity.profile.id) {
@@ -933,7 +975,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           serverAuthenticated: true,
           localAccessAccountId: user.id,
         });
-        await persistTokens(newTokens);
+        await persistTokens(newTokens, generation);
         return "connected" as const;
       } catch (error) {
         // A sign-out or reset ran meanwhile; whatever session exists now isn't ours.
