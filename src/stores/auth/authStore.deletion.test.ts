@@ -50,6 +50,7 @@ vi.mock("../../lib/crypto/crypto", () => ({
   setBaseUrl: vi.fn(async () => {}),
   setAuthTokens: vi.fn(async () => {}),
   clearAuthTokens: vi.fn(async () => {}),
+  clearAccessToken: vi.fn(async () => {}),
 }));
 vi.mock("../../lib/crypto/offlineIdentity", () => ({
   loadOfflineIdentity: vi.fn(async () => null),
@@ -69,6 +70,7 @@ import { resetDevice } from "@/lib/account/resetDevice";
 import { AuthApiError, authApi } from "@/lib/api/auth";
 import { onSessionRevoked } from "../../lib/api/http";
 import {
+  clearAccessToken,
   clearAuthTokens,
   clearKeychain,
   loadRefreshToken,
@@ -149,6 +151,15 @@ describe("handleRevokedSession", () => {
     expect(s.serverAuthenticated).toBe(false);
     expect(s.user).toEqual(user);
     expect(s.deletionNotice).toBeNull();
+  });
+
+  it("suspend_keeps_the_refresh_token", async () => {
+    // A refresh may have just stored a working token; the next retry reconnects with it.
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "active" });
+    await handleRevokedSession();
+    expect(clearAccessToken).toHaveBeenCalledTimes(1);
+    expect(clearAuthTokens).not.toHaveBeenCalled();
+    expect(clearKeychain).not.toHaveBeenCalled();
   });
 
   it("revoked_session_with_status_error_suspends", async () => {

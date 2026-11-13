@@ -1803,6 +1803,7 @@ pub fn run() {
             http::http_request,
             http::set_auth_tokens,
             http::clear_auth_tokens,
+            http::clear_access_token,
             http::set_base_url,
             http::get_request_log,
             logging::take_crash_marker,

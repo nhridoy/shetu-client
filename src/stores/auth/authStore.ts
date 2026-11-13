@@ -14,6 +14,7 @@ import { onSessionRevoked } from "../../lib/api/http";
 import { getDeviceId } from "../../lib/common/device";
 import {
   buildKeyringRows,
+  clearAccessToken,
   clearAuthTokens,
   clearKeychain,
   computeLoginProof,
@@ -324,7 +325,7 @@ async function suspendServerSession(): Promise<void> {
   await serialTokens(async () => {
     setRefreshToken(null);
     try {
-      await clearAuthTokens();
+      await clearAccessToken();
     } catch {
       /* best effort */
     }

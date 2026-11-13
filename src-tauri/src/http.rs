@@ -446,6 +446,13 @@ pub fn clear_auth_tokens(
     Ok(())
 }
 
+/// Suspend after a revoked session: the keychain refresh token may still work.
+#[tauri::command]
+pub fn clear_access_token(state: tauri::State<'_, HttpState>) -> Result<(), String> {
+    state.replace_session(None);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_base_url(url: String, state: tauri::State<'_, HttpState>) -> Result<(), String> {
     state.set_base_url(url);
@@ -731,6 +738,19 @@ pub(crate) mod tests {
         assert_eq!(state.token(), None);
         assert_eq!(refresh.get_refresh_token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn access_only_clear_keeps_a_working_refresh_token() {
+        // What `clear_access_token` does on suspend: a later retry can still refresh.
+        let state = HttpState::new(String::new());
+        state.set_token(Some("a1".into()));
+        let refresh = mem_refresh(Some("r1"));
+        let before = state.generation();
+        state.replace_session(None);
+        assert_eq!(state.token(), None);
+        assert!(state.generation() > before);
+        assert_eq!(refresh.get_refresh_token().as_deref(), Some("r1"));
     }
 
     #[tokio::test]

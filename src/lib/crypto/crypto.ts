@@ -225,6 +225,11 @@ export async function clearAuthTokens(): Promise<void> {
   await invoke("clear_auth_tokens");
 }
 
+// Suspend: drops only the access token; the keychain refresh token may still work.
+export async function clearAccessToken(): Promise<void> {
+  await invoke("clear_access_token");
+}
+
 let inMemoryRefreshToken: string | null = null;
 
 export function setRefreshToken(token: string | null): void {
