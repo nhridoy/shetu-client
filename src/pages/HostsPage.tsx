@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
+import SshConfigImportModal from "@/components/hosts/modals/SshConfigImportModal";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
 import { openGroupId } from "@/lib/hosts/helpers";
@@ -21,6 +22,7 @@ export default function HostsPage() {
 
   const hostModal = useModal();
   const groupModal = useModal();
+  const importModal = useModal();
 
   const handleConnect = (host: Host) => {
     addTab(host.id, host.name, {
@@ -50,6 +52,7 @@ export default function HostsPage() {
           setDefaultGroupId(groupId);
           hostModal.show();
         }}
+        onImport={importModal.show}
         onEditGroup={(group) => {
           setEditingGroup(group);
           groupModal.show();
@@ -96,6 +99,10 @@ export default function HostsPage() {
             setDefaultGroupId(undefined);
           }}
         />
+      )}
+
+      {importModal.open && (
+        <SshConfigImportModal groupId={openGroup} onClose={importModal.hide} />
       )}
 
       {groupModal.open && (
