@@ -283,6 +283,8 @@ function gatedCalls(): string[] {
 describe("grace-period sign-in", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Earlier tests leave a rotated keychain token behind.
+    vi.mocked(loadRefreshToken).mockResolvedValue(null);
     vi.mocked(resetDevice).mockResolvedValue([]);
     vi.mocked(authApi.prelogin).mockResolvedValue({
       nonce: "n",
@@ -578,5 +580,25 @@ describe("sign-in and sign-out", () => {
     expect(s.pendingDeletion).toBeNull();
     expect(s.error).toBe("disk full");
     expect(s.isLoading).toBe(false);
+  });
+
+  it("logout_revokes_the_latest_refresh_token", async () => {
+    useAuthStore.setState({
+      user,
+      tokens: { access_token: "a", refresh_token: "r-stale" },
+    });
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r-live");
+    await useAuthStore.getState().logout();
+    expect(authApi.logout).toHaveBeenCalledWith("r-live");
+  });
+
+  it("logout_falls_back_to_the_store_token", async () => {
+    useAuthStore.setState({
+      user,
+      tokens: { access_token: "a", refresh_token: "r-mirror" },
+    });
+    vi.mocked(loadRefreshToken).mockRejectedValueOnce(new Error("keychain"));
+    await useAuthStore.getState().logout();
+    expect(authApi.logout).toHaveBeenCalledWith("r-mirror");
   });
 });

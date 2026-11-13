@@ -629,10 +629,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    const { tokens } = get();
-    if (tokens?.refresh_token) {
+    // Rust rotates the keychain token; the store's mirror may be stale.
+    const refreshToken =
+      (await loadRefreshToken().catch(() => null)) ??
+      get().tokens?.refresh_token;
+    if (refreshToken) {
       try {
-        await authApi.logout(tokens.refresh_token);
+        await authApi.logout(refreshToken);
       } catch {
         // ignore logout errors
       }
