@@ -16,6 +16,7 @@ import {
   finishHistoryAttempt,
   markHistoryConnected,
 } from "./sessionHistory";
+import { handleTerminalKey } from "./terminalKeys";
 
 export interface SessionParams {
   paneId: string;
@@ -66,6 +67,9 @@ function createSession(params: SessionParams): Session {
   const fitAddon = new FitAddon();
   xterm.loadAddon(fitAddon);
   xterm.loadAddon(new WebLinksAddon());
+  xterm.attachCustomKeyEventHandler((e) =>
+    handleTerminalKey(e, xterm, navigator.platform.includes("Mac")),
+  );
 
   const session: Session = {
     params,

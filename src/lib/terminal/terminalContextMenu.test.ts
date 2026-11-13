@@ -80,6 +80,38 @@ describe("terminalContextMenuItems", () => {
     expect(openSnippets).toHaveBeenCalled();
   });
 
+  it("shows_shortcuts_that_work_on_each_platform", () => {
+    const real = navigator.platform;
+    const shortcuts = (platform: string) => {
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+      const items = terminalContextMenuItems(terminal(), vi.fn(), vi.fn());
+      return Object.fromEntries(
+        items.flatMap((i) => ("label" in i ? [[i.label, i.shortcut]] : [])),
+      );
+    };
+    expect(shortcuts("Linux x86_64")).toMatchObject({
+      Copy: "Ctrl+Shift+C",
+      Paste: "Ctrl+Shift+V",
+      "Select All": undefined,
+      Clear: undefined,
+      "Split Right": "Ctrl+\\",
+      "Split Down": "Ctrl+Shift+\\",
+    });
+    expect(shortcuts("MacIntel")).toMatchObject({
+      Copy: "Cmd+C",
+      Paste: "Cmd+V",
+      "Split Right": "Cmd+\\",
+      "Split Down": "Cmd+Shift+\\",
+    });
+    Object.defineProperty(navigator, "platform", {
+      value: real,
+      configurable: true,
+    });
+  });
+
   it("snippets_shows_the_platform_shortcut", () => {
     const real = navigator.platform;
     const label = (platform: string) => {
