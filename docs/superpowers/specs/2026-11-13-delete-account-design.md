@@ -17,7 +17,7 @@ left on the server.
 - **Request deletion** from Settings → Security → "Delete account" (a danger area).
   - The dialog lists what will be deleted: vault, hosts, keys, snippets, port forwards, session
     history, and **each team the user owns with its member count**, labelled "deleted for
-    everyone". It says: "You have 30 days to change your mind — sign in again to cancel."
+    everyone". It says: "You have 30 days to change your mind — sign in again and choose “Keep my account” to cancel."
   - Confirmation: the user types their **account password** and their **email**. The server
     verifies the password with the same proof the password-change endpoint uses
     (`computeLoginProof` client-side; `HandlePasswordChange` verifier check server-side).
