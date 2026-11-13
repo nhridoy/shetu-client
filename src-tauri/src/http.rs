@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -28,6 +28,8 @@ pub struct HttpState {
     pub access_token: Arc<Mutex<Option<String>>>,
     pub base_url: Arc<Mutex<String>>,
     pub refreshing: Arc<AtomicBool>,
+    /// Bumped by every sign-in and sign-out; a refresh started before one can't store tokens.
+    pub generation: Arc<AtomicU64>,
     pub request_log: Arc<Mutex<Vec<RequestLogEntry>>>,
 }
 
@@ -41,8 +43,19 @@ impl HttpState {
     pub fn token(&self) -> Option<String> {
         self.access_token.lock().unwrap().clone()
     }
+    /// Tests only: production writes go through `replace_session` or a refresh.
+    #[cfg(test)]
     pub fn set_token(&self, token: Option<String>) {
         *self.access_token.lock().unwrap() = token;
+    }
+    /// A sign-in or sign-out from the webview: starts a new session generation.
+    pub fn replace_session(&self, token: Option<String>) {
+        let mut current = self.access_token.lock().unwrap();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        *current = token;
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
     pub fn base_url(&self) -> String {
         self.base_url.lock().unwrap().clone()
@@ -265,11 +278,7 @@ impl HttpClient {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(REFRESH_WAIT_MS)).await;
             }
-            return if self.state.token().is_some() {
-                RefreshOutcome::Ok
-            } else {
-                RefreshOutcome::Failed
-            };
+            return self.current_session();
         }
 
         let outcome = self.do_refresh().await;
@@ -277,7 +286,17 @@ impl HttpClient {
         outcome
     }
 
+    /// Reuse whatever session is current now: retry if one exists, else pass the 401 through.
+    fn current_session(&self) -> RefreshOutcome {
+        if self.state.token().is_some() {
+            RefreshOutcome::Ok
+        } else {
+            RefreshOutcome::Failed
+        }
+    }
+
     async fn do_refresh(&self) -> RefreshOutcome {
+        let generation = self.state.generation();
         let Some(refresh_token) = self.refresh.get_refresh_token() else {
             return RefreshOutcome::Failed;
         };
@@ -297,27 +316,42 @@ impl HttpClient {
         };
         let status = res.status().as_u16();
         let text = res.text().await.unwrap_or_default();
-        if status == 401 {
+        let (new_access, new_refresh) = match status {
+            401 => (None, None),
+            200 => {
+                let data = match serde_json::from_str::<Value>(&text) {
+                    Ok(v) => v.get("data").cloned().unwrap_or(v),
+                    Err(_) => return RefreshOutcome::Failed,
+                };
+                let Some(access) = data.get("access_token").and_then(Value::as_str) else {
+                    return RefreshOutcome::Failed;
+                };
+                let rotated = data.get("refresh_token").and_then(Value::as_str);
+                (Some(access.to_string()), rotated.map(str::to_string))
+            }
+            _ => return RefreshOutcome::Failed,
+        };
+        // Held while storing so a sign-in or sign-out can't interleave with it.
+        let mut access = self.state.access_token.lock().unwrap();
+        // Signed out or in while this was in flight (keychain cleared or replaced counts too):
+        // drop the result, store nothing, and reuse whatever session is current.
+        if self.state.generation() != generation
+            || self.refresh.get_refresh_token().as_deref() != Some(refresh_token.as_str())
+        {
+            drop(access);
+            return self.current_session();
+        }
+        if new_access.is_none() {
             self.refresh.clear();
-            self.state.set_token(None);
+            *access = None;
             return RefreshOutcome::Revoked;
         }
-        if status != 200 {
-            return RefreshOutcome::Failed;
-        }
-        let data = match serde_json::from_str::<Value>(&text) {
-            Ok(v) => v.get("data").cloned().unwrap_or(v),
-            Err(_) => return RefreshOutcome::Failed,
-        };
-        let Some(new_access) = data.get("access_token").and_then(Value::as_str) else {
-            return RefreshOutcome::Failed;
-        };
-        if let Some(new_refresh) = data.get("refresh_token").and_then(Value::as_str) {
+        if let Some(new_refresh) = new_refresh {
             // Persist NOW: the server's reuse detection would otherwise revoke
             // the stored copy and log the user out on the next launch.
-            self.refresh.persist_rotated_token(new_refresh);
+            self.refresh.persist_rotated_token(&new_refresh);
         }
-        self.state.set_token(Some(new_access.to_string()));
+        *access = new_access;
         RefreshOutcome::Ok
     }
 }
@@ -387,7 +421,7 @@ pub fn set_auth_tokens(
     access_token: String,
     refresh_token: Option<String>,
 ) -> Result<(), String> {
-    state.set_token(Some(access_token));
+    state.replace_session(Some(access_token));
     if let Some(rt) = refresh_token {
         KeyringRefreshProvider { app }.persist_rotated_token(&rt);
     }
@@ -396,7 +430,7 @@ pub fn set_auth_tokens(
 
 #[tauri::command]
 pub fn clear_auth_tokens(state: tauri::State<'_, HttpState>) -> Result<(), String> {
-    state.set_token(None);
+    state.replace_session(None);
     Ok(())
 }
 
@@ -605,12 +639,73 @@ mod tests {
         let state = HttpState::new(url);
         state.set_token(Some("a1".into()));
         let refresh = mem_refresh(Some("r1"));
-        let client = HttpClient::new(state, refresh.clone());
+        let client = HttpClient::new(state.clone(), refresh.clone());
         let res = client.request("GET", "/api/v1/a", None, true).await.unwrap();
         assert_eq!(res.status, 200);
         assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
+        assert_eq!(state.token().as_deref(), Some("a2"));
         // original 401 + refresh + retry
         assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    /// Holds the refresh response until `during` has run: the user acts while a refresh is in flight.
+    async fn refresh_in_flight(
+        reply: (u16, &'static str),
+        during: impl FnOnce(&HttpState, &MemoryRefresh),
+    ) -> (Result<HttpResponse, HttpErrorKind>, HttpState, Arc<MemoryRefresh>) {
+        let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let originals = std::sync::atomic::AtomicUsize::new(0);
+        let (url, _) = spawn_mock(move |path| {
+            if path == "/api/v1/auth/refresh" {
+                let _ = arrived_tx.send(());
+                let _ = go_rx.recv();
+                (reply.0, reply.1.to_string())
+            } else if originals.fetch_add(1, Ordering::SeqCst) == 0 {
+                (401, "{}".to_string())
+            } else {
+                (200, r#"{"ok":true}"#.to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let refresh = mem_refresh(Some("r1"));
+        let client = HttpClient::new(state.clone(), refresh.clone());
+        let call = tokio::spawn(async move { client.request("GET", "/api/v1/a", None, true).await });
+        arrived_rx.recv().await.unwrap();
+        during(&state, &refresh);
+        go_tx.send(()).unwrap();
+        (call.await.unwrap(), state, refresh)
+    }
+
+    const ROTATED: &str = r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#;
+
+    #[tokio::test]
+    async fn sign_out_during_refresh_stores_no_tokens() {
+        let (res, state, refresh) =
+            refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
+        assert_eq!(state.token(), None);
+        assert!(refresh.persisted.lock().unwrap().is_empty());
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn keychain_cleared_during_refresh_stores_no_tokens() {
+        // Sign-out clears the keychain before it clears Rust's tokens.
+        let (_, state, refresh) = refresh_in_flight((200, ROTATED), |_, r| r.clear()).await;
+        assert_ne!(state.token().as_deref(), Some("a2"));
+        assert!(refresh.persisted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_rejected_refresh_keeps_a_fresh_session() {
+        let (res, state, refresh) = refresh_in_flight((401, "{}"), |state, _| {
+            state.replace_session(Some("fresh".into()))
+        })
+        .await;
+        assert_eq!(state.token().as_deref(), Some("fresh"));
+        assert_eq!(refresh.get_refresh_token().as_deref(), Some("r1"));
+        assert_eq!(res.unwrap().status, 200); // retried with the fresh token
     }
 
     #[tokio::test]
