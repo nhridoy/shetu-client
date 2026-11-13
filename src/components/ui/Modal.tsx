@@ -74,15 +74,18 @@ export default function Modal({
     const nested = openModals.findIndex((m) => self.contains(m));
     openModals.splice(nested === -1 ? openModals.length : nested, 0, self);
 
-    const bodyEls = bodyRef.current && getFocusableElements(bodyRef.current);
-    if (bodyEls && bodyEls.length > 0) {
-      bodyEls[0].focus();
-    } else if (panelRef.current) {
-      const focusable = getFocusableElements(panelRef.current);
-      if (focusable.length > 0) {
-        focusable[0].focus();
-      } else {
-        panelRef.current.focus();
+    // A parent opened together with its nested dialog leaves focus in the child.
+    if (openModals[openModals.length - 1] === self) {
+      const bodyEls = bodyRef.current && getFocusableElements(bodyRef.current);
+      if (bodyEls && bodyEls.length > 0) {
+        bodyEls[0].focus();
+      } else if (panelRef.current) {
+        const focusable = getFocusableElements(panelRef.current);
+        if (focusable.length > 0) {
+          focusable[0].focus();
+        } else {
+          panelRef.current.focus();
+        }
       }
     }
 

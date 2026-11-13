@@ -116,4 +116,16 @@ describe("Modal (mac panel)", () => {
     pressEscape();
     expect(outer).toHaveBeenCalledTimes(1);
   });
+
+  it("nested_dialogs_opened_together_focus_the_top_one", () => {
+    mount(
+      <Modal title="Settings" onClose={() => {}}>
+        <button type="button">Parent action</button>
+        <Modal title="Delete" onClose={() => {}} hideClose>
+          <button type="button">Child action</button>
+        </Modal>
+      </Modal>,
+    );
+    expect(document.activeElement?.textContent).toBe("Child action");
+  });
 });
