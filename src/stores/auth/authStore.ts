@@ -214,7 +214,11 @@ async function clearVaultSelection(): Promise<void> {
 // keychain password, clear the store, drop persisted tokens, and reset the
 // local cache. Best-effort end-to-end so no single failure blocks logout.
 async function teardownSession(): Promise<void> {
-  await lockSession();
+  try {
+    await lockSession();
+  } catch {
+    // ignore: the rest of the reset must still run
+  }
   try {
     await deletePassword();
   } catch {

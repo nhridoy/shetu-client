@@ -68,7 +68,9 @@ vi.mock("../../lib/common/device", () => ({
 import { resetDevice } from "@/lib/account/resetDevice";
 import { AuthApiError, authApi } from "@/lib/api/auth";
 import {
+  clearAuthTokens,
   loadRefreshToken,
+  lockSession,
   saveRefreshToken,
   setAuthTokens,
 } from "../../lib/crypto/crypto";
@@ -77,6 +79,7 @@ import {
   saveOfflineIdentity,
 } from "../../lib/crypto/offlineIdentity";
 import { wipeLocalData } from "../../lib/db/db";
+import { deletePassword } from "../../lib/keychain/keychain";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
 
@@ -600,5 +603,16 @@ describe("sign-in and sign-out", () => {
     vi.mocked(loadRefreshToken).mockRejectedValueOnce(new Error("keychain"));
     await useAuthStore.getState().logout();
     expect(authApi.logout).toHaveBeenCalledWith("r-mirror");
+  });
+
+  it("teardown_finishes_even_if_locking_fails", async () => {
+    useAuthStore.setState({ user, localAccessAccountId: "u1" });
+    vi.mocked(lockSession).mockRejectedValueOnce(new Error("lock failed"));
+    await useAuthStore.getState().logout();
+    expect(deletePassword).toHaveBeenCalled();
+    expect(clearAuthTokens).toHaveBeenCalled();
+    expect(wipeLocalData).toHaveBeenCalled();
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(useAuthStore.getState().localAccessAccountId).toBeNull();
   });
 });
