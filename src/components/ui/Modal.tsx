@@ -22,6 +22,9 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   );
 }
 
+// Open dialogs, topmost last; only the top one handles keys.
+const openModals: HTMLElement[] = [];
+
 function getPrimaryButton(container: HTMLElement): HTMLElement | null {
   const all = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
   for (const el of all) {
@@ -62,6 +65,10 @@ export default function Modal({
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
+    const self = overlayRef.current as HTMLElement;
+    // Child effects run first, so a parent goes below any dialog nested inside it.
+    const nested = openModals.findIndex((m) => self.contains(m));
+    openModals.splice(nested === -1 ? openModals.length : nested, 0, self);
 
     const bodyEls = bodyRef.current && getFocusableElements(bodyRef.current);
     if (bodyEls && bodyEls.length > 0) {
@@ -76,6 +83,7 @@ export default function Modal({
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (openModals[openModals.length - 1] !== self) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         if (!hideCloseRef.current) onCloseRef.current();
@@ -112,6 +120,7 @@ export default function Modal({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
+      openModals.splice(openModals.indexOf(self), 1);
       prev?.focus();
     };
   }, [open]);
