@@ -1,9 +1,16 @@
 import { useCallback, useState } from "react";
+import { toast } from "sonner";
 import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import {
+  type PaletteItem,
+  pickPaletteItem,
+} from "@/lib/terminal/paletteCommand";
+import { insertIntoPane } from "@/lib/terminal/sessionManager";
 import { dispatchAppAction } from "@/lib/window/menuActions";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 
 interface TerminalViewProps {
@@ -57,10 +64,23 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     );
   }, [sidebarVisible]);
 
-  const handleCommandSelect = useCallback((command: string) => {
-    console.log("Execute command:", command);
-    setShowCommandPalette(false);
-  }, []);
+  const handleCommandSelect = useCallback(
+    async (item: PaletteItem, run: boolean) => {
+      const { tabs: currentTabs, activeTabId: atId } =
+        useTerminalStore.getState();
+      const result = await pickPaletteItem(item, run, {
+        activePaneId:
+          currentTabs.find((t) => t.id === atId)?.activePaneId ?? null,
+        decryptSnippet: (id) =>
+          useSnippetStore.getState().getDecryptedSnippet(id),
+        insert: insertIntoPane,
+      });
+      if (result === "ok") setShowCommandPalette(false);
+      else if (result === "no-pane") toast.error("Open a terminal first");
+      else toast.error("Couldn't load this snippet");
+    },
+    [],
+  );
 
   const handleSplit = useCallback(
     (direction: "horizontal" | "vertical") => {
