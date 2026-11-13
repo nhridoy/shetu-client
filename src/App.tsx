@@ -3,6 +3,7 @@ import { type CSSProperties, useEffect } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router";
 import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
+import PendingDeletionDialog from "@/components/auth/PendingDeletionDialog";
 import UnlockDialog from "@/components/auth/UnlockDialog";
 import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
@@ -106,6 +107,7 @@ function App() {
         context={pendingRecoveryContext ?? "signup"}
       />
       <UnlockDialog />
+      <PendingDeletionDialog />
       <UpdateNotification />
       <Toaster
         richColors

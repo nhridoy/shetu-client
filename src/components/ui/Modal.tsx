@@ -10,6 +10,7 @@ interface ModalProps {
   maxWidth?: string;
   closeOnBackdrop?: boolean;
   hideClose?: boolean;
+  zClass?: string;
 }
 
 const FOCUSABLE_SELECTOR =
@@ -48,6 +49,7 @@ export default function Modal({
   maxWidth = "max-w-lg",
   closeOnBackdrop = false,
   hideClose = false,
+  zClass = "z-50",
 }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -121,7 +123,7 @@ export default function Modal({
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
+      className={`fixed inset-0 bg-black/30 flex items-center justify-center ${zClass} p-4`}
       onMouseDown={(e) => {
         if (closeOnBackdrop && e.target === overlayRef.current)
           onCloseRef.current();

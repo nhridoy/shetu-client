@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { XIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link } from "react-router";
@@ -17,9 +18,24 @@ import {
 } from "@/lib/schema/auth/loginFormSchema";
 import { useAuthStore } from "@/stores/auth/authStore";
 
+function noticeDate(iso: string): string {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime()))
+    return "Your account is scheduled for deletion. Sign in to cancel.";
+  const date = d.toLocaleDateString(undefined, { dateStyle: "long" });
+  return `Your account will be deleted on ${date}. Sign in to cancel.`;
+}
+
 export default function LoginPage() {
-  const { login, isLoading, error, clearError, pendingVerificationEmail } =
-    useAuthStore();
+  const {
+    login,
+    isLoading,
+    error,
+    clearError,
+    pendingVerificationEmail,
+    deletionNotice,
+    clearDeletionNotice,
+  } = useAuthStore();
   const [password, setPassword] = useState("");
   const {
     control,
@@ -45,6 +61,29 @@ export default function LoginPage() {
       title="Welcome back"
       subtitle="Sign in to sync your hosts and keys."
     >
+      {deletionNotice && (
+        <div className="mb-4">
+          <Alert
+            variant="error"
+            className="flex items-start justify-between gap-2"
+          >
+            <span>
+              {deletionNotice.kind === "deleted"
+                ? "This account has been deleted."
+                : noticeDate(deletionNotice.date)}
+            </span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={clearDeletionNotice}
+              className="shrink-0 hover:text-red-300"
+            >
+              <XIcon size={12} weight="bold" aria-hidden="true" />
+            </button>
+          </Alert>
+        </div>
+      )}
+
       {error && (
         <div className="mb-4">
           <Alert variant="error">{error}</Alert>

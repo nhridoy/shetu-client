@@ -135,6 +135,7 @@ interface AuthState {
   pendingRecoveryEmail: string | null;
   clearRecoveryCode: () => void;
   clearError: () => void;
+  clearDeletionNotice: () => void;
   restoreSession: () => Promise<void>;
   retryServerSession: () => Promise<"connected" | "offline" | "auth-required">;
   oauthStartFlow: (provider: string) => Promise<{ needsSetup: boolean }>;
@@ -746,6 +747,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+  clearDeletionNotice: () => set({ deletionNotice: null }),
 
   clearRecoveryCode: () =>
     set({
@@ -1134,3 +1136,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+// Any successful sign-in (password, OAuth, restore) supersedes the notice.
+useAuthStore.subscribe((s, prev) => {
+  if (s.isAuthenticated && !prev.isAuthenticated && s.deletionNotice) {
+    useAuthStore.setState({ deletionNotice: null });
+  }
+});
