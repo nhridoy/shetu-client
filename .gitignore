@@ -35,3 +35,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Brainstorming mockups from the superpowers plugin
+.superpowers/
