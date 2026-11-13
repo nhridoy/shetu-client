@@ -72,7 +72,10 @@ import {
   saveRefreshToken,
   setAuthTokens,
 } from "../../lib/crypto/crypto";
-import { saveOfflineIdentity } from "../../lib/crypto/offlineIdentity";
+import {
+  loadOfflineIdentity,
+  saveOfflineIdentity,
+} from "../../lib/crypto/offlineIdentity";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
 
@@ -437,5 +440,78 @@ describe("grace-period sign-in", () => {
     await useAuthStore.getState().logout();
     expect(useAuthStore.getState().pendingDeletion).toBeNull();
     expect(authApi.logout).toHaveBeenCalledWith("r");
+  });
+});
+
+describe("restore with a revoked refresh token", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resetDevice).mockResolvedValue([]);
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: user,
+      salt_cl: "sc",
+      wrapped_keyring: keyring,
+    } as never);
+    useAuthStore.setState({
+      user,
+      tokens: null,
+      isAuthenticated: false,
+      serverAuthenticated: false,
+      localAccessAccountId: "u1",
+      deletionNotice: null,
+      pendingDeletion: null,
+    });
+  });
+
+  // Rust only reports session-revoked for authenticated calls; refresh is not one.
+  const rejectRefresh = (code = "UNAUTHORIZED") => {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("revoked");
+    vi.mocked(authApi.refresh).mockRejectedValueOnce(apiError(401, code));
+  };
+
+  it("restore_with_revoked_refresh_asks_status", async () => {
+    rejectRefresh();
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "deletion_scheduled",
+      deletion_scheduled_for: "2026-12-13",
+    });
+    expect(await useAuthStore.getState().retryServerSession()).toBe(
+      "auth-required",
+    );
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+    expect(useAuthStore.getState().deletionNotice).toEqual({
+      kind: "scheduled",
+      date: "2026-12-13",
+    });
+  });
+
+  it("restore_with_revoked_refresh_for_active_account_keeps_data", async () => {
+    rejectRefresh();
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "active" });
+    await useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
+    await handleRevokedSession(); // let the run in flight finish
+    expect(resetDevice).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().localAccessAccountId).toBe("u1");
+  });
+
+  it("restore_offline_or_expired_does_not_ask_status", async () => {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockRejectedValueOnce(
+      apiError(0, "NETWORK_ERROR"),
+    );
+    expect(await useAuthStore.getState().retryServerSession()).toBe("offline");
+    rejectRefresh("AUTH_EXPIRED");
+    await useAuthStore.getState().retryServerSession();
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a",
+      refresh_token: "r",
+    });
+    vi.mocked(authApi.me).mockResolvedValueOnce({ ...user, id: "u2" });
+    await useAuthStore.getState().retryServerSession();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(authApi.accountStatus).not.toHaveBeenCalled();
   });
 });

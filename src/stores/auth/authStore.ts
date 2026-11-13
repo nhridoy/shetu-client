@@ -878,11 +878,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Held for the user's Keep / Sign out choice: no server call until then.
     if (get().pendingDeletion) return "auth-required";
     _serverSessionLock = (async () => {
+      let refreshing = false;
       try {
         const refreshToken = await loadRefreshToken();
         if (!refreshToken) return "auth-required" as const;
         const identity = await loadOfflineIdentity();
+        refreshing = true;
         const newTokens = await authApi.refresh(refreshToken);
+        refreshing = false;
         await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
         const user = await authApi.me();
         if (identity && user.id !== identity.profile.id) {
@@ -915,6 +918,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isAuthenticated: false,
           serverAuthenticated: false,
         });
+        // The server rejected the refresh token itself (revoked or purged).
+        // Rust reports session-revoked only for authenticated calls, so ask here.
+        if (
+          refreshing &&
+          error instanceof AuthApiError &&
+          error.status === 401 &&
+          error.apiError.code !== "AUTH_EXPIRED"
+        ) {
+          void handleRevokedSession();
+        }
         const message =
           error instanceof AuthApiError ? error.apiError.code : String(error);
         return /network|offline|connect|timeout/i.test(message)
