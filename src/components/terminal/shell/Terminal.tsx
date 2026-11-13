@@ -2,6 +2,7 @@ import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
+import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
   attachSession,
   destroySession,
@@ -235,10 +236,14 @@ export default function Terminal({
             items={(() => {
               const session = getSession(paneId);
               return session
-                ? terminalContextMenuItems(session.xterm, (direction) =>
-                    useTerminalStore
-                      .getState()
-                      .splitPane(tabId, paneId, direction),
+                ? terminalContextMenuItems(
+                    session.xterm,
+                    (direction) =>
+                      useTerminalStore
+                        .getState()
+                        .splitPane(tabId, paneId, direction),
+                    // Right-click already made this the active pane, so the pick lands here.
+                    openCommandPalette,
                   )
                 : [];
             })()}

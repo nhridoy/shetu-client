@@ -38,3 +38,15 @@ export async function pickPaletteItem(
   }
   return deps.insert(deps.activePaneId, command, run);
 }
+
+const OPEN_PALETTE_EVENT = "shetu:open-command-palette";
+
+/** Asks the terminal view to open the command palette, e.g. from a pane's context menu. */
+export function openCommandPalette(): void {
+  window.dispatchEvent(new Event(OPEN_PALETTE_EVENT));
+}
+
+export function onOpenCommandPalette(handler: () => void): () => void {
+  window.addEventListener(OPEN_PALETTE_EVENT, handler);
+  return () => window.removeEventListener(OPEN_PALETTE_EVENT, handler);
+}

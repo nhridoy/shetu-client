@@ -17,6 +17,7 @@ export interface TerminalMenuTarget {
 export function terminalContextMenuItems(
   term: TerminalMenuTarget,
   split: (direction: "horizontal" | "vertical") => void,
+  openSnippets: () => void,
 ): ContextMenuItem[] {
   const then = (action: () => void) => () => {
     action();
@@ -46,6 +47,12 @@ export function terminalContextMenuItems(
       },
     },
     { label: "Select All", onClick: then(() => term.selectAll()) },
+    { type: "separator" },
+    {
+      label: "Snippets…",
+      shortcut: `${navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}+Shift+P`,
+      onClick: openSnippets,
+    },
     { type: "separator" },
     { label: "Clear", onClick: then(() => term.clear()) },
     { type: "separator" },

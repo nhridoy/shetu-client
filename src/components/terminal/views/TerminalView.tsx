@@ -1,10 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import {
+  onOpenCommandPalette,
   type PaletteItem,
   pickPaletteItem,
 } from "@/lib/terminal/paletteCommand";
@@ -76,6 +77,8 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
       }),
     );
   }, [sidebarVisible]);
+
+  useEffect(() => onOpenCommandPalette(() => setShowCommandPalette(true)), []);
 
   const handleCommandSelect = useCallback(
     async (item: PaletteItem, run: boolean) => {
