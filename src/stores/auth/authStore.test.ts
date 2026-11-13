@@ -74,6 +74,7 @@ vi.mock("../../lib/crypto/crypto", () => ({
   setBaseUrl: vi.fn(async () => {}),
   setAuthTokens: vi.fn(async () => {}),
   clearAuthTokens: vi.fn(async () => {}),
+  clearAccessToken: vi.fn(async () => {}),
   signChallenge: vi.fn(async () => "sig"),
   generateRecoveryCode: vi.fn(async () => "new-recovery-code"),
   wrapDekWithRecovery: vi.fn(async () => "wrapped-recovery"),

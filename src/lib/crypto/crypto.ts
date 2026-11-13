@@ -220,8 +220,14 @@ export async function setAuthTokens(
   });
 }
 
+// Sign-out: Rust drops the access token and the keychain refresh token together.
 export async function clearAuthTokens(): Promise<void> {
   await invoke("clear_auth_tokens");
+}
+
+// Suspend: drops only the access token; the keychain refresh token may still work.
+export async function clearAccessToken(): Promise<void> {
+  await invoke("clear_access_token");
 }
 
 let inMemoryRefreshToken: string | null = null;

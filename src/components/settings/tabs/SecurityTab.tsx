@@ -18,6 +18,7 @@ import {
 } from "@/lib/schema/settings/profileFormSchema";
 import { useAuthStore } from "@/stores/auth/authStore";
 import type { SecurityTabProps } from "@/types/settings/types";
+import DeleteAccountDialog from "./DeleteAccountDialog";
 
 export default function SecurityTab({
   tabs,
@@ -28,6 +29,7 @@ export default function SecurityTab({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const passwordForm = useForm<ChangePasswordFormSchema>({
     resolver: zodResolver(changePasswordFormSchema),
@@ -127,11 +129,11 @@ export default function SecurityTab({
               Ask for password every time
             </span>
             <span className="text-xs text-dark-400 mt-1 block">
-              When off, Shetu securely remembers your password on this
-              device and unlocks automatically when you open the app (entry
-              expires after 14 days of inactivity or 90 days). When on,
-              you&apos;ll enter your password on every launch and after logout,
-              and any saved password is removed from this device.
+              When off, Shetu securely remembers your password on this device
+              and unlocks automatically when you open the app (entry expires
+              after 14 days of inactivity or 90 days). When on, you&apos;ll
+              enter your password on every launch and after logout, and any
+              saved password is removed from this device.
             </span>
           </div>
         </label>
@@ -171,6 +173,23 @@ export default function SecurityTab({
           Close All Sessions ({tabs.length})
         </Button>
       </div>
+
+      <div className="border-t border-danger-600/40 pt-6">
+        <h3 className="text-sm font-medium text-danger-400 mb-3">
+          Delete account
+        </h3>
+        <Button
+          type="button"
+          onClick={() => setDeleteOpen(true)}
+          variant="destructive"
+          size="sm"
+        >
+          Delete account…
+        </Button>
+      </div>
+      {deleteOpen && (
+        <DeleteAccountDialog onClose={() => setDeleteOpen(false)} />
+      )}
     </div>
   );
 }

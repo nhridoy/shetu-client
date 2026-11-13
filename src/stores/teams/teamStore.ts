@@ -32,6 +32,7 @@ export interface Team {
   updatedAt: string;
   syncStatus: "pending" | "synced" | "rejected";
   syncError?: string | null;
+  ownerDeletionScheduledFor?: string;
 }
 
 interface RecipientKey {
@@ -181,6 +182,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
           updatedAt: string;
           syncStatus: "pending" | "synced" | "rejected";
           syncError: string | null;
+          ownerDeletionScheduledFor?: string;
         }>
       >("local_teams", { accountId: userId });
       const membersByTeam = new Map(
@@ -194,6 +196,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         updatedAt: row.updatedAt,
         syncStatus: row.syncStatus,
         syncError: row.syncError,
+        ownerDeletionScheduledFor: row.ownerDeletionScheduledFor || undefined,
         members: membersByTeam.get(row.id),
       }));
       const selectedId = get().selectedTeam?.id;

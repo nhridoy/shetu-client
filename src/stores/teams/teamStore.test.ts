@@ -13,8 +13,8 @@ vi.mock("@/stores/auth/authStore", () => ({
   },
 }));
 
-import { teamsApi } from "@/lib/api/teams";
 import { invoke } from "@tauri-apps/api/core";
+import { teamsApi } from "@/lib/api/teams";
 import { useTeamStore } from "./teamStore";
 
 beforeEach(() => {
@@ -30,6 +30,25 @@ beforeEach(() => {
 });
 
 describe("team store", () => {
+  it("maps_owner_deletion_date", async () => {
+    const row = {
+      name: "Ops",
+      ownerId: "o",
+      createdAt: "c",
+      updatedAt: "u",
+      syncStatus: "synced",
+      syncError: null,
+    };
+    vi.mocked(invoke).mockResolvedValue([
+      { ...row, id: "a", ownerDeletionScheduledFor: "2026-12-13T00:00:00Z" },
+      { ...row, id: "b", ownerDeletionScheduledFor: "" },
+    ]);
+    await useTeamStore.getState().fetchTeams();
+    const [a, b] = useTeamStore.getState().teams;
+    expect(a.ownerDeletionScheduledFor).toBe("2026-12-13T00:00:00Z");
+    expect(b.ownerDeletionScheduledFor).toBeUndefined();
+  });
+
   it("loads teams from local SQLite without calling the server API", async () => {
     vi.mocked(invoke).mockResolvedValue([
       {
@@ -53,7 +72,9 @@ describe("team store", () => {
   });
 
   it("keeps create errors visible and does not add a fake team", async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error("local database unavailable"));
+    vi.mocked(invoke).mockRejectedValue(
+      new Error("local database unavailable"),
+    );
     await expect(
       useTeamStore.getState().createTeam({ name: "Ops" }),
     ).rejects.toThrow("local database unavailable");

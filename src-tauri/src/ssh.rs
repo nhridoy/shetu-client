@@ -77,6 +77,22 @@ impl KnownHosts {
             port,
             fingerprint: fingerprint.to_string(),
         });
+        self.persist();
+    }
+
+    /// Memory is emptied even if the file rewrite fails; the error is returned.
+    pub fn clear(&mut self) -> std::io::Result<()> {
+        self.entries.clear();
+        self.write_file()
+    }
+
+    fn persist(&self) {
+        if let Err(e) = self.write_file() {
+            log::error!("ssh: failed to persist known_hosts: {e}");
+        }
+    }
+
+    fn write_file(&self) -> std::io::Result<()> {
         let contents = self
             .entries
             .iter()
@@ -87,13 +103,9 @@ impl KnownHosts {
         // fingerprint would re-trigger TOFU acceptance later and could mask
         // a genuine key change (MITM window).
         if let Some(parent) = self.path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::error!("ssh: failed to create known_hosts dir: {e}");
-            }
+            std::fs::create_dir_all(parent)?;
         }
-        if let Err(e) = std::fs::write(&self.path, contents) {
-            log::error!("ssh: failed to persist known_hosts: {e}");
-        }
+        std::fs::write(&self.path, contents)
     }
 }
 
@@ -246,6 +258,38 @@ mod tests {
         kh.accept("web", 22, "fp-c");
         let reloaded = KnownHosts::load(&path);
         assert_eq!(reloaded.check("web", 22, "fp-c"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn known_hosts_clear_empties_file_and_memory() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        kh.clear().unwrap();
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_hosts_clear_reports_write_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout == b"0\n");
+        let result = kh.clear();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if !is_root {
+            assert!(result.is_err());
+            assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        }
         let _ = std::fs::remove_file(&path);
     }
 

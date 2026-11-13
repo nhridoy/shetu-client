@@ -1,5 +1,6 @@
 import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
+import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
   authApi,
@@ -13,17 +14,18 @@ import { onSessionRevoked } from "../../lib/api/http";
 import { getDeviceId } from "../../lib/common/device";
 import {
   buildKeyringRows,
+  clearAccessToken,
   clearAuthTokens,
   clearKeychain,
   computeLoginProof,
   deriveKek,
   generateAccountMaterial,
   generateRecoveryCode,
+  setAuthTokens as handOverTokens,
   loadRefreshToken,
   lockSession,
   recoveryUnwrapDek,
   saveRefreshToken,
-  setAuthTokens,
   setBaseUrl,
   setRefreshToken,
   signChallenge,
@@ -44,11 +46,102 @@ import {
 } from "../../lib/keychain/keychain";
 import { cancelOAuthFlow, startOAuthFlow } from "../../lib/oauth/oauth";
 
-// A rejected server session pauses sync and retains encrypted local work.
-// Only an explicit logout clears this device.
+// A rejected server session pauses sync and retains encrypted local work,
+// unless the server confirms the account is being deleted.
 onSessionRevoked(() => {
-  void suspendServerSession();
+  void handleRevokedSession();
 });
+
+let revokedRun: Promise<void> | null = null;
+
+// One owner of the session at a time. It advances on every sign-out or reset
+// and every sign-in takeover; an auth flow that no longer owns the session
+// stops before its next token write, enrollment or state change.
+let sessionOwner = 0;
+let teardownRun: Promise<unknown> = Promise.resolve();
+
+class SessionLost extends Error {}
+
+// Flows start after every teardown in flight, so no wipe can erase what they write.
+async function claimSession(): Promise<number> {
+  let awaited: Promise<unknown>;
+  do {
+    awaited = teardownRun;
+    await awaited;
+  } while (teardownRun !== awaited);
+  return sessionOwner;
+}
+
+function ensureOwner(owner: number): void {
+  if (owner !== sessionOwner) throw new SessionLost("The session changed.");
+}
+
+// A sign-in about to publish: older flows (retries included) stop.
+function takeOver(owner: number): number {
+  ensureOwner(owner);
+  return ++sessionOwner;
+}
+
+// Token writes and teardown's token clearing run one at a time, so a write in
+// flight can't land after a teardown cleared the keychain.
+let tokenQueue: Promise<unknown> = Promise.resolve();
+function serialTokens<T>(fn: () => Promise<T>): Promise<T> {
+  const run = tokenQueue.then(fn);
+  tokenQueue = run.catch(() => {});
+  return run;
+}
+
+// A write from a flow that no longer owns the session is dropped.
+function writeTokens(fn: () => Promise<void>, owner: number): Promise<void> {
+  return serialTokens(async () => {
+    if (owner === sessionOwner) await fn();
+  });
+}
+
+function setAuthTokens(
+  accessToken: string,
+  refreshToken: string | undefined,
+  owner: number,
+): Promise<void> {
+  return writeTokens(() => handOverTokens(accessToken, refreshToken), owner);
+}
+
+// Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
+export function handleRevokedSession(): Promise<void> {
+  revokedRun ??= runRevokedSession().finally(() => {
+    revokedRun = null;
+  });
+  return revokedRun;
+}
+
+function currentAccountId(): string | null {
+  const s = useAuthStore.getState();
+  return s.user?.id ?? s.localAccessAccountId;
+}
+
+async function runRevokedSession(): Promise<void> {
+  // Suspend first: it keeps user and localAccessAccountId, and must not wait on the network.
+  await suspendServerSession();
+  const userId = currentAccountId();
+  if (!userId) return;
+  let res: Awaited<ReturnType<typeof authApi.accountStatus>> | null;
+  try {
+    res = await authApi.accountStatus(userId);
+  } catch {
+    return; // offline or server error: never wipe on doubt
+  }
+  if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
+  // The account may have changed during the round-trip; don't wipe another one.
+  if (currentAccountId() !== userId) return;
+  const failures = await resetDevice(teardownSession);
+  if (failures.length) console.warn("device reset incomplete:", failures);
+  useAuthStore.setState({
+    deletionNotice:
+      res.status === "deleted"
+        ? { kind: "deleted" }
+        : { kind: "scheduled", date: res.deletion_scheduled_for ?? "" },
+  });
+}
 
 interface AuthState {
   user: User | null;
@@ -64,6 +157,12 @@ interface AuthState {
   pendingOAuth: { provider: string; setupCode: string; userId: string } | null;
   pendingVerificationEmail: string | null;
   alwaysAsk: boolean;
+  deletionNotice:
+    | { kind: "scheduled"; date: string }
+    | { kind: "deleted" }
+    | null;
+  // Grace-period date of the account just signed into; sign-in is held until Keep or Sign out.
+  pendingDeletion: string | null;
 
   prelogin: (email: string) => Promise<{
     nonce: string;
@@ -89,6 +188,7 @@ interface AuthState {
   pendingRecoveryEmail: string | null;
   clearRecoveryCode: () => void;
   clearError: () => void;
+  clearDeletionNotice: () => void;
   restoreSession: () => Promise<void>;
   retryServerSession: () => Promise<"connected" | "offline" | "auth-required">;
   oauthStartFlow: (provider: string) => Promise<{ needsSetup: boolean }>;
@@ -101,9 +201,48 @@ interface AuthState {
     existingKeyring?: KeyringRows | null,
   ) => Promise<string | null>;
   setAlwaysAsk: (flag: boolean) => Promise<void>;
+  requestAccountDeletion: (password: string, email: string) => Promise<void>;
+  cancelAccountDeletion: () => Promise<void>;
 }
 
-async function persistTokens(tokens: TokenPair | null): Promise<void> {
+// The rest of a sign-in held back by pendingDeletion; Keep runs it.
+let resumeAfterKeep: (() => Promise<unknown>) | null = null;
+
+// The server answers every call except GET /me and DELETE /me/deletion with 403
+// during the grace period, so nothing else may run before the user's choice.
+function holdForDeletionChoice(
+  date: string,
+  tokens: TokenPair,
+  resume: () => Promise<unknown>,
+): void {
+  resumeAfterKeep = resume;
+  useAuthStore.setState({ pendingDeletion: date, tokens, isLoading: false });
+}
+
+// After Keep: Rust may have refreshed while the dialog was open; keep its
+// session and read back the refresh token it persisted.
+async function tokensAfterKeep(held: TokenPair): Promise<TokenPair> {
+  return {
+    ...held,
+    refresh_token: (await loadRefreshToken()) ?? held.refresh_token,
+  };
+}
+
+function deletionRequestError(err: unknown): Error {
+  const status = err instanceof AuthApiError ? err.status : null;
+  if (status === 404)
+    return new Error("Your server doesn't support account deletion yet.");
+  if (status === 403) return new Error("That password is incorrect.");
+  if (status === 400)
+    return new Error("That email doesn't match your account.");
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+function persistTokens(tokens: TokenPair | null, owner: number): Promise<void> {
+  return writeTokens(() => storeTokens(tokens), owner);
+}
+
+async function storeTokens(tokens: TokenPair | null): Promise<void> {
   // In-memory mirror for anything still reading it; Rust owns the operative
   // custody (access token in memory, refresh token in the OS keychain).
   setRefreshToken(tokens?.refresh_token ?? null);
@@ -130,14 +269,29 @@ async function clearVaultSelection(): Promise<void> {
 
 // Fully tear down a session: zeroize in-memory keys, purge the saved
 // keychain password, clear the store, drop persisted tokens, and reset the
-// local cache. Best-effort end-to-end so no single failure blocks logout.
-async function teardownSession(): Promise<void> {
-  await lockSession();
-  try {
-    await deletePassword();
-  } catch {
-    // ignore keychain purge errors
-  }
+// local cache. Best-effort end-to-end so no single failure blocks logout;
+// returns what failed so a device reset can report it.
+function teardownSession(): Promise<string[]> {
+  sessionOwner++;
+  const run = runTeardown();
+  // Settles only after every earlier teardown too, whichever finishes last.
+  teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
+  return run;
+}
+
+// Publishes signed-out first so the UI reacts at once; flows started meanwhile
+// wait in claimSession until the wipe is done, so it can't erase their work.
+async function runTeardown(): Promise<string[]> {
+  const failures: string[] = [];
+  const attempt = async (name: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (e) {
+      failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  await attempt("lock", lockSession);
+  await attempt("saved password", deletePassword);
   // Drop the previous account's in-memory selection before a new account
   // can unlock; otherwise sync may target its stale vault ID once.
   await clearVaultSelection();
@@ -150,18 +304,19 @@ async function teardownSession(): Promise<void> {
     isUnlocked: false,
     pendingOAuth: null,
     pendingVerificationEmail: null,
+    pendingDeletion: null,
+    isLoading: false,
   });
-  await persistTokens(null);
-  try {
-    await clearAuthTokens();
-  } catch {
-    // ignore: Rust token state is best-effort on teardown
-  }
-  try {
-    await wipeLocalData();
-  } catch {
-    // ignore local cache wipe errors
-  }
+  resumeAfterKeep = null;
+  // Runs after any token write in flight, so it also clears what that wrote.
+  // Rust clears its access token and the keychain together; the JS clear after
+  // it only resets the in-memory mirror (the keychain delete is a no-op by then).
+  await serialTokens(async () => {
+    await attempt("session tokens", clearAuthTokens);
+    await storeTokens(null);
+  });
+  await attempt("local data", wipeLocalData);
+  return failures;
 }
 
 // A revoked or expired server session stops sync, but never erases offline
@@ -172,11 +327,22 @@ async function suspendServerSession(): Promise<void> {
     isAuthenticated: false,
     serverAuthenticated: false,
   });
-  setRefreshToken(null);
-  try {
-    await clearAuthTokens();
-  } catch {
-    /* best effort */
+  await serialTokens(async () => {
+    setRefreshToken(null);
+    try {
+      await clearAccessToken();
+    } catch {
+      /* best effort */
+    }
+  });
+}
+
+async function refuseOtherEnrolledAccount(userId: string): Promise<void> {
+  const existing = await loadOfflineIdentity();
+  if (existing && existing.profile.id !== userId) {
+    throw new Error(
+      "Another account is enrolled on this device. Sign out before switching accounts.",
+    );
   }
 }
 
@@ -184,15 +350,13 @@ async function enroll(
   profile: User,
   saltCl: string,
   keyring: KeyringRows,
+  owner: number,
 ): Promise<void> {
-  const existing = await loadOfflineIdentity();
-  if (existing && existing.profile.id !== profile.id) {
-    throw new Error(
-      "Another account is enrolled on this device. Sign out before switching accounts.",
-    );
-  }
+  await refuseOtherEnrolledAccount(profile.id);
+  ensureOwner(owner);
   if (useAuthStore.getState().localAccessAccountId !== profile.id) {
     await clearVaultSelection();
+    ensureOwner(owner);
   }
   await saveOfflineIdentity({
     profile,
@@ -202,6 +366,7 @@ async function enroll(
       dek_wrapped_by_recovery: keyring.dek_wrapped_by_recovery ?? "",
     },
   });
+  ensureOwner(owner);
   useAuthStore.setState({ localAccessAccountId: profile.id });
 }
 
@@ -245,6 +410,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   pendingOAuth: null,
   pendingVerificationEmail: null,
   alwaysAsk: false,
+  deletionNotice: null,
+  pendingDeletion: null,
 
   prelogin: async (email: string) => {
     const res = await authApi.prelogin(email);
@@ -258,6 +425,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   register: async (email: string, name: string, password: string) => {
     set({ isLoading: true, error: null });
+    let owner = await claimSession();
     try {
       const prelogin = await authApi.prelogin(email);
 
@@ -293,6 +461,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
       if (res.verification_required) {
+        ensureOwner(owner);
         set({
           pendingVerificationEmail: email,
           isLoading: false,
@@ -302,8 +471,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // Verification not required: tokens are guaranteed by the server contract
       const pair = res as TokenPair;
-      await enroll(res.user, material.salt_cl, res.keyring ?? keyring);
-      await setAuthTokens(pair.access_token, pair.refresh_token);
+      owner = takeOver(owner);
+      await enroll(res.user, material.salt_cl, res.keyring ?? keyring, owner);
+      await setAuthTokens(pair.access_token, pair.refresh_token, owner);
+      ensureOwner(owner);
       set({
         user: res.user,
         tokens: pair,
@@ -312,11 +483,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isUnlocked: true,
         isLoading: false,
       });
-      await persistTokens(pair);
+      await persistTokens(pair, owner);
+      ensureOwner(owner);
       if (!get().alwaysAsk) {
         await savePassword(password);
       }
       const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
+      ensureOwner(owner);
       if (recoveryCode) {
         set({
           pendingRecoveryCode: recoveryCode,
@@ -324,6 +497,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
       }
     } catch (err) {
+      if (owner !== sessionOwner) return;
       const message =
         typeof err === "string"
           ? err
@@ -337,27 +511,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   verifyEmail: async (email: string, otp: string, password?: string) => {
     set({ isLoading: true, error: null });
+    let owner = await claimSession();
     try {
       const res = await authApi.verifyEmail({
         email,
         otp,
         device_id: await getDeviceId(),
       });
+      const prelogin = res.keyring ? await authApi.prelogin(email) : null;
 
-      if (res.keyring) {
+      owner = takeOver(owner);
+      if (res.keyring && prelogin) {
         await unwrapDek(res.keyring.dek_wrapped_by_kek);
-      }
-
-      if (res.keyring) {
-        const prelogin = await authApi.prelogin(email);
-        await enroll(res.user, prelogin.salt_cl, res.keyring);
+        await enroll(res.user, prelogin.salt_cl, res.keyring, owner);
       }
 
       const newTokens = {
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+      await setAuthTokens(
+        newTokens.access_token,
+        newTokens.refresh_token,
+        owner,
+      );
+      ensureOwner(owner);
       set({
         user: res.user,
         tokens: newTokens,
@@ -367,11 +545,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pendingVerificationEmail: null,
         isLoading: false,
       });
-      await persistTokens(newTokens);
+      await persistTokens(newTokens, owner);
+      ensureOwner(owner);
       if (password && !get().alwaysAsk) {
         await savePassword(password);
       }
       const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
+      ensureOwner(owner);
       if (recoveryCode) {
         set({
           pendingRecoveryCode: recoveryCode,
@@ -379,6 +559,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
       }
     } catch (err) {
+      if (owner !== sessionOwner) return;
       const message =
         typeof err === "string"
           ? err
@@ -415,6 +596,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // exists on the server is never re-created. Callers that already hold the
   // keyring (login/verify responses) pass it in to skip a round trip.
   ensureRecoveryKit: async (existingKeyring?: KeyringRows | null) => {
+    const owner = sessionOwner;
     const { user, tokens } = get();
     if (!user || !tokens) return null;
     try {
@@ -435,10 +617,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       try {
         const cached = await loadOfflineIdentity();
         if (cached?.profile.id === user.id) {
-          await enroll(user, cached.salt_cl, {
-            ...cached.wrapped_keyring,
-            dek_wrapped_by_recovery: dekWrappedByRecovery,
-          });
+          await enroll(
+            user,
+            cached.salt_cl,
+            {
+              ...cached.wrapped_keyring,
+              dek_wrapped_by_recovery: dekWrappedByRecovery,
+            },
+            owner,
+          );
         }
       } catch {
         // Recovery was attached server-side: still show the one-time code.
@@ -451,6 +638,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (email: string, password: string) => {
     set({ isLoading: true, error: null });
+    let owner = await claimSession();
     try {
       const prelogin = await authApi.prelogin(email);
 
@@ -468,38 +656,66 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         client_pubkey: "",
       });
 
-      if (res.keyring) {
-        await unwrapDek(res.keyring.dek_wrapped_by_kek);
-      }
-
-      if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
-
       const newTokens = {
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-      set({
-        user: res.user,
-        tokens: newTokens,
-        isAuthenticated: true,
-        serverAuthenticated: true,
-        isUnlocked: true,
-        pendingVerificationEmail: null,
-        isLoading: false,
-      });
-      await persistTokens(newTokens);
-      if (!get().alwaysAsk) {
-        await savePassword(password);
-      }
-      const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
-      if (recoveryCode) {
+      // Also the Keep resume, which takes the session over from the hold.
+      const finish = async (resumed: boolean) => {
+        owner = takeOver(owner);
+        if (res.keyring) {
+          await unwrapDek(res.keyring.dek_wrapped_by_kek);
+          await enroll(res.user, prelogin.salt_cl, res.keyring, owner);
+        }
+
+        const tokens = resumed ? await tokensAfterKeep(newTokens) : newTokens;
+        if (!resumed) {
+          await setAuthTokens(tokens.access_token, tokens.refresh_token, owner);
+        }
+        ensureOwner(owner);
         set({
-          pendingRecoveryCode: recoveryCode,
-          pendingRecoveryContext: "signup",
+          user: res.user,
+          tokens,
+          isAuthenticated: true,
+          serverAuthenticated: true,
+          isUnlocked: true,
+          pendingVerificationEmail: null,
+          isLoading: false,
         });
+        await persistTokens(tokens, owner);
+        ensureOwner(owner);
+        if (!get().alwaysAsk) {
+          await savePassword(password);
+        }
+        const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
+        ensureOwner(owner);
+        if (recoveryCode) {
+          set({
+            pendingRecoveryCode: recoveryCode,
+            pendingRecoveryContext: "signup",
+          });
+        }
+      };
+
+      if (res.user.deletion_scheduled_for) {
+        // Before any token is written: Sign out from the hold wipes this device.
+        await refuseOtherEnrolledAccount(res.user.id);
+        owner = takeOver(owner);
+        // Rust needs the session to send DELETE /me/deletion on Keep.
+        await setAuthTokens(
+          newTokens.access_token,
+          newTokens.refresh_token,
+          owner,
+        );
+        ensureOwner(owner);
+        holdForDeletionChoice(res.user.deletion_scheduled_for, newTokens, () =>
+          finish(true),
+        );
+        return;
       }
+      await finish(false);
     } catch (err) {
+      if (owner !== sessionOwner) return;
       if (
         err instanceof AuthApiError &&
         err.apiError.code === "VERIFICATION_REQUIRED"
@@ -522,10 +738,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    const { tokens } = get();
-    if (tokens?.refresh_token) {
+    // Rust rotates the keychain token; the store's mirror may be stale.
+    const refreshToken =
+      (await loadRefreshToken().catch(() => null)) ??
+      get().tokens?.refresh_token;
+    if (refreshToken) {
       try {
-        await authApi.logout(tokens.refresh_token);
+        await authApi.logout(refreshToken);
       } catch {
         // ignore logout errors
       }
@@ -568,17 +787,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   updateProfile: async (data) => {
+    const owner = sessionOwner;
     const user = get().user;
     if (!user) return;
     const updated = { ...user, ...data };
     const identity = await loadOfflineIdentity();
     if (identity?.profile.id === user.id) {
-      await enroll(updated, identity.salt_cl, identity.wrapped_keyring);
+      await enroll(updated, identity.salt_cl, identity.wrapped_keyring, owner);
     }
+    ensureOwner(owner);
     set({ user: updated });
   },
 
   changePassword: async (currentPassword: string, newPassword: string) => {
+    const owner = sessionOwner;
     const { user, tokens } = get();
     if (!user || !tokens) throw new Error("Not authenticated");
 
@@ -629,13 +851,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const identity = await loadOfflineIdentity();
     if (identity?.profile.id === user.id) {
-      await enroll(user, newSaltCl, {
-        ...identity.wrapped_keyring,
-        dek_wrapped_by_kek: newEncryptedDek,
-      });
+      await enroll(
+        user,
+        newSaltCl,
+        { ...identity.wrapped_keyring, dek_wrapped_by_kek: newEncryptedDek },
+        owner,
+      );
     }
 
     // 7. Refresh the OS keychain entry with the new password
+    ensureOwner(owner);
     if (!get().alwaysAsk) {
       try {
         await savePassword(newPassword);
@@ -646,6 +871,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+  clearDeletionNotice: () => set({ deletionNotice: null }),
 
   clearRecoveryCode: () =>
     set({
@@ -656,6 +882,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   recovery: async (recoveryCode: string, newPassword: string) => {
     set({ isLoading: true, error: null });
+    const owner = await claimSession();
     try {
       const prefetch = await authApi.recoveryPrefetch(recoveryCode);
 
@@ -700,7 +927,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const cached = await loadOfflineIdentity();
       if (cached?.profile.email === prefetch.email) {
-        await enroll(cached.profile, prefetch.salt_cl, keyring);
+        await enroll(cached.profile, prefetch.salt_cl, keyring, owner);
       }
 
       set({
@@ -726,6 +953,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   restoreSession: async () => {
     if (_restoreSessionLock) return _restoreSessionLock;
     _restoreSessionLock = (async () => {
+      const owner = await claimSession();
       try {
         await loadApiUrl();
         const alwaysAsk = await loadAlwaysAsk();
@@ -737,6 +965,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         const identity = await loadOfflineIdentity();
         if (identity) {
+          ensureOwner(owner);
           set({
             user: identity.profile,
             localAccessAccountId: identity.profile.id,
@@ -748,6 +977,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               if (savedPassword) {
                 await deriveKek(savedPassword, identity.salt_cl);
                 await unwrapDek(identity.wrapped_keyring.dek_wrapped_by_kek);
+                ensureOwner(owner);
                 set({ isUnlocked: true });
               }
             } catch {
@@ -760,6 +990,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         // The enrolled vault can render immediately; server refresh may time out offline.
         if (identity) set({ isInitialized: true, isLoading: false });
+        ensureOwner(owner);
         await get().retryServerSession();
       } catch {
         // A corrupt/unavailable cache does not prevent online sign-in.
@@ -773,23 +1004,48 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   retryServerSession: async () => {
     if (_serverSessionLock) return _serverSessionLock;
+    // Held for the user's Keep / Sign out choice: no server call until then.
+    if (get().pendingDeletion) return "auth-required";
     _serverSessionLock = (async () => {
+      let refreshing = false;
+      const owner = await claimSession();
       try {
         const refreshToken = await loadRefreshToken();
-        if (!refreshToken) return "auth-required" as const;
+        if (!refreshToken) {
+          // An enrolled device whose token is gone (a rejected refresh cleared
+          // it) must still learn of a deletion; this suspends, asks, keeps on doubt.
+          if (!get().serverAuthenticated && currentAccountId())
+            void handleRevokedSession();
+          return "auth-required" as const;
+        }
         const identity = await loadOfflineIdentity();
+        refreshing = true;
         const newTokens = await authApi.refresh(refreshToken);
-        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+        refreshing = false;
+        await setAuthTokens(
+          newTokens.access_token,
+          newTokens.refresh_token,
+          owner,
+        );
+        ensureOwner(owner);
         const user = await authApi.me();
+        ensureOwner(owner);
         if (identity && user.id !== identity.profile.id) {
           throw new Error(
             "Server account differs from enrolled offline account",
           );
         }
+        if (user.deletion_scheduled_for) {
+          holdForDeletionChoice(user.deletion_scheduled_for, newTokens, () =>
+            get().retryServerSession(),
+          );
+          return "auth-required" as const;
+        }
         if (!identity) {
           const { keyring, salt_cl } = await authApi.fetchKeyring();
-          await enroll(user, salt_cl, keyring);
+          await enroll(user, salt_cl, keyring, owner);
         }
+        ensureOwner(owner);
         set({
           user,
           tokens: newTokens,
@@ -797,14 +1053,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           serverAuthenticated: true,
           localAccessAccountId: user.id,
         });
-        await persistTokens(newTokens);
+        await persistTokens(newTokens, owner);
         return "connected" as const;
       } catch (error) {
+        // A sign-out, reset or newer sign-in ran meanwhile; the session isn't ours.
+        if (owner !== sessionOwner) return "auth-required" as const;
         set({
           tokens: null,
           isAuthenticated: false,
           serverAuthenticated: false,
         });
+        // The server rejected the refresh token itself (revoked or purged).
+        // Rust reports session-revoked only for authenticated calls, so ask here.
+        if (
+          refreshing &&
+          error instanceof AuthApiError &&
+          error.status === 401 &&
+          error.apiError.code !== "AUTH_EXPIRED"
+        ) {
+          void handleRevokedSession();
+        }
         const message =
           error instanceof AuthApiError ? error.apiError.code : String(error);
         return /network|offline|connect|timeout/i.test(message)
@@ -821,6 +1089,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   oauthStartFlow: async (provider: string) => {
     set({ isLoading: true, error: null });
+    let owner = await claimSession();
     try {
       const result = await startOAuthFlow(provider, await getDeviceId());
 
@@ -829,6 +1098,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       if (result.dest === "setup") {
+        ensureOwner(owner);
         set({
           pendingOAuth: {
             provider,
@@ -845,36 +1115,68 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: result.accessToken ?? "",
         refresh_token: result.refreshToken ?? "",
       };
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-      set({
-        tokens: newTokens,
-        isAuthenticated: true,
-        serverAuthenticated: true,
-        isUnlocked: false,
-        user: null,
-        isLoading: false,
-      });
-      await persistTokens(newTokens);
+      owner = takeOver(owner);
+      await setAuthTokens(
+        newTokens.access_token,
+        newTokens.refresh_token,
+        owner,
+      );
+      await persistTokens(newTokens, owner);
+      ensureOwner(owner);
       const user = await authApi.me();
-      set({ user });
+      ensureOwner(owner);
+      try {
+        await refuseOtherEnrolledAccount(user.id);
+      } catch (refusal) {
+        // Drop this account's session, but keep the enrolled account's local data.
+        await writeTokens(async () => {
+          await clearAuthTokens().catch(() => {});
+          await storeTokens(null);
+        }, owner);
+        throw refusal;
+      }
+      // Also the Keep resume, which takes the session over from the hold.
+      const finish = async (resumed: boolean) => {
+        owner = takeOver(owner);
+        const tokens = resumed ? await tokensAfterKeep(newTokens) : newTokens;
+        if (resumed) await persistTokens(tokens, owner);
+        ensureOwner(owner);
+        set({
+          tokens,
+          isAuthenticated: true,
+          serverAuthenticated: true,
+          isUnlocked: false,
+          user,
+          isLoading: false,
+        });
 
-      // Enroll an OAuth-authenticated account for later offline unlock.
-      const { keyring, salt_cl } = await authApi.fetchKeyring();
-      await enroll(user, salt_cl, keyring);
-      if (!get().alwaysAsk) {
-        try {
-          const savedPassword = await loadPassword();
-          if (savedPassword) {
-            await deriveKek(savedPassword, salt_cl);
-            await unwrapDek(keyring.dek_wrapped_by_kek);
-            set({ isUnlocked: true });
+        // Enroll an OAuth-authenticated account for later offline unlock.
+        const { keyring, salt_cl } = await authApi.fetchKeyring();
+        await enroll(user, salt_cl, keyring, owner);
+        if (!get().alwaysAsk) {
+          try {
+            const savedPassword = await loadPassword();
+            if (savedPassword) {
+              await deriveKek(savedPassword, salt_cl);
+              await unwrapDek(keyring.dek_wrapped_by_kek);
+              ensureOwner(owner);
+              set({ isUnlocked: true });
+            }
+          } catch {
+            // Wrong or expired password: prompt for manual unlock.
           }
-        } catch {
-          // Wrong or expired password: prompt for manual unlock.
         }
+      };
+      if (user.deletion_scheduled_for) {
+        holdForDeletionChoice(user.deletion_scheduled_for, newTokens, () =>
+          finish(true),
+        );
+      } else {
+        await finish(false);
       }
       return { needsSetup: false };
     } catch (err) {
+      if (owner !== sessionOwner) return { needsSetup: false };
       const message =
         typeof err === "string"
           ? err
@@ -900,6 +1202,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error("No pending OAuth setup");
     }
     set({ isLoading: true, error: null });
+    let owner = await claimSession();
     try {
       const material = await generateAccountMaterial();
       await deriveKek(password, material.salt_cl);
@@ -923,8 +1226,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
-      await enroll(res.user, material.salt_cl, keyring);
-      await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+      owner = takeOver(owner);
+      await enroll(res.user, material.salt_cl, keyring, owner);
+      await setAuthTokens(
+        newTokens.access_token,
+        newTokens.refresh_token,
+        owner,
+      );
+      ensureOwner(owner);
       set({
         user: res.user,
         tokens: newTokens,
@@ -936,11 +1245,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pendingOAuth: null,
         isLoading: false,
       });
-      await persistTokens(newTokens);
+      await persistTokens(newTokens, owner);
+      ensureOwner(owner);
       if (!get().alwaysAsk) {
         await savePassword(password);
       }
     } catch (err) {
+      if (owner !== sessionOwner) return;
       const message =
         typeof err === "string"
           ? err
@@ -949,6 +1260,59 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             : "OAuth setup failed";
       set({ error: message, isLoading: false });
       throw err;
+    }
+  },
+
+  requestAccountDeletion: async (password: string, email: string) => {
+    const { user } = get();
+    if (!user) throw new Error("Not authenticated");
+    let date: string;
+    try {
+      // Same proof flow as changePassword.
+      const prelogin = await authApi.prelogin(user.email);
+      await deriveKek(password, prelogin.salt_cl);
+      const proof = await computeLoginProof(
+        prelogin.server_salt,
+        prelogin.nonce,
+      );
+      const res = await authApi.requestAccountDeletion({
+        proof: proof.proof,
+        nonce: prelogin.nonce,
+        email,
+      });
+      date = res.deletion_scheduled_for;
+    } catch (err) {
+      throw deletionRequestError(err);
+    }
+    const failures = await resetDevice(teardownSession);
+    if (failures.length) console.warn("device reset incomplete:", failures);
+    set({ deletionNotice: { kind: "scheduled", date } });
+  },
+
+  cancelAccountDeletion: async () => {
+    try {
+      await authApi.cancelAccountDeletion();
+    } catch (err) {
+      if (!(err instanceof AuthApiError && err.status === 410)) throw err;
+      // Purged during the grace period.
+      resumeAfterKeep = null;
+      const failures = await resetDevice(teardownSession);
+      if (failures.length) console.warn("device reset incomplete:", failures);
+      set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
+      return;
+    }
+    const resume = resumeAfterKeep;
+    resumeAfterKeep = null;
+    set({ pendingDeletion: null, deletionNotice: null });
+    try {
+      await resume?.();
+    } catch (err) {
+      if (err instanceof SessionLost) return;
+      // The dialog is gone; the sign-in page shows this.
+      set({
+        error: err instanceof Error ? err.message : String(err),
+        isLoading: false,
+      });
     }
   },
 
@@ -972,3 +1336,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+// Any successful sign-in (password, OAuth, restore) supersedes the notice.
+useAuthStore.subscribe((s, prev) => {
+  if (s.isAuthenticated && !prev.isAuthenticated && s.deletionNotice) {
+    useAuthStore.setState({ deletionNotice: null });
+  }
+});

@@ -143,6 +143,8 @@ export interface User {
   initialized: boolean;
   auth_provider: string;
   created_at: string;
+  /** Set while the account is in its deletion grace period. */
+  deletion_scheduled_for?: string;
 }
 
 export interface LoginResponse extends TokenPair {
@@ -224,6 +226,31 @@ export const authApi = {
 
   async prelogin(email: string): Promise<PreloginResponse> {
     return apiFetch("POST", "/api/v1/auth/prelogin", { email });
+  },
+
+  async requestAccountDeletion(body: {
+    proof: string;
+    nonce: string;
+    email: string;
+  }): Promise<{ deletion_scheduled_for: string }> {
+    return apiFetch("POST", "/api/v1/me/deletion", body);
+  },
+
+  async cancelAccountDeletion(): Promise<void> {
+    return apiFetch("DELETE", "/api/v1/me/deletion");
+  },
+
+  async accountStatus(userId: string): Promise<{
+    status: "active" | "deletion_scheduled" | "deleted";
+    deletion_scheduled_for?: string;
+  }> {
+    // Public: asked after a session is rejected, so send no (revoked) token.
+    return apiFetch(
+      "POST",
+      "/api/v1/auth/account-status",
+      { user_id: userId },
+      { auth: false },
+    );
   },
 
   async register(req: RegisterRequest): Promise<RegisterResponse> {

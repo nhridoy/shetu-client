@@ -105,6 +105,20 @@ async fn pull_until_caught_up(
     ))
 }
 
+/// One sync cycle; `on_revoked` fires when the session was rejected, so the webview runs its deletion check.
+pub async fn sync_and_report(
+    vault_id: &str,
+    device_id: &str,
+    db: &LocalDb,
+    crypto: &CryptoState,
+    http: &HttpClient,
+    on_revoked: impl FnOnce(),
+) -> Result<SyncReport, HttpErrorKind> {
+    let outcome = run_sync_cycle(vault_id, device_id, db, crypto, http).await;
+    crate::http::notify_if_revoked(&outcome, on_revoked);
+    outcome
+}
+
 pub async fn run_sync_cycle(
     vault_id: &str,
     device_id: &str,
@@ -243,7 +257,9 @@ mod cycle_tests {
             None
         }
         fn persist_rotated_token(&self, _: &str) {}
-        fn clear(&self) {}
+        fn clear(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     fn unlocked_crypto() -> CryptoState {
@@ -369,6 +385,29 @@ mod cycle_tests {
         worker.join().unwrap();
         assert_eq!(report.pending, 0);
         assert_eq!(report.cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_session_during_sync_reports_revoked_once() {
+        // Access token and refresh token are both rejected: the webview must run its deletion check.
+        let (url, _) = crate::http::tests::spawn_mock(|_| (401, "{}".to_string()));
+        let state = HttpState::new(url);
+        state.set_token(Some("access".into()));
+        let refresh = crate::http::tests::mem_refresh(Some("refresh"));
+        let http = HttpClient::new(state.clone(), refresh.clone());
+        let db = db::open(":memory:").unwrap();
+        let crypto = unlocked_crypto();
+        let vault = uuid::Uuid::new_v4().to_string();
+        let device = uuid::Uuid::new_v4().to_string();
+        let fired = std::cell::Cell::new(0);
+        let outcome = sync_and_report(&vault, &device, &db, &crypto, &http, || {
+            fired.set(fired.get() + 1)
+        })
+        .await;
+        assert_eq!(outcome.unwrap_err(), HttpErrorKind::SessionExpired);
+        assert_eq!(fired.get(), 1);
+        assert_eq!(state.token(), None);
+        assert_eq!(refresh.get_refresh_token(), None);
     }
 
     #[tokio::test]

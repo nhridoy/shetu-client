@@ -1308,9 +1308,10 @@ async fn team_sync_now(
     let _guard = lock.lock().await;
     let client = http::HttpClient::new(
         http.inner().clone(),
-        Arc::new(http::KeyringRefreshProvider { app }),
+        Arc::new(http::KeyringRefreshProvider { app: app.clone() }),
     );
     let outcome = team_sync::run_team_sync(&account_id, &db, &crypto.session, &client).await;
+    http::report_revoked(&app, &outcome);
     match &outcome {
         Err(http::HttpErrorKind::Http(0, message)) => log::warn!("team sync failed: {message}"),
         Err(http::HttpErrorKind::Http(status, body)) => match http::server_reason(body) {
@@ -1362,21 +1363,20 @@ async fn lookup_team_recipient_key(
     let path = format!("/api/v1/teams/{team_id}/recipient-key?email={encoded_email}");
     let client = http::HttpClient::new(
         http.inner().clone(),
-        Arc::new(http::KeyringRefreshProvider { app }),
+        Arc::new(http::KeyringRefreshProvider { app: app.clone() }),
     );
-    let response = client
-        .request("GET", &path, None, true)
-        .await
-        .map_err(|error| match error {
-            http::HttpErrorKind::Network => "network:Cannot reach the team server".into(),
-            http::HttpErrorKind::InvalidUrl => format!("network:{}", http::INVALID_URL_MESSAGE),
-            http::HttpErrorKind::SessionExpired => {
-                "auth:Sign in again to look up a team member".into()
-            }
-            http::HttpErrorKind::Http(status, body) => {
-                format!("team-recipient:server-error-{status}:{body}")
-            }
-        })?;
+    let outcome = client.request("GET", &path, None, true).await;
+    http::report_revoked(&app, &outcome);
+    let response = outcome.map_err(|error| match error {
+        http::HttpErrorKind::Network => "network:Cannot reach the team server".into(),
+        http::HttpErrorKind::InvalidUrl => format!("network:{}", http::INVALID_URL_MESSAGE),
+        http::HttpErrorKind::SessionExpired => {
+            "auth:Sign in again to look up a team member".into()
+        }
+        http::HttpErrorKind::Http(status, body) => {
+            format!("team-recipient:server-error-{status}:{body}")
+        }
+    })?;
     #[derive(serde::Deserialize)]
     struct Envelope {
         data: TeamRecipientKey,
@@ -1803,10 +1803,12 @@ pub fn run() {
             http::http_request,
             http::set_auth_tokens,
             http::clear_auth_tokens,
+            http::clear_access_token,
             http::set_base_url,
             http::get_request_log,
             logging::take_crash_marker,
             logging::export_logs,
+            logging::reset_device_files,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

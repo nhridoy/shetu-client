@@ -1,15 +1,18 @@
 import { XIcon } from "@phosphor-icons/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Button } from "@/components/ui/Button";
 
 interface ModalProps {
   open?: boolean;
   onClose: () => void;
   title?: string;
+  /** Accessible name for a dialog without a title. */
+  ariaLabel?: string;
   children: React.ReactNode;
   maxWidth?: string;
   closeOnBackdrop?: boolean;
   hideClose?: boolean;
+  zClass?: string;
 }
 
 const FOCUSABLE_SELECTOR =
@@ -20,6 +23,9 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
     container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
   );
 }
+
+// Open dialogs, topmost last; only the top one handles keys.
+const openModals: HTMLElement[] = [];
 
 function getPrimaryButton(container: HTMLElement): HTMLElement | null {
   const all = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
@@ -44,11 +50,14 @@ export default function Modal({
   open = true,
   onClose,
   title,
+  ariaLabel,
   children,
   maxWidth = "max-w-lg",
   closeOnBackdrop = false,
   hideClose = false,
+  zClass = "z-50",
 }: ModalProps) {
+  const titleId = useId();
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -60,20 +69,28 @@ export default function Modal({
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
+    const self = overlayRef.current as HTMLElement;
+    // Child effects run first, so a parent goes below any dialog nested inside it.
+    const nested = openModals.findIndex((m) => self.contains(m));
+    openModals.splice(nested === -1 ? openModals.length : nested, 0, self);
 
-    const bodyEls = bodyRef.current && getFocusableElements(bodyRef.current);
-    if (bodyEls && bodyEls.length > 0) {
-      bodyEls[0].focus();
-    } else if (panelRef.current) {
-      const focusable = getFocusableElements(panelRef.current);
-      if (focusable.length > 0) {
-        focusable[0].focus();
-      } else {
-        panelRef.current.focus();
+    // A parent opened together with its nested dialog leaves focus in the child.
+    if (openModals[openModals.length - 1] === self) {
+      const bodyEls = bodyRef.current && getFocusableElements(bodyRef.current);
+      if (bodyEls && bodyEls.length > 0) {
+        bodyEls[0].focus();
+      } else if (panelRef.current) {
+        const focusable = getFocusableElements(panelRef.current);
+        if (focusable.length > 0) {
+          focusable[0].focus();
+        } else {
+          panelRef.current.focus();
+        }
       }
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (openModals[openModals.length - 1] !== self) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         if (!hideCloseRef.current) onCloseRef.current();
@@ -110,6 +127,7 @@ export default function Modal({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
+      openModals.splice(openModals.indexOf(self), 1);
       prev?.focus();
     };
   }, [open]);
@@ -121,7 +139,9 @@ export default function Modal({
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
+      aria-labelledby={title ? titleId : undefined}
+      aria-label={title ? undefined : ariaLabel}
+      className={`fixed inset-0 bg-black/30 flex items-center justify-center ${zClass} p-4`}
       onMouseDown={(e) => {
         if (closeOnBackdrop && e.target === overlayRef.current)
           onCloseRef.current();
@@ -134,7 +154,9 @@ export default function Modal({
       >
         {title && (
           <div className="flex items-center justify-between h-11 px-4 border-b border-dark-700 shrink-0">
-            <h2 className="text-sm font-semibold text-white">{title}</h2>
+            <h2 id={titleId} className="text-sm font-semibold text-white">
+              {title}
+            </h2>
             {!hideClose && (
               <Button
                 type="button"

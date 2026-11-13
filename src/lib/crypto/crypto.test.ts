@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildKeyringRows,
+  clearAccessToken,
   clearAuthTokens,
   computeLoginProof,
   decryptObject,
@@ -365,6 +366,14 @@ describe("token custody handoff", () => {
     await clearAuthTokens();
 
     expect(mockInvoke).toHaveBeenCalledWith("clear_auth_tokens");
+  });
+
+  it("clearAccessToken clears only the Rust access token", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await clearAccessToken();
+
+    expect(mockInvoke).toHaveBeenCalledWith("clear_access_token");
   });
 });
 

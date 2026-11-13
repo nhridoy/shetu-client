@@ -302,9 +302,123 @@ pub fn export_logs(app: tauri::AppHandle, destination: String) -> Result<(), Str
     export_logs_in(&dir, Path::new(&destination), &header).map_err(|e| e.to_string())
 }
 
+/// Deletes regular files directly inside `dir`; returns the names that could not be removed.
+/// A missing dir counts as clean; one that can't be listed is reported by its own name.
+fn clear_dir_files(dir: &Path) -> Vec<String> {
+    let dir_name = || {
+        dir.file_name()
+            .map_or_else(|| "logs".to_string(), |n| n.to_string_lossy().into_owned())
+    };
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return vec![dir_name()],
+    };
+    let mut failures = Vec::new();
+    for entry in read {
+        let Ok(entry) = entry else {
+            failures.push(dir_name());
+            continue;
+        };
+        match entry.file_type() {
+            Ok(t) if !t.is_file() => {}
+            Ok(_) if std::fs::remove_file(entry.path()).is_ok() => {}
+            _ => failures.push(entry.file_name().to_string_lossy().into_owned()),
+        }
+    }
+    failures
+}
+
+/// Wipes known hosts and logs; returns log files that could not be deleted
+/// (the live log file may be locked on Windows).
+#[tauri::command]
+pub fn reset_device_files(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::ssh::SshSessions>,
+) -> Result<Vec<String>, String> {
+    let hosts_cleared = state
+        .known_hosts
+        .lock()
+        .map_err(|_| "known_hosts lock poisoned".to_string())?
+        .clear();
+    log::logger().flush();
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    let mut failures = clear_dir_files(&dir);
+    if hosts_cleared.is_err() {
+        failures.push("known_hosts".to_string());
+    }
+    Ok(failures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("shetu-{tag}-{stamp}"))
+    }
+
+    #[test]
+    fn clear_dir_files_removes_files_and_reports_failures() {
+        let dir = tmp_dir("clear");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.log"), "x").unwrap();
+        std::fs::write(dir.join("b.log"), "y").unwrap();
+        assert!(clear_dir_files(&dir).is_empty());
+        assert!(!dir.join("a.log").exists() && !dir.join("b.log").exists());
+        assert!(dir.join("sub").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_dir_files_reports_files_it_cannot_delete() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir("readonly");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("locked.log"), "x").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout == b"0\n");
+        let failed = clear_dir_files(&dir);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !is_root {
+            assert_eq!(failed, vec!["locked.log".to_string()]);
+            assert!(dir.join("locked.log").exists());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_dir_files_reports_an_unreadable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir("unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.log"), "x").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout == b"0\n");
+        let failed = clear_dir_files(&dir);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !is_root {
+            assert!(!failed.is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_dir_files_missing_dir_is_empty() {
+        assert!(clear_dir_files(&tmp_dir("missing")).is_empty());
+    }
 
     #[test]
     fn scrub_redacts_identifying_and_secret_values() {

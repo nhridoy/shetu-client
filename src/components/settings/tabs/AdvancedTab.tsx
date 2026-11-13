@@ -211,14 +211,6 @@ export default function AdvancedTab({
           </Button>
         </div>
       </div>
-
-      <div className="border-t border-dark-700 pt-6">
-        <h3 className="text-sm font-medium text-white mb-3">Data deletion</h3>
-        <p className="text-xs text-dark-400">
-          Account-wide data deletion is not available yet. Signing out clears
-          this device's local account data after pending changes are synced.
-        </p>
-      </div>
     </div>
   );
 }

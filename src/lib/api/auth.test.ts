@@ -139,3 +139,51 @@ describe("isShetuServer", () => {
     await expect(authApi.isShetuServer()).resolves.toBe(false);
   });
 });
+
+describe("account deletion", () => {
+  it("request_deletion_posts_proof_and_email", async () => {
+    mockHttpRequest.mockResolvedValue({
+      status: 200,
+      body: '{"data":{"deletion_scheduled_for":"2026-12-13T00:00:00Z"}}',
+    });
+    const body = { proof: "p", nonce: "n", email: "a@b.c" };
+    await expect(authApi.requestAccountDeletion(body)).resolves.toEqual({
+      deletion_scheduled_for: "2026-12-13T00:00:00Z",
+    });
+    expect(mockHttpRequest).toHaveBeenCalledWith(
+      "POST",
+      "/api/v1/me/deletion",
+      body,
+      {},
+    );
+  });
+
+  it("cancel_deletion_deletes", async () => {
+    mockHttpRequest.mockResolvedValue({ status: 204, body: "" });
+    await expect(authApi.cancelAccountDeletion()).resolves.toBeUndefined();
+    expect(mockHttpRequest).toHaveBeenCalledWith(
+      "DELETE",
+      "/api/v1/me/deletion",
+      undefined,
+      {},
+    );
+  });
+
+  it("account_status_posts_user_id", async () => {
+    mockHttpRequest.mockResolvedValue({
+      status: 200,
+      body: '{"data":{"status":"deletion_scheduled","deletion_scheduled_for":"2026-12-13T00:00:00Z"}}',
+    });
+    await expect(authApi.accountStatus("u1")).resolves.toEqual({
+      status: "deletion_scheduled",
+      deletion_scheduled_for: "2026-12-13T00:00:00Z",
+    });
+    // Public endpoint: must not attach (or try to refresh) a possibly revoked session.
+    expect(mockHttpRequest).toHaveBeenCalledWith(
+      "POST",
+      "/api/v1/auth/account-status",
+      { user_id: "u1" },
+      { auth: false },
+    );
+  });
+});
