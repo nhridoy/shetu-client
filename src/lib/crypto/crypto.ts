@@ -220,6 +220,7 @@ export async function setAuthTokens(
   });
 }
 
+// Sign-out: Rust drops the access token and the keychain refresh token together.
 export async function clearAuthTokens(): Promise<void> {
   await invoke("clear_auth_tokens");
 }

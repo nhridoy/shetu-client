@@ -43,16 +43,25 @@ impl HttpState {
     pub fn token(&self) -> Option<String> {
         self.access_token.lock().unwrap().clone()
     }
-    /// Tests only: production writes go through `replace_session` or a refresh.
+    /// Tests only: production writes go through `replace_session`, `clear_session` or a refresh.
     #[cfg(test)]
     pub fn set_token(&self, token: Option<String>) {
         *self.access_token.lock().unwrap() = token;
     }
-    /// A sign-in or sign-out from the webview: starts a new session generation.
+    /// A sign-in from the webview: starts a new session generation.
     pub fn replace_session(&self, token: Option<String>) {
         let mut current = self.access_token.lock().unwrap();
         self.generation.fetch_add(1, Ordering::SeqCst);
         *current = token;
+    }
+    /// Sign-out: drops the access token and the keychain refresh token under one
+    /// lock, so no refresh can start between the two.
+    pub fn clear_session(&self, refresh: &dyn RefreshProvider) {
+        let mut current = self.access_token.lock().unwrap();
+        // Keychain first: a refresh that reads the new generation finds no token.
+        refresh.clear();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        *current = None;
     }
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
@@ -429,8 +438,11 @@ pub fn set_auth_tokens(
 }
 
 #[tauri::command]
-pub fn clear_auth_tokens(state: tauri::State<'_, HttpState>) -> Result<(), String> {
-    state.replace_session(None);
+pub fn clear_auth_tokens(
+    app: AppHandle,
+    state: tauri::State<'_, HttpState>,
+) -> Result<(), String> {
+    state.clear_session(&KeyringRefreshProvider { app });
     Ok(())
 }
 
@@ -694,6 +706,30 @@ pub(crate) mod tests {
         // The webview writes the keychain itself, outside Rust's lock.
         let (_, state, refresh) = refresh_in_flight((200, ROTATED), |_, r| r.clear()).await;
         assert_ne!(state.token().as_deref(), Some("a2"));
+        assert!(refresh.persisted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_refresh_starts_after_sign_out() {
+        // A request still in flight at sign-out gets a 401; it must not find a
+        // refresh token left behind and restore an access token.
+        let (url, hits) = spawn_mock(|path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, ROTATED.to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let refresh = mem_refresh(Some("r1"));
+        state.clear_session(&*refresh);
+        let client = HttpClient::new(state.clone(), refresh.clone());
+        let res = client.request("GET", "/api/v1/a", None, true).await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
+        assert_eq!(state.token(), None);
+        assert_eq!(refresh.get_refresh_token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
     }
 
