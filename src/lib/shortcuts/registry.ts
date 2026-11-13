@@ -12,9 +12,7 @@ export type ShortcutId =
   | "terminal.prevTab"
   | "terminal.splitRight"
   | "terminal.splitDown"
-  | "terminal.focusMode"
   | "terminal.palette"
-  | "terminal.toggleSidebar"
   | "terminal.copy"
   | "terminal.paste"
   | "files.copy"
@@ -123,21 +121,12 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     "shift+meta+backslash",
     true,
   ),
-  def("terminal.focusMode", "terminal", "Focus mode", "f11", "f11", true),
   def(
     "terminal.palette",
     "terminal",
     "Snippets palette",
     "ctrl+shift+p",
     "shift+meta+p",
-    true,
-  ),
-  def(
-    "terminal.toggleSidebar",
-    "terminal",
-    "Toggle sidebar",
-    "ctrl+shift+b",
-    "meta+b",
     true,
   ),
   def("terminal.copy", "terminal", "Copy", "ctrl+shift+c", "", true, {

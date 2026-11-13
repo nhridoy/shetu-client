@@ -7,9 +7,7 @@ interface UseKeyboardShortcutsProps {
   onPrevTab?: () => void;
   onSplitHorizontal?: () => void;
   onSplitVertical?: () => void;
-  onFocusMode?: () => void;
   onCommandPalette?: () => void;
-  onToggleSidebar?: () => void;
 }
 
 /** The terminal view's shortcuts, on the user's bindings (Settings → Keyboard). */
@@ -20,9 +18,7 @@ export function useKeyboardShortcuts({
   onPrevTab,
   onSplitHorizontal,
   onSplitVertical,
-  onFocusMode,
   onCommandPalette,
-  onToggleSidebar,
 }: UseKeyboardShortcutsProps) {
   const run = (cb?: () => void) => [() => cb?.(), { enabled: !!cb }] as const;
   useShortcut("terminal.newTab", ...run(onNewTab));
@@ -31,7 +27,5 @@ export function useKeyboardShortcuts({
   useShortcut("terminal.prevTab", ...run(onPrevTab));
   useShortcut("terminal.splitRight", ...run(onSplitHorizontal));
   useShortcut("terminal.splitDown", ...run(onSplitVertical));
-  useShortcut("terminal.focusMode", ...run(onFocusMode));
   useShortcut("terminal.palette", ...run(onCommandPalette));
-  useShortcut("terminal.toggleSidebar", ...run(onToggleSidebar));
 }

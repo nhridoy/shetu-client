@@ -39,7 +39,9 @@ shortcuts, and from then on that combination does the action everywhere the shor
 - The code editor's built-in editing keys (CodeMirror `basicSetup`: undo, find, comment line, …).
   They stay standard.
 - Navigation keys inside widgets: Enter / Escape / arrows in lists, dialogs, menus, the palette,
-  inline rename boxes, focus-mode Escape.
+  inline rename boxes.
+- Focus mode (full-window terminal) and Toggle sidebar: removed by the user after review — the
+  sidebar toggle did nothing, and Focus mode's Esc exit couldn't work from a focused terminal.
 - Syncing bindings across devices; import/export of bindings; multi-key sequences (Ctrl+K Ctrl+S).
 - "Save workspace" (listed today as Ctrl+S but does nothing): removed from the list until it exists.
 
@@ -79,7 +81,7 @@ Keyboard tab shows "overrides <App-wide action> here").
 | Context | Shortcuts — default as **Linux/Windows · macOS** | Focus rule |
 |---|---|---|
 | **App-wide** | Quick Connect `ctrl+shift+k` · `meta+k`; Settings `ctrl+comma` · `meta+comma`; Search hosts `/` (hosts page) | Quick Connect, Settings: anywhere, including the terminal. `/`: not while typing. |
-| **Terminal view** | New tab `ctrl+shift+t` · `meta+t`; Close pane `ctrl+shift+w` · `meta+w`; Next tab `ctrl+tab` · `meta+tab`; Previous tab `ctrl+shift+tab` · `meta+shift+tab`; Split right `ctrl+backslash` · `meta+backslash`; Split down `ctrl+shift+backslash` · `meta+shift+backslash`; Focus mode `f11`; Snippets palette `ctrl+shift+p` · `meta+shift+p`; Toggle sidebar `ctrl+shift+b` · `meta+b`; Copy `ctrl+shift+c` · —*; Paste `ctrl+shift+v` · —* | Anywhere, including the terminal; never reach the shell. |
+| **Terminal view** | New tab `ctrl+shift+t` · `meta+t`; Close pane `ctrl+shift+w` · `meta+w`; Next tab `ctrl+tab` · `meta+tab`; Previous tab `ctrl+shift+tab` · `meta+shift+tab`; Split right `ctrl+backslash` · `meta+backslash`; Split down `ctrl+shift+backslash` · `meta+shift+backslash`; Snippets palette `ctrl+shift+p` · `meta+shift+p`; Copy `ctrl+shift+c` · —*; Paste `ctrl+shift+v` · —* | Anywhere, including the terminal; never reach the shell. |
 | **File browser** | Copy `mod+c`; Cut `mod+x`; Paste `mod+v`; New file `mod+n`; New folder `mod+shift+n`; Select all `mod+a`; Rename `f2`; Refresh `f5`; Delete `delete`; Up a folder `backspace` | Not while typing. Rename/Delete need a selection. |
 | **Editor** | Quick open `mod+p`; Toggle file list `mod+b`; Save `mod+s`; Copy path `mod+c` (explorer); Rename `f2`; Delete `delete` | Quick open: anywhere. Toggle: not while typing. Save: in the editor. Copy path/Rename/Delete: in the explorer. |
 
@@ -139,15 +141,13 @@ page, so for conflict checks they count as App-wide there.
 ## Defaults
 
 macOS: unchanged. Linux/Windows, chosen by the user: New tab Ctrl+Shift+T (was Ctrl+T), Close pane
-Ctrl+Shift+W (was Ctrl+W), Toggle sidebar Ctrl+Shift+B (was Ctrl+B). Designer's calls: Quick Connect
+Ctrl+Shift+W (was Ctrl+W). Designer's calls: Quick Connect
 Ctrl+Shift+K (was Ctrl+K, which is the shell's delete-to-end-of-line); Settings gains Ctrl+, (today
 only on macOS). "Save workspace" is removed. Saved user bindings are never changed by these new
 defaults (there are none yet).
 
 ## Calls made by the designer (check these)
 
-- Toggle sidebar stays in the Terminal view context, where it works today (not app-wide), so it
-  doesn't clash with the editor's Ctrl+B.
 - Conflict resolution offers Replace/Cancel rather than blocking outright.
 - Terminal copy/paste on macOS are shown but not rebindable (system Edit-menu items).
 - Settings gains Ctrl+, on Linux/Windows.

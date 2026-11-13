@@ -77,7 +77,7 @@ describe("KeyboardTab", () => {
     const { container } = setup();
     for (const h of ["App-wide", "Terminal", "File browser", "Editor"])
       expect(container.textContent).toContain(h);
-    expect(container.querySelectorAll("[data-shortcut]")).toHaveLength(30);
+    expect(container.querySelectorAll("[data-shortcut]")).toHaveLength(28);
   });
 
   it("records_a_new_binding", async () => {
