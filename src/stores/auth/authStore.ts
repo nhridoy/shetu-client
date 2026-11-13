@@ -51,18 +51,35 @@ onSessionRevoked(() => {
   void handleRevokedSession();
 });
 
-export async function handleRevokedSession(): Promise<void> {
+let revokedRun: Promise<void> | null = null;
+
+// Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
+export function handleRevokedSession(): Promise<void> {
+  revokedRun ??= runRevokedSession().finally(() => {
+    revokedRun = null;
+  });
+  return revokedRun;
+}
+
+function currentAccountId(): string | null {
   const s = useAuthStore.getState();
-  const userId = s.user?.id ?? s.localAccessAccountId;
-  if (!userId) return suspendServerSession();
-  let res: Awaited<ReturnType<typeof authApi.accountStatus>>;
+  return s.user?.id ?? s.localAccessAccountId;
+}
+
+async function runRevokedSession(): Promise<void> {
+  // Suspend first: it keeps user and localAccessAccountId, and must not wait on the network.
+  await suspendServerSession();
+  const userId = currentAccountId();
+  if (!userId) return;
+  let res: Awaited<ReturnType<typeof authApi.accountStatus>> | null;
   try {
     res = await authApi.accountStatus(userId);
   } catch {
-    // Offline or server error: never wipe on doubt.
-    return suspendServerSession();
+    return; // offline or server error: never wipe on doubt
   }
-  if (res.status === "active") return suspendServerSession();
+  if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
+  // The account may have changed during the round-trip; don't wipe another one.
+  if (currentAccountId() !== userId) return;
   const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({

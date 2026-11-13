@@ -102,4 +102,37 @@ describe("handleRevokedSession", () => {
     expect(useAuthStore.getState().serverAuthenticated).toBe(false);
     expect(useAuthStore.getState().user).toEqual(user);
   });
+
+  it("revoked_session_with_unknown_status_suspends", async () => {
+    for (const res of [{ status: "weird" }, {}, null]) {
+      vi.mocked(authApi.accountStatus).mockResolvedValue(res as never);
+      await handleRevokedSession();
+      expect(resetDevice).not.toHaveBeenCalled();
+      expect(useAuthStore.getState().serverAuthenticated).toBe(false);
+      useAuthStore.setState({ serverAuthenticated: true });
+    }
+  });
+
+  it("concurrent_revoked_sessions_share_one_run", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "deleted" });
+    await Promise.all([handleRevokedSession(), handleRevokedSession()]);
+    expect(authApi.accountStatus).toHaveBeenCalledTimes(1);
+    expect(resetDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("revoked_session_for_a_switched_user_does_not_reset", async () => {
+    let answer: (v: { status: "deleted" }) => void = () => {};
+    vi.mocked(authApi.accountStatus).mockReturnValue(
+      new Promise((r) => {
+        answer = r;
+      }),
+    );
+    const run = handleRevokedSession();
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
+    useAuthStore.setState({ user: { ...user, id: "u2" } });
+    answer({ status: "deleted" });
+    await run;
+    expect(resetDevice).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().deletionNotice).toBeNull();
+  });
 });
