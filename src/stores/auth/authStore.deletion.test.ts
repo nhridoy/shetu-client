@@ -67,6 +67,7 @@ vi.mock("../../lib/common/device", () => ({
 
 import { resetDevice } from "@/lib/account/resetDevice";
 import { AuthApiError, authApi } from "@/lib/api/auth";
+import { onSessionRevoked } from "../../lib/api/http";
 import {
   clearAuthTokens,
   clearKeychain,
@@ -83,6 +84,9 @@ import { wipeLocalData } from "../../lib/db/db";
 import { deletePassword } from "../../lib/keychain/keychain";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
+
+// The listener the store registers on import; captured before any test clears mock calls.
+const revokedListener = vi.mocked(onSessionRevoked).mock.calls[0]?.[0];
 
 const user = {
   id: "u1",
@@ -117,6 +121,17 @@ describe("handleRevokedSession", () => {
       kind: "scheduled",
       date: "2026-12-13",
     });
+  });
+
+  it("session_revoked_event_runs_the_deletion_check", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "deletion_scheduled",
+      deletion_scheduled_for: "2026-12-13",
+    });
+    expect(revokedListener).toBeTypeOf("function");
+    revokedListener?.();
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
   });
 
   it("revoked_session_for_deleted_account_resets", async () => {

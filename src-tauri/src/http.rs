@@ -408,7 +408,7 @@ pub fn report_revoked<T>(app: &AppHandle, outcome: &Result<T, HttpErrorKind>) {
 }
 
 /// Only a rejected refresh token is a revoked session; other errors are not.
-fn notify_if_revoked<T>(outcome: &Result<T, HttpErrorKind>, emit: impl FnOnce()) {
+pub(crate) fn notify_if_revoked<T>(outcome: &Result<T, HttpErrorKind>, emit: impl FnOnce()) {
     if matches!(outcome, Err(HttpErrorKind::SessionExpired)) {
         emit();
     }
@@ -471,7 +471,7 @@ pub fn server_reason(body: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    struct MemoryRefresh {
+    pub(crate) struct MemoryRefresh {
         token: Mutex<Option<String>>,
         persisted: Mutex<Vec<String>>,
     }
@@ -530,7 +530,7 @@ mod tests {
         }
     }
 
-    fn mem_refresh(token: Option<&str>) -> Arc<MemoryRefresh> {
+    pub(crate) fn mem_refresh(token: Option<&str>) -> Arc<MemoryRefresh> {
         Arc::new(MemoryRefresh {
             token: Mutex::new(token.map(str::to_string)),
             persisted: Mutex::new(vec![]),
@@ -539,7 +539,7 @@ mod tests {
 
     /// Minimal mock HTTP server: responds per-path via a handler closure.
     /// Real OS socket; keeps count of requests seen.
-    fn spawn_mock(
+    pub(crate) fn spawn_mock(
         handler: impl Fn(&str) -> (u16, String) + Send + 'static,
     ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
