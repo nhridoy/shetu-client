@@ -48,7 +48,24 @@ impl HttpState {
     pub fn set_token(&self, token: Option<String>) {
         *self.access_token.lock().unwrap() = token;
     }
-    /// A sign-in from the webview: starts a new session generation.
+    /// A sign-in from the webview: the keychain refresh token, generation and access
+    /// token change under one lock, so no refresh pairs the old token with the new generation.
+    pub fn start_session(
+        &self,
+        token: String,
+        refresh_token: Option<&str>,
+        refresh: &dyn RefreshProvider,
+    ) {
+        let mut current = self.access_token.lock().unwrap();
+        // Keychain first, as in clear_session; without a new token the old one must not stay.
+        match refresh_token {
+            Some(rt) => refresh.persist_rotated_token(rt),
+            None => refresh.clear(),
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        *current = Some(token);
+    }
+    /// Suspend (and tests): starts a new session generation, keychain untouched.
     pub fn replace_session(&self, token: Option<String>) {
         let mut current = self.access_token.lock().unwrap();
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -430,10 +447,11 @@ pub fn set_auth_tokens(
     access_token: String,
     refresh_token: Option<String>,
 ) -> Result<(), String> {
-    state.replace_session(Some(access_token));
-    if let Some(rt) = refresh_token {
-        KeyringRefreshProvider { app }.persist_rotated_token(&rt);
-    }
+    state.start_session(
+        access_token,
+        refresh_token.as_deref(),
+        &KeyringRefreshProvider { app },
+    );
     Ok(())
 }
 
@@ -738,6 +756,55 @@ pub(crate) mod tests {
         assert_eq!(state.token(), None);
         assert_eq!(refresh.get_refresh_token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
+    }
+
+    /// Records whether the session lock was held at each keychain write.
+    struct LockProbe {
+        state: HttpState,
+        token: Mutex<Option<String>>,
+        locked: Mutex<Vec<bool>>,
+    }
+
+    impl LockProbe {
+        fn note(&self) {
+            let held = self.state.access_token.try_lock().is_err();
+            self.locked.lock().unwrap().push(held);
+        }
+    }
+
+    impl RefreshProvider for LockProbe {
+        fn get_refresh_token(&self) -> Option<String> {
+            self.token.lock().unwrap().clone()
+        }
+        fn persist_rotated_token(&self, t: &str) {
+            self.note();
+            *self.token.lock().unwrap() = Some(t.to_string());
+        }
+        fn clear(&self) {
+            self.note();
+            *self.token.lock().unwrap() = None;
+        }
+    }
+
+    #[test]
+    fn sign_in_writes_the_keychain_inside_the_session_lock() {
+        // A refresh starting between the generation bump and the keychain write
+        // would send the old session's refresh token under the new generation.
+        let state = HttpState::new(String::new());
+        let probe = LockProbe {
+            state: state.clone(),
+            token: Mutex::new(Some("old".into())),
+            locked: Mutex::new(vec![]),
+        };
+        let before = state.generation();
+        state.start_session("a2".into(), Some("r2"), &probe);
+        assert_eq!(probe.get_refresh_token().as_deref(), Some("r2"));
+        // No refresh token handed over: the old one must not stay readable.
+        state.start_session("a3".into(), None, &probe);
+        assert_eq!(probe.get_refresh_token(), None);
+        assert_eq!(*probe.locked.lock().unwrap(), vec![true, true]);
+        assert_eq!(state.token().as_deref(), Some("a3"));
+        assert_eq!(state.generation(), before + 2);
     }
 
     #[test]
