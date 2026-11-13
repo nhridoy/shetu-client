@@ -58,6 +58,11 @@ export default function TeamManager() {
     ownRole === "owner" ||
     ownRole === "admin";
 
+  const deletionDate =
+    selectedTeam?.ownerDeletionScheduledFor &&
+    selectedTeam.ownerId !== currentUserId
+      ? new Date(selectedTeam.ownerDeletionScheduledFor)
+      : null;
   const createModal = useModal();
   const inviteModal = useModal();
   const deleteDialog = useModal();
@@ -266,6 +271,19 @@ export default function TeamManager() {
         <div className="flex-1 overflow-y-auto">
           {selectedTeam ? (
             <div className="p-6">
+              {deletionDate && !Number.isNaN(deletionDate.getTime()) && (
+                <p
+                  role="alert"
+                  className="mb-4 rounded border border-danger-400 p-3 text-sm text-danger-400"
+                >
+                  This team's owner is deleting their account. The team and its
+                  shared vault will be deleted on{" "}
+                  {deletionDate.toLocaleDateString(undefined, {
+                    dateStyle: "long",
+                  })}
+                  .
+                </p>
+              )}
               <div className="flex items-center justify-between mb-6">
                 <div>
                   {editingTeamName ? (

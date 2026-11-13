@@ -61,6 +61,8 @@ pub struct TeamRecord {
     pub updated_at: String,
     pub sync_status: String,
     pub sync_error: Option<String>,
+    #[serde(default)]
+    pub owner_deletion_scheduled_for: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -142,9 +144,9 @@ pub fn apply_team_sync_page(
             return Err("team name cannot be empty".into());
         }
         tx.execute(
-            "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error) VALUES (?1,?2,?3,?4,?5,?6,'synced',NULL)
-             ON CONFLICT(account_id,id) DO UPDATE SET owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status='synced',sync_error=NULL",
-            rusqlite::params![account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at],
+            "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error,owner_deletion_scheduled_for) VALUES (?1,?2,?3,?4,?5,?6,'synced',NULL,?7)
+             ON CONFLICT(account_id,id) DO UPDATE SET owner_deletion_scheduled_for=excluded.owner_deletion_scheduled_for,owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status='synced',sync_error=NULL",
+            rusqlite::params![account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at, team.owner_deletion_scheduled_for],
         ).map_err(|e| e.to_string())?;
 
         tx.execute(
@@ -490,9 +492,9 @@ pub fn upsert_team(db: &LocalDb, team: &TeamRecord) -> Result<(), String> {
     }
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-         ON CONFLICT(account_id,id) DO UPDATE SET owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status=excluded.sync_status,sync_error=excluded.sync_error",
-        rusqlite::params![team.account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at, team.sync_status, team.sync_error],
+        "INSERT INTO team_records (account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error,owner_deletion_scheduled_for) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(account_id,id) DO UPDATE SET owner_deletion_scheduled_for=excluded.owner_deletion_scheduled_for,owner_id=excluded.owner_id,name=excluded.name,updated_at=excluded.updated_at,sync_status=excluded.sync_status,sync_error=excluded.sync_error",
+        rusqlite::params![team.account_id, team.id, team.owner_id, team.name.trim(), team.created_at, team.updated_at, team.sync_status, team.sync_error, team.owner_deletion_scheduled_for],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -500,7 +502,7 @@ pub fn upsert_team(db: &LocalDb, team: &TeamRecord) -> Result<(), String> {
 pub fn list_teams(db: &LocalDb, account_id: &str) -> Result<Vec<TeamRecord>, String> {
     validate_team_account_id(account_id)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error FROM team_records WHERE account_id=?1 ORDER BY name COLLATE NOCASE,id")
+    let mut stmt = conn.prepare("SELECT account_id,id,owner_id,name,created_at,updated_at,sync_status,sync_error,owner_deletion_scheduled_for FROM team_records WHERE account_id=?1 ORDER BY name COLLATE NOCASE,id")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([account_id], |row| {
@@ -513,6 +515,7 @@ pub fn list_teams(db: &LocalDb, account_id: &str) -> Result<Vec<TeamRecord>, Str
                 updated_at: row.get(5)?,
                 sync_status: row.get(6)?,
                 sync_error: row.get(7)?,
+                owner_deletion_scheduled_for: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1633,6 +1636,7 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
     const COLUMNS: &[(&str, &str, &str)] = &[
         ("hosts", "auth_type", "TEXT NOT NULL DEFAULT 'password'"),
         ("team_records", "owner_id", "TEXT NOT NULL DEFAULT ''"),
+        ("team_records", "owner_deletion_scheduled_for", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "id", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "public_key", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "fingerprint", "TEXT NOT NULL DEFAULT ''"),
@@ -3733,6 +3737,25 @@ mod team_sync_tests {
     use super::*;
 
     #[test]
+    fn team_record_keeps_owner_deletion_date() {
+        let db = open(":memory:").unwrap();
+        let account_id = "d31e18e3-613b-4656-a085-4688c40b7890";
+        let wire = |extra: &str| {
+            serde_json::from_str::<crate::team_sync::TeamSnapshot>(&format!(
+                r#"{{"teams":[{{"id":"73ca4a95-574e-4174-a255-e45169ca7494","owner_id":"{account_id}","name":"Alpha","created_at":"2026-10-04T00:00:00Z","updated_at":"2026-10-04T00:00:00Z"{extra}}}]}}"#
+            ))
+            .unwrap()
+        };
+        let session = crate::crypto::KeySession::new();
+        let apply = |s: &crate::team_sync::TeamSnapshot| {
+            apply_team_sync_page(&db, account_id, s, &[], &session, None, false).unwrap();
+            list_teams(&db, account_id).unwrap()[0].owner_deletion_scheduled_for.clone()
+        };
+        assert_eq!(apply(&wire(r#","owner_deletion_scheduled_for":"2026-12-13T00:00:00Z""#)), "2026-12-13T00:00:00Z");
+        assert_eq!(apply(&wire("")), "");
+    }
+
+    #[test]
     fn team_snapshots_and_outbox_are_account_scoped_and_durable() {
         let db = open(":memory:").unwrap();
         let now = "2026-10-04T00:00:00.000Z";
@@ -3747,6 +3770,7 @@ mod team_sync_tests {
             updated_at: now.into(),
             sync_status: "synced".into(),
             sync_error: None,
+            owner_deletion_scheduled_for: String::new(),
         };
         upsert_team(&db, &team).unwrap();
         assert_eq!(list_teams(&db, account_id).unwrap(), vec![team]);

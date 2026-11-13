@@ -88,6 +88,8 @@ pub(crate) struct TeamWire {
     pub(crate) name: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    #[serde(default)]
+    pub(crate) owner_deletion_scheduled_for: String,
 }
 #[derive(Deserialize)]
 pub(crate) struct MemberWire {
