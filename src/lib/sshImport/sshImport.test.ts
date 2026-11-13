@@ -186,8 +186,9 @@ describe("runSshImport", () => {
     await runSshImport(rows, {}, deps);
     const calls = createHost.mock.calls.map((c) => c[0]);
     expect(calls).toHaveLength(3);
-    expect(calls[0].jumpHostId).toBe(calls[1].id);
-    expect(calls[2].jumpHostId).toBe("h7");
+    const by = (n: string) => calls.find((c) => c.name === n);
+    expect(by("a")?.jumpHostId).toBe(by("b")?.id);
+    expect(by("c")?.jumpHostId).toBe("h7");
   });
 
   it("defaults_user_to_root", async () => {
@@ -211,5 +212,49 @@ describe("runSshImport", () => {
     expect(s.problems).toEqual([
       { alias: "a", message: "Couldn't create host" },
     ]);
+  });
+  it("create_host_throw_is_reported_and_import_continues", async () => {
+    const createHost = vi.fn(async (h: Record<string, unknown>) => {
+      if (h.name === "a") throw new Error("db locked");
+      return h as never;
+    });
+    const { deps } = makeDeps({ createHost });
+    const rows = planSshImport(preview([host("a"), host("b")]), []);
+    const s = await runSshImport(rows, {}, deps);
+    expect(s.hostsImported).toBe(1);
+    expect(s.problems).toEqual([{ alias: "a", message: "db locked" }]);
+  });
+
+  it("jump_target_creation_failed_drops_link", async () => {
+    const createHost = vi.fn(async (h: Record<string, unknown>) =>
+      h.name === "b" ? null : (h as never),
+    );
+    const { deps } = makeDeps({ createHost });
+    const rows = planSshImport(
+      preview([host("a", { proxyJump: "b" }), host("b")]),
+      [],
+    );
+    const s = await runSshImport(rows, {}, deps);
+    const a = createHost.mock.calls
+      .map((c) => c[0])
+      .find((h) => h.name === "a");
+    expect(a?.jumpHostId ?? null).toBeNull();
+    expect(s.problems).toContainEqual({
+      alias: "a",
+      message: "Jump host b couldn't be imported; imported without a jump host",
+    });
+    expect(s.hostsImported).toBe(1);
+  });
+
+  it("jump_target_defined_later_in_config_still_links", async () => {
+    const { deps, createHost } = makeDeps();
+    const rows = planSshImport(
+      preview([host("a", { proxyJump: "b" }), host("b")]),
+      [],
+    );
+    await runSshImport(rows, {}, deps);
+    const calls = createHost.mock.calls.map((c) => c[0]);
+    expect(calls[0].name).toBe("b");
+    expect(calls[1].jumpHostId).toBe(calls[0].id);
   });
 });

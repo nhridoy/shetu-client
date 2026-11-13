@@ -149,30 +149,57 @@ export async function runSshImport(
     }
   }
 
-  for (const r of toCreate) {
+  // Only successfully created rows (or existing Shetu hosts) may be linked as jump hosts.
+  const created = new Set<string>();
+  const jumpId = (alias: string) => {
+    const target = rows.find((x) => x.alias === alias);
+    if (!target || target.existing) return existingHostId(alias);
+    return created.has(alias) ? ids.get(alias) : undefined;
+  };
+
+  // Kept links never target a row with its own jump host, so targets are always in pass 1.
+  const ordered = [
+    ...toCreate.filter((r) => !r.jumpAlias),
+    ...toCreate.filter((r) => r.jumpAlias),
+  ];
+  for (const r of ordered) {
     const outcome = r.key ? keys.get(r.key.path) : undefined;
     if (outcome?.problem)
       summary.problems.push({ alias: r.alias, message: outcome.problem });
     const keyId = outcome?.keyId;
-    const created = await deps.createHost({
-      id: ids.get(r.alias),
-      name: r.alias,
-      address: r.hostname,
-      port: r.port,
-      username: r.user ?? "root",
-      authType: keyId ? "key" : "password",
-      keyId,
-      jumpHostId: r.jumpAlias
-        ? (ids.get(r.jumpAlias) ?? existingHostId(r.jumpAlias))
-        : undefined,
-      groupId: deps.groupId,
-    });
-    if (created) summary.hostsImported++;
-    else
+    const jumpHostId = r.jumpAlias ? jumpId(r.jumpAlias) : undefined;
+    if (r.jumpAlias && !jumpHostId) {
       summary.problems.push({
         alias: r.alias,
-        message: "Couldn't create host",
+        message: `Jump host ${r.jumpAlias} couldn't be imported; imported without a jump host`,
       });
+    }
+    try {
+      const host = await deps.createHost({
+        id: ids.get(r.alias),
+        name: r.alias,
+        address: r.hostname,
+        port: r.port,
+        username: r.user ?? "root",
+        authType: keyId ? "key" : "password",
+        keyId,
+        jumpHostId,
+        groupId: deps.groupId,
+      });
+      if (host) {
+        created.add(r.alias);
+        summary.hostsImported++;
+      } else
+        summary.problems.push({
+          alias: r.alias,
+          message: "Couldn't create host",
+        });
+    } catch (e) {
+      summary.problems.push({
+        alias: r.alias,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
   return summary;
 }
