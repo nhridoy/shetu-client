@@ -43,16 +43,16 @@ describe("filterHosts", () => {
     expect(filterHosts(hosts, "", new Set())).toEqual(hosts);
   });
 
-  it("matches name, address, user or tag, case-insensitively", () => {
+  it("matches name or tag, case-insensitively", () => {
     expect(names(filterHosts(hosts, "DB", new Set()))).toEqual(["db-01"]);
-    expect(names(filterHosts(hosts, "10.0.4", new Set()))).toEqual([
-      "prod-eu-1",
-      "db-01",
-    ]);
-    expect(names(filterHosts(hosts, "postgres", new Set()))).toEqual(["db-01"]);
     expect(names(filterHosts(hosts, "  staging ", new Set()))).toEqual([
       "staging-api",
     ]);
+  });
+
+  it("ignores address and user, which list-state hosts keep encrypted", () => {
+    expect(filterHosts(hosts, "10.0.4", new Set())).toEqual([]);
+    expect(filterHosts(hosts, "postgres", new Set())).toEqual([]);
   });
 
   it("keeps a host that has any selected tag", () => {

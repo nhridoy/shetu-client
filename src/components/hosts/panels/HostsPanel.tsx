@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
 import {
   CaretRightIcon,
-  MagnifyingGlassIcon,
   DesktopTowerIcon,
+  MagnifyingGlassIcon,
   PlusIcon,
 } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
 import { DraggableHostCard } from "@/components/hosts/cards/DraggableHostCard";
 import { DroppableGroupCard } from "@/components/hosts/cards/DroppableGroupCard";
 import { BreadcrumbDropTarget } from "@/components/hosts/panels/BreadcrumbDropTarget";
@@ -120,7 +120,7 @@ export default function HostsPanel({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-            placeholder="Search hosts…"
+            placeholder="Search name or tag…"
             aria-label="Search hosts"
             className="flex-1 min-w-0 bg-transparent text-xs text-white outline-none placeholder:text-dark-500"
           />

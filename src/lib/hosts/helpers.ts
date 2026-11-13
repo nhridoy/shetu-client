@@ -29,9 +29,11 @@ export function openGroupId(
     : null;
 }
 
-type FilterableHost = Pick<Host, "name" | "address" | "tags" | "username">;
+// Address and username stay encrypted in list state (decrypted per host on
+// demand), so search covers only the fields the list actually holds.
+type FilterableHost = Pick<Host, "name" | "tags">;
 
-/** Hosts matching the search text (name, address, user or tag) and any of the selected tags. */
+/** Hosts matching the search text (name or tag) and any of the selected tags. */
 export function filterHosts<T extends FilterableHost>(
   hosts: T[],
   query: string,
@@ -41,10 +43,7 @@ export function filterHosts<T extends FilterableHost>(
   return hosts.filter(
     (h) =>
       (tags.size === 0 || h.tags.some((t) => tags.has(t))) &&
-      (!q ||
-        [h.name, h.address, h.username ?? "", ...h.tags].some((v) =>
-          v.toLowerCase().includes(q),
-        )),
+      (!q || [h.name, ...h.tags].some((v) => v.toLowerCase().includes(q))),
   );
 }
 
