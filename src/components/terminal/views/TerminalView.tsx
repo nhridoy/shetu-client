@@ -1,10 +1,31 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import {
+  onOpenCommandPalette,
+  type PaletteItem,
+  pickPaletteItem,
+} from "@/lib/terminal/paletteCommand";
+import { insertIntoPane } from "@/lib/terminal/sessionManager";
 import { dispatchAppAction } from "@/lib/window/menuActions";
-import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import {
+  type LeafNode,
+  type PaneNode,
+  useTerminalStore,
+} from "@/stores/terminal/terminalStore";
+
+function findLeaf(node: PaneNode, id: string): LeafNode | undefined {
+  if (node.type === "leaf") return node.id === id ? node : undefined;
+  for (const child of node.children) {
+    const leaf = findLeaf(child, id);
+    if (leaf) return leaf;
+  }
+  return undefined;
+}
 
 interface TerminalViewProps {
   onSetActiveView?: (view: string) => void;
@@ -57,10 +78,43 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     );
   }, [sidebarVisible]);
 
-  const handleCommandSelect = useCallback((command: string) => {
-    console.log("Execute command:", command);
-    setShowCommandPalette(false);
-  }, []);
+  useEffect(() => onOpenCommandPalette(() => setShowCommandPalette(true)), []);
+
+  const handleCommandSelect = useCallback(
+    async (item: PaletteItem, run: boolean) => {
+      const activeTab = () => {
+        const { tabs: currentTabs, activeTabId: atId } =
+          useTerminalStore.getState();
+        return currentTabs.find((t) => t.id === atId);
+      };
+      const result = await pickPaletteItem(item, run, {
+        activePaneId: activeTab()?.activePaneId ?? null,
+        // Reads the live store: it is checked again after decryption.
+        isConnected: (paneId) => {
+          const tab = activeTab();
+          return (
+            !!tab &&
+            findLeaf(tab.root, paneId)?.connectionStatus === "connected"
+          );
+        },
+        decryptSnippet: (id) =>
+          useSnippetStore.getState().getDecryptedSnippet(id),
+        insert: insertIntoPane,
+      });
+      const runKey = navigator.platform.includes("Mac") ? "Cmd" : "Ctrl";
+      if (result === "ok") setShowCommandPalette(false);
+      else if (result === "no-pane") toast.error("Open a terminal first");
+      else if (result === "not-connected")
+        toast.error("This terminal isn't connected");
+      else if (result === "empty") toast.error("This snippet is empty");
+      else if (result === "unsafe-multiline")
+        toast.error(
+          `This shell would run each line. Use ${runKey}+Enter to run it.`,
+        );
+      else toast.error("Couldn't load this snippet");
+    },
+    [],
+  );
 
   const handleSplit = useCallback(
     (direction: "horizontal" | "vertical") => {

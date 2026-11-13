@@ -12,44 +12,74 @@ export interface TerminalMenuTarget {
   focus(): void;
 }
 
+type ClipboardTarget = Pick<
+  TerminalMenuTarget,
+  "hasSelection" | "getSelection" | "paste" | "focus"
+>;
+
 // The Tauri clipboard plugin, not navigator.clipboard: webview clipboard reads
 // are blocked or prompt on some platforms.
+export function copySelection(term: ClipboardTarget): void {
+  if (!term.hasSelection()) return;
+  void writeText(term.getSelection()).then(
+    () => term.focus(),
+    () => toast.error("Couldn't copy to the clipboard"),
+  );
+}
+
+export function pasteClipboard(term: ClipboardTarget): void {
+  void readText().then(
+    (text) => {
+      if (text) term.paste(text);
+      term.focus();
+    },
+    () => toast.error("Couldn't read the clipboard"),
+  );
+}
+
 export function terminalContextMenuItems(
   term: TerminalMenuTarget,
   split: (direction: "horizontal" | "vertical") => void,
+  openSnippets: () => void,
 ): ContextMenuItem[] {
   const then = (action: () => void) => () => {
     action();
     term.focus();
   };
+  const mac = navigator.platform.includes("Mac");
+  const mod = mac ? "Cmd" : "Ctrl";
   return [
     {
       label: "Copy",
+      // Plain Ctrl+C belongs to the shell; macOS copies through the Edit menu.
+      shortcut: mac ? "Cmd+C" : "Ctrl+Shift+C",
       disabled: !term.hasSelection(),
-      onClick: () => {
-        void writeText(term.getSelection()).then(
-          () => term.focus(),
-          () => toast.error("Couldn't copy to the clipboard"),
-        );
-      },
+      onClick: () => copySelection(term),
     },
     {
       label: "Paste",
-      onClick: () => {
-        void readText().then(
-          (text) => {
-            if (text) term.paste(text);
-            term.focus();
-          },
-          () => toast.error("Couldn't read the clipboard"),
-        );
-      },
+      shortcut: mac ? "Cmd+V" : "Ctrl+Shift+V",
+      onClick: () => pasteClipboard(term),
     },
     { label: "Select All", onClick: then(() => term.selectAll()) },
     { type: "separator" },
+    {
+      label: "Snippets…",
+      shortcut: `${mod}+Shift+P`,
+      onClick: openSnippets,
+    },
+    { type: "separator" },
     { label: "Clear", onClick: then(() => term.clear()) },
     { type: "separator" },
-    { label: "Split Right", onClick: () => split("horizontal") },
-    { label: "Split Down", onClick: () => split("vertical") },
+    {
+      label: "Split Right",
+      shortcut: `${mod}+\\`,
+      onClick: () => split("horizontal"),
+    },
+    {
+      label: "Split Down",
+      shortcut: `${mod}+Shift+\\`,
+      onClick: () => split("vertical"),
+    },
   ];
 }

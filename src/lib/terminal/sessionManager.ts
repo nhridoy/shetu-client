@@ -16,6 +16,7 @@ import {
   finishHistoryAttempt,
   markHistoryConnected,
 } from "./sessionHistory";
+import { handleTerminalKey } from "./terminalKeys";
 
 export interface SessionParams {
   paneId: string;
@@ -66,6 +67,9 @@ function createSession(params: SessionParams): Session {
   const fitAddon = new FitAddon();
   xterm.loadAddon(fitAddon);
   xterm.loadAddon(new WebLinksAddon());
+  xterm.attachCustomKeyEventHandler((e) =>
+    handleTerminalKey(e, xterm, navigator.platform.includes("Mac")),
+  );
 
   const session: Session = {
     params,
@@ -448,6 +452,48 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 }
 
 export const getSession = (paneId: string) => sessions.get(paneId);
+
+/**
+ * Types `text` at the prompt like a paste; `run` also presses Enter. Returns false, without
+ * typing anything, when inserting several lines into a shell that would run each one.
+ */
+export function insertIntoTerminal(
+  term: Pick<XTerminal, "paste" | "input" | "focus"> & {
+    modes: Pick<XTerminal["modes"], "bracketedPasteMode">;
+  },
+  text: string,
+  run: boolean,
+): "ok" | "unsafe-multiline" | "empty" {
+  // Control characters (incl. ESC, so no fake bracketed-paste end) never reach the shell;
+  // trailing newlines would run the command even when the user only inserts.
+  const clean = text
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .replace(/\n+$/, "");
+  // Nothing to type; with `run`, Enter would submit whatever is already at the prompt.
+  if (!clean.trim()) return "empty";
+  // Without bracketed paste, xterm sends each newline as Enter: the lines would run.
+  if (!run && clean.includes("\n") && !term.modes.bracketedPasteMode) {
+    return "unsafe-multiline";
+  }
+  term.paste(clean);
+  if (run) term.input("\r");
+  term.focus();
+  return "ok";
+}
+
+export type InsertResult = ReturnType<typeof insertIntoTerminal> | "no-pane";
+
+/** Inserts into a pane's terminal. */
+export function insertIntoPane(
+  paneId: string,
+  text: string,
+  run: boolean,
+): InsertResult {
+  const session = sessions.get(paneId);
+  if (!session) return "no-pane";
+  return insertIntoTerminal(session.xterm, text, run);
+}
 
 export function getOrCreateSession(params: SessionParams): Session {
   const existing = sessions.get(params.paneId);

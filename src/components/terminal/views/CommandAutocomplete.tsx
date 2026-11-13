@@ -2,13 +2,18 @@ import { TerminalIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import type { PaletteItem } from "@/lib/terminal/paletteCommand";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 
 interface CommandAutocompleteProps {
   isVisible: boolean;
-  onSelect: (command: string) => void;
+  /** `run` is true for Ctrl+Enter (Cmd+Enter on macOS); Enter and click insert. */
+  /** May return a promise; picks are ignored until it settles. */
+  onSelect: (item: PaletteItem, run: boolean) => unknown;
   onClose: () => void;
 }
+
+const isMac = () => navigator.platform.includes("Mac");
 
 export default function CommandAutocomplete({
   isVisible,
@@ -19,11 +24,15 @@ export default function CommandAutocomplete({
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Ignore further picks while one is still running (e.g. a double Ctrl+Enter).
+  const picking = useRef(false);
 
-  const filteredCommands = snippets.filter(
-    (snippet) =>
-      snippet.name.toLowerCase().includes(query.toLowerCase()) ||
-      snippet.command.toLowerCase().includes(query.toLowerCase()),
+  const q = query.toLowerCase();
+  // Snippet commands are encrypted in list state, so search the plaintext fields.
+  const filteredCommands = snippets.filter((snippet) =>
+    [snippet.name, snippet.description ?? "", ...snippet.tags].some((v) =>
+      v.toLowerCase().includes(q),
+    ),
   );
 
   // Common Linux commands
@@ -96,18 +105,40 @@ export default function CommandAutocomplete({
 
   const allCommands = [
     ...filteredCommands.map((s) => ({
-      name: s.name,
-      command: s.command,
+      key: `snippet:${s.id}`,
+      label: s.name,
+      item: { snippetId: s.id, command: "" } as PaletteItem,
       description: s.description,
       isSnippet: true,
     })),
-    ...commonCommands.filter(
-      (c) =>
-        !filteredCommands.some((s) => s.command === c.command) &&
-        (c.name.toLowerCase().includes(query.toLowerCase()) ||
-          c.command.toLowerCase().includes(query.toLowerCase())),
-    ),
+    ...commonCommands
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.command.toLowerCase().includes(q),
+      )
+      .map((c) => ({
+        key: `builtin:${c.command}`,
+        label: c.command,
+        item: { command: c.command } as PaletteItem,
+        description: c.description,
+        isSnippet: false,
+      })),
   ];
+
+  // Only these rows are rendered, so keyboard selection stays within them.
+  const visible = allCommands.slice(0, 10);
+
+  const pick = (item: PaletteItem, run: boolean) => {
+    if (picking.current) return;
+    const result = onSelect(item, run);
+    if (result instanceof Promise) {
+      picking.current = true;
+      void result.finally(() => {
+        picking.current = false;
+      });
+    }
+  };
 
   useEffect(() => {
     if (isVisible) {
@@ -123,15 +154,19 @@ export default function CommandAutocomplete({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Enter that confirms an IME candidate belongs to the search box.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((prev) => Math.min(prev + 1, allCommands.length - 1));
+      setSelectedIndex((prev) => Math.min(prev + 1, visible.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
-    } else if (e.key === "Enter" && allCommands[selectedIndex]) {
-      onSelect(allCommands[selectedIndex].command);
-      onClose();
+    } else if (e.key === "Enter" && visible[selectedIndex]) {
+      e.preventDefault();
+      const run = isMac() ? e.metaKey : e.ctrlKey;
+      // The caller closes the palette on success; it stays open on failure.
+      pick(visible[selectedIndex].item, run);
     } else if (e.key === "Escape") {
       onClose();
     }
@@ -161,7 +196,10 @@ export default function CommandAutocomplete({
               aria-label="Search commands"
               placeholder="Search commands..."
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setSelectedIndex(0);
+              }}
               onKeyDown={handleKeyDown}
               className="flex-1 bg-transparent text-white placeholder-dark-400 focus:outline-none"
             />
@@ -177,14 +215,17 @@ export default function CommandAutocomplete({
                 No commands found
               </div>
             ) : (
-              allCommands.slice(0, 10).map((cmd, index) => (
+              visible.map((cmd, index) => (
                 <Button
                   variant="ghost"
-                  key={cmd.command}
-                  onClick={() => {
-                    onSelect(cmd.command);
-                    onClose();
-                  }}
+                  key={cmd.key}
+                  ref={
+                    index === selectedIndex
+                      ? (el: HTMLButtonElement | null) =>
+                          el?.scrollIntoView?.({ block: "nearest" })
+                      : undefined
+                  }
+                  onClick={() => pick(cmd.item, false)}
                   className={`w-full h-auto px-4 py-2 justify-start ${
                     index === selectedIndex ? "bg-dark-800" : ""
                   }`}
@@ -192,9 +233,9 @@ export default function CommandAutocomplete({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-white text-sm font-mono">
-                        {cmd.command}
+                        {cmd.label}
                       </span>
-                      {"isSnippet" in cmd && cmd.isSnippet && (
+                      {cmd.isSnippet && (
                         <Badge variant="primary">snippet</Badge>
                       )}
                     </div>
@@ -207,6 +248,9 @@ export default function CommandAutocomplete({
                 </Button>
               ))
             )}
+          </div>
+          <div className="px-4 py-2 border-t border-dark-700 text-xs text-dark-400">
+            Enter to insert · {isMac() ? "Cmd" : "Ctrl"}+Enter to run
           </div>
         </div>
       </div>
