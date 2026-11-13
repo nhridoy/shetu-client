@@ -70,7 +70,8 @@ describe("DeleteAccountDialog", () => {
     setup();
     const text = document.body.textContent;
     expect(text).toContain("Mine (2 members) — deleted for everyone");
-    expect(text).toContain("Solo (0 members) — deleted for everyone");
+    expect(text).toContain("Solo — deleted for everyone");
+    expect(text).not.toContain("0 members");
     expect(text).not.toContain("Other");
   });
 

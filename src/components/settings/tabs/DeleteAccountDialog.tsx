@@ -48,7 +48,9 @@ export default function DeleteAccountDialog({
           </p>
           {ownedTeams.map((t) => (
             <p key={t.id}>
-              {t.name} ({t.members?.length ?? 0} members) — deleted for everyone
+              {t.name}
+              {t.members && ` (${t.members.length} members)`} — deleted for
+              everyone
             </p>
           ))}
           <p>You have 30 days to change your mind — sign in again to cancel.</p>
