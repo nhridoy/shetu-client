@@ -90,6 +90,7 @@ async function decryptKeyRow(row: SyncRow): Promise<Key> {
 }
 
 let latestFetch = 0;
+let latest: { vid: string; promise: Promise<boolean> } | null = null;
 
 export const useKeyStore = create<KeyState>((set, get) => ({
   keys: [],
@@ -105,17 +106,24 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     }
     const request = ++latestFetch;
     set({ isLoading: true, error: null });
-    try {
-      const rows = await listRows("keys", vid);
-      if (request !== latestFetch) return false;
-      const keys = rows.map((row) => keyFromRow(row));
-      set({ keys, isLoading: false });
-      return true;
-    } catch (err) {
-      if (request !== latestFetch) return false;
-      set({ isLoading: false, error: errorMessage(err) });
-      return false;
-    }
+    // A newer fetch for the same vault gives the same answer; otherwise this result is stale.
+    const superseded = () =>
+      latest?.vid === vid ? latest.promise : Promise.resolve(false);
+    const promise = (async () => {
+      try {
+        const rows = await listRows("keys", vid);
+        if (request !== latestFetch) return superseded();
+        const keys = rows.map((row) => keyFromRow(row));
+        set({ keys, isLoading: false });
+        return true;
+      } catch (err) {
+        if (request !== latestFetch) return superseded();
+        set({ isLoading: false, error: errorMessage(err) });
+        return false;
+      }
+    })();
+    latest = { vid, promise };
+    return promise;
   },
 
   selectKey: (key) => set({ selectedKey: key }),

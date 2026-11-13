@@ -84,7 +84,10 @@ fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, scoped: Option<&
         match split_keyword(line) {
             Some((kw, _)) if kw == "match" || (kw == "host" && scoped.is_some()) => {
                 if scoped.is_some() {
-                    out.scoped_files.push(path.to_string_lossy().into_owned());
+                    let name = path.to_string_lossy().into_owned();
+                    if !out.scoped_files.contains(&name) {
+                        out.scoped_files.push(name);
+                    }
                     return;
                 }
                 skipping = true;
@@ -120,7 +123,10 @@ fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, scoped: Option<&
         }
     }
     if had_match {
-        out.match_files.push(path.to_string_lossy().into_owned());
+        let name = path.to_string_lossy().into_owned();
+        if !out.match_files.contains(&name) {
+            out.match_files.push(name);
+        }
     }
 }
 
@@ -581,5 +587,15 @@ mod tests {
         let k = only_key(&home);
         assert_eq!(k.status, "unreadable");
         assert!(read_key(&home, &k.path).is_err());
+    }
+
+    #[test]
+    fn scoped_include_file_is_listed_once() {
+        let home = temp_home(&[
+            ("config", "Host a\n  Include s.conf\nHost b\n  Include s.conf\n"),
+            ("s.conf", "Host *\n  User u\n"),
+        ]);
+        let (_, _, scoped) = parse_hosts(&home).unwrap();
+        assert_eq!(scoped.len(), 1);
     }
 }
