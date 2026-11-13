@@ -35,6 +35,7 @@ pub async fn sync_now(
         Arc::new(KeyringRefreshProvider { app: app.clone() }),
     );
     let outcome = run_sync_cycle(&vault_id, &device_id, &db, &crypto, &client).await;
+    crate::http::report_revoked(&app, &outcome);
     if matches!(&outcome, Err(HttpErrorKind::Http(403, _))) {
         if let Some((team_id, epoch, _)) = crate::db::team_vault_meta(&db, &vault_id)? {
             crate::db::store_team_vault_meta(&db, &vault_id, &team_id, epoch, "revoked")?;

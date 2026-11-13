@@ -365,6 +365,21 @@ pub async fn http_request(
     }
 }
 
+/// Native callers (sync, team sync) map errors themselves; this keeps the
+/// webview's revoked-session check (account deletion) firing for them too.
+pub fn report_revoked<T>(app: &AppHandle, outcome: &Result<T, HttpErrorKind>) {
+    notify_if_revoked(outcome, || {
+        let _ = app.emit(SESSION_REVOKED_EVENT, ());
+    });
+}
+
+/// Only a rejected refresh token is a revoked session; other errors are not.
+fn notify_if_revoked<T>(outcome: &Result<T, HttpErrorKind>, emit: impl FnOnce()) {
+    if matches!(outcome, Err(HttpErrorKind::SessionExpired)) {
+        emit();
+    }
+}
+
 #[tauri::command]
 pub fn set_auth_tokens(
     app: AppHandle,
@@ -424,6 +439,21 @@ pub fn server_reason(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_rejected_session_reports_revoked() {
+        let fired = |outcome: Result<(), HttpErrorKind>| {
+            let mut count = 0;
+            notify_if_revoked(&outcome, || count += 1);
+            count
+        };
+        assert_eq!(fired(Err(HttpErrorKind::SessionExpired)), 1);
+        assert_eq!(fired(Err(HttpErrorKind::Network)), 0);
+        assert_eq!(fired(Err(HttpErrorKind::InvalidUrl)), 0);
+        assert_eq!(fired(Err(HttpErrorKind::Http(401, String::new()))), 0);
+        assert_eq!(fired(Err(HttpErrorKind::Http(403, String::new()))), 0);
+        assert_eq!(fired(Ok(())), 0);
+    }
 
     #[test]
     fn server_reason_reads_both_error_shapes() {
