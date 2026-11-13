@@ -1,13 +1,4 @@
-import { useCallback, useEffect } from "react";
-import { hasMacMenu, isMenuOwnedShortcut } from "@/lib/window/menuActions";
-
-export interface KeyboardShortcut {
-  id: string;
-  keys: string;
-  description: string;
-  category: string;
-  action: () => void;
-}
+import { useShortcut } from "./useShortcut";
 
 interface UseKeyboardShortcutsProps {
   onNewTab?: () => void;
@@ -18,10 +9,10 @@ interface UseKeyboardShortcutsProps {
   onSplitVertical?: () => void;
   onFocusMode?: () => void;
   onCommandPalette?: () => void;
-  onSaveWorkspace?: () => void;
   onToggleSidebar?: () => void;
 }
 
+/** The terminal view's shortcuts, on the user's bindings (Settings → Keyboard). */
 export function useKeyboardShortcuts({
   onNewTab,
   onCloseTab,
@@ -31,148 +22,16 @@ export function useKeyboardShortcuts({
   onSplitVertical,
   onFocusMode,
   onCommandPalette,
-  onSaveWorkspace,
   onToggleSidebar,
 }: UseKeyboardShortcutsProps) {
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      // The macOS menu bar handles these keys itself.
-      if (isMenuOwnedShortcut(e, hasMacMenu())) return;
-      const isMac = navigator.platform.includes("Mac");
-      const modifier = isMac ? e.metaKey : e.ctrlKey;
-
-      // New tab: Ctrl+T / Cmd+T
-      if (modifier && e.key === "t" && onNewTab) {
-        e.preventDefault();
-        onNewTab();
-      }
-
-      // Close pane, then tab: Ctrl+W / Cmd+W
-      if (modifier && e.key === "w" && onCloseTab) {
-        e.preventDefault();
-        onCloseTab();
-      }
-
-      // Next / previous tab: Ctrl+Tab, Ctrl+Shift+Tab (Cmd on macOS)
-      const switchTab = e.shiftKey ? onPrevTab : onNextTab;
-      if (modifier && e.key === "Tab" && switchTab) {
-        e.preventDefault();
-        switchTab();
-      }
-
-      // Split right / down: Ctrl+\, Ctrl+Shift+\ (Cmd on macOS). By key position:
-      // Shift+\ reads as "|" on US layouts.
-      const split = e.shiftKey ? onSplitVertical : onSplitHorizontal;
-      if (modifier && e.code === "Backslash" && split) {
-        e.preventDefault();
-        split();
-      }
-
-      // Focus mode: F11
-      if (e.key === "F11" && onFocusMode) {
-        e.preventDefault();
-        onFocusMode();
-      }
-
-      // Command palette: Ctrl+Shift+P / Cmd+Shift+P
-      if (modifier && e.shiftKey && e.key === "P" && onCommandPalette) {
-        e.preventDefault();
-        onCommandPalette();
-      }
-
-      // Save workspace: Ctrl+S / Cmd+S
-      if (modifier && e.key === "s" && onSaveWorkspace) {
-        e.preventDefault();
-        onSaveWorkspace();
-      }
-
-      // Toggle sidebar: Ctrl+B / Cmd+B
-      if (modifier && e.key === "b" && onToggleSidebar) {
-        e.preventDefault();
-        onToggleSidebar();
-      }
-    },
-    [
-      onNewTab,
-      onCloseTab,
-      onNextTab,
-      onPrevTab,
-      onSplitHorizontal,
-      onSplitVertical,
-      onFocusMode,
-      onCommandPalette,
-      onSaveWorkspace,
-      onToggleSidebar,
-    ],
-  );
-
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+  const run = (cb?: () => void) => [() => cb?.(), { enabled: !!cb }] as const;
+  useShortcut("terminal.newTab", ...run(onNewTab));
+  useShortcut("terminal.closePane", ...run(onCloseTab));
+  useShortcut("terminal.nextTab", ...run(onNextTab));
+  useShortcut("terminal.prevTab", ...run(onPrevTab));
+  useShortcut("terminal.splitRight", ...run(onSplitHorizontal));
+  useShortcut("terminal.splitDown", ...run(onSplitVertical));
+  useShortcut("terminal.focusMode", ...run(onFocusMode));
+  useShortcut("terminal.palette", ...run(onCommandPalette));
+  useShortcut("terminal.toggleSidebar", ...run(onToggleSidebar));
 }
-
-// Default shortcuts configuration
-export const defaultShortcuts: Omit<KeyboardShortcut, "action">[] = [
-  { id: "new-tab", keys: "Ctrl+T", description: "New tab", category: "Tabs" },
-  {
-    id: "close-tab",
-    keys: "Ctrl+W",
-    description: "Close pane (closes the tab after its last pane)",
-    category: "Tabs",
-  },
-  {
-    id: "next-tab",
-    keys: "Ctrl+Tab",
-    description: "Next tab",
-    category: "Tabs",
-  },
-  {
-    id: "prev-tab",
-    keys: "Ctrl+Shift+Tab",
-    description: "Previous tab",
-    category: "Tabs",
-  },
-  {
-    id: "split-h",
-    keys: "Ctrl+\\",
-    description: "Split horizontal",
-    category: "Split",
-  },
-  {
-    id: "split-v",
-    keys: "Ctrl+Shift+\\",
-    description: "Split vertical",
-    category: "Split",
-  },
-  {
-    id: "focus-mode",
-    keys: "F11",
-    description: "Toggle focus mode",
-    category: "View",
-  },
-  {
-    id: "quick-connect",
-    keys: "Ctrl+K",
-    description: "Quick connect",
-    category: "Connection",
-  },
-  {
-    id: "command-palette",
-    keys: "Ctrl+Shift+P",
-    description: "Command palette",
-    category: "General",
-  },
-  {
-    id: "save-workspace",
-    keys: "Ctrl+S",
-    description: "Save workspace",
-    category: "Workspace",
-  },
-  {
-    id: "toggle-sidebar",
-    keys: "Ctrl+B",
-    description: "Toggle sidebar",
-    category: "View",
-  },
-];

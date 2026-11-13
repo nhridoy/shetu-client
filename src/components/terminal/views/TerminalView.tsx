@@ -4,6 +4,7 @@ import FocusMode from "@/components/terminal/focus/FocusMode";
 import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useShortcutContext } from "@/hooks/useShortcutContext";
 import {
   onOpenCommandPalette,
   type PaletteItem,
@@ -79,6 +80,7 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   }, [sidebarVisible]);
 
   useEffect(() => onOpenCommandPalette(() => setShowCommandPalette(true)), []);
+  useShortcutContext("terminal");
 
   const handleCommandSelect = useCallback(
     async (item: PaletteItem, run: boolean) => {
@@ -145,7 +147,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onSplitVertical: () => handleSplit("vertical"),
     onFocusMode: handleFocusMode,
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
-    onSaveWorkspace: () => console.log("Save workspace"),
     onToggleSidebar: handleToggleSidebar,
   });
 
