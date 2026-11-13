@@ -519,6 +519,67 @@ describe("post-save os probe", () => {
     expect(useHostStore.getState().error).toBeNull();
   });
 
+  it("createHost uses the given id and returns the host", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "h1",
+      revision: 1,
+      vault_id: "v1",
+      created_at: "1970-01-01T00:00:01.000Z",
+      updated_at: "1970-01-01T00:00:01.000Z",
+      deleted_at: null,
+      name: "x",
+      os: null,
+      sort_order: 0,
+      data: "enc",
+      tags: "[]",
+    });
+    useVaultStore.setState({ currentVaultId: "v1" });
+    const result = await useHostStore
+      .getState()
+      .createHost({ id: "h1", name: "x", address: "1.2.3.4" });
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "hosts",
+      expect.objectContaining({ id: "h1" }),
+      expect.anything(),
+    );
+    expect(result?.id).toBe("h1");
+  });
+
+  it("createHost skips the OS probe when probeOs is false", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "h1",
+      revision: 1,
+      vault_id: "v1",
+      created_at: "1970-01-01T00:00:01.000Z",
+      updated_at: "1970-01-01T00:00:01.000Z",
+      deleted_at: null,
+      name: "x",
+      os: null,
+      sort_order: 0,
+      data: "enc",
+      tags: "[]",
+    });
+    const { invoke } = await import("@tauri-apps/api/core");
+    useVaultStore.setState({ currentVaultId: "v1" });
+    await useHostStore
+      .getState()
+      .createHost({ name: "x", address: "1.2.3.4" }, { probeOs: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(invoke).not.toHaveBeenCalledWith(
+      "ping_host_saved",
+      expect.anything(),
+    );
+  });
+
+  it("createHost returns null when no vault is selected", async () => {
+    useVaultStore.setState({ currentVaultId: null });
+    const result = await useHostStore
+      .getState()
+      .createHost({ name: "x", address: "1.2.3.4" });
+    expect(result).toBeNull();
+    expect(useHostStore.getState().error).toBe("No vault selected");
+  });
+
   it("updateHost fires a background probe with the host id", async () => {
     useHostStore.setState({
       hosts: [

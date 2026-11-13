@@ -410,4 +410,41 @@ describe("keyStore", () => {
     const creds = await useKeyStore.getState().getCredentialsForKey("missing");
     expect(creds).toBe("");
   });
+
+  it("fetchKeys returns false on error and true on success", async () => {
+    mockList.mockResolvedValueOnce([]);
+    expect(await useKeyStore.getState().fetchKeys("v1")).toBe(true);
+    mockList.mockRejectedValueOnce(new Error("boom"));
+    expect(await useKeyStore.getState().fetchKeys("v1")).toBe(false);
+  });
+
+  it("an older fetch finishing last does not overwrite the newer fetch", async () => {
+    let resolveFirst!: (rows: never[]) => void;
+    let resolveSecond!: (rows: never[]) => void;
+    mockList
+      .mockReturnValueOnce(new Promise((r) => (resolveFirst = r)))
+      .mockReturnValueOnce(new Promise((r) => (resolveSecond = r)));
+    const first = useKeyStore.getState().fetchKeys("v1");
+    const second = useKeyStore.getState().fetchKeys("v2");
+    resolveSecond([{ ...keyRow, id: "new", vault_id: "v2" }] as never[]);
+    expect(await second).toBe(true);
+    resolveFirst([{ ...keyRow, id: "old" }] as never[]);
+    expect(await first).toBe(false);
+    expect(useKeyStore.getState().keys.map((k) => k.id)).toEqual(["new"]);
+  });
+
+  it("a fetch superseded by another fetch for the same vault resolves with the newer result (true)", async () => {
+    let resolveFirst!: (rows: never[]) => void;
+    let resolveSecond!: (rows: never[]) => void;
+    mockList
+      .mockReturnValueOnce(new Promise((r) => (resolveFirst = r)))
+      .mockReturnValueOnce(new Promise((r) => (resolveSecond = r)));
+    const first = useKeyStore.getState().fetchKeys("v1");
+    const second = useKeyStore.getState().fetchKeys("v1");
+    resolveFirst([{ ...keyRow, id: "old" }] as never[]);
+    resolveSecond([{ ...keyRow, id: "new" }] as never[]);
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(useKeyStore.getState().keys.map((k) => k.id)).toEqual(["new"]);
+  });
 });

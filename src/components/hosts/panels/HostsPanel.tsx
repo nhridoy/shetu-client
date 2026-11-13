@@ -1,6 +1,7 @@
 import {
   CaretRightIcon,
   DesktopTowerIcon,
+  DownloadSimpleIcon,
   MagnifyingGlassIcon,
   PlusIcon,
 } from "@phosphor-icons/react";
@@ -25,6 +26,7 @@ interface HostsPanelProps {
   onSelectGroup: (id: string | null) => void;
   onNewGroup: (parentId?: string) => void;
   onNewHost: (groupId?: string) => void;
+  onImport: () => void;
   onEditGroup: (group: Group) => void;
   onEditHost: (host: Host) => void;
   onConnect: (host: Host) => void;
@@ -37,6 +39,7 @@ export default function HostsPanel({
   onSelectGroup,
   onNewGroup,
   onNewHost,
+  onImport,
   onEditGroup,
   onEditHost,
   onConnect,
@@ -253,6 +256,15 @@ export default function HostsPanel({
                 )}
               </div>
             )}
+            <Button
+              type="button"
+              onClick={onImport}
+              variant="secondary"
+              size="sm"
+            >
+              <DownloadSimpleIcon className="w-3 h-3" weight="bold" />
+              Import
+            </Button>
             <Button
               type="button"
               onClick={() => onNewHost(selectedGroupId ?? undefined)}

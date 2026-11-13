@@ -14,6 +14,7 @@ mod offline_auth;
 mod session_history;
 mod sftp;
 mod ssh;
+mod ssh_config_import;
 mod ssh_route;
 mod sync;
 mod team_keys;
@@ -1726,6 +1727,8 @@ pub fn run() {
             ssh::connect,
             keys::derive_public_key,
             keys::inspect_private_key,
+            ssh_config_import::ssh_config_preview,
+            ssh_config_import::ssh_config_read_key,
             keys::generate_ssh_key,
             ssh::connect_saved,
             ssh::disconnect,

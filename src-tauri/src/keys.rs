@@ -9,9 +9,9 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct KeyMetadata {
-    key_type: String,
+    pub(crate) key_type: String,
     public_key: String,
-    fingerprint: String,
+    pub(crate) fingerprint: String,
 }
 
 #[derive(Serialize)]
@@ -22,7 +22,7 @@ pub struct GeneratedKey {
     fingerprint: String,
 }
 
-fn metadata_for_key(key: &PrivateKey) -> Result<KeyMetadata, String> {
+pub(crate) fn metadata_for_key(key: &PrivateKey) -> Result<KeyMetadata, String> {
     let key_type = match key.algorithm() {
         Algorithm::Ed25519 => "ed25519",
         Algorithm::Rsa { .. } => "rsa",
