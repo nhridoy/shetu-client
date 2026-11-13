@@ -13,7 +13,12 @@ const DEFS = new Map(SHORTCUTS.map((d) => [d.id, d]));
 export function useShortcut(
   id: ShortcutId,
   callback: (e: KeyboardEvent) => void,
-  options: { enabled?: boolean; capture?: boolean } = {},
+  options: {
+    enabled?: boolean;
+    capture?: boolean;
+    /** Also fire inside contenteditable (the code editor) even when not while-typing. */
+    contentEditable?: boolean;
+  } = {},
 ): void {
   const def = DEFS.get(id);
   if (!def) throw new Error(`unknown shortcut ${id}`);
@@ -43,7 +48,7 @@ export function useShortcut(
     {
       enabled,
       enableOnFormTags: def.whileTyping,
-      enableOnContentEditable: def.whileTyping,
+      enableOnContentEditable: def.whileTyping || !!options.contentEditable,
       preventDefault: true,
       eventListenerOptions: options.capture ? { capture: true } : undefined,
     },

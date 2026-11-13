@@ -19,11 +19,14 @@ import { extractError } from "@/lib/common/extractError";
 import { isTauriAvailable } from "@/lib/common/utils";
 import { getEditorProvider } from "@/lib/editor/editorProvider";
 import { getFileIcon } from "@/lib/sftp/fileHelpers";
+import { matchesBinding } from "@/lib/shortcuts/binding";
+import type { ShortcutId } from "@/lib/shortcuts/registry";
 import {
   type EditorDirState,
   useActiveViewId,
   useEditorStore,
 } from "@/stores/editor/editorStore";
+import { effectiveBinding } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface EditorExplorerProps {
@@ -576,16 +579,18 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
       if (!selectedPath) return;
       const item = findItem(selectedPath);
       if (!item) return;
-      if (e.key === "F2") {
+      const is = (id: ShortcutId) =>
+        matchesBinding(e.nativeEvent, effectiveBinding(id));
+      if (is("editor.rename")) {
         e.preventDefault();
         startRename(item);
-      } else if (e.key === "Delete") {
+      } else if (is("editor.delete")) {
         e.preventDefault();
         setDeletePath(selectedPath);
       } else if (e.key === "Enter") {
         e.preventDefault();
         handleRowClick(item);
-      } else if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+      } else if (is("editor.copyPath")) {
         e.preventDefault();
         copyPath(selectedPath);
       }
