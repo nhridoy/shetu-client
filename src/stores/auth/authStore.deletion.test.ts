@@ -76,6 +76,7 @@ import {
   loadOfflineIdentity,
   saveOfflineIdentity,
 } from "../../lib/crypto/offlineIdentity";
+import { wipeLocalData } from "../../lib/db/db";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
 
@@ -513,5 +514,69 @@ describe("restore with a revoked refresh token", () => {
     await useAuthStore.getState().retryServerSession();
     await new Promise((r) => setTimeout(r, 0));
     expect(authApi.accountStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("sign-in and sign-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resetDevice).mockResolvedValue([]);
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
+    });
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "a",
+      refresh_token: "r",
+      user: scheduledUser,
+      keyring,
+    } as never);
+    useAuthStore.setState({
+      user: null,
+      tokens: null,
+      isAuthenticated: false,
+      serverAuthenticated: false,
+      isUnlocked: false,
+      localAccessAccountId: null,
+      deletionNotice: null,
+      pendingDeletion: null,
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("scheduled_login_for_a_different_enrolled_account_is_refused", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { ...user, id: "other" },
+      salt_cl: "sc",
+      wrapped_keyring: keyring,
+    } as never);
+    await expect(
+      useAuthStore.getState().login("a@example.com", "pw"),
+    ).rejects.toThrow("Another account is enrolled on this device");
+    const s = useAuthStore.getState();
+    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(saveRefreshToken).not.toHaveBeenCalled();
+    expect(s.pendingDeletion).toBeNull();
+    expect(s.error).toMatch("Another account is enrolled on this device");
+    expect(saveOfflineIdentity).not.toHaveBeenCalled();
+    expect(wipeLocalData).not.toHaveBeenCalled();
+    expect(resetDevice).not.toHaveBeenCalled();
+  });
+
+  it("keep_then_resume_failure_shows_error", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue(null);
+    await useAuthStore.getState().login("a@example.com", "pw");
+    vi.mocked(saveOfflineIdentity).mockRejectedValueOnce(
+      new Error("disk full"),
+    );
+    vi.mocked(authApi.cancelAccountDeletion).mockResolvedValue();
+    await useAuthStore.getState().cancelAccountDeletion();
+    const s = useAuthStore.getState();
+    expect(s.pendingDeletion).toBeNull();
+    expect(s.error).toBe("disk full");
+    expect(s.isLoading).toBe(false);
   });
 });

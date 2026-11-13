@@ -264,17 +264,21 @@ async function suspendServerSession(): Promise<void> {
   }
 }
 
+async function refuseOtherEnrolledAccount(userId: string): Promise<void> {
+  const existing = await loadOfflineIdentity();
+  if (existing && existing.profile.id !== userId) {
+    throw new Error(
+      "Another account is enrolled on this device. Sign out before switching accounts.",
+    );
+  }
+}
+
 async function enroll(
   profile: User,
   saltCl: string,
   keyring: KeyringRows,
 ): Promise<void> {
-  const existing = await loadOfflineIdentity();
-  if (existing && existing.profile.id !== profile.id) {
-    throw new Error(
-      "Another account is enrolled on this device. Sign out before switching accounts.",
-    );
-  }
+  await refuseOtherEnrolledAccount(profile.id);
   if (useAuthStore.getState().localAccessAccountId !== profile.id) {
     await clearVaultSelection();
   }
@@ -592,6 +596,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       };
 
       if (res.user.deletion_scheduled_for) {
+        // Before any token is written: Sign out from the hold wipes this device.
+        await refuseOtherEnrolledAccount(res.user.id);
         // Rust needs the session to send DELETE /me/deletion on Keep.
         await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
         holdForDeletionChoice(res.user.deletion_scheduled_for, newTokens, () =>
@@ -1126,7 +1132,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const resume = resumeAfterKeep;
     resumeAfterKeep = null;
     set({ pendingDeletion: null, deletionNotice: null });
-    await resume?.();
+    try {
+      await resume?.();
+    } catch (err) {
+      // The dialog is gone; the sign-in page shows this.
+      set({
+        error: err instanceof Error ? err.message : String(err),
+        isLoading: false,
+      });
+    }
   },
 
   setAlwaysAsk: async (flag: boolean) => {

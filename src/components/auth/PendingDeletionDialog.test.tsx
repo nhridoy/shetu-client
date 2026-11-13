@@ -38,6 +38,7 @@ function setup() {
   const root = createRoot(container);
   roots.push(root);
   act(() => root.render(<PendingDeletionDialog />));
+  return () => act(() => root.render(<PendingDeletionDialog />));
 }
 
 const btn = (text: string) =>
@@ -83,6 +84,18 @@ describe("PendingDeletionDialog", () => {
     expect(document.body.textContent).toContain("Another account is enrolled");
     expect(btn("Sign out").disabled).toBe(false);
     expect(btn("Keep my account").disabled).toBe(false);
+  });
+
+  it("grace_dialog_drops_a_stale_error_on_the_next_sign_in", async () => {
+    cancelAccountDeletion.mockRejectedValue(new Error("Keep failed"));
+    const rerender = setup();
+    await click(btn("Keep my account"));
+    expect(document.body.textContent).toContain("Keep failed");
+    state.pendingDeletion = null;
+    rerender();
+    state.pendingDeletion = "2026-12-20T00:00:00Z";
+    rerender();
+    expect(document.body.textContent).not.toContain("Keep failed");
   });
 
   it("renders_nothing_without_pending_deletion", () => {

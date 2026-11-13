@@ -5,10 +5,29 @@ import { useAuthStore } from "@/stores/auth/authStore";
 
 export default function PendingDeletionDialog() {
   const { pendingDeletion, cancelAccountDeletion, logout } = useAuthStore();
+  if (!pendingDeletion) return null;
+  // Remount per sign-in so an earlier error never shows on the next one.
+  return (
+    <Choice
+      key={pendingDeletion}
+      pendingDeletion={pendingDeletion}
+      cancelAccountDeletion={cancelAccountDeletion}
+      logout={logout}
+    />
+  );
+}
+
+function Choice({
+  pendingDeletion,
+  cancelAccountDeletion,
+  logout,
+}: {
+  pendingDeletion: string;
+  cancelAccountDeletion: () => Promise<void>;
+  logout: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  if (!pendingDeletion) return null;
 
   const d = new Date(pendingDeletion);
   const when = Number.isNaN(d.getTime())
@@ -32,7 +51,7 @@ export default function PendingDeletionDialog() {
       onClose={() => {}}
       title="Account scheduled for deletion"
       hideClose
-      zClass="z-[60]"
+      zClass="z-[55]"
     >
       <p className="text-sm text-dark-200">
         Your account is scheduled for deletion{when}.
