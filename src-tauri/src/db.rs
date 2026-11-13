@@ -1652,14 +1652,18 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
         ("vaults", "data", "TEXT NOT NULL DEFAULT '{}'"),
     ];
     for (table, column, ddl) in COLUMNS {
-        let has: bool = conn
+        let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(|e| format!("migrate table_info {table}: {e}"))?
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(|e| format!("migrate table_info {table}: {e}"))?
             .filter_map(|r| r.ok())
-            .any(|name| name == *column);
-        if !has {
+            .collect();
+        // A missing table has nothing to migrate: CREATE TABLE gives it every column.
+        if columns.is_empty() {
+            continue;
+        }
+        if !columns.iter().any(|name| name == column) {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))
                 .map_err(|e| format!("migrate ADD COLUMN {table}.{column}: {e}"))?;
         }
