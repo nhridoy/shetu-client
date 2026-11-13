@@ -156,6 +156,15 @@ const DEFAULT_KEYS: [&str; 6] = [
     "id_dsa",
 ];
 
+/// Regular files up to 64 KiB only, so a FIFO, device or huge file can't hang or exhaust memory.
+fn read_small_file(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 64 * 1024 {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 fn describe_key(path: &Path) -> SshConfigKey {
     let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut key = SshConfigKey {
@@ -169,7 +178,7 @@ fn describe_key(path: &Path) -> SshConfigKey {
         key.status = "missing";
         return key;
     }
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Some(content) = read_small_file(path) else {
         return key;
     };
     match russh::keys::decode_secret_key(&content, None) {
@@ -221,14 +230,16 @@ pub(crate) fn preview(home: &Path) -> Result<SshConfigPreview, String> {
 }
 
 pub(crate) fn read_key(home: &Path, path: &str) -> Result<String, String> {
-    let listed = preview(home)?
-        .hosts
-        .iter()
-        .any(|h| h.key.as_ref().is_some_and(|k| k.path == path));
+    // Only files that parsed as private keys: never a general read-any-file command.
+    let listed = preview(home)?.hosts.iter().any(|h| {
+        h.key
+            .as_ref()
+            .is_some_and(|k| k.path == path && matches!(k.status, "ready" | "encrypted"))
+    });
     if !listed {
         return Err("This file isn't a key listed in your SSH config".into());
     }
-    std::fs::read_to_string(path).map_err(|e| format!("Could not read key file: {e}"))
+    read_small_file(Path::new(path)).ok_or_else(|| "Could not read key file".to_string())
 }
 
 fn home() -> Result<PathBuf, String> {
@@ -401,5 +412,21 @@ mod tests {
         assert_eq!(read_key(&home, &k.path).unwrap(), pem);
         let cfg = home.join(".ssh/config");
         assert!(read_key(&home, cfg.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn read_key_rejects_listed_non_key_file() {
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/junk\n"), ("junk", "not a key")]);
+        let k = only_key(&home);
+        assert!(read_key(&home, &k.path).is_err());
+    }
+
+    #[test]
+    fn non_regular_file_is_unreadable() {
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/somedir\n")]);
+        std::fs::create_dir_all(home.join(".ssh/somedir")).unwrap();
+        let k = only_key(&home);
+        assert_eq!(k.status, "unreadable");
+        assert!(read_key(&home, &k.path).is_err());
     }
 }
