@@ -6,10 +6,10 @@ import {
   GearSixIcon,
   KeyIcon,
   SignOutIcon,
-  UserIcon,
   UsersIcon,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router";
+import { Avatar } from "@/components/common/Avatar";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/auth/authStore";
 
@@ -100,9 +100,12 @@ export default function AppSidebar({
         </Button>
 
         <div className="flex items-center gap-2 px-2 py-1">
-          <div className="flex items-center justify-center shrink-0 w-6 h-6 rounded-full bg-primary-600/20">
-            <UserIcon className="w-3 h-3 text-primary-400" />
-          </div>
+          <Avatar
+            id={user?.id ?? "me"}
+            name={user?.full_name}
+            email={user?.email}
+            avatarUrl={user?.avatar_url}
+          />
           <div className="flex-1 min-w-0">
             <p className="text-sm text-white truncate">
               {user?.full_name || "User"}

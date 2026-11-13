@@ -19,6 +19,7 @@ export interface TeamMember {
   joinedAt: string;
   publicKey: string;
   fingerprint: string;
+  avatarUrl?: string;
 }
 
 export interface Team {
@@ -277,6 +278,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
           createdAt: string;
           publicKey: string;
           fingerprint: string;
+          avatarUrl?: string;
         }>
       >("local_team_members", { accountId: accountId(), teamId });
       const members = rows.map((member) => ({
@@ -288,6 +290,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         joinedAt: member.createdAt,
         publicKey: member.publicKey,
         fingerprint: member.fingerprint,
+        avatarUrl: member.avatarUrl,
       }));
       const teams = get().teams.map((team) =>
         team.id === teamId ? { ...team, members } : team,
