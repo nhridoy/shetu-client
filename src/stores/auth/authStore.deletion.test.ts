@@ -631,6 +631,27 @@ describe("sign-in and sign-out", () => {
     expect(authApi.logout).toHaveBeenCalledWith("r-mirror");
   });
 
+  it("reset_teardown_reports_a_failed_local_wipe", async () => {
+    vi.mocked(authApi.requestAccountDeletion).mockResolvedValue({
+      deletion_scheduled_for: "2026-12-13",
+    });
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
+    });
+    useAuthStore.setState({ user, localAccessAccountId: "u1" });
+    vi.mocked(wipeLocalData).mockRejectedValueOnce(new Error("db locked"));
+    let returned: unknown;
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      returned = await teardown();
+      return [];
+    });
+    await useAuthStore.getState().requestAccountDeletion("pw", "a@example.com");
+    expect(returned).toEqual([expect.stringContaining("db locked")]);
+  });
+
   it("teardown_finishes_even_if_locking_fails", async () => {
     useAuthStore.setState({ user, localAccessAccountId: "u1" });
     vi.mocked(lockSession).mockRejectedValueOnce(new Error("lock failed"));

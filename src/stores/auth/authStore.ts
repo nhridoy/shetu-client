@@ -212,18 +212,19 @@ async function clearVaultSelection(): Promise<void> {
 
 // Fully tear down a session: zeroize in-memory keys, purge the saved
 // keychain password, clear the store, drop persisted tokens, and reset the
-// local cache. Best-effort end-to-end so no single failure blocks logout.
-async function teardownSession(): Promise<void> {
-  try {
-    await lockSession();
-  } catch {
-    // ignore: the rest of the reset must still run
-  }
-  try {
-    await deletePassword();
-  } catch {
-    // ignore keychain purge errors
-  }
+// local cache. Best-effort end-to-end so no single failure blocks logout;
+// returns what failed so a device reset can report it.
+async function teardownSession(): Promise<string[]> {
+  const failures: string[] = [];
+  const attempt = async (name: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (e) {
+      failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  await attempt("lock", lockSession);
+  await attempt("saved password", deletePassword);
   // Drop the previous account's in-memory selection before a new account
   // can unlock; otherwise sync may target its stale vault ID once.
   await clearVaultSelection();
@@ -240,16 +241,9 @@ async function teardownSession(): Promise<void> {
   });
   resumeAfterKeep = null;
   await persistTokens(null);
-  try {
-    await clearAuthTokens();
-  } catch {
-    // ignore: Rust token state is best-effort on teardown
-  }
-  try {
-    await wipeLocalData();
-  } catch {
-    // ignore local cache wipe errors
-  }
+  await attempt("session tokens", clearAuthTokens);
+  await attempt("local data", wipeLocalData);
+  return failures;
 }
 
 // A revoked or expired server session stops sync, but never erases offline

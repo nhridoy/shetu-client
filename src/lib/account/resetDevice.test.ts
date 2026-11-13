@@ -50,6 +50,11 @@ describe("resetDevice", () => {
     expect(failures).toEqual(["known_hosts"]);
   });
 
+  it("reset_reports_failures_the_teardown_returns", async () => {
+    const failures = await resetDevice(async () => ["local data: locked"]);
+    expect(failures).toContain("local data: locked");
+  });
+
   it("reset_continues_after_a_failing_step", async () => {
     fail.invoke = true;
     useShortcutStore.setState({ overrides: { a: "b" } as never });

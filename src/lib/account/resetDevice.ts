@@ -6,7 +6,7 @@ import { useThemeStore } from "@/stores/themeStore";
 
 /** Wipes everything local. Never throws; returns what could not be cleared (empty = clean). */
 export async function resetDevice(
-  teardown: () => Promise<void>,
+  teardown: () => Promise<string[] | void>,
 ): Promise<string[]> {
   const failures: string[] = [];
   const step = async (name: string, fn: () => Promise<unknown> | unknown) => {
@@ -17,7 +17,9 @@ export async function resetDevice(
     }
   };
 
-  await step("sign out", teardown);
+  await step("sign out", async () => {
+    failures.push(...((await teardown()) ?? []));
+  });
   for (const file of ["settings.json", "team-cache.json"]) {
     await step(file, async () => {
       const s = await load(file, { autoSave: false });
