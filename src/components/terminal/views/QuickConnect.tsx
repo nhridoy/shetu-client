@@ -49,9 +49,10 @@ export default function QuickConnect({
       shell.path.toLowerCase().includes(query.toLowerCase()),
   );
 
-  // Opens from any view, even while typing; capture runs before the terminal sees the key.
+  // Opens from any view, even while typing (the terminal holds the key back from the shell),
+  // but leaves keys the code editor already used, like Ctrl+Shift+K "delete line".
   // On macOS the menu bar owns it and opens the panel through an app action.
-  useShortcut("app.quickConnect", open, { capture: true });
+  useShortcut("app.quickConnect", open, { yieldToHandled: true });
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

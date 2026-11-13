@@ -53,8 +53,12 @@ export function isValidBinding(b: string): boolean {
   )
     return false;
   const mods = parts.slice(0, -1);
-  // Canonical: each modifier at most once, in MODIFIERS order.
-  return canonical(parts) === b && new Set(mods).size === mods.length;
+  // Canonical: only known modifiers, each at most once, in MODIFIERS order.
+  return (
+    mods.every((m) => (MODIFIERS as readonly string[]).includes(m)) &&
+    canonical(parts) === b &&
+    new Set(mods).size === mods.length
+  );
 }
 
 export function matchesBinding(e: KeyInput, binding: string): boolean {

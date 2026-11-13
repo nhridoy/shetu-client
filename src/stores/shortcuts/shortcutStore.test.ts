@@ -83,6 +83,7 @@ describe("shortcut store", () => {
       "ctrl+t",
       ["x"],
       { "nope.id": "ctrl+x", "terminal.newTab": "ctrl+", "files.copy": 5 },
+      { "terminal.newTab": "cmd+k", "files.copy": "CTRL+k" },
     ]) {
       disk.saved.shortcuts = bad;
       await useShortcutStore.getState().initShortcuts();
@@ -91,6 +92,16 @@ describe("shortcut store", () => {
       );
       expect(effectiveBinding("files.copy", undefined, false)).toBe("ctrl+c");
     }
+  });
+
+  it("load_refuses_bare_keys_for_while_typing_shortcuts", async () => {
+    disk.saved.shortcuts = { "app.settings": "slash", "files.copy": "slash" };
+    await useShortcutStore.getState().initShortcuts();
+    expect(effectiveBinding("app.settings", undefined, false)).toBe(
+      "ctrl+comma",
+    );
+    expect(effectiveBinding("files.copy", undefined, false)).toBe("slash");
+    expect(isHeldBackFromTerminal(ev("Slash"), false)).toBe(false);
   });
 
   it("load_keeps_valid_overrides", async () => {

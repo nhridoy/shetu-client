@@ -78,4 +78,25 @@ describe("QuickConnect shortcut", () => {
     press({ key: "k", code: "KeyK", ctrlKey: true, altKey: true });
     expect(isOpen()).toBe(true);
   });
+
+  it("quick_connect_leaves_keys_the_editor_handled", () => {
+    const { isOpen } = setup();
+    // The code editor binds Ctrl+Shift+K to "delete line" and marks the event handled.
+    const editor = document.createElement("div");
+    editor.addEventListener("keydown", (e) => e.preventDefault());
+    document.body.append(editor);
+    act(() => {
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          key: "K",
+          code: "KeyK",
+          ctrlKey: true,
+          shiftKey: true,
+        }),
+      );
+    });
+    expect(isOpen()).toBe(false);
+  });
 });

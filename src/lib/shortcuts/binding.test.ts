@@ -55,6 +55,10 @@ describe("binding helpers", () => {
     expect(isValidBinding("shift+ctrl+t")).toBe(false);
     expect(isValidBinding("ctrl+shift")).toBe(false);
     expect(isValidBinding("ctrl+ctrl+t")).toBe(false);
+    expect(isValidBinding("cmd+k")).toBe(false);
+    expect(isValidBinding("mod+k")).toBe(false);
+    expect(isValidBinding("CTRL+k")).toBe(false);
+    expect(isValidBinding("ctrl+a+b")).toBe(false);
   });
 
   it("display_per_platform", () => {

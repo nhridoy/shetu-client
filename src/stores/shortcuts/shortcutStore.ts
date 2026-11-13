@@ -2,6 +2,7 @@ import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import {
   displayBinding,
+  hasTypingModifier,
   isValidBinding,
   matchesBinding,
   resolveMod,
@@ -50,17 +51,20 @@ async function persist(overrides: Overrides): Promise<void> {
   }
 }
 
-/** Keeps only known ids with valid binding strings. */
+/** Keeps only what the Keyboard tab could have saved: known ids, valid bindings, and
+ * no bare keys for shortcuts that fire while typing. */
 function sanitize(value: unknown): Overrides {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Overrides = {};
   for (const [id, b] of Object.entries(value)) {
+    const def = DEFS.get(id as ShortcutId);
     if (
-      DEFS.has(id as ShortcutId) &&
+      def &&
       typeof b === "string" &&
-      isValidBinding(b)
+      isValidBinding(b) &&
+      !(def.whileTyping && b !== "" && !hasTypingModifier(b))
     )
-      out[id as ShortcutId] = b;
+      out[def.id] = b;
   }
   return out;
 }

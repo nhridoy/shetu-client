@@ -18,6 +18,8 @@ export function useShortcut(
     capture?: boolean;
     /** Also fire inside contenteditable (the code editor) even when not while-typing. */
     contentEditable?: boolean;
+    /** Skip keys another handler already used (e.g. the code editor's own commands). */
+    yieldToHandled?: boolean;
   } = {},
 ): void {
   const def = DEFS.get(id);
@@ -51,6 +53,9 @@ export function useShortcut(
       enableOnContentEditable: def.whileTyping || !!options.contentEditable,
       preventDefault: true,
       eventListenerOptions: options.capture ? { capture: true } : undefined,
+      ignoreEventWhen: options.yieldToHandled
+        ? (e) => e.defaultPrevented
+        : undefined,
     },
     [callback],
   );
