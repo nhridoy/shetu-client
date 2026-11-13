@@ -620,6 +620,39 @@ describe("restore with a revoked refresh token", () => {
     expect(saveRefreshToken).not.toHaveBeenCalled();
   });
 
+  // A refresh rejected earlier cleared the keychain, but the status call then failed.
+  it("enrolled_launch_without_refresh_token_resets_a_scheduled_account", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "deletion_scheduled",
+      deletion_scheduled_for: "2026-12-13",
+    });
+    expect(await useAuthStore.getState().retryServerSession()).toBe(
+      "auth-required",
+    );
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+  });
+
+  it("enrolled_launch_without_refresh_token_keeps_an_active_account", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "active" });
+    await useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
+    await handleRevokedSession(); // let the run in flight finish
+    expect(resetDevice).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().localAccessAccountId).toBe("u1");
+  });
+
+  it("fresh_install_without_refresh_token_does_not_ask_status", async () => {
+    vi.mocked(loadOfflineIdentity).mockResolvedValue(null);
+    useAuthStore.setState({ user: null, localAccessAccountId: null });
+    expect(await useAuthStore.getState().retryServerSession()).toBe(
+      "auth-required",
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(authApi.accountStatus).not.toHaveBeenCalled();
+    expect(clearAccessToken).not.toHaveBeenCalled();
+  });
+
   it("restore_offline_or_expired_does_not_ask_status", async () => {
     vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
     vi.mocked(authApi.refresh).mockRejectedValueOnce(

@@ -1010,7 +1010,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const owner = await claimSession();
       try {
         const refreshToken = await loadRefreshToken();
-        if (!refreshToken) return "auth-required" as const;
+        if (!refreshToken) {
+          // An enrolled device whose token is gone (a rejected refresh cleared
+          // it) must still learn of a deletion; this suspends, asks, keeps on doubt.
+          if (!get().serverAuthenticated && currentAccountId())
+            void handleRevokedSession();
+          return "auth-required" as const;
+        }
         const identity = await loadOfflineIdentity();
         refreshing = true;
         const newTokens = await authApi.refresh(refreshToken);
