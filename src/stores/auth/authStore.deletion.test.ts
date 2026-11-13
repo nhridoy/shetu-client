@@ -67,7 +67,11 @@ vi.mock("../../lib/common/device", () => ({
 
 import { resetDevice } from "@/lib/account/resetDevice";
 import { AuthApiError, authApi } from "@/lib/api/auth";
-import { loadRefreshToken } from "../../lib/crypto/crypto";
+import {
+  loadRefreshToken,
+  saveRefreshToken,
+  setAuthTokens,
+} from "../../lib/crypto/crypto";
 import { saveOfflineIdentity } from "../../lib/crypto/offlineIdentity";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
@@ -363,6 +367,18 @@ describe("grace-period sign-in", () => {
     expect(s.localAccessAccountId).toBe("u1");
     expect(saveOfflineIdentity).toHaveBeenCalled();
     expect(resetDevice).not.toHaveBeenCalled();
+  });
+
+  it("keep_after_sign_in_keeps_the_rotated_session", async () => {
+    await useAuthStore.getState().login("a@example.com", "pw");
+    expect(setAuthTokens).toHaveBeenCalledTimes(1);
+    // Rust refreshed (and persisted) a new pair while the dialog was open.
+    vi.mocked(loadRefreshToken).mockResolvedValue("r-rotated");
+    vi.mocked(authApi.cancelAccountDeletion).mockResolvedValue();
+    await useAuthStore.getState().cancelAccountDeletion();
+    expect(setAuthTokens).toHaveBeenCalledTimes(1);
+    expect(saveRefreshToken).not.toHaveBeenCalledWith("r");
+    expect(useAuthStore.getState().tokens?.refresh_token).toBe("r-rotated");
   });
 
   it("cancel_after_purge_resets_with_deleted_notice", async () => {

@@ -548,24 +548,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         access_token: res.access_token,
         refresh_token: res.refresh_token,
       };
-      const finish = async () => {
+      const finish = async (resumed: boolean) => {
         if (res.keyring) {
           await unwrapDek(res.keyring.dek_wrapped_by_kek);
         }
 
         if (res.keyring) await enroll(res.user, prelogin.salt_cl, res.keyring);
 
-        await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
+        // On Keep, Rust may have refreshed while the dialog was open: keep its
+        // session and read back the refresh token it persisted.
+        const tokens = resumed
+          ? {
+              ...newTokens,
+              refresh_token:
+                (await loadRefreshToken()) ?? newTokens.refresh_token,
+            }
+          : newTokens;
+        if (!resumed) {
+          await setAuthTokens(tokens.access_token, tokens.refresh_token);
+        }
         set({
           user: res.user,
-          tokens: newTokens,
+          tokens,
           isAuthenticated: true,
           serverAuthenticated: true,
           isUnlocked: true,
           pendingVerificationEmail: null,
           isLoading: false,
         });
-        await persistTokens(newTokens);
+        await persistTokens(tokens);
         if (!get().alwaysAsk) {
           await savePassword(password);
         }
@@ -581,14 +592,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.user.deletion_scheduled_for) {
         // Rust needs the session to send DELETE /me/deletion on Keep.
         await setAuthTokens(newTokens.access_token, newTokens.refresh_token);
-        holdForDeletionChoice(
-          res.user.deletion_scheduled_for,
-          newTokens,
-          finish,
+        holdForDeletionChoice(res.user.deletion_scheduled_for, newTokens, () =>
+          finish(true),
         );
         return;
       }
-      await finish();
+      await finish(false);
     } catch (err) {
       if (
         err instanceof AuthApiError &&
