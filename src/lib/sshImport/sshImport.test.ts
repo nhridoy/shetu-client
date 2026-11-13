@@ -246,6 +246,33 @@ describe("runSshImport", () => {
     expect(s.hostsImported).toBe(1);
   });
 
+  it("notes_and_skipped_rows_reach_problems", async () => {
+    const { deps } = makeDeps({ existingHosts: [{ id: "e1", name: "old" }] });
+    const rows = planSshImport(
+      preview([
+        host("nokey", { key: key({ status: "missing" }) }),
+        host("chain", { proxyJump: "x,y" }),
+        host("old"),
+      ]),
+      ["old"],
+    );
+    const s = await runSshImport(rows, {}, deps);
+    expect(s.problems).toEqual(
+      expect.arrayContaining([
+        {
+          alias: "nokey",
+          message: "Key file not found; imported without a key",
+        },
+        {
+          alias: "chain",
+          message: "Jump chains aren't supported; imported without a jump host",
+        },
+        { alias: "old", message: "Already in Shetu; skipped" },
+      ]),
+    );
+    expect(s.problems).toHaveLength(3);
+  });
+
   it("jump_target_defined_later_in_config_still_links", async () => {
     const { deps, createHost } = makeDeps();
     const rows = planSshImport(

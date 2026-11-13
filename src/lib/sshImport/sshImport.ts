@@ -113,6 +113,12 @@ export async function runSshImport(
     ids.set(r.alias, (r.existing && existingHostId(r.alias)) || deps.newId());
 
   const toCreate = rows.filter((r) => !r.existing);
+  for (const r of rows)
+    if (r.existing)
+      summary.problems.push({
+        alias: r.alias,
+        message: "Already in Shetu; skipped",
+      });
 
   // One outcome per distinct key file: a key id, or the reason it was skipped.
   const keys = new Map<string, { keyId?: string; problem?: string }>();
@@ -163,6 +169,8 @@ export async function runSshImport(
     ...toCreate.filter((r) => r.jumpAlias),
   ];
   for (const r of ordered) {
+    for (const message of [r.keyNote, r.jumpNote])
+      if (message) summary.problems.push({ alias: r.alias, message });
     const outcome = r.key ? keys.get(r.key.path) : undefined;
     if (outcome?.problem)
       summary.problems.push({ alias: r.alias, message: outcome.problem });

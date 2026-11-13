@@ -14,6 +14,7 @@ import {
 } from "@/lib/sshImport/sshImport";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
+import { useVaultStore, VAULT_KIND_TEAM } from "@/stores/vault/vaultStore";
 
 export default function SshConfigImportModal({
   groupId,
@@ -23,7 +24,10 @@ export default function SshConfigImportModal({
   onClose: () => void;
 }) {
   const { hosts, createHost } = useHostStore();
-  const { keys, importKey } = useKeyStore();
+  const { keys, importKey, fetchKeys } = useKeyStore();
+  const { vaults, currentVaultId } = useVaultStore();
+  const vault = vaults.find((v) => v.id === currentVaultId);
+  const [keysReady, setKeysReady] = useState(false);
   const [preview, setPreview] = useState<SshConfigPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
@@ -32,6 +36,20 @@ export default function SshConfigImportModal({
   const [problems, setProblems] = useState<ImportSummary["problems"] | null>(
     null,
   );
+
+  // Keys may be unfetched or from another vault; wait for this vault's keys before importing.
+  useEffect(() => {
+    let cancelled = false;
+    setKeysReady(false);
+    fetchKeys(currentVaultId ?? undefined)
+      .then(() => !cancelled && setKeysReady(true))
+      .catch((e) => {
+        if (!cancelled) setError(extractError(e, "Failed to load keys"));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchKeys, currentVaultId]);
 
   useEffect(() => {
     invoke<SshConfigPreview>("ssh_config_preview")
@@ -50,16 +68,23 @@ export default function SshConfigImportModal({
     [preview, hosts],
   );
   const selected = rows.filter((r) => !r.existing && !unchecked.has(r.alias));
+  const vaultFingerprints = new Set(keys.map((k) => k.fingerprint));
+  // Keys already in the vault are reused: no passphrase prompt, not counted.
+  const isNewKey = (k: { fingerprint: string | null }) =>
+    !(k.fingerprint && vaultFingerprints.has(k.fingerprint));
   const encryptedKeys = [
     ...new Map(
       selected.flatMap((r) =>
-        r.key?.status === "encrypted" ? [[r.key.path, r.key] as const] : [],
+        r.key?.status === "encrypted" && isNewKey(r.key)
+          ? [[r.key.path, r.key] as const]
+          : [],
       ),
     ).values(),
   ];
   const keyCount = new Set(
     selected.flatMap((r) =>
       r.key &&
+      isNewKey(r.key) &&
       (r.key.status === "ready" ||
         (r.key.status === "encrypted" && passphrases[r.key.path]))
         ? [r.key.path]
@@ -91,9 +116,11 @@ export default function SshConfigImportModal({
           newId: () => crypto.randomUUID(),
         },
       );
-      toast.success(
-        `Imported ${summary.hostsImported} hosts and ${summary.keysImported} keys`,
-      );
+      if (summary.hostsImported === 0) toast.error("No hosts were imported");
+      else
+        toast.success(
+          `Imported ${summary.hostsImported} hosts and ${summary.keysImported} keys`,
+        );
       if (summary.problems.length) setProblems(summary.problems);
       else onClose();
     } catch (e) {
@@ -185,6 +212,11 @@ export default function SshConfigImportModal({
   return (
     <Modal onClose={onClose} title="Import from SSH config" maxWidth="max-w-xl">
       {body}
+      {vault?.kind === VAULT_KIND_TEAM && !problems && (
+        <p className="mt-4 text-sm text-amber-400">
+          This is a team vault. Imported keys will be shared with its members.
+        </p>
+      )}
       <div className="flex justify-end gap-3 pt-4 mt-4 border-t border-dark-700">
         {problems ? (
           <Button type="button" size="sm" onClick={onClose}>
@@ -205,9 +237,10 @@ export default function SshConfigImportModal({
               type="button"
               size="sm"
               onClick={submit}
-              disabled={busy || selected.length === 0}
+              disabled={busy || !keysReady || selected.length === 0}
             >
               Import {selected.length} hosts and {keyCount} keys
+              {vault ? ` into ${vault.name}` : ""}
             </Button>
           </>
         )}

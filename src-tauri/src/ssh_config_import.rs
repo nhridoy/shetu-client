@@ -31,10 +31,17 @@ fn expand_include(arg: &str, home: &Path) -> PathBuf {
     }
 }
 
+fn read_lossy(path: &Path) -> std::io::Result<String> {
+    Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
+}
+
 fn inline_file(path: &Path, home: &Path, depth: u8, out: &mut String, match_files: &mut Vec<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
-    };
+    if let Ok(text) = read_lossy(path) {
+        inline_text(&text, path, home, depth, out, match_files);
+    }
+}
+
+fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, out: &mut String, match_files: &mut Vec<String>) {
     let mut skipping = false;
     let mut had_match = false;
     for line in text.lines() {
@@ -72,11 +79,16 @@ fn inline_file(path: &Path, home: &Path, depth: u8, out: &mut String, match_file
 }
 
 /// Main config with `Include`s inlined and `Match` blocks removed, plus the files that had `Match` blocks.
-pub(crate) fn sanitize_config(home: &Path) -> (String, Vec<String>) {
+pub(crate) fn sanitize_config(home: &Path) -> Result<(String, Vec<String>), String> {
     let mut out = String::new();
     let mut match_files = Vec::new();
-    inline_file(&home.join(".ssh").join("config"), home, 0, &mut out, &mut match_files);
-    (out, match_files)
+    let path = home.join(".ssh").join("config");
+    match read_lossy(&path) {
+        Ok(text) => inline_text(&text, &path, home, 0, &mut out, &mut match_files),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Couldn't read ~/.ssh/config: {e}")),
+    }
+    Ok((out, match_files))
 }
 
 pub(crate) struct ParsedHost {
@@ -89,7 +101,7 @@ pub(crate) struct ParsedHost {
 }
 
 pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>), String> {
-    let (text, match_files) = sanitize_config(home);
+    let (text, match_files) = sanitize_config(home)?;
     let mut reader = BufReader::new(text.as_bytes());
     let config = SshConfig::default()
         .home_dir(home)
@@ -112,7 +124,11 @@ pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>),
             hostname: p.host_name.unwrap_or_else(|| alias.clone()),
             user: p.user,
             port: p.port.unwrap_or(22),
-            proxy_jump: p.proxy_jump.map(|j| j.join(",")),
+            // `ProxyJump none` means "no jump host" in OpenSSH.
+            proxy_jump: p
+                .proxy_jump
+                .filter(|j| !(j.len() == 1 && j[0].trim().eq_ignore_ascii_case("none")))
+                .map(|j| j.join(",")),
             identity_files: p.identity_file.unwrap_or_default(),
         });
     }
@@ -332,6 +348,36 @@ mod tests {
             matches,
             [home.join(".ssh").join("config").to_string_lossy().into_owned()]
         );
+    }
+
+    #[test]
+    fn proxy_jump_none_means_no_jump() {
+        let home = temp_home(&[(
+            "config",
+            "Host bastion\n  HostName b.example.com\n  ProxyJump none\nHost web\n  HostName w.example.com\nHost *\n  ProxyJump bastion\n",
+        )]);
+        let (hosts, _) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "bastion").proxy_jump, None);
+        assert_eq!(find(&hosts, "web").proxy_jump.as_deref(), Some("bastion"));
+    }
+
+    #[test]
+    fn invalid_utf8_in_config_still_parses() {
+        let home = temp_home(&[]);
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let mut bytes = b"# caf\xff\nHost a\n  HostName a.example.com\n".to_vec();
+        bytes.push(b'\n');
+        std::fs::write(home.join(".ssh").join("config"), bytes).unwrap();
+        let (hosts, _) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "a").hostname, "a.example.com");
+    }
+
+    #[test]
+    fn unreadable_main_config_is_an_error() {
+        let home = temp_home(&[]);
+        std::fs::create_dir_all(home.join(".ssh").join("config")).unwrap();
+        let err = parse_hosts(&home).err().unwrap();
+        assert!(err.starts_with("Couldn't read ~/.ssh/config:"), "{err}");
     }
 
     #[test]
