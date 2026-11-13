@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -27,7 +27,10 @@ beforeEach(() => {
     recording: false,
   });
 });
+const roots: Root[] = [];
 afterEach(() => {
+  // Unmounting stops any recorder still listening on window.
+  for (const r of roots.splice(0)) act(() => r.unmount());
   setPlatform(realPlatform);
   document.body.innerHTML = "";
 });
@@ -40,8 +43,10 @@ function NewTabProbe({ onNewTab }: { onNewTab: () => void }) {
 function setup(onNewTab?: () => void) {
   const container = document.createElement("div");
   document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
   act(() =>
-    createRoot(container).render(
+    root.render(
       <>
         <KeyboardTab />
         {onNewTab && <NewTabProbe onNewTab={onNewTab} />}
@@ -183,5 +188,36 @@ describe("KeyboardTab", () => {
     expect(row("terminal.copy").textContent).toContain("⌘C");
     expect(row("terminal.copy").textContent).toContain("System");
     expect(row("terminal.paste").textContent).toContain("⌘V");
+  });
+
+  it("reset_checks_conflicts", async () => {
+    useShortcutStore.setState({
+      overrides: { "terminal.newTab": "ctrl+shift+p", "terminal.palette": "" },
+    });
+    const { row, button } = setup();
+    await act(async () => button("terminal.palette", "Reset").click());
+    expect(row("terminal.palette").textContent).toContain(
+      "Already used by New tab.",
+    );
+    expect(overrides()).toEqual({
+      "terminal.newTab": "ctrl+shift+p",
+      "terminal.palette": "",
+    });
+  });
+
+  it("replace_clears_every_conflict", async () => {
+    setPlatform("MacIntel");
+    const { row, cap, button, click, press } = setup();
+    click(cap("terminal.newTab"));
+    await press({ code: "KeyC", key: "c", metaKey: true });
+    expect(row("terminal.newTab").textContent).toContain(
+      "Already used by Copy and Copy path.",
+    );
+    await act(async () => button("terminal.newTab", "Replace").click());
+    expect(overrides()).toEqual({
+      "terminal.newTab": "meta+c",
+      "files.copy": "",
+      "editor.copyPath": "",
+    });
   });
 });

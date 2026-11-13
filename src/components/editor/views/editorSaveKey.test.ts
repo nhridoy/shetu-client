@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { EditorState } from "@codemirror/state";
-import { EditorView, runScopeHandlers } from "@codemirror/view";
+import { EditorView, keymap, runScopeHandlers } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { saveKeymapFor } from "./editorSaveKey";
 
@@ -26,5 +26,18 @@ describe("saveKeymapFor", () => {
 
   it("empty_binding_has_no_keymap", () => {
     expect(saveKeymapFor("", vi.fn())).toBeNull();
+  });
+
+  it("save_beats_a_built_in_editor_key", () => {
+    const onSave = vi.fn();
+    const undo = keymap.of([{ key: "Ctrl-z", run: () => true }]);
+    const save = saveKeymapFor("ctrl+z", onSave);
+    // Same order as EditorView: the built-in setup comes first.
+    const view = new EditorView({
+      state: EditorState.create({ extensions: [undo, save ?? []] }),
+      parent: document.body,
+    });
+    press(view, { key: "z", ctrlKey: true });
+    expect(onSave).toHaveBeenCalledTimes(1);
   });
 });

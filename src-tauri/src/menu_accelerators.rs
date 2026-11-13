@@ -25,6 +25,7 @@ pub fn accelerator_updates(
 }
 
 /// Sets each listed item's accelerator; `None` removes it. Unknown ids are ignored.
+/// A rejected accelerator clears that item and the rest still update.
 #[tauri::command]
 pub fn set_menu_accelerators(
     app: AppHandle,
@@ -33,13 +34,21 @@ pub fn set_menu_accelerators(
     let Some(items) = app.try_state::<MenuItems>() else {
         return Ok(());
     };
+    let mut errors = Vec::new();
     for (id, accel) in accelerator_updates(&accelerators) {
         if let Some((_, item)) = items.0.iter().find(|(item_id, _)| *item_id == id) {
-            item.set_accelerator(accel.as_deref())
-                .map_err(|e| format!("{id}: {e}"))?;
+            if let Err(e) = item.set_accelerator(accel.as_deref()) {
+                // Don't leave the old key active on a binding we couldn't apply.
+                let _ = item.set_accelerator(None::<&str>);
+                errors.push(format!("{id}: {e}"));
+            }
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[cfg(test)]

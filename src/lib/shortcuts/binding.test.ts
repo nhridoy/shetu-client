@@ -99,4 +99,31 @@ describe("binding helpers", () => {
     expect(matchesBinding(e, "ctrl+t")).toBe(false);
     expect(matchesBinding(e, "")).toBe(false);
   });
+
+  it("tauri_accelerator_names_for_named_keys", () => {
+    expect(toTauriAccelerator("meta+pageup")).toBe("Cmd+PageUp");
+    expect(toTauriAccelerator("meta+arrowdown")).toBe("Cmd+ArrowDown");
+  });
+
+  it("codemirror_names_for_named_keys", () => {
+    expect(toCodeMirrorKey("ctrl+pageup")).toBe("Ctrl-PageUp");
+    expect(toCodeMirrorKey("meta+arrowup")).toBe("Meta-ArrowUp");
+    expect(toCodeMirrorKey("ctrl+delete")).toBe("Ctrl-Delete");
+  });
+
+  it("unknown_key_names_are_invalid", () => {
+    expect(isValidBinding("ctrl+banana")).toBe(false);
+    expect(isValidBinding("ctrl+numpad1")).toBe(false);
+    for (const ok of [
+      "ctrl+pageup",
+      "alt+arrowleft",
+      "ctrl+space",
+      "ctrl+enter",
+    ])
+      expect(isValidBinding(ok), ok).toBe(true);
+    expect(bindingFromEvent({ ...mods, code: "CapsLock" })).toBeNull();
+    expect(
+      bindingFromEvent({ ...mods, code: "Numpad1", ctrlKey: true }),
+    ).toBeNull();
+  });
 });

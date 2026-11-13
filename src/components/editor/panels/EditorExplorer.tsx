@@ -10,7 +10,10 @@ import {
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { buildExplorerMenuItems } from "@/components/editor/panels/explorerMenu";
+import {
+  buildExplorerMenuItems,
+  explorerKeyAction,
+} from "@/components/editor/panels/explorerMenu";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import ContextMenu, { type ContextMenuItem } from "@/components/ui/ContextMenu";
 import PromptDialog from "@/components/ui/PromptDialog";
@@ -19,14 +22,11 @@ import { extractError } from "@/lib/common/extractError";
 import { isTauriAvailable } from "@/lib/common/utils";
 import { getEditorProvider } from "@/lib/editor/editorProvider";
 import { getFileIcon } from "@/lib/sftp/fileHelpers";
-import { matchesBinding } from "@/lib/shortcuts/binding";
-import type { ShortcutId } from "@/lib/shortcuts/registry";
 import {
   type EditorDirState,
   useActiveViewId,
   useEditorStore,
 } from "@/stores/editor/editorStore";
-import { effectiveBinding } from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface EditorExplorerProps {
@@ -579,21 +579,13 @@ export default function EditorExplorer({ rootPath }: EditorExplorerProps) {
       if (!selectedPath) return;
       const item = findItem(selectedPath);
       if (!item) return;
-      const is = (id: ShortcutId) =>
-        matchesBinding(e.nativeEvent, effectiveBinding(id));
-      if (is("editor.rename")) {
-        e.preventDefault();
-        startRename(item);
-      } else if (is("editor.delete")) {
-        e.preventDefault();
-        setDeletePath(selectedPath);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        handleRowClick(item);
-      } else if (is("editor.copyPath")) {
-        e.preventDefault();
-        copyPath(selectedPath);
-      }
+      const action = explorerKeyAction(e.nativeEvent);
+      if (!action) return;
+      e.preventDefault();
+      if (action === "rename") startRename(item);
+      else if (action === "delete") setDeletePath(selectedPath);
+      else if (action === "copyPath") copyPath(selectedPath);
+      else handleRowClick(item);
     },
     [selectedPath, findItem, startRename, handleRowClick, copyPath],
   );

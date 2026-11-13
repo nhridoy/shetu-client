@@ -20,7 +20,7 @@ beforeEach(() => {
   });
   mocks.macMenu = true;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
-  useShortcutStore.setState({ overrides: {} });
+  useShortcutStore.setState({ overrides: {}, recording: false });
 });
 afterEach(() => {
   Object.defineProperty(navigator, "platform", {
@@ -66,6 +66,28 @@ describe("macOS menu sync", () => {
     await vi.waitFor(() =>
       expect(mocks.invoke).toHaveBeenLastCalledWith("set_menu_accelerators", {
         accelerators: { ...DEFAULTS, settings: "Shift+Cmd+," },
+      }),
+    );
+    stop();
+  });
+
+  it("recording_clears_the_menu_accelerators", async () => {
+    const stop = watchMacMenu();
+    useShortcutStore.getState().setRecording(true);
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenLastCalledWith("set_menu_accelerators", {
+        accelerators: {
+          "new-tab": null,
+          "close-tab": null,
+          "quick-connect": null,
+          settings: null,
+        },
+      }),
+    );
+    useShortcutStore.getState().setRecording(false);
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenLastCalledWith("set_menu_accelerators", {
+        accelerators: DEFAULTS,
       }),
     );
     stop();

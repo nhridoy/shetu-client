@@ -9,8 +9,10 @@ import { toTauriAccelerator } from "./binding";
 /** Pushes the menu-bar shortcuts' bindings to the native macOS menu. */
 export async function syncMacMenu(): Promise<void> {
   if (!hasMacMenu()) return;
+  // While the Keyboard tab records, the native menu must not grab ⌘W or ⌘K first.
+  const recording = useShortcutStore.getState().recording;
   const accel = (id: Parameters<typeof effectiveBinding>[0]) =>
-    toTauriAccelerator(effectiveBinding(id));
+    recording ? null : toTauriAccelerator(effectiveBinding(id));
   await invoke("set_menu_accelerators", {
     accelerators: {
       "new-tab": accel("terminal.newTab"),
@@ -21,10 +23,11 @@ export async function syncMacMenu(): Promise<void> {
   }).catch(() => {});
 }
 
-/** Syncs now and after every binding change; returns a stop function. */
+/** Syncs now, after every binding change, and when recording starts or stops. */
 export function watchMacMenu(): () => void {
   void syncMacMenu();
   return useShortcutStore.subscribe((s, prev) => {
-    if (s.overrides !== prev.overrides) void syncMacMenu();
+    if (s.overrides !== prev.overrides || s.recording !== prev.recording)
+      void syncMacMenu();
   });
 }

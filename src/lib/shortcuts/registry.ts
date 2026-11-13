@@ -46,6 +46,8 @@ export interface ShortcutDef {
   menuItem?: "new-tab" | "close-tab" | "quick-connect" | "settings";
   /** Shown but not rebindable on macOS. */
   macFixed?: boolean;
+  /** What macOS shows for a fixed system key, e.g. "⌘C". */
+  macLabel?: string;
 }
 
 const def = (
@@ -131,9 +133,11 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   ),
   def("terminal.copy", "terminal", "Copy", "ctrl+shift+c", "", true, {
     macFixed: true,
+    macLabel: "⌘C",
   }),
   def("terminal.paste", "terminal", "Paste", "ctrl+shift+v", "", true, {
     macFixed: true,
+    macLabel: "⌘V",
   }),
   def("files.copy", "files", "Copy", "mod+c", "mod+c", false),
   def("files.cut", "files", "Cut", "mod+x", "mod+x", false),

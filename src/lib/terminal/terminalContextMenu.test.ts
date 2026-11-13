@@ -114,8 +114,8 @@ describe("terminalContextMenuItems", () => {
       "Split Down": "Ctrl+Shift+\\",
     });
     expect(shortcuts("MacIntel")).toMatchObject({
-      Copy: undefined,
-      Paste: undefined,
+      Copy: "⌘C",
+      Paste: "⌘V",
       "Snippets…": "⇧⌘P",
       "Split Right": "⌘\\",
       "Split Down": "⇧⌘\\",

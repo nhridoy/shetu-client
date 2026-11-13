@@ -1,5 +1,10 @@
 import type { ContextMenuItem } from "@/components/ui/ContextMenu";
-import { shortcutLabel } from "@/stores/shortcuts/shortcutStore";
+import { matchesBinding } from "@/lib/shortcuts/binding";
+import type { ShortcutId } from "@/lib/shortcuts/registry";
+import {
+  effectiveBinding,
+  shortcutLabel,
+} from "@/stores/shortcuts/shortcutStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface ExplorerMenuHandlers {
@@ -97,4 +102,19 @@ export function buildExplorerMenuItems({
   );
 
   return items;
+}
+
+export type ExplorerKeyAction = "rename" | "delete" | "copyPath" | "open";
+
+/** What a key pressed in the explorer tree does; null for keys typed in the rename box. */
+export function explorerKeyAction(e: KeyboardEvent): ExplorerKeyAction | null {
+  const target = e.target as HTMLElement | null;
+  if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return null;
+  const is = (id: ShortcutId) => matchesBinding(e, effectiveBinding(id));
+  if (is("editor.rename")) return "rename";
+  if (is("editor.delete")) return "delete";
+  // Before Enter, so a binding like Ctrl+Enter isn't swallowed by "open".
+  if (is("editor.copyPath")) return "copyPath";
+  if (e.key === "Enter") return "open";
+  return null;
 }

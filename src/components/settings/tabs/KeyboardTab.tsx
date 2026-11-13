@@ -15,7 +15,7 @@ import {
 } from "@/lib/shortcuts/registry";
 import {
   effectiveBinding,
-  findConflict,
+  findConflicts,
   shadowedAppShortcut,
   useShortcutStore,
 } from "@/stores/shortcuts/shortcutStore";
@@ -23,13 +23,9 @@ import {
 const CONTEXTS: ShortcutContext[] = ["app", "terminal", "files", "editor"];
 const labelOf = (id: ShortcutId) =>
   SHORTCUTS.find((d) => d.id === id)?.label ?? id;
-/** macOS terminal copy/paste are the system Edit menu's keys. */
-const MAC_SYSTEM_KEYS: Partial<Record<ShortcutId, string>> = {
-  "terminal.copy": "⌘C",
-  "terminal.paste": "⌘V",
-};
-
-type Pending = { id: ShortcutId; binding: string; other: ShortcutId };
+type Pending = { id: ShortcutId; binding: string; others: ShortcutId[] };
+const names = (ids: ShortcutId[]) =>
+  new Intl.ListFormat("en", { type: "conjunction" }).format(ids.map(labelOf));
 
 export default function KeyboardTab() {
   const mac = navigator.platform.includes("Mac");
@@ -65,9 +61,9 @@ export default function KeyboardTab() {
         });
         return;
       }
-      const other = findConflict(def.id, binding, mac);
-      if (other) {
-        setPending({ id: def.id, binding, other });
+      const others = findConflicts(def.id, binding, mac);
+      if (others.length) {
+        setPending({ id: def.id, binding, others });
         return;
       }
       void useShortcutStore.getState().setBinding(def.id, binding);
@@ -85,10 +81,18 @@ export default function KeyboardTab() {
     setRecordingId(id);
   };
 
-  const replace = async ({ id, binding, other }: Pending) => {
+  const replace = async ({ id, binding, others }: Pending) => {
     setPending(null);
-    await store.setBinding(other, "");
+    for (const other of others) await store.setBinding(other, "");
     await store.setBinding(id, binding);
+  };
+
+  // Restoring a default goes through the same clash check as recording a key.
+  const reset = (id: ShortcutId) => {
+    const binding = effectiveBinding(id, { overrides: {} }, mac);
+    const others = findConflicts(id, binding, mac);
+    if (others.length) setPending({ id, binding, others });
+    else void store.resetBinding(id);
   };
 
   const row = (def: ShortcutDef) => {
@@ -114,9 +118,7 @@ export default function KeyboardTab() {
           <span className="text-white text-sm">{def.label}</span>
           {fixed ? (
             <span className="flex items-center gap-2 text-sm">
-              <span className="font-mono text-dark-200">
-                {MAC_SYSTEM_KEYS[def.id]}
-              </span>
+              <span className="font-mono text-dark-200">{def.macLabel}</span>
               <span className="text-xs text-dark-400">System</span>
             </span>
           ) : (
@@ -126,7 +128,7 @@ export default function KeyboardTab() {
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={() => void store.resetBinding(def.id)}
+                  onClick={() => reset(def.id)}
                 >
                   Reset
                 </Button>
@@ -158,7 +160,7 @@ export default function KeyboardTab() {
         {rowError && <p className="mt-2 text-xs text-red-400">{rowError}</p>}
         {rowPending && (
           <div className="mt-2 flex items-center gap-2 text-xs text-amber-300">
-            <span>Already used by {labelOf(rowPending.other)}.</span>
+            <span>Already used by {names(rowPending.others)}.</span>
             <Button
               type="button"
               variant="secondary"

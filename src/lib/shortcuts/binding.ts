@@ -16,6 +16,43 @@ type KeyInput = Pick<
 const keyName = (code: string) =>
   code.toLowerCase().replace(/^(key|digit)/, "");
 
+/** Keys as other tools name them (Tauri menu accelerators, CodeMirror). */
+const NAMED_KEYS: Record<string, string> = {
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  arrowup: "ArrowUp",
+  arrowdown: "ArrowDown",
+  arrowleft: "ArrowLeft",
+  arrowright: "ArrowRight",
+  delete: "Delete",
+  backspace: "Backspace",
+  enter: "Enter",
+  space: "Space",
+  tab: "Tab",
+  home: "Home",
+  end: "End",
+  insert: "Insert",
+};
+const PUNCTUATION = [
+  "backslash",
+  "comma",
+  "slash",
+  "period",
+  "minus",
+  "equal",
+  "semicolon",
+  "quote",
+  "backquote",
+  "bracketleft",
+  "bracketright",
+];
+
+/** Letters, digits, F1–F24, punctuation and the named keys above. */
+const isSupportedKey = (key: string) =>
+  /^([a-z0-9]|f([1-9]|1\d|2[0-4]))$/.test(key) ||
+  key in NAMED_KEYS ||
+  PUNCTUATION.includes(key);
+
 function canonical(parts: string[]): string {
   const key = parts.filter(
     (p) => !(MODIFIERS as readonly string[]).includes(p),
@@ -33,7 +70,13 @@ export function resolveMod(binding: string, mac: boolean): string {
 }
 
 export function bindingFromEvent(e: KeyInput): string | null {
-  if (!e.code || MODIFIER_CODES.test(e.code)) return null;
+  // Modifier-only presses and keys we can't name everywhere (numpad, CapsLock…).
+  if (
+    !e.code ||
+    MODIFIER_CODES.test(e.code) ||
+    !isSupportedKey(keyName(e.code))
+  )
+    return null;
   const parts: string[] = [];
   if (e.ctrlKey) parts.push("ctrl");
   if (e.altKey) parts.push("alt");
@@ -47,11 +90,7 @@ export function isValidBinding(b: string): boolean {
   if (b === "") return true;
   const parts = b.split("+");
   const key = parts[parts.length - 1];
-  if (
-    !/^[a-z0-9]+$/.test(key) ||
-    (MODIFIERS as readonly string[]).includes(key)
-  )
-    return false;
+  if (!isSupportedKey(key)) return false;
   const mods = parts.slice(0, -1);
   // Canonical: only known modifiers, each at most once, in MODIFIERS order.
   return (
@@ -85,6 +124,10 @@ const KEY_LABELS: Record<string, string> = {
   delete: "Del",
   pageup: "PgUp",
   pagedown: "PgDn",
+  arrowup: "↑",
+  arrowdown: "↓",
+  arrowleft: "←",
+  arrowright: "→",
 };
 
 function keyLabel(key: string): string {
@@ -113,22 +156,19 @@ export function displayBinding(binding: string, mac: boolean): string {
   return [...mods.map((m) => WORDS[m]), keyLabel(key)].join("+");
 }
 
-/** CodeMirror keymap syntax: "Shift-Meta-s". */
+/** CodeMirror keymap syntax: "Shift-Meta-s", "Ctrl-PageUp". */
 export function toCodeMirrorKey(binding: string): string {
   const { mods, key } = split(binding);
-  const name = key.length === 1 ? key : (KEY_LABELS[key] ?? keyLabel(key));
-  return [...mods.map((m) => WORDS[m]), name === "Del" ? "Delete" : name].join(
-    "-",
-  );
+  const name = key.length === 1 ? key : (NAMED_KEYS[key] ?? keyLabel(key));
+  return [...mods.map((m) => WORDS[m]), name].join("-");
 }
 
-/** Tauri menu accelerator syntax: "Shift+Cmd+T". */
+/** Tauri menu accelerator syntax: "Shift+Cmd+T", "Cmd+PageUp". */
 export function toTauriAccelerator(binding: string): string | null {
   if (!binding) return null;
   const { mods, key } = split(binding);
   const word = (m: string) => (m === "meta" ? "Cmd" : WORDS[m]);
-  const name = keyLabel(key);
-  return [...mods.map(word), name === "Del" ? "Delete" : name].join("+");
+  return [...mods.map(word), NAMED_KEYS[key] ?? keyLabel(key)].join("+");
 }
 
 /** True when the binding can't be typed as text: has Ctrl/Alt/Meta, or is an F-key. */

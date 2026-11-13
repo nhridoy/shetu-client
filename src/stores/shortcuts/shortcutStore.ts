@@ -120,23 +120,31 @@ export function effectiveBinding(
   return s.overrides[id] ?? defaultBinding(d, mac);
 }
 
-/** Another shortcut that would fire on the same key at the same time, if any. */
+/** Other shortcuts that would fire on the same key at the same time. A view reusing an
+ * app-wide key isn't one: it shadows it (see shadowedAppShortcut). */
+export function findConflicts(
+  id: ShortcutId,
+  binding: string,
+  mac = isMac(),
+): ShortcutId[] {
+  if (!binding) return [];
+  const me = defOf(id);
+  return SHORTCUTS.filter(
+    (o) =>
+      o.id !== id &&
+      effectiveBinding(o.id, undefined, mac) === binding &&
+      (o.context === me.context ||
+        // macOS menu-bar keys fire on every page.
+        (mac && !!(o.menuItem || me.menuItem))),
+  ).map((o) => o.id);
+}
+
 export function findConflict(
   id: ShortcutId,
   binding: string,
   mac = isMac(),
 ): ShortcutId | null {
-  if (!binding) return null;
-  const me = defOf(id);
-  for (const o of SHORTCUTS) {
-    if (o.id === id || effectiveBinding(o.id, undefined, mac) !== binding)
-      continue;
-    if (o.context === me.context) return o.id;
-    // macOS menu-bar keys fire on every page.
-    if (mac && (o.menuItem || me.menuItem)) return o.id;
-    // Otherwise a view reusing an app-wide key shadows it (see shadowedAppShortcut).
-  }
-  return null;
+  return findConflicts(id, binding, mac)[0] ?? null;
 }
 
 /** The app-wide shortcut this view shortcut overrides while its view is active. */
@@ -184,5 +192,7 @@ export function shortcutLabel(
   id: ShortcutId,
   mac = isMac(),
 ): string | undefined {
+  const d = defOf(id);
+  if (mac && d.macFixed) return d.macLabel;
   return displayBinding(effectiveBinding(id, undefined, mac), mac) || undefined;
 }

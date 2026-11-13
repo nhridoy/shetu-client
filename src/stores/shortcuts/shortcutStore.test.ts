@@ -21,9 +21,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 import {
   effectiveBinding,
   findConflict,
+  findConflicts,
   isHeldBackFromTerminal,
   isShortcutDisabled,
   shadowedAppShortcut,
+  shortcutLabel,
   useShortcutStore,
 } from "./shortcutStore";
 
@@ -84,6 +86,7 @@ describe("shortcut store", () => {
       ["x"],
       { "nope.id": "ctrl+x", "terminal.newTab": "ctrl+", "files.copy": 5 },
       { "terminal.newTab": "cmd+k", "files.copy": "CTRL+k" },
+      { "terminal.newTab": "ctrl+banana" },
     ]) {
       disk.saved.shortcuts = bad;
       await useShortcutStore.getState().initShortcuts();
@@ -181,5 +184,20 @@ describe("shortcut store", () => {
     expect(isShortcutDisabled("app.quickConnect")).toBe(false);
     useShortcutStore.getState().setRecording(true);
     expect(isShortcutDisabled("app.quickConnect")).toBe(true);
+  });
+
+  it("find_conflicts_returns_every_clash", () => {
+    // On macOS a menu-bar key clashes with every area.
+    expect(findConflicts("terminal.newTab", "meta+c", true)).toEqual([
+      "files.copy",
+      "editor.copyPath",
+    ]);
+    expect(findConflicts("files.copy", "ctrl+x", false)).toEqual(["files.cut"]);
+  });
+
+  it("mac_system_copy_paste_have_labels", () => {
+    expect(shortcutLabel("terminal.copy", true)).toBe("⌘C");
+    expect(shortcutLabel("terminal.paste", true)).toBe("⌘V");
+    expect(effectiveBinding("terminal.copy", undefined, true)).toBe("");
   });
 });

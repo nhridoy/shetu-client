@@ -1,4 +1,4 @@
-import type { Extension } from "@codemirror/state";
+import { type Extension, Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { toCodeMirrorKey } from "@/lib/shortcuts/binding";
 
@@ -8,13 +8,16 @@ export function saveKeymapFor(
   onSave: () => void,
 ): Extension | null {
   if (!binding) return null;
-  return keymap.of([
-    {
-      key: toCodeMirrorKey(binding),
-      run: () => {
-        onSave();
-        return true;
+  // Highest precedence: the user's Save key wins over the editor's built-in keys.
+  return Prec.highest(
+    keymap.of([
+      {
+        key: toCodeMirrorKey(binding),
+        run: () => {
+          onSave();
+          return true;
+        },
       },
-    },
-  ]);
+    ]),
+  );
 }
