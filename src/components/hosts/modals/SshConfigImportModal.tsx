@@ -28,6 +28,7 @@ export default function SshConfigImportModal({
   const { vaults, currentVaultId } = useVaultStore();
   const vault = vaults.find((v) => v.id === currentVaultId);
   const [keysReady, setKeysReady] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
   const [preview, setPreview] = useState<SshConfigPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
@@ -41,8 +42,13 @@ export default function SshConfigImportModal({
   useEffect(() => {
     let cancelled = false;
     setKeysReady(false);
+    setKeysError(null);
     fetchKeys(currentVaultId ?? undefined)
-      .then(() => !cancelled && setKeysReady(true))
+      .then((ok) => {
+        if (cancelled) return;
+        if (ok) setKeysReady(true);
+        else setKeysError("Couldn't load your keys for this vault.");
+      })
       .catch((e) => {
         if (!cancelled) setError(extractError(e, "Failed to load keys"));
       });
@@ -154,6 +160,13 @@ export default function SshConfigImportModal({
     body = (
       <div className="space-y-4">
         {error && <p className="text-sm text-red-500">{error}</p>}
+        {keysError && <p className="text-sm text-red-500">{keysError}</p>}
+        {preview.ignoredScopedIncludeFiles.length > 0 && (
+          <p className="text-sm text-amber-400">
+            Host blocks inside an Include under a Host entry aren't supported
+            and were ignored in: {preview.ignoredScopedIncludeFiles.join(", ")}
+          </p>
+        )}
         {preview.ignoredMatchFiles.length > 0 && (
           <p className="text-sm text-amber-400">
             Match blocks aren't supported and were ignored in:{" "}
@@ -210,7 +223,12 @@ export default function SshConfigImportModal({
   }
 
   return (
-    <Modal onClose={onClose} title="Import from SSH config" maxWidth="max-w-xl">
+    <Modal
+      onClose={onClose}
+      title="Import from SSH config"
+      maxWidth="max-w-xl"
+      hideClose={busy}
+    >
       {body}
       {vault?.kind === VAULT_KIND_TEAM && !problems && (
         <p className="mt-4 text-sm text-amber-400">

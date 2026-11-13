@@ -25,7 +25,8 @@ interface KeyState {
   isLoading: boolean;
   error: string | null;
 
-  fetchKeys: (vaultId?: string) => Promise<void>;
+  // True when this vault's keys were loaded and are still the latest request.
+  fetchKeys: (vaultId?: string) => Promise<boolean>;
   selectKey: (key: Key | null) => void;
   getDecryptedKey: (keyId: string) => Promise<Key | null>;
   importKey: (key: Partial<Key>) => Promise<void>;
@@ -88,6 +89,8 @@ async function decryptKeyRow(row: SyncRow): Promise<Key> {
   };
 }
 
+let latestFetch = 0;
+
 export const useKeyStore = create<KeyState>((set, get) => ({
   keys: [],
   selectedKey: null,
@@ -98,15 +101,20 @@ export const useKeyStore = create<KeyState>((set, get) => ({
     const vid = vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vid) {
       set({ isLoading: false });
-      return;
+      return false;
     }
+    const request = ++latestFetch;
     set({ isLoading: true, error: null });
     try {
       const rows = await listRows("keys", vid);
+      if (request !== latestFetch) return false;
       const keys = rows.map((row) => keyFromRow(row));
       set({ keys, isLoading: false });
+      return true;
     } catch (err) {
+      if (request !== latestFetch) return false;
       set({ isLoading: false, error: errorMessage(err) });
+      return false;
     }
   },
 

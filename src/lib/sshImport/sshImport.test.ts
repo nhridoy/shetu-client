@@ -29,7 +29,11 @@ const host = (
   ...over,
 });
 
-const preview = (hosts: SshConfigHost[]) => ({ hosts, ignoredMatchFiles: [] });
+const preview = (hosts: SshConfigHost[]) => ({
+  hosts,
+  ignoredMatchFiles: [],
+  ignoredScopedIncludeFiles: [],
+});
 
 function makeDeps(over: Partial<ImportDeps> = {}) {
   let n = 0;

@@ -1,6 +1,5 @@
 //! Read `~/.ssh/config` (with `Include`; `Match` blocks dropped) into plain host records.
 
-use russh::keys::{HashAlg, PublicKey};
 use serde::Serialize;
 use ssh2_config::{ParseRule, SshConfig};
 use std::collections::HashSet;
@@ -35,60 +34,107 @@ fn read_lossy(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
 }
 
-fn inline_file(path: &Path, home: &Path, depth: u8, out: &mut String, match_files: &mut Vec<String>) {
+/// Splits Include arguments: double quotes group (and are removed); an unquoted `#` token starts a comment.
+fn include_args(rest: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut chars = rest.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+        } else if c == '#' {
+            break;
+        } else {
+            let (mut tok, mut quoted) = (String::new(), false);
+            while let Some(&c) = chars.peek() {
+                if c == '"' {
+                    quoted = !quoted;
+                } else if c.is_whitespace() && !quoted {
+                    break;
+                } else {
+                    tok.push(c);
+                }
+                chars.next();
+            }
+            args.push(tok);
+        }
+    }
+    args
+}
+
+#[derive(Default)]
+struct Inlined {
+    text: String,
+    match_files: Vec<String>,
+    scoped_files: Vec<String>,
+}
+
+/// `scoped` is the enclosing (non-`*`) Host line when inlining an Include found under it.
+fn inline_file(path: &Path, home: &Path, depth: u8, scoped: Option<&str>, out: &mut Inlined) {
     if let Ok(text) = read_lossy(path) {
-        inline_text(&text, path, home, depth, out, match_files);
+        inline_text(&text, path, home, depth, scoped, out);
     }
 }
 
-fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, out: &mut String, match_files: &mut Vec<String>) {
+fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, scoped: Option<&str>, out: &mut Inlined) {
     let mut skipping = false;
     let mut had_match = false;
+    // Host line whose scope is current; None means all hosts.
+    let mut scope: Option<String> = scoped.map(String::from);
     for line in text.lines() {
         match split_keyword(line) {
-            Some((kw, _)) if kw == "match" => {
+            Some((kw, _)) if kw == "match" || (kw == "host" && scoped.is_some()) => {
+                if scoped.is_some() {
+                    out.scoped_files.push(path.to_string_lossy().into_owned());
+                    return;
+                }
                 skipping = true;
                 had_match = true;
                 continue;
             }
-            Some((kw, _)) if kw == "host" => skipping = false,
+            Some((kw, rest)) if kw == "host" => {
+                skipping = false;
+                scope = (rest.trim() != "*").then(|| line.to_string());
+            }
             Some((kw, rest)) if kw == "include" && !skipping => {
                 if depth < MAX_INCLUDE_DEPTH {
-                    for arg in rest.split_whitespace() {
-                        let pattern = expand_include(arg, home);
+                    for arg in include_args(rest) {
+                        let pattern = expand_include(&arg, home);
                         let Ok(paths) = glob::glob(&pattern.to_string_lossy()) else {
                             continue;
                         };
                         for p in paths.flatten() {
-                            inline_file(&p, home, depth + 1, out, match_files);
+                            inline_file(&p, home, depth + 1, scope.as_deref(), out);
                         }
                     }
+                    // Return to the enclosing scope after the included lines.
+                    out.text.push_str(scope.as_deref().unwrap_or("Host *"));
+                    out.text.push('\n');
                 }
                 continue;
             }
             _ => {}
         }
         if !skipping {
-            out.push_str(line);
-            out.push('\n');
+            out.text.push_str(line);
+            out.text.push('\n');
         }
     }
     if had_match {
-        match_files.push(path.to_string_lossy().into_owned());
+        out.match_files.push(path.to_string_lossy().into_owned());
     }
 }
 
-/// Main config with `Include`s inlined and `Match` blocks removed, plus the files that had `Match` blocks.
-pub(crate) fn sanitize_config(home: &Path) -> Result<(String, Vec<String>), String> {
-    let mut out = String::new();
-    let mut match_files = Vec::new();
+/// Main config with `Include`s inlined and `Match` blocks removed, plus the files that had `Match`
+/// blocks and the files whose Host blocks were ignored because they sit under a Host entry.
+pub(crate) fn sanitize_config(home: &Path) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let mut out = Inlined::default();
     let path = home.join(".ssh").join("config");
     match read_lossy(&path) {
-        Ok(text) => inline_text(&text, &path, home, 0, &mut out, &mut match_files),
+        Ok(text) => inline_text(&text, &path, home, 0, None, &mut out),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Couldn't read ~/.ssh/config: {e}")),
     }
-    Ok((out, match_files))
+    Ok((out.text, out.match_files, out.scoped_files))
 }
 
 pub(crate) struct ParsedHost {
@@ -100,8 +146,8 @@ pub(crate) struct ParsedHost {
     pub identity_files: Vec<PathBuf>,
 }
 
-pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>), String> {
-    let (text, match_files) = sanitize_config(home)?;
+pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>, Vec<String>), String> {
+    let (text, match_files, scoped_files) = sanitize_config(home)?;
     let mut reader = BufReader::new(text.as_bytes());
     let config = SshConfig::default()
         .home_dir(home)
@@ -132,7 +178,7 @@ pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>),
             identity_files: p.identity_file.unwrap_or_default(),
         });
     }
-    Ok((hosts, match_files))
+    Ok((hosts, match_files, scoped_files))
 }
 
 #[derive(Serialize)]
@@ -161,6 +207,7 @@ pub struct SshConfigHost {
 pub struct SshConfigPreview {
     hosts: Vec<SshConfigHost>,
     ignored_match_files: Vec<String>,
+    ignored_scoped_include_files: Vec<String>,
 }
 
 const DEFAULT_KEYS: [&str; 6] = [
@@ -207,12 +254,13 @@ fn describe_key(path: &Path) -> SshConfigKey {
         }
         Err(russh::keys::Error::KeyIsEncrypted) => {
             key.status = "encrypted";
-            let mut pub_path = path.as_os_str().to_owned();
-            pub_path.push(".pub");
-            key.fingerprint = std::fs::read_to_string(pub_path)
-                .ok()
-                .and_then(|t| PublicKey::from_openssh(t.trim()).ok())
-                .map(|p| p.fingerprint(HashAlg::Sha256).to_string());
+            // OpenSSH-format keys keep the public half unencrypted; legacy PEM won't parse and stays unmatched.
+            if let Ok(k) = russh::keys::ssh_key::PrivateKey::from_openssh(&content) {
+                if let Ok(meta) = crate::keys::metadata_for_key(&k) {
+                    key.fingerprint = Some(meta.fingerprint);
+                    key.key_type = Some(meta.key_type);
+                }
+            }
         }
         Err(_) => {}
     }
@@ -230,7 +278,7 @@ fn pick_key(host: &ParsedHost, home: &Path) -> Option<SshConfigKey> {
 }
 
 pub(crate) fn preview(home: &Path) -> Result<SshConfigPreview, String> {
-    let (parsed, ignored_match_files) = parse_hosts(home)?;
+    let (parsed, ignored_match_files, ignored_scoped_include_files) = parse_hosts(home)?;
     let hosts = parsed
         .iter()
         .map(|h| SshConfigHost {
@@ -242,7 +290,7 @@ pub(crate) fn preview(home: &Path) -> Result<SshConfigPreview, String> {
             key: pick_key(h, home),
         })
         .collect();
-    Ok(SshConfigPreview { hosts, ignored_match_files })
+    Ok(SshConfigPreview { hosts, ignored_match_files, ignored_scoped_include_files })
 }
 
 pub(crate) fn read_key(home: &Path, path: &str) -> Result<String, String> {
@@ -294,7 +342,7 @@ mod tests {
     #[test]
     fn missing_config_is_empty() {
         let home = temp_home(&[]);
-        let (hosts, matches) = parse_hosts(&home).unwrap();
+        let (hosts, matches, _) = parse_hosts(&home).unwrap();
         assert!(hosts.is_empty() && matches.is_empty());
     }
 
@@ -304,7 +352,7 @@ mod tests {
             "config",
             "Host web-*\n  User www\nHost a b\n  HostName 10.0.0.1\nHost !c d\n",
         )]);
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         let aliases: Vec<_> = hosts.iter().map(|h| h.alias.as_str()).collect();
         assert_eq!(aliases, ["a", "b", "d"]);
         assert_eq!(find(&hosts, "a").hostname, "10.0.0.1");
@@ -316,7 +364,7 @@ mod tests {
             "config",
             "Host prod\n  HostName p.example.com\nHost own\n  User me\nHost *\n  User deploy\n  Port 2222\n",
         )]);
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         let prod = find(&hosts, "prod");
         assert_eq!(prod.user.as_deref(), Some("deploy"));
         assert_eq!(prod.port, 2222);
@@ -330,7 +378,7 @@ mod tests {
             ("config.d/one", "Host one\n"),
             ("config.d/two", "Host two\n"),
         ]);
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         let aliases: Vec<_> = hosts.iter().map(|h| h.alias.as_str()).collect();
         assert!(aliases.contains(&"one") && aliases.contains(&"two"));
     }
@@ -341,7 +389,7 @@ mod tests {
             "config",
             "Host x\n  User xu\nMatch host *.corp\n  User corpuser\nHost y\n  HostName y.example.com\n",
         )]);
-        let (hosts, matches) = parse_hosts(&home).unwrap();
+        let (hosts, matches, _) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "x").user.as_deref(), Some("xu"));
         assert_eq!(find(&hosts, "y").user, None);
         assert_eq!(
@@ -356,7 +404,7 @@ mod tests {
             "config",
             "Host bastion\n  HostName b.example.com\n  ProxyJump none\nHost web\n  HostName w.example.com\nHost *\n  ProxyJump bastion\n",
         )]);
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "bastion").proxy_jump, None);
         assert_eq!(find(&hosts, "web").proxy_jump.as_deref(), Some("bastion"));
     }
@@ -368,7 +416,7 @@ mod tests {
         let mut bytes = b"# caf\xff\nHost a\n  HostName a.example.com\n".to_vec();
         bytes.push(b'\n');
         std::fs::write(home.join(".ssh").join("config"), bytes).unwrap();
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "a").hostname, "a.example.com");
     }
 
@@ -383,7 +431,7 @@ mod tests {
     #[test]
     fn proxy_jump_kept_raw() {
         let home = temp_home(&[("config", "Host z\n  ProxyJump bastion,edge\n")]);
-        let (hosts, _) = parse_hosts(&home).unwrap();
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "z").proxy_jump.as_deref(), Some("bastion,edge"));
     }
 
@@ -421,21 +469,80 @@ mod tests {
         assert!(only_key(&home).path.ends_with("id_ed25519"));
     }
 
+    fn own_fingerprint(pem: &str) -> String {
+        russh::keys::ssh_key::PrivateKey::from_openssh(pem)
+            .unwrap()
+            .public_key()
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string()
+    }
+
     #[test]
-    fn encrypted_key_uses_pub_fingerprint() {
-        let (pem, public) = key_pem(Some("pw"));
+    fn encrypted_key_fingerprint_comes_from_key_not_pub() {
+        let (pem, _) = key_pem(Some("pw"));
+        let (_, other_public) = key_pem(None);
         let home = temp_home(&[
             ("config", "Host a\n  IdentityFile ~/.ssh/enc\n"),
             ("enc", &pem),
-            ("enc.pub", &public),
+            ("enc.pub", &other_public),
         ]);
         let k = only_key(&home);
-        let want = russh::keys::PublicKey::from_openssh(&public)
-            .unwrap()
-            .fingerprint(russh::keys::HashAlg::Sha256)
-            .to_string();
         assert_eq!(k.status, "encrypted");
-        assert_eq!(k.fingerprint.unwrap(), want);
+        assert_eq!(k.fingerprint.unwrap(), own_fingerprint(&pem));
+        assert_eq!(k.key_type.as_deref(), Some("ed25519"));
+    }
+
+    #[test]
+    fn encrypted_key_without_pub_has_fingerprint() {
+        let (pem, _) = key_pem(Some("pw"));
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/enc\n"), ("enc", &pem)]);
+        let k = only_key(&home);
+        assert_eq!(k.status, "encrypted");
+        assert_eq!(k.fingerprint.unwrap(), own_fingerprint(&pem));
+    }
+
+    #[test]
+    fn include_with_quoted_path_containing_space() {
+        let home = temp_home(&[
+            ("config", "Include \"config.d/company hosts.conf\" # trailing\n"),
+            ("config.d/company hosts.conf", "Host corp\n"),
+        ]);
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
+        assert!(hosts.iter().any(|h| h.alias == "corp"));
+    }
+
+    #[test]
+    fn include_under_host_does_not_leak_to_other_hosts() {
+        let home = temp_home(&[
+            ("config", "Host prod\n  Include scoped.conf\nHost dev\n  HostName dev.example.com\n"),
+            ("scoped.conf", "User produser\nHost *\n  HostName wrong.example.com\n"),
+        ]);
+        let (hosts, _, scoped) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "prod").user.as_deref(), Some("produser"));
+        assert_eq!(find(&hosts, "dev").hostname, "dev.example.com");
+        assert_eq!(scoped, [home.join(".ssh/scoped.conf").to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn lines_after_include_stay_in_parent_scope() {
+        let home = temp_home(&[
+            ("config", "Host prod\n  HostName p.example.com\n  Include more.conf\n  Port 2200\n"),
+            ("more.conf", "Host other\n  HostName o.example.com\n"),
+        ]);
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "prod").port, 2200);
+        assert!(!hosts.iter().any(|h| h.alias == "other"));
+    }
+
+    #[test]
+    fn top_level_include_restores_global_scope() {
+        let home = temp_home(&[
+            ("config", "Include a.conf\nUser bob\nHost y\n  HostName y.example.com\n"),
+            ("a.conf", "Host x\n  HostName x.example.com\n"),
+        ]);
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "x").user.as_deref(), Some("bob"));
+        assert_eq!(find(&hosts, "y").user.as_deref(), Some("bob"));
     }
 
     #[test]

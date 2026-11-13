@@ -70,7 +70,7 @@ const host = (alias: string, k: ReturnType<typeof key> | null = null) => ({
   key: k,
 });
 
-async function mount(preview: unknown) {
+async function mount(preview: unknown, onClose: () => void = () => {}) {
   h.invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "ssh_config_preview") return preview;
     return "PRIVATE";
@@ -79,7 +79,7 @@ async function mount(preview: unknown) {
     document.body.appendChild(document.createElement("div")),
   );
   await act(async () =>
-    root.render(<SshConfigImportModal groupId="g1" onClose={() => {}} />),
+    root.render(<SshConfigImportModal groupId="g1" onClose={onClose} />),
   );
   await act(async () => {});
 }
@@ -94,19 +94,27 @@ beforeEach(() => {
   h.keys = [];
   h.vaults = [{ id: "v1", name: "Personal", kind: "personal" }];
   h.currentVaultId = "v1";
-  h.fetchKeys.mockResolvedValue(undefined);
+  h.fetchKeys.mockResolvedValue(true);
   h.createHost.mockImplementation(async (x) => ({ ...x }));
 });
 
 describe("SshConfigImportModal", () => {
   it("shows empty state when no hosts", async () => {
-    await mount({ hosts: [], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     expect(text()).toContain("No hosts found in ~/.ssh/config");
   });
 
   it('existing host row is disabled with "already in Shetu"', async () => {
     h.hosts = [{ id: "h1", name: "web" }];
-    await mount({ hosts: [host("web")], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [host("web")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     expect(text()).toContain("already in Shetu");
     const box = document.querySelector(
       '[role="checkbox"]',
@@ -119,6 +127,7 @@ describe("SshConfigImportModal", () => {
     await mount({
       hosts: [host("a", key("encrypted")), host("b", key("encrypted"))],
       ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
     });
     expect(document.querySelectorAll('input[type="password"]')).toHaveLength(1);
     expect(text()).toContain("Passphrase for id_ed25519");
@@ -128,6 +137,7 @@ describe("SshConfigImportModal", () => {
     await mount({
       hosts: [host("a", key("ready")), host("b", key("ready"))],
       ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
     });
     const btn = [...document.querySelectorAll("button")].find((b) =>
       b.textContent?.startsWith("Import 2 hosts"),
@@ -140,7 +150,11 @@ describe("SshConfigImportModal", () => {
   });
 
   it("unexpected import error keeps the list and marks created hosts as existing", async () => {
-    await mount({ hosts: [host("a"), host("b")], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [host("a"), host("b")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     h.run = async () => {
       h.hosts = [{ id: "h1", name: "a" }];
       throw new Error("boom");
@@ -162,8 +176,14 @@ describe("SshConfigImportModal", () => {
 
   it("fetches keys for the current vault and keeps Import disabled until done", async () => {
     let resolve!: () => void;
-    h.fetchKeys.mockReturnValue(new Promise<void>((r) => (resolve = r)));
-    await mount({ hosts: [host("a")], ignoredMatchFiles: [] });
+    h.fetchKeys.mockReturnValue(
+      new Promise<boolean>((r) => (resolve = () => r(true))),
+    );
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     expect(h.fetchKeys).toHaveBeenCalledWith("v1");
     expect(importBtn().disabled).toBe(true);
     await act(async () => resolve());
@@ -171,14 +191,22 @@ describe("SshConfigImportModal", () => {
   });
 
   it("footer names the vault; team notice only for team vaults", async () => {
-    await mount({ hosts: [host("a")], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     expect(importBtn().textContent).toBe(
       "Import 1 hosts and 0 keys into Personal",
     );
     expect(text()).not.toContain("This is a team vault");
     document.body.innerHTML = "";
     h.vaults = [{ id: "v1", name: "Ops", kind: "team" }];
-    await mount({ hosts: [host("a")], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     expect(importBtn().textContent).toContain("into Ops");
     expect(text()).toContain(
       "This is a team vault. Imported keys will be shared with its members.",
@@ -190,6 +218,7 @@ describe("SshConfigImportModal", () => {
     await mount({
       hosts: [host("a", key("encrypted", "SHA256:abc"))],
       ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
     });
     expect(document.querySelectorAll('input[type="password"]')).toHaveLength(0);
     expect(importBtn().textContent).toContain("and 0 keys");
@@ -197,16 +226,67 @@ describe("SshConfigImportModal", () => {
     await mount({
       hosts: [host("a", key("ready", "SHA256:abc"))],
       ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
     });
     expect(importBtn().textContent).toContain("and 0 keys");
   });
 
   it("reports an error toast when nothing was imported", async () => {
-    await mount({ hosts: [host("a")], ignoredMatchFiles: [] });
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
     h.createHost.mockResolvedValue(null);
     await act(async () => importBtn().click());
     expect(toast.error).toHaveBeenCalledWith("No hosts were imported");
     expect(toast.success).not.toHaveBeenCalled();
     expect(text()).toContain("Couldn't create host");
+  });
+
+  it("failed key fetch keeps Import disabled and shows the message", async () => {
+    h.fetchKeys.mockResolvedValue(false);
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: [],
+    });
+    expect(importBtn().disabled).toBe(true);
+    expect(text()).toContain("Couldn't load your keys for this vault.");
+  });
+
+  it("notes Host blocks ignored inside scoped Includes", async () => {
+    await mount({
+      hosts: [host("a")],
+      ignoredMatchFiles: [],
+      ignoredScopedIncludeFiles: ["/home/u/.ssh/scoped.conf"],
+    });
+    expect(text()).toContain(
+      "Host blocks inside an Include under a Host entry aren't supported and were ignored in: /home/u/.ssh/scoped.conf",
+    );
+  });
+
+  it("cannot be closed while an import is running", async () => {
+    const onClose = vi.fn();
+    await mount(
+      {
+        hosts: [host("a")],
+        ignoredMatchFiles: [],
+        ignoredScopedIncludeFiles: [],
+      },
+      onClose,
+    );
+    let finish!: () => void;
+    h.run = () =>
+      new Promise<never>((_, rej) => (finish = () => rej(new Error("x"))));
+    await act(async () => importBtn().click());
+    expect(document.querySelector('[aria-label="Close"]')).toBeNull();
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => finish());
   });
 });

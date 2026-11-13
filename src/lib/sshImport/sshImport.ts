@@ -20,6 +20,7 @@ export type SshConfigHost = {
 export type SshConfigPreview = {
   hosts: SshConfigHost[];
   ignoredMatchFiles: string[];
+  ignoredScopedIncludeFiles: string[];
 };
 
 export type ImportRow = {
