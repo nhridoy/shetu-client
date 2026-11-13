@@ -107,11 +107,11 @@ fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, scoped: Option<&
                         };
                         for p in paths.flatten() {
                             inline_file(&p, home, depth + 1, scope.as_deref(), out);
+                            // Like OpenSSH, every included file ends back in the enclosing scope.
+                            out.text.push_str(scope.as_deref().unwrap_or("Host *"));
+                            out.text.push('\n');
                         }
                     }
-                    // Return to the enclosing scope after the included lines.
-                    out.text.push_str(scope.as_deref().unwrap_or("Host *"));
-                    out.text.push('\n');
                 }
                 continue;
             }
@@ -549,6 +549,19 @@ mod tests {
         let (hosts, _, _) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "x").user.as_deref(), Some("bob"));
         assert_eq!(find(&hosts, "y").user.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn each_included_file_starts_in_the_parent_scope() {
+        // OpenSSH restores the parent scope after every file of one Include line.
+        let home = temp_home(&[
+            ("config", "Include a.conf b.conf\nHost y\n  HostName y.example.com\n"),
+            ("a.conf", "Host x\n  HostName x.example.com\n"),
+            ("b.conf", "User included-user\n"),
+        ]);
+        let (hosts, _, _) = parse_hosts(&home).unwrap();
+        assert_eq!(find(&hosts, "x").user.as_deref(), Some("included-user"));
+        assert_eq!(find(&hosts, "y").user.as_deref(), Some("included-user"));
     }
 
     #[test]
