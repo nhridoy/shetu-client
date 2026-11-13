@@ -353,6 +353,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn clear_dir_files_reports_files_it_cannot_delete() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir("readonly");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("locked.log"), "x").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout == b"0\n");
+        let failed = clear_dir_files(&dir);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !is_root {
+            assert_eq!(failed, vec!["locked.log".to_string()]);
+            assert!(dir.join("locked.log").exists());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn clear_dir_files_missing_dir_is_empty() {
         assert!(clear_dir_files(&tmp_dir("missing")).is_empty());
