@@ -53,13 +53,9 @@ onSessionRevoked(() => {
 
 let revokedRun: Promise<void> | null = null;
 
-// Bumped by every device reset; a session retry that started before one must not publish.
+// Bumped by every teardown (sign-out or reset); a session retry that started
+// before one must not publish.
 let resetGeneration = 0;
-
-function resetThisDevice(): Promise<string[]> {
-  resetGeneration++;
-  return resetDevice(teardownSession);
-}
 
 // Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
 export function handleRevokedSession(): Promise<void> {
@@ -88,7 +84,7 @@ async function runRevokedSession(): Promise<void> {
   if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
   // The account may have changed during the round-trip; don't wipe another one.
   if (currentAccountId() !== userId) return;
-  const failures = await resetThisDevice();
+  const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
     deletionNotice:
@@ -223,6 +219,7 @@ async function clearVaultSelection(): Promise<void> {
 // local cache. Best-effort end-to-end so no single failure blocks logout;
 // returns what failed so a device reset can report it.
 async function teardownSession(): Promise<string[]> {
+  resetGeneration++;
   const failures: string[] = [];
   const attempt = async (name: string, fn: () => Promise<unknown>) => {
     try {
@@ -939,6 +936,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await persistTokens(newTokens);
         return "connected" as const;
       } catch (error) {
+        // A sign-out or reset ran meanwhile; whatever session exists now isn't ours.
+        if (wiped()) return "auth-required" as const;
         set({
           tokens: null,
           isAuthenticated: false,
@@ -1144,7 +1143,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (err) {
       throw deletionRequestError(err);
     }
-    const failures = await resetThisDevice();
+    const failures = await resetDevice(teardownSession);
     if (failures.length) console.warn("device reset incomplete:", failures);
     set({ deletionNotice: { kind: "scheduled", date } });
   },
@@ -1156,7 +1155,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (!(err instanceof AuthApiError && err.status === 410)) throw err;
       // Purged during the grace period.
       resumeAfterKeep = null;
-      const failures = await resetThisDevice();
+      const failures = await resetDevice(teardownSession);
       if (failures.length) console.warn("device reset incomplete:", failures);
       set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
       return;

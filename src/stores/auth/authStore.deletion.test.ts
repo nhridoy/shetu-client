@@ -535,6 +535,65 @@ describe("restore with a revoked refresh token", () => {
     expect(saveRefreshToken).not.toHaveBeenCalled();
   });
 
+  // Starts a retry whose /me stays pending; returns the retry and /me's settlers.
+  async function retryWithPendingMe() {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a2",
+      refresh_token: "r2",
+    });
+    const me: {
+      resolve: (u: typeof user) => void;
+      reject: (e: unknown) => void;
+    } = { resolve: () => {}, reject: () => {} };
+    vi.mocked(authApi.me).mockReturnValueOnce(
+      new Promise((resolve, reject) => {
+        Object.assign(me, { resolve, reject });
+      }) as never,
+    );
+    const retry = useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalled());
+    return { retry, me };
+  }
+
+  it("failed_stale_retry_leaves_a_fresh_sign_in_alone", async () => {
+    useAuthStore.setState({ user });
+    const { retry, me } = await retryWithPendingMe();
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "deleted" });
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      await teardown();
+      return [];
+    });
+    await handleRevokedSession();
+    const fresh = { access_token: "a3", refresh_token: "r3" };
+    useAuthStore.setState({
+      user,
+      tokens: fresh,
+      isAuthenticated: true,
+      serverAuthenticated: true,
+    });
+    me.reject(new Error("timeout"));
+    await retry;
+    const s = useAuthStore.getState();
+    expect(s.tokens).toEqual(fresh);
+    expect(s.isAuthenticated).toBe(true);
+    expect(s.serverAuthenticated).toBe(true);
+  });
+
+  it("retry_finishing_after_logout_stays_signed_out", async () => {
+    useAuthStore.setState({ user });
+    const { retry, me } = await retryWithPendingMe();
+    await useAuthStore.getState().logout();
+    me.resolve(user);
+    await retry;
+    const s = useAuthStore.getState();
+    expect(s.user).toBeNull();
+    expect(s.tokens).toBeNull();
+    expect(s.isAuthenticated).toBe(false);
+    expect(s.localAccessAccountId).toBeNull();
+    expect(saveRefreshToken).not.toHaveBeenCalled();
+  });
+
   it("restore_offline_or_expired_does_not_ask_status", async () => {
     vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
     vi.mocked(authApi.refresh).mockRejectedValueOnce(
