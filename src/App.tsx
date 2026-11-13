@@ -24,6 +24,7 @@ import TerminalPage from "@/pages/TerminalPage";
 import WorkspacesPage from "@/pages/WorkspacesPage";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 import { isLightTheme, useThemeStore } from "@/stores/themeStore";
 import { useUpdateStore } from "@/stores/update/updateStore";
@@ -43,6 +44,7 @@ function App() {
   const pendingRecoveryContext = useAuthStore((s) => s.pendingRecoveryContext);
   const clearRecoveryCode = useAuthStore((s) => s.clearRecoveryCode);
   const initSettings = useSettingsStore((s) => s.initSettings);
+  const initShortcuts = useShortcutStore((s) => s.initShortcuts);
   const initTheme = useThemeStore((s) => s.initTheme);
   const currentTheme = useThemeStore((s) => s.currentTheme);
   const detectShells = useShellStore((s) => s.detect);
@@ -52,12 +54,13 @@ function App() {
     const init = async () => {
       initTheme();
       initSettings();
+      initShortcuts();
       restoreSession();
       await detectShells();
       emit("main-ready");
     };
     init();
-  }, [restoreSession, initSettings, initTheme, detectShells]);
+  }, [restoreSession, initSettings, initShortcuts, initTheme, detectShells]);
 
   useEffect(() => {
     void checkForUpdates(false);
