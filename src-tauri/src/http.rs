@@ -691,7 +691,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn keychain_cleared_during_refresh_stores_no_tokens() {
-        // Sign-out clears the keychain before it clears Rust's tokens.
+        // The webview writes the keychain itself, outside Rust's lock.
         let (_, state, refresh) = refresh_in_flight((200, ROTATED), |_, r| r.clear()).await;
         assert_ne!(state.token().as_deref(), Some("a2"));
         assert!(refresh.persisted.lock().unwrap().is_empty());
