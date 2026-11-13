@@ -58,8 +58,7 @@ export default function Pane({
     const refresh = () => setRecording(isPaneRecording(pane.id));
     window.addEventListener("shetu:recording-change", refresh);
     refresh();
-    return () =>
-      window.removeEventListener("shetu:recording-change", refresh);
+    return () => window.removeEventListener("shetu:recording-change", refresh);
   }, [pane.id]);
 
   const { ref, isDragging } = useDraggable({

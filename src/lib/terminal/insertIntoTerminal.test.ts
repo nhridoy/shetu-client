@@ -52,26 +52,35 @@ describe("insertIntoTerminal safety", () => {
   it("refuses_to_insert_multi_line_without_bracketed_paste", () => {
     const t = fakeTerm(false);
     expect(insertIntoTerminal(t, "cd /srv\ngit reset --hard", false)).toBe(
-      false,
+      "unsafe-multiline",
     );
     expect(t.paste).not.toHaveBeenCalled();
   });
 
   it("multi_line_run_is_allowed_without_bracketed_paste", () => {
     const t = fakeTerm(false);
-    expect(insertIntoTerminal(t, "a\nb", true)).toBe(true);
+    expect(insertIntoTerminal(t, "a\nb", true)).toBe("ok");
     expect(t.paste).toHaveBeenCalledWith("a\nb");
   });
 
   it("single_line_insert_is_fine_without_bracketed_paste", () => {
     const t = fakeTerm(false);
-    expect(insertIntoTerminal(t, "uptime", false)).toBe(true);
+    expect(insertIntoTerminal(t, "uptime", false)).toBe("ok");
   });
 
   it("strips_paste_escape_and_control_characters", () => {
     const t = fakeTerm();
     insertIntoTerminal(t, "echo hi\x1b[201~; rm -rf /tmp/x\x07", false);
     expect(t.paste).toHaveBeenCalledWith("echo hi[201~; rm -rf /tmp/x");
+  });
+});
+
+describe("insertIntoTerminal empty", () => {
+  it("empty_command_sends_nothing_not_even_enter", () => {
+    const t = fakeTerm();
+    expect(insertIntoTerminal(t, "\n\x07", true)).toBe("empty");
+    expect(t.paste).not.toHaveBeenCalled();
+    expect(t.input).not.toHaveBeenCalled();
   });
 });
 

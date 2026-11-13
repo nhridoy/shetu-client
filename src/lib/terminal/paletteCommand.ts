@@ -6,7 +6,8 @@ export type PickResult =
   | "no-pane"
   | "not-connected"
   | "decrypt-failed"
-  | "unsafe-multiline";
+  | "unsafe-multiline"
+  | "empty";
 
 /** Puts the picked command into the active pane: inserted, or run when `run`. */
 export async function pickPaletteItem(
@@ -20,7 +21,7 @@ export async function pickPaletteItem(
       paneId: string,
       text: string,
       run: boolean,
-    ): "ok" | "no-pane" | "unsafe-multiline";
+    ): "ok" | "no-pane" | "unsafe-multiline" | "empty";
   },
 ): Promise<PickResult> {
   if (!deps.activePaneId) return "no-pane";
@@ -32,6 +33,8 @@ export async function pickPaletteItem(
     const snippet = await deps.decryptSnippet(item.snippetId).catch(() => null);
     if (!snippet) return "decrypt-failed";
     command = snippet.command;
+    // The pane may have disconnected while we waited.
+    if (!deps.isConnected(deps.activePaneId)) return "not-connected";
   }
   return deps.insert(deps.activePaneId, command, run);
 }

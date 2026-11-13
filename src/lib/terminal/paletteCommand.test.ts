@@ -68,6 +68,21 @@ describe("pickPaletteItem", () => {
     expect(d.insert).not.toHaveBeenCalled();
   });
 
+  it("pane_that_disconnects_during_decrypt_is_not_connected", async () => {
+    const d = deps({
+      isConnected: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
+    });
+    expect(
+      await pickPaletteItem({ snippetId: "s1", command: "" }, true, d),
+    ).toBe("not-connected");
+    expect(d.insert).not.toHaveBeenCalled();
+  });
+
+  it("empty_is_passed_through", async () => {
+    const d = deps({ insert: vi.fn(() => "empty" as const) });
+    expect(await pickPaletteItem({ command: "" }, true, d)).toBe("empty");
+  });
+
   it("unsafe_multiline_is_passed_through", async () => {
     const d = deps({ insert: vi.fn(() => "unsafe-multiline" as const) });
     expect(await pickPaletteItem({ command: "a\nb" }, false, d)).toBe(

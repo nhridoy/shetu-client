@@ -152,4 +152,11 @@ describe("CommandAutocomplete", () => {
     key({ key: "Enter", ctrlKey: true });
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
+
+  it("enter_confirming_an_ime_candidate_does_not_pick", () => {
+    const { onSelect, key } = render();
+    key({ key: "Enter", isComposing: true });
+    key({ key: "Enter", keyCode: 229 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

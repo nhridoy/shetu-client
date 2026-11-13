@@ -79,13 +79,21 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
 
   const handleCommandSelect = useCallback(
     async (item: PaletteItem, run: boolean) => {
-      const { tabs: currentTabs, activeTabId: atId } =
-        useTerminalStore.getState();
-      const tab = currentTabs.find((t) => t.id === atId);
+      const activeTab = () => {
+        const { tabs: currentTabs, activeTabId: atId } =
+          useTerminalStore.getState();
+        return currentTabs.find((t) => t.id === atId);
+      };
       const result = await pickPaletteItem(item, run, {
-        activePaneId: tab?.activePaneId ?? null,
-        isConnected: (paneId) =>
-          !!tab && findLeaf(tab.root, paneId)?.connectionStatus === "connected",
+        activePaneId: activeTab()?.activePaneId ?? null,
+        // Reads the live store: it is checked again after decryption.
+        isConnected: (paneId) => {
+          const tab = activeTab();
+          return (
+            !!tab &&
+            findLeaf(tab.root, paneId)?.connectionStatus === "connected"
+          );
+        },
         decryptSnippet: (id) =>
           useSnippetStore.getState().getDecryptedSnippet(id),
         insert: insertIntoPane,
@@ -95,6 +103,7 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
       else if (result === "no-pane") toast.error("Open a terminal first");
       else if (result === "not-connected")
         toast.error("This terminal isn't connected");
+      else if (result === "empty") toast.error("This snippet is empty");
       else if (result === "unsafe-multiline")
         toast.error(
           `This shell would run each line. Use ${runKey}+Enter to run it.`,

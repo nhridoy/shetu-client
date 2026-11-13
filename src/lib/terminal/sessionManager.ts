@@ -459,24 +459,26 @@ export function insertIntoTerminal(
   },
   text: string,
   run: boolean,
-): boolean {
+): "ok" | "unsafe-multiline" | "empty" {
   // Control characters (incl. ESC, so no fake bracketed-paste end) never reach the shell;
   // trailing newlines would run the command even when the user only inserts.
   const clean = text
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
     .replace(/\n+$/, "");
+  // Nothing to type; with `run`, Enter would submit whatever is already at the prompt.
+  if (!clean.trim()) return "empty";
   // Without bracketed paste, xterm sends each newline as Enter: the lines would run.
   if (!run && clean.includes("\n") && !term.modes.bracketedPasteMode) {
-    return false;
+    return "unsafe-multiline";
   }
   term.paste(clean);
   if (run) term.input("\r");
   term.focus();
-  return true;
+  return "ok";
 }
 
-export type InsertResult = "ok" | "no-pane" | "unsafe-multiline";
+export type InsertResult = ReturnType<typeof insertIntoTerminal> | "no-pane";
 
 /** Inserts into a pane's terminal. */
 export function insertIntoPane(
@@ -486,9 +488,7 @@ export function insertIntoPane(
 ): InsertResult {
   const session = sessions.get(paneId);
   if (!session) return "no-pane";
-  return insertIntoTerminal(session.xterm, text, run)
-    ? "ok"
-    : "unsafe-multiline";
+  return insertIntoTerminal(session.xterm, text, run);
 }
 
 export function getOrCreateSession(params: SessionParams): Session {

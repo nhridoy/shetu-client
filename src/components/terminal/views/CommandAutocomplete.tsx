@@ -154,6 +154,8 @@ export default function CommandAutocomplete({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Enter that confirms an IME candidate belongs to the search box.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex((prev) => Math.min(prev + 1, visible.length - 1));
