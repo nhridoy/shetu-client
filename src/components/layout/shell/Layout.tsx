@@ -11,6 +11,7 @@ import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useModal } from "@/hooks/useModal";
+import { useShortcut } from "@/hooks/useShortcut";
 import {
   isModalOpen,
   listenAppActions,
@@ -65,6 +66,7 @@ export default function Layout() {
   const workspaceModal = useModal();
   const presetModal = useModal();
   const settingsModal = useModal();
+  useShortcut("app.settings", settingsModal.show);
   const [presetTargetTabId, setPresetTargetTabId] = useState<string | null>(
     null,
   );

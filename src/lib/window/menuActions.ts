@@ -20,9 +20,6 @@ export const MENU_ACTION_EVENT = "menu-action";
 
 const APP_ACTION_DOM_EVENT = "shetu:app-action";
 
-/** Keys the macOS menu owns; in-app handlers skip them there to avoid firing twice. */
-const MENU_OWNED_KEYS = new Set(["t", "w", "k", ","]);
-
 export function isMenuActionId(value: unknown): value is MenuActionId {
   return MENU_ACTION_IDS.includes(value as MenuActionId);
 }
@@ -67,36 +64,6 @@ export function hasMacMenu(): boolean {
     typeof navigator !== "undefined" &&
     /Macintosh|Mac OS X/.test(navigator.userAgent)
   );
-}
-
-export function isMenuOwnedShortcut(
-  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
-  mac: boolean,
-): boolean {
-  return (
-    mac &&
-    e.metaKey &&
-    !e.ctrlKey &&
-    !e.altKey &&
-    !e.shiftKey &&
-    MENU_OWNED_KEYS.has(e.key.toLowerCase())
-  );
-}
-
-/**
- * Ctrl/Cmd+K handling for Quick Connect. "menu": macOS menu bar owns it, so the
- * page must not touch the event (preventDefault would stop the menu firing).
- * "open": the page opens the panel itself. null: not the Quick Connect key.
- */
-export function classifyQuickConnectKey(
-  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key">,
-  mac: boolean,
-  macMenu: boolean,
-): "menu" | "open" | null {
-  const modifier = mac ? e.metaKey : e.ctrlKey;
-  if (!modifier || e.shiftKey || e.altKey || e.key.toLowerCase() !== "k")
-    return null;
-  return isMenuOwnedShortcut(e, macMenu) ? "menu" : "open";
 }
 
 /** True while a modal dialog (Modal, Settings, Quick Connect…) is on screen. */

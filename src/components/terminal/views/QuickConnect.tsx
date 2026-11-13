@@ -8,12 +8,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import { useShortcut } from "@/hooks/useShortcut";
 import type { ShellInfo } from "@/lib/terminal/shellDetection";
-import {
-  classifyQuickConnectKey,
-  hasMacMenu,
-  listenAppActions,
-} from "@/lib/window/menuActions";
+import { listenAppActions } from "@/lib/window/menuActions";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 
@@ -52,21 +49,12 @@ export default function QuickConnect({
       shell.path.toLowerCase().includes(query.toLowerCase()),
   );
 
+  // Opens from any view, even while typing; capture runs before the terminal sees the key.
+  // On macOS the menu bar owns it and opens the panel through an app action.
+  useShortcut("app.quickConnect", open, { capture: true });
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl/Cmd+K opens the panel from any view. On macOS the menu bar owns
-      // ⌘K and opens it via an app action, so the event is left untouched.
-      const quickKey = classifyQuickConnectKey(
-        e,
-        navigator.platform.includes("Mac"),
-        hasMacMenu(),
-      );
-      if (quickKey === "open") {
-        // Capture phase + stopPropagation: the terminal must not also receive it.
-        e.preventDefault();
-        e.stopPropagation();
-        open();
-      }
       // Escape to close
       if (e.key === "Escape" && isOpen) {
         setIsOpen(false);
@@ -76,7 +64,7 @@ export default function QuickConnect({
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen, open]);
+  }, [isOpen]);
 
   useEffect(() => {
     setSelectedIndex(0);
