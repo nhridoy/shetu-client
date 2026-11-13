@@ -8,7 +8,8 @@ import { useSnippetStore } from "@/stores/snippets/snippetStore";
 interface CommandAutocompleteProps {
   isVisible: boolean;
   /** `run` is true for Ctrl+Enter (Cmd+Enter on macOS); Enter and click insert. */
-  onSelect: (item: PaletteItem, run: boolean) => void;
+  /** May return a promise; picks are ignored until it settles. */
+  onSelect: (item: PaletteItem, run: boolean) => unknown;
   onClose: () => void;
 }
 
@@ -23,6 +24,8 @@ export default function CommandAutocomplete({
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Ignore further picks while one is still running (e.g. a double Ctrl+Enter).
+  const picking = useRef(false);
 
   const q = query.toLowerCase();
   // Snippet commands are encrypted in list state, so search the plaintext fields.
@@ -123,6 +126,20 @@ export default function CommandAutocomplete({
       })),
   ];
 
+  // Only these rows are rendered, so keyboard selection stays within them.
+  const visible = allCommands.slice(0, 10);
+
+  const pick = (item: PaletteItem, run: boolean) => {
+    if (picking.current) return;
+    const result = onSelect(item, run);
+    if (result instanceof Promise) {
+      picking.current = true;
+      void result.finally(() => {
+        picking.current = false;
+      });
+    }
+  };
+
   useEffect(() => {
     if (isVisible) {
       setQuery("");
@@ -139,15 +156,15 @@ export default function CommandAutocomplete({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((prev) => Math.min(prev + 1, allCommands.length - 1));
+      setSelectedIndex((prev) => Math.min(prev + 1, visible.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
-    } else if (e.key === "Enter" && allCommands[selectedIndex]) {
+    } else if (e.key === "Enter" && visible[selectedIndex]) {
       e.preventDefault();
       const run = isMac() ? e.metaKey : e.ctrlKey;
       // The caller closes the palette on success; it stays open on failure.
-      onSelect(allCommands[selectedIndex].item, run);
+      pick(visible[selectedIndex].item, run);
     } else if (e.key === "Escape") {
       onClose();
     }
@@ -177,7 +194,10 @@ export default function CommandAutocomplete({
               aria-label="Search commands"
               placeholder="Search commands..."
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setSelectedIndex(0);
+              }}
               onKeyDown={handleKeyDown}
               className="flex-1 bg-transparent text-white placeholder-dark-400 focus:outline-none"
             />
@@ -193,11 +213,17 @@ export default function CommandAutocomplete({
                 No commands found
               </div>
             ) : (
-              allCommands.slice(0, 10).map((cmd, index) => (
+              visible.map((cmd, index) => (
                 <Button
                   variant="ghost"
                   key={cmd.key}
-                  onClick={() => onSelect(cmd.item, false)}
+                  ref={
+                    index === selectedIndex
+                      ? (el: HTMLButtonElement | null) =>
+                          el?.scrollIntoView?.({ block: "nearest" })
+                      : undefined
+                  }
+                  onClick={() => pick(cmd.item, false)}
                   className={`w-full h-auto px-4 py-2 justify-start ${
                     index === selectedIndex ? "bg-dark-800" : ""
                   }`}

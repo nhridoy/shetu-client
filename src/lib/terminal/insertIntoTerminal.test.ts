@@ -9,10 +9,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { insertIntoPane, insertIntoTerminal } from "./sessionManager";
 
-const fakeTerm = () => {
+const fakeTerm = (bracketedPasteMode = true) => {
   const calls: string[] = [];
   return {
     calls,
+    modes: { bracketedPasteMode },
     paste: vi.fn((d: string) => calls.push(`paste:${d}`)),
     input: vi.fn((d: string) => calls.push(`input:${d}`)),
     focus: vi.fn(() => calls.push("focus")),
@@ -47,8 +48,35 @@ describe("insertIntoTerminal", () => {
   });
 });
 
+describe("insertIntoTerminal safety", () => {
+  it("refuses_to_insert_multi_line_without_bracketed_paste", () => {
+    const t = fakeTerm(false);
+    expect(insertIntoTerminal(t, "cd /srv\ngit reset --hard", false)).toBe(
+      false,
+    );
+    expect(t.paste).not.toHaveBeenCalled();
+  });
+
+  it("multi_line_run_is_allowed_without_bracketed_paste", () => {
+    const t = fakeTerm(false);
+    expect(insertIntoTerminal(t, "a\nb", true)).toBe(true);
+    expect(t.paste).toHaveBeenCalledWith("a\nb");
+  });
+
+  it("single_line_insert_is_fine_without_bracketed_paste", () => {
+    const t = fakeTerm(false);
+    expect(insertIntoTerminal(t, "uptime", false)).toBe(true);
+  });
+
+  it("strips_paste_escape_and_control_characters", () => {
+    const t = fakeTerm();
+    insertIntoTerminal(t, "echo hi\x1b[201~; rm -rf /tmp/x\x07", false);
+    expect(t.paste).toHaveBeenCalledWith("echo hi[201~; rm -rf /tmp/x");
+  });
+});
+
 describe("insertIntoPane", () => {
   it("missing_session_returns_false", () => {
-    expect(insertIntoPane("nope", "ls", false)).toBe(false);
+    expect(insertIntoPane("nope", "ls", false)).toBe("no-pane");
   });
 });

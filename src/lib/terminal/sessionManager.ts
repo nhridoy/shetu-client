@@ -449,28 +449,46 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 
 export const getSession = (paneId: string) => sessions.get(paneId);
 
-/** Types `text` at the prompt like a paste; `run` also presses Enter. */
+/**
+ * Types `text` at the prompt like a paste; `run` also presses Enter. Returns false, without
+ * typing anything, when inserting several lines into a shell that would run each one.
+ */
 export function insertIntoTerminal(
-  term: Pick<XTerminal, "paste" | "input" | "focus">,
+  term: Pick<XTerminal, "paste" | "input" | "focus"> & {
+    modes: Pick<XTerminal["modes"], "bracketedPasteMode">;
+  },
   text: string,
   run: boolean,
-): void {
-  // Trailing newlines would run the command even when the user only inserts.
-  term.paste(text.replace(/[\r\n]+$/, ""));
+): boolean {
+  // Control characters (incl. ESC, so no fake bracketed-paste end) never reach the shell;
+  // trailing newlines would run the command even when the user only inserts.
+  const clean = text
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .replace(/\n+$/, "");
+  // Without bracketed paste, xterm sends each newline as Enter: the lines would run.
+  if (!run && clean.includes("\n") && !term.modes.bracketedPasteMode) {
+    return false;
+  }
+  term.paste(clean);
   if (run) term.input("\r");
   term.focus();
+  return true;
 }
 
-/** Inserts into a pane's terminal; false when the pane has no live session. */
+export type InsertResult = "ok" | "no-pane" | "unsafe-multiline";
+
+/** Inserts into a pane's terminal. */
 export function insertIntoPane(
   paneId: string,
   text: string,
   run: boolean,
-): boolean {
+): InsertResult {
   const session = sessions.get(paneId);
-  if (!session) return false;
-  insertIntoTerminal(session.xterm, text, run);
-  return true;
+  if (!session) return "no-pane";
+  return insertIntoTerminal(session.xterm, text, run)
+    ? "ok"
+    : "unsafe-multiline";
 }
 
 export function getOrCreateSession(params: SessionParams): Session {

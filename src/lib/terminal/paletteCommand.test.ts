@@ -4,7 +4,8 @@ import { pickPaletteItem } from "./paletteCommand";
 const deps = (over: Partial<Parameters<typeof pickPaletteItem>[2]> = {}) => ({
   activePaneId: "p1" as string | null,
   decryptSnippet: vi.fn(async () => ({ command: "docker ps" })),
-  insert: vi.fn(() => true),
+  isConnected: vi.fn(() => true),
+  insert: vi.fn(() => "ok" as const),
   ...over,
 });
 
@@ -55,7 +56,22 @@ describe("pickPaletteItem", () => {
   });
 
   it("missing_session_is_no_pane", async () => {
-    const d = deps({ insert: vi.fn(() => false) });
+    const d = deps({ insert: vi.fn(() => "no-pane" as const) });
     expect(await pickPaletteItem({ command: "ls" }, false, d)).toBe("no-pane");
+  });
+
+  it("disconnected_pane_is_not_connected", async () => {
+    const d = deps({ isConnected: vi.fn(() => false) });
+    expect(await pickPaletteItem({ command: "ls" }, true, d)).toBe(
+      "not-connected",
+    );
+    expect(d.insert).not.toHaveBeenCalled();
+  });
+
+  it("unsafe_multiline_is_passed_through", async () => {
+    const d = deps({ insert: vi.fn(() => "unsafe-multiline" as const) });
+    expect(await pickPaletteItem({ command: "a\nb" }, false, d)).toBe(
+      "unsafe-multiline",
+    );
   });
 });

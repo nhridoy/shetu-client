@@ -32,12 +32,15 @@ afterEach(() => {
   });
 });
 
-function render(platform = "Linux x86_64") {
+function render(
+  platform = "Linux x86_64",
+  onSelectImpl: (...a: unknown[]) => unknown = () => {},
+) {
   Object.defineProperty(navigator, "platform", {
     value: platform,
     configurable: true,
   });
-  const onSelect = vi.fn();
+  const onSelect = vi.fn(onSelectImpl);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -119,5 +122,34 @@ describe("CommandAutocomplete", () => {
     expect(render("MacIntel").container.textContent).toContain(
       "Enter to insert · Cmd+Enter to run",
     );
+  });
+
+  it("selection_never_goes_past_the_visible_rows", () => {
+    const { onSelect, key } = render();
+    for (let i = 0; i < 15; i++) key({ key: "ArrowDown" });
+    key({ key: "Enter" });
+    // 10 rows are shown: the snippet, then built-ins; the 10th is "chown ".
+    expect(onSelect).toHaveBeenCalledWith({ command: "chown " }, false);
+  });
+
+  it("typing_resets_the_selection", () => {
+    const { onSelect, key, type } = render();
+    for (let i = 0; i < 3; i++) key({ key: "ArrowDown" });
+    type("deploy");
+    key({ key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith(
+      { snippetId: "s1", command: "" },
+      false,
+    );
+  });
+
+  it("a_second_pick_is_ignored_while_the_first_is_running", () => {
+    const { onSelect, key } = render(
+      "Linux x86_64",
+      () => new Promise(() => {}),
+    );
+    key({ key: "Enter", ctrlKey: true });
+    key({ key: "Enter", ctrlKey: true });
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
