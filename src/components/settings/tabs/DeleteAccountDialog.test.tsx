@@ -73,6 +73,9 @@ describe("DeleteAccountDialog", () => {
     expect(text).toContain("Solo — deleted for everyone");
     expect(text).not.toContain("0 members");
     expect(text).not.toContain("Other");
+    expect(text).toContain(
+      "You have 30 days to change your mind — sign in again and choose “Keep my account” to cancel.",
+    );
   });
 
   it("confirm_disabled_until_email_matches", () => {

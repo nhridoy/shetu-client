@@ -53,7 +53,10 @@ export default function DeleteAccountDialog({
               everyone
             </p>
           ))}
-          <p>You have 30 days to change your mind — sign in again to cancel.</p>
+          <p>
+            You have 30 days to change your mind — sign in again and choose
+            “Keep my account” to cancel.
+          </p>
           <p>
             Changes on your other devices that haven't synced yet will be lost.
           </p>
