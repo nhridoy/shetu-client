@@ -50,7 +50,7 @@ const PUNCTUATION = [
 /** Letters, digits, F1–F24, punctuation and the named keys above. */
 const isSupportedKey = (key: string) =>
   /^([a-z0-9]|f([1-9]|1\d|2[0-4]))$/.test(key) ||
-  key in NAMED_KEYS ||
+  Object.hasOwn(NAMED_KEYS, key) ||
   PUNCTUATION.includes(key);
 
 function canonical(parts: string[]): string {

@@ -113,6 +113,9 @@ describe("binding helpers", () => {
 
   it("unknown_key_names_are_invalid", () => {
     expect(isValidBinding("ctrl+banana")).toBe(false);
+    // Names every JS object has must not count as keys.
+    expect(isValidBinding("ctrl+constructor")).toBe(false);
+    expect(isValidBinding("ctrl+tostring")).toBe(false);
     expect(isValidBinding("ctrl+numpad1")).toBe(false);
     for (const ok of [
       "ctrl+pageup",
