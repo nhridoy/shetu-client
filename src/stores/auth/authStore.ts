@@ -62,9 +62,13 @@ let teardownRun: Promise<unknown> = Promise.resolve();
 
 class SessionLost extends Error {}
 
-// Flows start after a teardown in flight, so its wipe can't erase what they write.
+// Flows start after every teardown in flight, so no wipe can erase what they write.
 async function claimSession(): Promise<number> {
-  await teardownRun;
+  let awaited: Promise<unknown>;
+  do {
+    awaited = teardownRun;
+    await awaited;
+  } while (teardownRun !== awaited);
   return sessionOwner;
 }
 
