@@ -1807,6 +1807,7 @@ pub fn run() {
             http::get_request_log,
             logging::take_crash_marker,
             logging::export_logs,
+            logging::reset_device_files,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

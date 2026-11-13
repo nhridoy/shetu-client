@@ -77,6 +77,15 @@ impl KnownHosts {
             port,
             fingerprint: fingerprint.to_string(),
         });
+        self.persist();
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.persist();
+    }
+
+    fn persist(&self) {
         let contents = self
             .entries
             .iter()
@@ -246,6 +255,17 @@ mod tests {
         kh.accept("web", 22, "fp-c");
         let reloaded = KnownHosts::load(&path);
         assert_eq!(reloaded.check("web", 22, "fp-c"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn known_hosts_clear_empties_file_and_memory() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        kh.clear();
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         let _ = std::fs::remove_file(&path);
     }
 

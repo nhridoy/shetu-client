@@ -302,9 +302,61 @@ pub fn export_logs(app: tauri::AppHandle, destination: String) -> Result<(), Str
     export_logs_in(&dir, Path::new(&destination), &header).map_err(|e| e.to_string())
 }
 
+/// Deletes regular files directly inside `dir`; returns the names that could not be removed.
+fn clear_dir_files(dir: &Path) -> Vec<String> {
+    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
+    read.flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|e| std::fs::remove_file(e.path()).is_err())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Wipes known hosts and logs; returns log files that could not be deleted
+/// (the live log file may be locked on Windows).
+#[tauri::command]
+pub fn reset_device_files(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::ssh::SshSessions>,
+) -> Result<Vec<String>, String> {
+    state
+        .known_hosts
+        .lock()
+        .map_err(|_| "known_hosts lock poisoned".to_string())?
+        .clear();
+    log::logger().flush();
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    Ok(clear_dir_files(&dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("shetu-{tag}-{stamp}"))
+    }
+
+    #[test]
+    fn clear_dir_files_removes_files_and_reports_failures() {
+        let dir = tmp_dir("clear");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.log"), "x").unwrap();
+        std::fs::write(dir.join("b.log"), "y").unwrap();
+        assert!(clear_dir_files(&dir).is_empty());
+        assert!(!dir.join("a.log").exists() && !dir.join("b.log").exists());
+        assert!(dir.join("sub").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_dir_files_missing_dir_is_empty() {
+        assert!(clear_dir_files(&tmp_dir("missing")).is_empty());
+    }
 
     #[test]
     fn scrub_redacts_identifying_and_secret_values() {
