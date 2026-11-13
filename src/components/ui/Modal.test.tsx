@@ -42,6 +42,30 @@ describe("Modal (mac panel)", () => {
     expect(html).toContain("bg-black/30");
   });
 
+  it("titled_dialog_is_labelled_by_its_heading", () => {
+    mount(
+      <Modal title="Add Host" onClose={() => {}}>
+        body
+      </Modal>,
+    );
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const id = dialog.getAttribute("aria-labelledby");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id as string)?.textContent).toBe("Add Host");
+  });
+
+  it("untitled_dialog_uses_aria_label", () => {
+    mount(
+      <Modal ariaLabel="Confirm" onClose={() => {}}>
+        body
+      </Modal>,
+    );
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.getAttribute("aria-label")).toBe("Confirm");
+    expect(dialog.hasAttribute("aria-labelledby")).toBe(false);
+  });
+
   it("escape_closes_only_the_top_dialog", () => {
     const outer = vi.fn();
     const inner = vi.fn();

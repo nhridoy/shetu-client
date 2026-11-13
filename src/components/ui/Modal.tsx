@@ -1,11 +1,13 @@
 import { XIcon } from "@phosphor-icons/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Button } from "@/components/ui/Button";
 
 interface ModalProps {
   open?: boolean;
   onClose: () => void;
   title?: string;
+  /** Accessible name for a dialog without a title. */
+  ariaLabel?: string;
   children: React.ReactNode;
   maxWidth?: string;
   closeOnBackdrop?: boolean;
@@ -48,12 +50,14 @@ export default function Modal({
   open = true,
   onClose,
   title,
+  ariaLabel,
   children,
   maxWidth = "max-w-lg",
   closeOnBackdrop = false,
   hideClose = false,
   zClass = "z-50",
 }: ModalProps) {
+  const titleId = useId();
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -132,6 +136,8 @@ export default function Modal({
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
+      aria-label={title ? undefined : ariaLabel}
       className={`fixed inset-0 bg-black/30 flex items-center justify-center ${zClass} p-4`}
       onMouseDown={(e) => {
         if (closeOnBackdrop && e.target === overlayRef.current)
@@ -145,7 +151,9 @@ export default function Modal({
       >
         {title && (
           <div className="flex items-center justify-between h-11 px-4 border-b border-dark-700 shrink-0">
-            <h2 className="text-sm font-semibold text-white">{title}</h2>
+            <h2 id={titleId} className="text-sm font-semibold text-white">
+              {title}
+            </h2>
             {!hideClose && (
               <Button
                 type="button"

@@ -162,6 +162,7 @@ export default function QuickConnect({
         setIsOpen(false);
         setQuery("");
       }}
+      ariaLabel="Quick connect"
       maxWidth="max-w-lg"
     >
       <div className="p-0">
