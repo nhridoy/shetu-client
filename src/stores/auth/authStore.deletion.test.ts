@@ -786,12 +786,25 @@ describe("token writes racing a teardown", () => {
   // Stand-ins for Rust's in-memory access token and the keychain refresh token.
   let access: string | null;
   let keychain: string | null;
+  // Stand-in for the offline identity a sign-in enrolls and the wipe deletes.
+  let enrolled: string | null;
   let landStaleWrite: () => void;
 
   beforeEach(() => {
     vi.clearAllMocks();
     access = null;
     keychain = "r";
+    enrolled = null;
+    // Answers queued by earlier tests (clearAllMocks keeps them) would skip the races below.
+    vi.mocked(authApi.me).mockReset();
+    vi.mocked(authApi.refresh).mockReset();
+    vi.mocked(loadRefreshToken).mockReset().mockResolvedValue(null);
+    vi.mocked(saveOfflineIdentity).mockImplementation(async (identity) => {
+      enrolled = identity.profile.id;
+    });
+    vi.mocked(wipeLocalData).mockImplementation(async () => {
+      enrolled = null;
+    });
     vi.mocked(resetDevice).mockResolvedValue([]);
     vi.mocked(loadOfflineIdentity).mockResolvedValue(null);
     vi.mocked(clearAuthTokens).mockImplementation(async () => {
@@ -917,5 +930,117 @@ describe("token writes racing a teardown", () => {
     expect(setAuthTokens).toHaveBeenCalledTimes(1);
     expect(saveRefreshToken).toHaveBeenCalledTimes(1);
     expect([access, keychain]).toEqual(["a4", "r4"]);
+  });
+
+  const mockSignIn = () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
+    });
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "a3",
+      refresh_token: "r3",
+      user,
+      keyring,
+    } as never);
+  };
+
+  // A session retry whose /me stays pending until settled.
+  async function retryWithPendingMe() {
+    vi.mocked(loadRefreshToken).mockResolvedValueOnce("r");
+    vi.mocked(authApi.refresh).mockResolvedValueOnce({
+      access_token: "a2",
+      refresh_token: "r2",
+    });
+    const me: {
+      resolve: (u: typeof user) => void;
+      reject: (e: unknown) => void;
+    } = { resolve: () => {}, reject: () => {} };
+    vi.mocked(authApi.me).mockReturnValueOnce(
+      new Promise((resolve, reject) => {
+        Object.assign(me, { resolve, reject });
+      }) as never,
+    );
+    const retry = useAuthStore.getState().retryServerSession();
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalled());
+    return { retry, me };
+  }
+
+  const expectNewerSignIn = () => {
+    expect([access, keychain]).toEqual(["a3", "r3"]);
+    const s = useAuthStore.getState();
+    expect(s.tokens).toEqual({ access_token: "a3", refresh_token: "r3" });
+    expect(s.isAuthenticated).toBe(true);
+    expect(s.serverAuthenticated).toBe(true);
+  };
+
+  it("sign_in_in_flight_across_a_sign_out_leaves_no_session", async () => {
+    mockSignIn();
+    let answer: (v: unknown) => void = () => {};
+    vi.mocked(authApi.login).mockReturnValueOnce(
+      new Promise((r) => {
+        answer = r;
+      }) as never,
+    );
+    const signIn = useAuthStore.getState().login("a@example.com", "pw");
+    await vi.waitFor(() => expect(authApi.login).toHaveBeenCalled());
+    await useAuthStore.getState().logout();
+    answer({ access_token: "a3", refresh_token: "r3", user, keyring });
+    await signIn;
+    await settle();
+    expect([access, keychain, enrolled]).toEqual([null, null, null]);
+    expect(saveRefreshToken).not.toHaveBeenCalled();
+    const s = useAuthStore.getState();
+    expect(s.user).toBeNull();
+    expect(s.tokens).toBeNull();
+    expect(s.isAuthenticated).toBe(false);
+    expect(s.localAccessAccountId).toBeNull();
+    expect(s.isLoading).toBe(false);
+  });
+
+  it("sign_in_during_a_sign_out_is_not_left_half_wiped", async () => {
+    // The stale write holds the sign-out in the token queue, before its wipe.
+    const { retry } = await retryWithSlowWrite();
+    const signOut = useAuthStore.getState().logout();
+    await vi.waitFor(() => expect(useAuthStore.getState().user).toBeNull());
+    mockSignIn();
+    const signIn = useAuthStore.getState().login("a@example.com", "pw");
+    await settle();
+    landStaleWrite();
+    await Promise.all([signOut, signIn, retry]);
+    const s = useAuthStore.getState();
+    expect(s.isAuthenticated ? "u1" : null).toBe(enrolled);
+    expect(s.localAccessAccountId).toBe(enrolled);
+    // It started after the sign-out began, so it owns the next session.
+    expect(enrolled).toBe("u1");
+  });
+
+  it("failed_old_retry_leaves_a_newer_sign_in_alone", async () => {
+    const { retry, me } = await retryWithPendingMe();
+    mockSignIn();
+    await useAuthStore.getState().login("a@example.com", "pw");
+    me.reject(new Error("timeout"));
+    await retry;
+    expectNewerSignIn();
+  });
+
+  it("succeeding_old_retry_leaves_a_newer_sign_in_alone", async () => {
+    const { retry, me } = await retryWithPendingMe();
+    mockSignIn();
+    await useAuthStore.getState().login("a@example.com", "pw");
+    me.resolve(user);
+    await retry;
+    expectNewerSignIn();
+  });
+
+  it("sign_in_after_a_sign_out_succeeds", async () => {
+    await useAuthStore.getState().logout();
+    mockSignIn();
+    await useAuthStore.getState().login("a@example.com", "pw");
+    expectNewerSignIn();
+    expect(enrolled).toBe("u1");
+    expect(useAuthStore.getState().localAccessAccountId).toBe("u1");
   });
 });
