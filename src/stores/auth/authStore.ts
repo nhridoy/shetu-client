@@ -283,9 +283,11 @@ async function teardownSession(): Promise<string[]> {
   });
   resumeAfterKeep = null;
   // Runs after any token write in flight, so it also clears what that wrote.
+  // The native session goes first: a native refresh finishing after it stores
+  // nothing, and the keychain clear then removes what one stored before it.
   await serialTokens(async () => {
-    await storeTokens(null);
     await attempt("session tokens", clearAuthTokens);
+    await storeTokens(null);
   });
   await attempt("local data", wipeLocalData);
   return failures;

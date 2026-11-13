@@ -758,6 +758,18 @@ describe("sign-in and sign-out", () => {
     expect(returned).toEqual([expect.stringContaining("db locked")]);
   });
 
+  it("sign_out_clears_the_native_session_before_the_keychain", async () => {
+    // A native refresh finishing after the session clear stores nothing; one
+    // finishing before it has its rotated token removed by the keychain clear.
+    useAuthStore.setState({ user, localAccessAccountId: "u1" });
+    await useAuthStore.getState().logout();
+    const [session] = vi.mocked(clearAuthTokens).mock.invocationCallOrder;
+    const [keychain] = vi.mocked(clearKeychain).mock.invocationCallOrder;
+    expect(session).toBeDefined();
+    expect(keychain).toBeDefined();
+    expect(session).toBeLessThan(keychain);
+  });
+
   it("teardown_finishes_even_if_locking_fails", async () => {
     useAuthStore.setState({ user, localAccessAccountId: "u1" });
     vi.mocked(lockSession).mockRejectedValueOnce(new Error("lock failed"));
