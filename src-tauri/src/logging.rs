@@ -302,7 +302,8 @@ pub fn export_logs(app: tauri::AppHandle, destination: String) -> Result<(), Str
     export_logs_in(&dir, Path::new(&destination), &header).map_err(|e| e.to_string())
 }
 
-/// Deletes regular files directly inside `dir`; returns the names that could not be removed.
+/// Empties regular files directly inside `dir`; returns the names that could not be emptied.
+/// Truncated, not deleted, so the logger keeps writing to the same file.
 /// A missing dir counts as clean; one that can't be listed is reported by its own name.
 fn clear_dir_files(dir: &Path) -> Vec<String> {
     let dir_name = || {
@@ -322,14 +323,18 @@ fn clear_dir_files(dir: &Path) -> Vec<String> {
         };
         match entry.file_type() {
             Ok(t) if !t.is_file() => {}
-            Ok(_) if std::fs::remove_file(entry.path()).is_ok() => {}
+            Ok(_) if truncate(&entry.path()).is_ok() => {}
             _ => failures.push(entry.file_name().to_string_lossy().into_owned()),
         }
     }
     failures
 }
 
-/// Wipes known hosts and logs; returns log files that could not be deleted
+fn truncate(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new().write(true).open(path)?.set_len(0)
+}
+
+/// Wipes known hosts and logs; returns log files that could not be emptied
 /// (the live log file may be locked on Windows).
 #[tauri::command]
 pub fn reset_device_files(
@@ -363,34 +368,45 @@ mod tests {
     }
 
     #[test]
-    fn clear_dir_files_removes_files_and_reports_failures() {
+    fn clear_dir_files_empties_files_and_keeps_them() {
+        use std::io::Write;
         let dir = tmp_dir("clear");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("a.log"), "x").unwrap();
         std::fs::write(dir.join("b.log"), "y").unwrap();
+        // The logger holds its file open in append mode.
+        let mut live = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("a.log"))
+            .unwrap();
+        live.write_all(b"before").unwrap();
         assert!(clear_dir_files(&dir).is_empty());
-        assert!(!dir.join("a.log").exists() && !dir.join("b.log").exists());
+        assert_eq!(std::fs::metadata(dir.join("a.log")).unwrap().len(), 0);
+        assert_eq!(std::fs::metadata(dir.join("b.log")).unwrap().len(), 0);
         assert!(dir.join("sub").is_dir());
+        // It keeps writing to the same, now-empty file.
+        live.write_all(b"after").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.log")).unwrap(), "after");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
-    fn clear_dir_files_reports_files_it_cannot_delete() {
+    fn clear_dir_files_reports_files_it_cannot_empty() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tmp_dir("readonly");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("locked.log"), "x").unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(dir.join("locked.log"), std::fs::Permissions::from_mode(0o444))
+            .unwrap();
         let is_root = std::process::Command::new("id")
             .arg("-u")
             .output()
             .is_ok_and(|o| o.stdout == b"0\n");
         let failed = clear_dir_files(&dir);
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         if !is_root {
             assert_eq!(failed, vec!["locked.log".to_string()]);
-            assert!(dir.join("locked.log").exists());
+            assert_eq!(std::fs::read_to_string(dir.join("locked.log")).unwrap(), "x");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

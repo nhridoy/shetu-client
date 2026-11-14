@@ -1,4 +1,5 @@
 import { load } from "@tauri-apps/plugin-store";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
@@ -54,6 +55,10 @@ onSessionRevoked(() => {
 
 let revokedRun: Promise<void> | null = null;
 
+// When a device without a refresh token may next ask for its account status.
+const STATUS_CHECK_INTERVAL_MS = 15 * 60_000;
+let nextStatusCheck = 0;
+
 // One owner of the session at a time. It advances on every sign-out or reset
 // and every sign-in takeover; an auth flow that no longer owns the session
 // stops before its next token write, enrollment or state change.
@@ -98,12 +103,19 @@ function writeTokens(fn: () => Promise<void>, owner: number): Promise<void> {
   });
 }
 
+// A keychain that can't save the refresh token still signs in for this run.
 function setAuthTokens(
   accessToken: string,
   refreshToken: string | undefined,
   owner: number,
 ): Promise<void> {
-  return writeTokens(() => handOverTokens(accessToken, refreshToken), owner);
+  return writeTokens(async () => {
+    if ((await handOverTokens(accessToken, refreshToken)) === false) {
+      toast.warning(
+        "Couldn't save your sign-in. You'll need to sign in again next time.",
+      );
+    }
+  }, owner);
 }
 
 // Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.
@@ -228,7 +240,14 @@ async function tokensAfterKeep(held: TokenPair): Promise<TokenPair> {
   };
 }
 
+// The server's code first: a 403 may mean "already scheduled", not a wrong password.
 function deletionRequestError(err: unknown): Error {
+  const code = err instanceof AuthApiError ? err.apiError.code : null;
+  if (code === "ACCOUNT_DELETION_SCHEDULED")
+    return new Error("Your account is already scheduled for deletion.");
+  // A bad or expired nonce.
+  if (code === "UNAUTHORIZED")
+    return new Error("Something went wrong. Please try again.");
   const status = err instanceof AuthApiError ? err.status : null;
   if (status === 404)
     return new Error("Your server doesn't support account deletion yet.");
@@ -1014,8 +1033,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!refreshToken) {
           // An enrolled device whose token is gone (a rejected refresh cleared
           // it) must still learn of a deletion; this suspends, asks, keeps on doubt.
-          if (!get().serverAuthenticated && currentAccountId())
+          // Once per launch, then every 15 minutes, not on every sync retry.
+          if (
+            !get().serverAuthenticated &&
+            currentAccountId() &&
+            Date.now() >= nextStatusCheck
+          ) {
+            nextStatusCheck = Date.now() + STATUS_CHECK_INTERVAL_MS;
             void handleRevokedSession();
+          }
           return "auth-required" as const;
         }
         const identity = await loadOfflineIdentity();

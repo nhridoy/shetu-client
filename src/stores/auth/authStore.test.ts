@@ -99,6 +99,9 @@ vi.mock("../../lib/common/device", () => ({
   getDeviceId: vi.fn(async () => "dev-1"),
 }));
 
+vi.mock("sonner", () => ({ toast: { warning: vi.fn() } }));
+
+import { toast } from "sonner";
 import { AuthApiError, authApi } from "../../lib/api/auth";
 import { onSessionRevoked } from "../../lib/api/http";
 import {
@@ -287,6 +290,49 @@ describe("authStore email verification", () => {
     expect(useVaultStore.getState().currentVaultId).toBeNull();
     expect(useVaultStore.getState().vaults).toEqual([]);
     expect(useAuthStore.getState().isUnlocked).toBe(true);
+  });
+
+  it("login warns once when the keychain can't save the sign-in", async () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "at",
+      refresh_token: "rt",
+      user,
+      keyring: {
+        dek_wrapped_by_kek: "kek",
+        dek_wrapped_by_recovery: "rec",
+        private_key_wrapped_by_dek: "pk",
+      },
+    });
+    vi.mocked(setAuthTokens).mockResolvedValueOnce(false);
+
+    await useAuthStore.getState().login("new@example.com", "pw");
+
+    // Signed in for this run anyway.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Couldn't save your sign-in. You'll need to sign in again next time.",
+    );
+  });
+
+  it("login with a saved sign-in shows no warning", async () => {
+    vi.mocked(authApi.prelogin).mockResolvedValue(preloginResponse);
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "at",
+      refresh_token: "rt",
+      user,
+      keyring: {
+        dek_wrapped_by_kek: "kek",
+        dek_wrapped_by_recovery: "rec",
+        private_key_wrapped_by_dek: "pk",
+      },
+    });
+    vi.mocked(setAuthTokens).mockResolvedValueOnce(true);
+
+    await useAuthStore.getState().login("new@example.com", "pw");
+
+    expect(toast.warning).not.toHaveBeenCalled();
   });
 
   it("login with VERIFICATION_REQUIRED sets pending email", async () => {

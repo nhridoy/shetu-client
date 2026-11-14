@@ -1609,6 +1609,11 @@ pub fn run() {
             menu::install(app)?;
 
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            http::restore_sign_out(
+                &app.state::<http::HttpState>(),
+                &data_dir,
+                &http::KeyringRefreshProvider { app: app.handle().clone() },
+            );
             let db_path = data_dir.join(db::DB_FILE_NAME);
             app.manage(db::open(&db_path.display().to_string())?);
 
