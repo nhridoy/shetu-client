@@ -174,13 +174,14 @@ pub async fn sftp_connect(
 pub async fn sftp_connect_saved(
     session_id: String,
     host_id: String,
+    username: Option<String>,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     ssh_sessions: tauri::State<'_, crate::ssh::SshSessions>,
     sftp_sessions: tauri::State<'_, SftpSessions>,
     app_handle: tauri::AppHandle,
 ) -> Result<SftpConnectResult, String> {
-    let route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let config = &route.target;
 
     // Check if we already have an SFTP session for this session_id

@@ -553,8 +553,22 @@ mod tests {
         host_in(&db, &crypto, "h", &vault, "none", None, Some("g"), serde_json::json!({"address": "a", "username": ""}));
         let route = resolve_saved_route_as(&db, &crypto, "h", Some("typed")).unwrap();
         assert_eq!(route.target.username, "typed");
-        assert_eq!(crate::ssh::load_host_config(&db, &crypto, "h").unwrap().username, "root");
-        assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "h", Some("  ")).unwrap().username, "root");
+        assert_eq!(crate::ssh::load_host_config(&db, &crypto, "h").err().as_deref(), Some("No username set for this host"));
+        assert_eq!(
+            crate::ssh::load_host_config_as(&db, &crypto, "h", Some("  ")).err().as_deref(),
+            Some("No username set for this host")
+        );
+    }
+
+    #[test]
+    fn missing_username_errors_unless_legacy_host() {
+        let (db, crypto, vault) = fixture();
+        host_in(&db, &crypto, "new", &vault, "none", None, None, serde_json::json!({"address": "a", "username": ""}));
+        host_in(&db, &crypto, "old", &vault, "none", None, None, serde_json::json!({"address": "a"}));
+        // sftp_connect_saved and connect_saved both go through resolve_saved_route_as.
+        assert_eq!(resolve_saved_route(&db, &crypto, "new").err().as_deref(), Some("No username set for this host"));
+        assert_eq!(resolve_saved_route_as(&db, &crypto, "new", Some("typed")).unwrap().target.username, "typed");
+        assert_eq!(resolve_saved_route(&db, &crypto, "old").unwrap().target.username, "root");
     }
 
     #[test]

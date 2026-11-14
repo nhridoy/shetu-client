@@ -1606,14 +1606,20 @@ pub fn load_host_config_as(
         row.key_id.as_deref(),
         &chain,
     );
+    let username = match effective
+        .username
+        .map(|(name, _)| name)
+        .or_else(|| username.filter(|u| !u.trim().is_empty()).map(String::from))
+    {
+        Some(name) => name,
+        // Hosts saved before usernames became optional have no key and keep the old default.
+        None if payload.get("username").is_none() => "root".to_string(),
+        None => return Err("No username set for this host".into()),
+    };
     let mut config = SshConfig {
         host: payload["address"].as_str().unwrap_or_default().to_string(),
         port: effective.port.0,
-        username: effective
-            .username
-            .map(|(name, _)| name)
-            .or_else(|| username.filter(|u| !u.trim().is_empty()).map(String::from))
-            .unwrap_or_else(|| "root".to_string()),
+        username,
         password: effective.password,
         private_key: None,
         passphrase: None,
