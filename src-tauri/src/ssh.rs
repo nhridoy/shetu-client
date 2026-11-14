@@ -400,12 +400,17 @@ mod tests {
     }
 
     #[test]
-    fn ping_reports_reachable_when_only_the_host_key_is_untrusted() {
-        let rejected = format!("bastion connection: ssh handshake jump:22: {}", russh::Error::UnknownKey);
-        let result = ping_failure(rejected).expect("untrusted key still means reachable");
-        assert!(result.reachable);
-        assert_eq!(result.latency_ms, None);
-        assert_eq!(ping_failure("authentication rejected".into()).err(), Some("authentication rejected".to_string()));
+    fn ping_reports_reachable_only_when_the_destination_key_is_untrusted() {
+        use crate::ssh_route::{RouteError, RouteHop};
+        let refused = format!("ssh handshake web:22: {}", russh::Error::UnknownKey);
+        let target = ping_failure(RouteError { hop: RouteHop::Target, message: refused.clone() })
+            .expect("the destination answered");
+        assert!(target.reachable);
+        assert_eq!(target.latency_ms, None);
+        let bastion = ping_failure(RouteError { hop: RouteHop::Bastion, message: refused });
+        assert_eq!(bastion.err(), Some("Jump host key not trusted".to_string()));
+        let other = ping_failure(RouteError { hop: RouteHop::Target, message: "authentication rejected".into() });
+        assert_eq!(other.err(), Some("authentication rejected".to_string()));
     }
 
     #[test]
@@ -476,12 +481,12 @@ fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
     }
 }
 
-/// The server answered; only its key is not trusted yet.
-fn ping_failure(error: String) -> Result<PingResult, String> {
-    if is_host_key_rejection(&error) {
-        Ok(PingResult { reachable: true, latency_ms: None, os: None })
-    } else {
-        Err(error)
+/// A refused destination key means the destination answered; a refused jump-host key means it was never reached.
+fn ping_failure(error: crate::ssh_route::RouteError) -> Result<PingResult, String> {
+    match error.hop {
+        _ if !is_host_key_rejection(&error.message) => Err(error.message),
+        crate::ssh_route::RouteHop::Target => Ok(PingResult { reachable: true, latency_ms: None, os: None }),
+        crate::ssh_route::RouteHop::Bastion => Err("Jump host key not trusted".to_string()),
     }
 }
 
@@ -947,7 +952,7 @@ async fn run_connect_session(
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
             let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false);
-            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await
+            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await.map_err(String::from)
         } else {
             connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await
                 .map(|target| crate::ssh_route::RouteConnection { target, bastion: None })
