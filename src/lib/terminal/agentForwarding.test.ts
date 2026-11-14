@@ -26,6 +26,11 @@ import {
   recordAgentForwarding,
   useAgentForwardAsks,
 } from "./agentForwarding";
+import {
+  answerUsername,
+  savePendingCredentials,
+  useUsernameAsks,
+} from "./pendingCredentials";
 
 const args = {
   sessionId: "p1",
@@ -40,6 +45,7 @@ function hostWith(forwardAgent: boolean | null) {
     id: "h1",
     name: "prod",
     address: "10.0.0.1",
+    username: "root",
     groupId: "g1",
     vaultId: "v1",
     forwardAgent,
@@ -193,6 +199,105 @@ describe("inherited forwarding", () => {
   });
 });
 
+describe("missing username", () => {
+  const usernameAsks = () => useUsernameAsks.getState().queue;
+  const nextUsernameAsk = () =>
+    vi.waitFor(() => expect(usernameAsks()).toHaveLength(1));
+
+  function hostWithout(groupId: string | null, inherited?: string) {
+    useUsernameAsks.setState({ queue: [] });
+    useHostStore.setState({
+      hosts: [{ id: "h1", authType: "key" }],
+      getDecryptedHost: vi.fn(async () => ({
+        id: "h1",
+        name: "",
+        address: "10.0.0.1",
+        username: "  ",
+        groupId,
+        vaultId: "v1",
+        forwardAgent: false,
+      })),
+    } as never);
+    mocks.invoke.mockImplementation((async (cmd: string) =>
+      cmd === "inherited_host_defaults"
+        ? { username: inherited }
+        : undefined) as never);
+  }
+
+  it("asks username when none resolves", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].host).toBe("10.0.0.1");
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      username: "deploy",
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("asks for a host outside any group", async () => {
+    hostWithout(null);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "inherited_host_defaults",
+      expect.anything(),
+    );
+  });
+
+  it("cancel aborts the connect", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername(null);
+    await expect(pending).rejects.toThrow("Connection cancelled");
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "connect_saved",
+      expect.anything(),
+    );
+  });
+
+  it("no username dialog when group provides one", async () => {
+    hostWithout("g1", "ops");
+    await connectSavedTerminal(args);
+    expect(usernameAsks()).toHaveLength(0);
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("username save waits for the session to connect", async () => {
+    hostWithout("g1");
+    const updateHost = vi.fn(async () => true);
+    useHostStore.setState({ updateHost } as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: true });
+    await pending;
+    expect(updateHost).not.toHaveBeenCalled();
+    await savePendingCredentials(args.sessionId);
+    expect(updateHost).toHaveBeenCalledWith("h1", { username: "deploy" });
+  });
+
+  it("an unchecked Save remembers nothing", async () => {
+    hostWithout("g1");
+    const updateHost = vi.fn(async () => true);
+    useHostStore.setState({ updateHost } as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    await savePendingCredentials(args.sessionId);
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+});
+
 describe("recordAgentForwarding", () => {
   it("records and removes a host's decision", async () => {
     await recordAgentForwarding("h1", true);
@@ -223,6 +328,7 @@ describe("before saved settings have loaded", () => {
       id: "h1",
       name: "prod",
       address: "10.0.0.1",
+      username: "root",
       forwardAgent: true,
     });
     useHostStore.setState({ getDecryptedHost } as never);

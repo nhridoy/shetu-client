@@ -1,0 +1,146 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const m = vi.hoisted(() => ({ toastError: vi.fn() }));
+vi.mock("sonner", () => ({ toast: { error: m.toastError } }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@/lib/db/db");
+vi.mock("@/lib/crypto/crypto");
+vi.mock("@/stores/auth/authStore", () => ({
+  useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
+}));
+
+import { useHostStore } from "@/stores/hosts/hostStore";
+import {
+  answerUsername,
+  askUsername,
+  dropPendingCredentials,
+  forgetSession,
+  isSavedHostSession,
+  registerSavedHostSession,
+  rememberCredentials,
+  savePendingCredentials,
+  useUsernameAsks,
+} from "./pendingCredentials";
+
+const updateHost = vi.fn(async () => true);
+
+function hostAuth(authType: string) {
+  useHostStore.setState({
+    hosts: [{ id: "h1", authType }],
+    updateHost,
+  } as never);
+}
+
+beforeEach(() => {
+  updateHost.mockReset().mockResolvedValue(true);
+  m.toastError.mockReset();
+  forgetSession("s1");
+  hostAuth("none");
+  registerSavedHostSession("s1", "h1");
+});
+
+describe("pending credentials", () => {
+  it("knows which sessions are saved-host terminal connects", () => {
+    expect(isSavedHostSession("s1")).toBe(true);
+    expect(isSavedHostSession("sftp-1")).toBe(false);
+    forgetSession("s1");
+    expect(isSavedHostSession("s1")).toBe(false);
+  });
+
+  it("saves a password after connected with authType password", async () => {
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", {
+      password: "pw",
+      authType: "password",
+    });
+  });
+
+  it("keeps the key when the host's own auth is key", async () => {
+    hostAuth("key");
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", {
+      password: "pw",
+      authType: "both",
+    });
+  });
+
+  it("saves a username alone without touching authType", async () => {
+    rememberCredentials("s1", { username: "deploy" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", { username: "deploy" });
+  });
+
+  it("merges username and password remembered for one session", async () => {
+    rememberCredentials("s1", { username: "deploy" });
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", {
+      username: "deploy",
+      password: "pw",
+      authType: "password",
+    });
+  });
+
+  it("an unchecked retry replaces a password marked to save", async () => {
+    rememberCredentials("s1", { password: "wrong" });
+    rememberCredentials("s1", { password: undefined });
+    await savePendingCredentials("s1");
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+
+  it("saves once, then forgets", async () => {
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledTimes(1);
+  });
+
+  it("dropped credentials are never saved", async () => {
+    rememberCredentials("s1", { password: "pw" });
+    dropPendingCredentials("s1");
+    await savePendingCredentials("s1");
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+
+  it("ignores credentials for sessions that are not saved-host connects", async () => {
+    rememberCredentials("sftp-1", { password: "pw" });
+    await savePendingCredentials("sftp-1");
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+
+  it("a new connect attempt starts with nothing pending", async () => {
+    rememberCredentials("s1", { password: "pw" });
+    registerSavedHostSession("s1", "h1");
+    await savePendingCredentials("s1");
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+
+  it("toasts when the save fails", async () => {
+    updateHost.mockResolvedValue(false);
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(m.toastError).toHaveBeenCalledWith(
+      "Couldn't save credentials to this host",
+    );
+  });
+});
+
+describe("askUsername", () => {
+  beforeEach(() => useUsernameAsks.setState({ queue: [] }));
+
+  it("queues the question and resolves with the answer", async () => {
+    const answer = askUsername("prod");
+    expect(useUsernameAsks.getState().queue[0].host).toBe("prod");
+    answerUsername({ username: "deploy", save: true });
+    await expect(answer).resolves.toEqual({ username: "deploy", save: true });
+    expect(useUsernameAsks.getState().queue).toHaveLength(0);
+  });
+
+  it("resolves null on cancel", async () => {
+    const answer = askUsername("prod");
+    answerUsername(null);
+    await expect(answer).resolves.toBeNull();
+  });
+});

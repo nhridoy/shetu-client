@@ -11,6 +11,11 @@ import {
 } from "@/stores/themeStore";
 import { connectSavedTerminal } from "./agentForwarding";
 import {
+  dropPendingCredentials,
+  forgetSession,
+  savePendingCredentials,
+} from "./pendingCredentials";
+import {
   beginHistoryAttempt,
   captureHistoryOutput,
   finishHistoryAttempt,
@@ -253,6 +258,7 @@ async function connectViaTauri(session: Session) {
           clearReconnect();
           updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
+          void savePendingCredentials(params.paneId);
           if (event.payload.os && params.hostId) {
             void useHostStore
               .getState()
@@ -264,6 +270,7 @@ async function connectViaTauri(session: Session) {
           void captureHistoryOutput(session.historyAttemptId, data);
           break;
         case "disconnected":
+          dropPendingCredentials(params.paneId);
           void finishHistoryAttempt(
             session.historyAttemptId,
             "ended",
@@ -273,6 +280,7 @@ async function connectViaTauri(session: Session) {
           startReconnect();
           break;
         case "error":
+          dropPendingCredentials(params.paneId);
           void finishHistoryAttempt(session.historyAttemptId, "failed", data);
           session.historyAttemptId = null;
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);
@@ -536,6 +544,7 @@ useThemeStore.subscribe((state, prev) => {
 export async function destroySession(paneId: string) {
   const closing = sessions.get(paneId);
   if (closing) closing.closed = true;
+  forgetSession(paneId);
   // Forward definitions remain saved, but their listeners belong to this pane.
   try {
     const { invoke } = await import("@tauri-apps/api/core");

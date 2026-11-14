@@ -3,6 +3,11 @@ import { create } from "zustand";
 import { fetchInheritedDefaults } from "@/lib/hosts/inherited";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
+import {
+  askUsername,
+  registerSavedHostSession,
+  rememberCredentials,
+} from "./pendingCredentials";
 
 export const AGENT_FORWARD_HELP =
   "Lets this server use your local SSH keys while you're connected. Anyone with root on the server can use them too. Only enable for servers you trust.";
@@ -94,7 +99,30 @@ export async function connectSavedTerminal(
   },
   isCancelled: () => boolean = () => false,
 ) {
+  registerSavedHostSession(args.sessionId, args.hostId);
+  const username = await missingUsername(args.sessionId, args.hostId);
+  if (username === null) throw new Error("Connection cancelled: no username.");
+  if (isCancelled()) return;
   const allowAgentForwarding = await agentForwardingAllowed(args.hostId);
   if (isCancelled()) return;
-  await invoke("connect_saved", { ...args, allowAgentForwarding });
+  await invoke("connect_saved", { ...args, username, allowAgentForwarding });
+}
+
+/** Asks when neither the host nor its groups name a user: the answer, `undefined` when
+ * nothing is missing, or `null` when the user cancelled. */
+async function missingUsername(sessionId: string, hostId: string) {
+  const host = await useHostStore.getState().getDecryptedHost(hostId);
+  if (!host || host.username?.trim()) return undefined;
+  if (host.groupId && host.vaultId) {
+    const inherited = await fetchInheritedDefaults(
+      host.groupId,
+      host.vaultId,
+    ).catch(() => null);
+    if (inherited?.username) return undefined;
+  }
+  const answer = await askUsername(host.name || host.address);
+  if (!answer) return null;
+  if (answer.save)
+    rememberCredentials(sessionId, { username: answer.username });
+  return answer.username;
 }

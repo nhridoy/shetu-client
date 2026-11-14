@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   handlers: [] as ((event: { payload: unknown }) => void)[],
   names: [] as string[],
+  remember: vi.fn(),
+}));
+vi.mock("@/lib/terminal/pendingCredentials", () => ({
+  isSavedHostSession: (id: string) => id === "term-1",
+  rememberCredentials: mocks.remember,
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
@@ -23,6 +28,7 @@ beforeEach(() => {
   mocks.handlers.length = 0;
   mocks.names.length = 0;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.remember.mockReset();
   mocks.listen.mockReset().mockImplementation(async (name, handler) => {
     mocks.names.push(name);
     mocks.handlers.push(handler);
@@ -196,5 +202,69 @@ describe("AuthPromptDialog", () => {
     await emit("ssh-auth-prompt-closed", { id: "p2" });
     await click("Continue");
     expect(document.body.textContent).not.toContain("Login required");
+  });
+
+  describe("Save to this host", () => {
+    const password = {
+      ...base,
+      name: "",
+      instructions: "",
+      kind: "password",
+      sessionId: "term-1",
+      hop: "target",
+      prompts: [{ text: "Password", echo: false }],
+    };
+    const saveBox = () =>
+      Array.from(document.querySelectorAll("label"))
+        .find((l) => l.textContent?.includes("Save to this host"))
+        ?.querySelector("input") as HTMLInputElement | undefined;
+
+    it("password dialog shows Save for password kind only", async () => {
+      await setup();
+      await prompt(password);
+      expect(saveBox()?.type).toBe("checkbox");
+      await click("Cancel");
+      await prompt({ ...password, id: "p2", kind: "keyboard-interactive" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("is hidden for the bastion hop", async () => {
+      await setup();
+      await prompt({ ...password, hop: "bastion" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("is hidden for sessions that are not saved-host terminals", async () => {
+      await setup();
+      await prompt({ ...password, sessionId: "sftp-1" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("remembers the password for the session when checked", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      expect(mocks.remember).toHaveBeenCalledWith("term-1", { password: "pw" });
+      expect(mocks.invoke).toHaveBeenCalledWith("answer_auth_prompt", {
+        id: "p1",
+        responses: ["pw"],
+      });
+    });
+
+    it("remembers nothing when unchecked or cancelled", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await click("Continue");
+      await prompt({ ...password, id: "p2" });
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Cancel");
+      expect(mocks.remember).not.toHaveBeenCalledWith("term-1", {
+        password: "pw",
+      });
+    });
   });
 });

@@ -8,6 +8,7 @@ import UnlockDialog from "@/components/auth/UnlockDialog";
 import AgentForwardDialog from "@/components/connection/AgentForwardDialog";
 import AuthPromptDialog from "@/components/connection/AuthPromptDialog";
 import HostKeyDialog from "@/components/connection/HostKeyDialog";
+import UsernamePromptDialog from "@/components/connection/UsernamePromptDialog";
 import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
 import TeamManager from "@/components/teams/managers/TeamManager";
@@ -114,6 +115,7 @@ function App() {
       <HostKeyDialog />
       <AuthPromptDialog />
       <AgentForwardDialog />
+      <UsernamePromptDialog />
       <UpdateNotification />
       <Toaster
         richColors
