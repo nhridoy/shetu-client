@@ -25,6 +25,7 @@ import {
   ConnectCancelled,
   connectSavedTerminal,
   recordAgentForwarding,
+  resolveUsernameOrAsk,
   useAgentForwardAsks,
 } from "./agentForwarding";
 import {
@@ -300,6 +301,52 @@ describe("missing username", () => {
     expect(updateHost).not.toHaveBeenCalled();
     await savePendingCredentials(args.sessionId);
     expect(updateHost).toHaveBeenCalledWith("h1", { username: "deploy" });
+  });
+
+  it("asks without Save when the group lookup fails", async () => {
+    hostWithout("g1");
+    mocks.invoke.mockImplementation((async (cmd: string) => {
+      if (cmd === "inherited_host_defaults") throw new Error("offline");
+    }) as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(false);
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      username: "deploy",
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("offers Save when the group sets no username", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(true);
+    answerUsername(null);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+  });
+
+  it("resolveUsernameOrAsk asks without Save for non-terminal connects", async () => {
+    hostWithout(null);
+    const pending = resolveUsernameOrAsk("sftp-1", "h1");
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(false);
+    answerUsername({ username: "deploy", save: false });
+    await expect(pending).resolves.toBe("deploy");
+  });
+
+  it("resolveUsernameOrAsk rejects on cancel and skips hosts that have a user", async () => {
+    hostWithout(null);
+    const pending = resolveUsernameOrAsk("sftp-1", "h1");
+    await nextUsernameAsk();
+    answerUsername(null);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+    hostWithout("g1", "ops");
+    await expect(resolveUsernameOrAsk("sftp-1", "h1")).resolves.toBeUndefined();
+    expect(usernameAsks()).toHaveLength(0);
   });
 
   it("an unchecked Save remembers nothing", async () => {

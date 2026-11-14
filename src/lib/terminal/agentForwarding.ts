@@ -112,20 +112,40 @@ export async function connectSavedTerminal(
   await invoke("connect_saved", { ...args, username, allowAgentForwarding });
 }
 
+/** For SFTP and editor connects to a saved host: the typed username, or `undefined` when
+ * nothing is missing. Saving is not offered: these connects have no "connected" hook. */
+export async function resolveUsernameOrAsk(sessionId: string, hostId: string) {
+  const username = await missingUsername(sessionId, hostId, false);
+  if (username === null)
+    throw new ConnectCancelled("Connection cancelled: no username.");
+  return username;
+}
+
 /** Asks when neither the host nor its groups name a user: the answer, `undefined` when
  * nothing is missing, or `null` when the user cancelled. */
-async function missingUsername(sessionId: string, hostId: string) {
+async function missingUsername(
+  sessionId: string,
+  hostId: string,
+  canSave = true,
+) {
   const host = await useHostStore.getState().getDecryptedHost(hostId);
   if (!host || host.username?.trim()) return undefined;
-  // Without a vaultId, or when the group lookup fails, we ask even if a group sets one.
+  // Without a vaultId, or when the group lookup fails, we ask even if a group sets one,
+  // but never offer Save: a saved name would override the group's.
+  let groupKnown = !host.groupId;
   if (host.groupId && host.vaultId) {
     const inherited = await fetchInheritedDefaults(
       host.groupId,
       host.vaultId,
     ).catch(() => null);
     if (inherited?.username) return undefined;
+    groupKnown = inherited !== null;
   }
-  const answer = await askUsername(sessionId, host.name || host.address);
+  const answer = await askUsername(
+    sessionId,
+    host.name || host.address,
+    canSave && groupKnown,
+  );
   if (!answer) return null;
   if (answer.save)
     rememberCredentials(sessionId, { username: answer.username });

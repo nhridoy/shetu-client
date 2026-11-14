@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { type FileProvider, LocalFileProvider } from "@/lib/sftp/fileTransfer";
 import { getProvider, registerProvider } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
+import { resolveUsernameOrAsk } from "@/lib/terminal/agentForwarding";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -48,6 +49,7 @@ export async function ensureRemoteSession(
     await invoke("sftp_connect_saved", {
       sessionId: state.sessionId,
       hostId: state.hostId,
+      username: await resolveUsernameOrAsk(state.sessionId, state.hostId),
     });
   }
   const existing = getProvider(state.sessionId);

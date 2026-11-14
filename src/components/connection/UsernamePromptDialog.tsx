@@ -17,12 +17,12 @@ export default function UsernamePromptDialog() {
       zClass="z-[60]"
     >
       {/* Keyed so a typed name never carries into the next question. */}
-      <UsernameForm key={ask.id} />
+      <UsernameForm key={ask.id} canSave={ask.canSave} />
     </Modal>
   );
 }
 
-function UsernameForm() {
+function UsernameForm({ canSave }: { canSave: boolean }) {
   const [username, setUsername] = useState("");
   const [save, setSave] = useState(false);
   return (
@@ -45,15 +45,17 @@ function UsernameForm() {
           className="mt-1 w-full rounded-lg bg-dark-800 px-3 py-2 text-sm text-white outline-none"
         />
       </label>
-      <label className="mt-3 flex items-center gap-2 text-sm text-white">
-        <input
-          type="checkbox"
-          checked={save}
-          onChange={(e) => setSave(e.target.checked)}
-          className="accent-primary-500"
-        />
-        <span>Save to this host</span>
-      </label>
+      {canSave && (
+        <label className="mt-3 flex items-center gap-2 text-sm text-white">
+          <input
+            type="checkbox"
+            checked={save}
+            onChange={(e) => setSave(e.target.checked)}
+            className="accent-primary-500"
+          />
+          <span>Save to this host</span>
+        </label>
+      )}
       <div className="mt-5 flex justify-end gap-2">
         <Button
           type="button"
@@ -62,7 +64,9 @@ function UsernameForm() {
         >
           Cancel
         </Button>
-        <Button type="submit">Continue</Button>
+        <Button type="submit" disabled={!username.trim()}>
+          Continue
+        </Button>
       </div>
     </form>
   );

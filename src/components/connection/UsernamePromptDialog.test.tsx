@@ -80,4 +80,24 @@ describe("UsernamePromptDialog", () => {
     await act(async () => btn("Continue").click());
     expect(useUsernameAsks.getState().queue).toHaveLength(1);
   });
+
+  it("Continue is disabled until a name is typed", async () => {
+    await ask();
+    expect(btn("Continue").disabled).toBe(true);
+    await type(input("text"), "   ");
+    expect(btn("Continue").disabled).toBe(true);
+    await type(input("text"), "deploy");
+    expect(btn("Continue").disabled).toBe(false);
+  });
+
+  it("hides Save when the ask cannot save", async () => {
+    let answer!: ReturnType<typeof askUsername>;
+    await act(async () => {
+      answer = askUsername("s1", "prod", false);
+    });
+    expect(document.body.textContent).not.toContain("Save to this host");
+    await type(input("text"), "deploy");
+    await act(async () => btn("Continue").click());
+    await expect(answer).resolves.toEqual({ username: "deploy", save: false });
+  });
 });

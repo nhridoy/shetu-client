@@ -11,6 +11,7 @@ import {
   unregisterProvider,
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
+import { resolveUsernameOrAsk } from "@/lib/terminal/agentForwarding";
 import {
   fileBrowserActions,
   useFileBrowserStore,
@@ -83,6 +84,7 @@ export function useFileOperations({
             await invoke("sftp_connect_saved", {
               sessionId: paneId,
               hostId,
+              username: await resolveUsernameOrAsk(paneId, hostId),
             });
           }
 

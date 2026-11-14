@@ -64,6 +64,8 @@ interface UsernameAsk {
   id: number;
   sessionId: string;
   host: string;
+  /** False hides "Save to this host". */
+  canSave: boolean;
   resolve: (answer: { username: string; save: boolean } | null) => void;
 }
 
@@ -74,10 +76,13 @@ export const useUsernameAsks = create<{ queue: UsernameAsk[] }>(() => ({
 
 let nextAskId = 0;
 
-export function askUsername(sessionId: string, host: string) {
+export function askUsername(sessionId: string, host: string, canSave = true) {
   return new Promise<{ username: string; save: boolean } | null>((resolve) =>
     useUsernameAsks.setState((s) => ({
-      queue: [...s.queue, { id: ++nextAskId, sessionId, host, resolve }],
+      queue: [
+        ...s.queue,
+        { id: ++nextAskId, sessionId, host, canSave, resolve },
+      ],
     })),
   );
 }

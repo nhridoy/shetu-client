@@ -18,6 +18,13 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockInvoke,
 }));
 
+const mockResolveUsername = vi.hoisted(() =>
+  vi.fn(async (): Promise<string | undefined> => undefined),
+);
+vi.mock("@/lib/terminal/agentForwarding", () => ({
+  resolveUsernameOrAsk: mockResolveUsername,
+}));
+
 const { RemoteFileProviderImpl } = await import("@/lib/sftp/remoteFs");
 
 const savedConfig = {
@@ -79,8 +86,20 @@ describe("ensureRemoteSession", () => {
     expect(mockInvoke).toHaveBeenCalledWith("sftp_connect_saved", {
       sessionId: "sess-1",
       hostId: "h1",
+      username: undefined,
     });
     expect(provider).toBeInstanceOf(RemoteFileProviderImpl);
+  });
+
+  it("passes a username typed for a host that has none", async () => {
+    mockResolveUsername.mockResolvedValueOnce("typed");
+    await ensureRemoteSession(savedConfig);
+    expect(mockResolveUsername).toHaveBeenCalledWith("sess-1", "h1");
+    expect(mockInvoke).toHaveBeenCalledWith("sftp_connect_saved", {
+      sessionId: "sess-1",
+      hostId: "h1",
+      username: "typed",
+    });
   });
 
   it("connects a direct host via sftp_connect with a config", async () => {
