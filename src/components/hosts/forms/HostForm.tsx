@@ -17,6 +17,10 @@ import {
   hostFormSchema,
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
+import {
+  AGENT_FORWARD_HELP,
+  recordAgentForwarding,
+} from "@/lib/terminal/agentForwarding";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
@@ -230,10 +234,15 @@ export default function HostForm({
       startup: startupFromForm(data),
     };
 
+    // Turning the toggle on here is this device's "Allow"; off forgets it so re-enabling asks again.
+    const turnedOn = data.forwardAgent && !host?.forwardAgent;
     if (host) {
       await updateHost(host.id, hostData);
+      if (turnedOn) await recordAgentForwarding(host.id, true);
+      else if (!data.forwardAgent) await recordAgentForwarding(host.id, null);
     } else {
-      await createHost(hostData);
+      const created = await createHost(hostData);
+      if (created && turnedOn) await recordAgentForwarding(created.id, true);
     }
     reset();
     onClose();
@@ -457,11 +466,7 @@ export default function HostForm({
               />
               <span>Forward SSH agent</span>
             </label>
-            <p className="text-xs text-dark-400">
-              Lets this server use your local SSH keys while you're connected.
-              Anyone with root on the server can use them too. Only enable for
-              servers you trust.
-            </p>
+            <p className="text-xs text-dark-400">{AGENT_FORWARD_HELP}</p>
           </div>
 
           <fieldset className="space-y-2">

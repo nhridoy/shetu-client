@@ -2,6 +2,7 @@ import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
+import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
 import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
   attachSession,
@@ -331,7 +332,7 @@ export default function Terminal({
                     .hosts.find((h) => h.id === hostId);
                   try {
                     if (savedHost) {
-                      await invoke("connect_saved", {
+                      await connectSavedTerminal({
                         sessionId: paneId,
                         hostId,
                         detectOs: !savedHost.os,

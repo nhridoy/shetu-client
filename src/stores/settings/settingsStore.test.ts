@@ -126,3 +126,33 @@ describe("ssh defaults", () => {
     });
   });
 });
+
+describe("agent forwarding decisions", () => {
+  it("defaults to no decisions", async () => {
+    await useSettingsStore.getState().initSettings();
+    expect(
+      useSettingsStore.getState().settings.agentForwardingDecisions,
+    ).toEqual({});
+  });
+
+  it("keeps boolean decisions and drops junk", async () => {
+    mocks.entries = [
+      ["agentForwardingDecisions", { h1: true, h2: false, h3: "yes", h4: 1 }],
+    ];
+    await useSettingsStore.getState().initSettings();
+    expect(
+      useSettingsStore.getState().settings.agentForwardingDecisions,
+    ).toEqual({ h1: true, h2: false });
+  });
+
+  it.each([["not an object"], [[true]], [42]])(
+    "falls back to no decisions for %j",
+    async (junk) => {
+      mocks.entries = [["agentForwardingDecisions", junk]];
+      await useSettingsStore.getState().initSettings();
+      expect(
+        useSettingsStore.getState().settings.agentForwardingDecisions,
+      ).toEqual({});
+    },
+  );
+});

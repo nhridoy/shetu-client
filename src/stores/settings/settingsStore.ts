@@ -20,6 +20,8 @@ export interface AppSettings {
   sshConnectTimeoutSecs: number;
   sshTerminalType: SshTerminalType;
   sshAgentPath: string;
+  /** Host id → whether this device allows agent forwarding to it. Device-local, never synced. */
+  agentForwardingDecisions: Record<string, boolean>;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -36,6 +38,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   sshConnectTimeoutSecs: 10,
   sshTerminalType: "xterm-256color",
   sshAgentPath: "",
+  agentForwardingDecisions: {},
 };
 
 const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
@@ -77,14 +80,19 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
     merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;
   if (typeof merged.sshAgentPath !== "string")
     merged.sshAgentPath = DEFAULT_SETTINGS.sshAgentPath;
+  const decisions: unknown = merged.agentForwardingDecisions;
+  merged.agentForwardingDecisions =
+    decisions && typeof decisions === "object" && !Array.isArray(decisions)
+      ? Object.fromEntries(
+          Object.entries(decisions).filter(([, v]) => typeof v === "boolean"),
+        )
+      : {};
   return merged;
 }
 
-function parseValue(
-  key: string,
-  value: unknown,
-): string | number | boolean | null {
+function parseValue(key: string, value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (key === "agentForwardingDecisions") return value; // validated in mergeSettings
   if (
     key === "fontSize" ||
     key === "scrollback" ||

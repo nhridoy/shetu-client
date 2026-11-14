@@ -11,6 +11,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 }));
 
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import HostForm from "./HostForm";
@@ -161,6 +162,77 @@ describe("HostForm edit", () => {
     expect(patch.forwardAgent).toBe(true);
     expect(patch.env).toEqual([{ name: "LANG", value: "C.UTF-8" }]);
     expect(patch.startup).toEqual({ command: "tmux a" });
+  });
+});
+
+describe("HostForm agent forwarding consent", () => {
+  const decisions = () =>
+    useSettingsStore.getState().settings.agentForwardingDecisions;
+  const setDecisions = (d: Record<string, boolean>) =>
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, agentForwardingDecisions: d },
+    }));
+  const toggle = () => {
+    click(byText("button", "Advanced"));
+    click(
+      document.querySelector('input[aria-label="Forward SSH agent"]') ??
+        undefined,
+    );
+  };
+  async function mountEdit(forwardAgent: boolean) {
+    const updateHost = vi.fn();
+    useHostStore.setState({ updateHost, hosts: [], groups: [] } as never);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const host = {
+      id: "h1",
+      name: "n",
+      address: "a",
+      port: 22,
+      username: "u",
+      password: "pw",
+      authType: "password",
+      forwardAgent,
+    };
+    await act(async () => {
+      root.render(<HostForm host={host as never} onClose={() => {}} />);
+    });
+    return updateHost;
+  }
+
+  it("turning it on for a new host allows it on this device", async () => {
+    setDecisions({});
+    const createHost = await mountAndFill();
+    createHost.mockResolvedValue({ id: "new1" });
+    toggle();
+    await submit();
+    expect(createHost.mock.calls[0][0].forwardAgent).toBe(true);
+    expect(decisions()).toEqual({ new1: true });
+  });
+
+  it("turning it on for an existing host allows it on this device", async () => {
+    setDecisions({ h1: false });
+    await mountEdit(false);
+    toggle();
+    await submit();
+    expect(decisions()).toEqual({ h1: true });
+  });
+
+  it("turning it off forgets this device's answer", async () => {
+    setDecisions({ h1: false, other: true });
+    await mountEdit(true);
+    toggle();
+    await submit();
+    expect(decisions()).toEqual({ other: true });
+  });
+
+  it("saving without touching it keeps the answer", async () => {
+    setDecisions({ h1: false });
+    await mountEdit(true);
+    await submit();
+    expect(decisions()).toEqual({ h1: false });
   });
 });
 

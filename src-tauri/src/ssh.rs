@@ -1078,12 +1078,15 @@ pub async fn connect_saved(
     detect_os: bool,
     cols: u32,
     rows: u32,
+    allow_agent_forwarding: Option<bool>,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
     let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
     let mut config = route.target.clone();
+    // Gates both the handler flag and the agent_forward request in run_connect_session.
+    config.forward_agent = agent_forwarding_on(config.forward_agent, allow_agent_forwarding);
     config.detect_os = detect_os;
     route.target.detect_os = detect_os;
     let os = if detect_os {
@@ -1136,6 +1139,11 @@ where
         _ = tokio::io::copy(&mut ar, &mut bw) => {}
         _ = tokio::io::copy(&mut br, &mut aw) => {}
     }
+}
+
+/// The synced host flag alone never forwards: this device must have allowed it too.
+fn agent_forwarding_on(forward_agent: bool, allowed_on_device: Option<bool>) -> bool {
+    forward_agent && allowed_on_device == Some(true)
 }
 
 /// Agent channels are only served when the user turned forwarding on for this session.
@@ -1614,7 +1622,15 @@ pub fn load_host_config(
 
 #[cfg(test)]
 mod agent_use_tests {
-    use super::uses_agent;
+    use super::{agent_forwarding_on, uses_agent};
+
+    #[test]
+    fn forwarding_needs_host_flag_and_device_consent() {
+        assert!(!agent_forwarding_on(true, None));
+        assert!(!agent_forwarding_on(true, Some(false)));
+        assert!(!agent_forwarding_on(false, Some(true)));
+        assert!(agent_forwarding_on(true, Some(true)));
+    }
 
     #[test]
     fn only_ping_and_os_probe_skip_the_agent() {

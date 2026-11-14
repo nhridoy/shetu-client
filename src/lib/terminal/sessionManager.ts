@@ -9,6 +9,7 @@ import {
   terminalThemeFor,
   useThemeStore,
 } from "@/stores/themeStore";
+import { connectSavedTerminal } from "./agentForwarding";
 import {
   beginHistoryAttempt,
   captureHistoryOutput,
@@ -123,7 +124,7 @@ async function connectViaTauri(session: Session) {
 
     try {
       if (savedHost) {
-        await invoke("connect_saved", {
+        await connectSavedTerminal({
           sessionId: params.paneId,
           hostId: params.hostId,
           detectOs: !savedHost.os,
