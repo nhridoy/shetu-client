@@ -132,10 +132,23 @@ const submit = async () => {
   });
 };
 
+describe("HostForm panel", () => {
+  it("shows GENERAL, CREDENTIALS and CONNECTION without toggles", async () => {
+    await mountAndFill();
+    expect(document.querySelector("aside h2")?.textContent).toBe("New host");
+    expect(
+      [...document.querySelectorAll("aside h3")].map((h) => h.textContent),
+    ).toEqual(["GENERAL", "CREDENTIALS", "CONNECTION"]);
+    expect(byText("button", "Advanced")).toBeUndefined();
+    expect(document.body.textContent).toContain("On connect");
+    expect(byText("button", "Save")).toBeTruthy();
+    expect(byText("button", "Cancel")).toBeTruthy();
+  });
+});
+
 describe("HostForm advanced validation", () => {
-  it("re-expands Advanced and shows the error when a hidden field is invalid", async () => {
+  it("shows the error for an invalid connection field", async () => {
     const createHost = await mountAndFill();
-    click(byText("button", "Advanced"));
     // pick Startup = Snippet
     const startup = byText("button[role=combobox]", "None");
     click(startup);
@@ -144,20 +157,15 @@ describe("HostForm advanced validation", () => {
         new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
       );
     });
-    click(byText("button", "Hide advanced"));
-    expect(document.body.textContent).not.toContain("On connect");
 
     await submit();
 
-    expect(document.body.textContent).toContain("On connect");
     expect(document.body.textContent).toContain("Select a snippet");
     expect(createHost).not.toHaveBeenCalled();
   });
 
-  it("has an agent forwarding choice in Advanced, off by default", async () => {
+  it("has an agent forwarding choice, off by default", async () => {
     await mountAndFill();
-    expect(document.body.textContent).not.toContain("Forward SSH agent");
-    click(byText("button", "Advanced"));
     expect(document.body.textContent).toContain(
       "Lets this server use your local SSH keys while you're connected. Anyone with root on the server can use them too. Only enable for servers you trust.",
     );
@@ -168,7 +176,6 @@ describe("HostForm advanced validation", () => {
 
   it("renders nested env name errors", async () => {
     await mountAndFill();
-    click(byText("button", "Advanced"));
     click(byText("button", "Add variable"));
     const nameInput = document.querySelector(
       'input[placeholder="LANG"]',
@@ -231,7 +238,6 @@ describe("HostForm agent forwarding consent", () => {
       settings: { ...s.settings, agentForwardingDecisions: d },
     }));
   const setForwarding = (label: "From group" | "On" | "Off") => {
-    click(byText("button", "Advanced"));
     pick("forwardAgentMode", label);
   };
   async function mountEdit(
@@ -481,7 +487,10 @@ describe("HostForm inherits from its group", () => {
 
   it("offers From group auth only when the host has a group", async () => {
     await mount({});
-    expect(byText("button", "From group")).toBeUndefined();
+    // Connection options have their own From group choices; check the login choices only.
+    expect(byText("fieldset", "Authentication")?.textContent).not.toContain(
+      "From group",
+    );
   });
 
   it("choosing From group hides secrets and saves inherit", async () => {
@@ -529,7 +538,6 @@ describe("HostForm inherits from its group", () => {
 
     for (const r of roots.splice(0)) act(() => r.unmount());
     const second = await mount({ defaultGroupId: "g1", inherited: PROD });
-    click(byText("button", "Advanced"));
     pick("startupMode", "None");
     await submit();
     expect(second.createHost.mock.calls[0][0].startup).toEqual({ none: true });
@@ -537,7 +545,6 @@ describe("HostForm inherits from its group", () => {
 
   it("startup: an existing host with null startup in a group shows From group", async () => {
     await mount({ host: existing({ startup: null }) });
-    click(byText("button", "Advanced"));
     expect(document.getElementById("startupMode")?.textContent).toBe(
       "From group",
     );
@@ -554,7 +561,6 @@ describe("HostForm inherits from its group", () => {
         defaultGroupId: "g1",
         inherited: PROD,
       });
-      click(byText("button", "Advanced"));
       expect(document.getElementById("forwardAgentMode")?.textContent).toBe(
         "From group",
       );
@@ -569,7 +575,6 @@ describe("HostForm inherits from its group", () => {
       host: existing({ env: [{ name: "TZ", value: "UTC" }] }),
       inherited: PROD,
     });
-    click(byText("button", "Advanced"));
     const text = document.body.textContent ?? "";
     expect(text).toContain("LANG=C.UTF-8");
     expect(text).toContain("from prod");
@@ -585,13 +590,11 @@ describe("HostForm inherits from its group", () => {
       host: existing({ env: [{ name: "LANG", value: "en_US" }] }),
       inherited: PROD,
     });
-    click(byText("button", "Advanced"));
     expect(document.body.textContent).toContain("overridden");
   });
 
   it("a group change keeps choices the user made on a new host", async () => {
     await mount({});
-    click(byText("button", "Advanced"));
     pick("forwardAgentMode", "On");
     pick("groupId", "prod");
     await act(async () => {});

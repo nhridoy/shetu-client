@@ -1,8 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { Controller, type FieldErrors, useForm } from "react-hook-form";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import ModalForm from "@/components/common/ModalForm";
+import SidePanel from "@/components/common/SidePanel";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
@@ -20,6 +20,7 @@ import { recordAgentForwarding } from "@/lib/terminal/agentForwarding";
 import { type Startup, useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import ConnectionOptionsFields from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
@@ -68,7 +69,6 @@ export default function HostForm({
   const { createHost, updateHost, groups, hosts } = useHostStore();
   const { currentVaultId } = useVaultStore();
   const fetchSnippets = useSnippetStore((s) => s.fetchSnippets);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
   const [bastions, setBastions] = useState<
@@ -127,9 +127,9 @@ export default function HostForm({
     handleSubmit,
     watch,
     reset,
-    setValue,
+    resetField,
     trigger,
-    formState: { isSubmitted },
+    formState: { isSubmitted, isDirty },
   } = useForm<HostFormValues>({
     resolver: (values, context, options) =>
       zodResolver(hostFormSchemaFor(usernameInherited.current))(
@@ -211,9 +211,10 @@ export default function HostForm({
         startupMode: groupId ? "inherit" : "none",
         forwardAgentMode: groupId ? "inherit" : "off",
       } as const;
+      // resetField moves the baseline too, so these defaults never count as edits.
       for (const [name, value] of Object.entries(defaults))
         if (!userSet.current.has(name))
-          setValue(name as keyof typeof defaults, value);
+          resetField(name as keyof typeof defaults, { defaultValue: value });
     };
     if (groupId && currentVaultId)
       fetchInheritedDefaults(groupId, currentVaultId).then(apply, () =>
@@ -223,7 +224,7 @@ export default function HostForm({
     return () => {
       stale = true;
     };
-  }, [groupId, currentVaultId, isNew, setValue]);
+  }, [groupId, currentVaultId, isNew, resetField]);
 
   useEffect(() => {
     usernameInherited.current = !!inherited?.username;
@@ -244,11 +245,6 @@ export default function HostForm({
     "#ec4899",
     "#06b6d4",
   ];
-
-  const getButtonText = () => {
-    if (isPending) return "Saving...";
-    return host ? "Save Changes" : "Add Host";
-  };
 
   const handleHostSubmit = async (data: HostFormValues) => {
     if (
@@ -321,151 +317,164 @@ export default function HostForm({
     onClose();
   };
 
-  // Advanced fields unmount while collapsed; reveal them so errors are visible.
-  const onInvalid = (errors: FieldErrors<HostFormValues>) => {
-    if (errors.keepaliveSecs || errors.startupSnippetId || errors.env)
-      setShowAdvanced(true);
-  };
-
   const onSubmit = async (data: HostFormValues) => {
     startTransition(async () => {
       await handleHostSubmit(data);
     });
   };
 
+  const formId = useId();
   return (
-    <ModalForm
+    <SidePanel
+      title={host ? `Edit host · ${host.name}` : "New host"}
+      open
+      dirty={isDirty}
       onClose={onClose}
-      title={host ? "Edit Host" : "Add Host"}
-      isPending={isPending}
-      onSubmit={handleSubmit(onSubmit, onInvalid)}
-      submitButtonText={getButtonText()}
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isPending}
+            onClick={async () => {
+              if (await useUnsavedChanges.getState().confirmLeave()) onClose();
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} size="sm" disabled={isPending}>
+            {isPending ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
     >
-      <FormInput
-        name="name"
-        label="Name"
-        control={control}
-        placeholder="My Server"
-        required
-      />
-
-      <div className="grid grid-cols-3 gap-3">
-        <div className="col-span-2">
+      <form id={formId} onSubmit={handleSubmit(onSubmit)}>
+        <SidePanel.Section title="GENERAL">
           <FormInput
-            name="address"
-            label="Address"
+            name="name"
+            label="Name"
             control={control}
-            placeholder="192.168.1.100 or hostname"
+            placeholder="My Server"
             required
           />
-        </div>
-        <div>
-          <FormInput
-            name="port"
-            label="Port"
-            control={control}
-            type="number"
-            required
-          />
-        </div>
-      </div>
 
-      <FormInput
-        name="username"
-        label="Username"
-        control={control}
-        placeholder={
-          inherited?.username
-            ? `From group '${inherited.usernameFrom}': ${inherited.username}`
-            : "root"
-        }
-        required={!inherited?.username}
-      />
-
-      <CredentialsFields control={control} mode="host" inherited={inherited} />
-
-      <FormSelect
-        name="jumpHostId"
-        label="Connect through"
-        control={control}
-        options={[
-          { value: "", label: "Direct connection" },
-          ...bastions.map((candidate) => ({
-            value: candidate.id,
-            label: candidate.name,
-          })),
-        ]}
-      />
-      <p className="text-xs text-dark-400">
-        The bastion uses its own SSH credentials and host-key check before
-        connecting to this host.
-      </p>
-      {(missingBastion || routeError) && (
-        <p role="alert" className="text-xs text-red-400">
-          {routeError ??
-            "Selected bastion is unavailable. Choose another route before saving."}
-        </p>
-      )}
-
-      <fieldset>
-        <legend className="block text-dark-300 text-sm mb-2">Color</legend>
-        <Controller
-          name="color"
-          control={control}
-          render={({ field }) => (
-            <div className="flex gap-2">
-              {colors.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => field.onChange(c)}
-                  className={`cursor-pointer w-8 h-8 rounded-full ${
-                    field.value === c
-                      ? "ring-2 ring-white ring-offset-2 ring-offset-dark-900"
-                      : ""
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2">
+              <FormInput
+                name="address"
+                label="Address"
+                control={control}
+                placeholder="192.168.1.100 or hostname"
+                required
+              />
             </div>
+            <div>
+              <FormInput
+                name="port"
+                label="Port"
+                control={control}
+                type="number"
+                required
+              />
+            </div>
+          </div>
+
+          {!defaultGroupId && (
+            <FormSelect
+              name="groupId"
+              label="Group"
+              control={control}
+              options={[
+                { value: "", label: "No Group" },
+                ...groups.map((g) => ({ value: g.id, label: g.name })),
+              ]}
+            />
           )}
-        />
-      </fieldset>
 
-      <FormInput
-        name="tags"
-        label="Tags"
-        control={control}
-        placeholder="production, web (comma-separated)"
-      />
+          <FormSelect
+            name="jumpHostId"
+            label="Connect through"
+            control={control}
+            options={[
+              { value: "", label: "Direct connection" },
+              ...bastions.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.name,
+              })),
+            ]}
+          />
+          <p className="text-xs text-dark-400">
+            The bastion uses its own SSH credentials and host-key check before
+            connecting to this host.
+          </p>
+          {(missingBastion || routeError) && (
+            <p role="alert" className="text-xs text-red-400">
+              {routeError ??
+                "Selected bastion is unavailable. Choose another route before saving."}
+            </p>
+          )}
 
-      {!defaultGroupId && (
-        <FormSelect
-          name="groupId"
-          label="Group"
-          control={control}
-          options={[
-            { value: "", label: "No Group" },
-            ...groups.map((g) => ({ value: g.id, label: g.name })),
-          ]}
-        />
-      )}
+          <fieldset>
+            <legend className="block text-dark-300 text-sm mb-2">Color</legend>
+            <Controller
+              name="color"
+              control={control}
+              render={({ field }) => (
+                <div className="flex gap-2">
+                  {colors.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => field.onChange(c)}
+                      className={`cursor-pointer w-8 h-8 rounded-full ${
+                        field.value === c
+                          ? "ring-2 ring-white ring-offset-2 ring-offset-dark-900"
+                          : ""
+                      }`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              )}
+            />
+          </fieldset>
 
-      <Button
-        type="button"
-        variant="secondary"
-        onClick={() => setShowAdvanced((v) => !v)}
-        aria-expanded={showAdvanced}
-      >
-        {showAdvanced ? "Hide advanced" : "Advanced"}
-      </Button>
-      {showAdvanced && (
-        <ConnectionOptionsFields
-          control={control}
-          mode="host"
-          inherited={inherited}
-        />
-      )}
-    </ModalForm>
+          <FormInput
+            name="tags"
+            label="Tags"
+            control={control}
+            placeholder="production, web (comma-separated)"
+          />
+        </SidePanel.Section>
+
+        <SidePanel.Section title="CREDENTIALS">
+          <FormInput
+            name="username"
+            label="Username"
+            control={control}
+            placeholder={
+              inherited?.username
+                ? `From group '${inherited.usernameFrom}': ${inherited.username}`
+                : "root"
+            }
+            required={!inherited?.username}
+          />
+          <CredentialsFields
+            control={control}
+            mode="host"
+            inherited={inherited}
+          />
+        </SidePanel.Section>
+
+        <SidePanel.Section title="CONNECTION">
+          <ConnectionOptionsFields
+            control={control}
+            mode="host"
+            inherited={inherited}
+          />
+        </SidePanel.Section>
+      </form>
+    </SidePanel>
   );
 }

@@ -19,6 +19,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import GroupForm from "./GroupForm";
 
@@ -98,18 +99,39 @@ const fillName = (v: string) =>
   changeInput(document.querySelector('input[id$="name"]'), v);
 
 describe("GroupForm", () => {
-  it("shows collapsed Credentials and Advanced sections", async () => {
+  it("shows GENERAL, CREDENTIALS and CONNECTION without toggles", async () => {
     await mount();
-    expect(byText("button", "Credentials")).toBeTruthy();
-    expect(byText("button", "Advanced")).toBeTruthy();
-    expect(document.body.textContent).not.toContain("Authentication");
-    expect(document.body.textContent).not.toContain("On connect");
+    expect(document.querySelector("aside h2")?.textContent).toBe("New group");
+    expect(document.body.textContent).toContain(
+      "Hosts in this group use these unless they set their own.",
+    );
+    expect(
+      [...document.querySelectorAll("aside h3")].map((h) => h.textContent),
+    ).toEqual(["GENERAL", "CREDENTIALS", "CONNECTION"]);
+    expect(byText("button", "Credentials")).toBeUndefined();
+    expect(byText("button", "Advanced")).toBeUndefined();
+    expect(document.body.textContent).toContain("Authentication");
+    expect(document.body.textContent).toContain("On connect");
+  });
+
+  it("loaded values are the baseline, so only typing makes it dirty", async () => {
+    await mount({ id: "g1", name: "prod" }, { username: "deploy" });
+    expect(useUnsavedChanges.getState().dirty).toBe(false);
+    fillName("prod2");
+    await act(async () => {});
+    expect(useUnsavedChanges.getState().dirty).toBe(true);
+  });
+
+  it("titles the edit panel with the group name", async () => {
+    await mount({ id: "g1", name: "prod" });
+    expect(document.querySelector("aside h2")?.textContent).toBe(
+      "Edit group · prod",
+    );
   });
 
   it("creates a group with username and password credentials", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    click(byText("button", "Credentials"));
     changeInput(document.querySelector('input[id$="username"]'), "deploy");
     click(byText("button", "Password"));
     changeInput(document.querySelector('input[type="password"]'), "pw");
@@ -129,14 +151,12 @@ describe("GroupForm", () => {
 
   it("offers Not set but never From group as an auth method", async () => {
     await mount();
-    click(byText("button", "Credentials"));
     expect(byText("button", "Not set")).toBeTruthy();
     expect(document.body.textContent).not.toContain("From group");
   });
 
   it("labels the null startup choice Not set", async () => {
     await mount();
-    click(byText("button", "Advanced"));
     click(document.getElementById("startupMode") ?? undefined);
     const labels = [...document.querySelectorAll("[role=option]")].map(
       (e) => e.textContent,
@@ -148,7 +168,6 @@ describe("GroupForm", () => {
   it("requires a password for password auth", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    click(byText("button", "Credentials"));
     click(byText("button", "Password"));
     await submit();
     expect(document.body.textContent).toContain("Password is required");
@@ -158,7 +177,6 @@ describe("GroupForm", () => {
   it("requires a key for key auth", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    click(byText("button", "Credentials"));
     click(byText("button", "SSH Key"));
     await submit();
     expect(document.body.textContent).toContain("Please select an SSH key");
@@ -168,7 +186,6 @@ describe("GroupForm", () => {
   it("shows the same env name error as hosts", async () => {
     await mount();
     fillName("Prod");
-    click(byText("button", "Advanced"));
     click(byText("button", "Add variable"));
     changeInput(document.querySelector('input[placeholder="LANG"]'), "1X");
     await submit();
@@ -210,7 +227,6 @@ describe("GroupForm", () => {
       { id: "g1", name: "Prod" },
       { username: "deploy", authType: "password", password: "pw" },
     );
-    click(byText("button", "Credentials"));
     click(byText("button", "Not set"));
     await submit();
     expect(updateGroup).toHaveBeenCalledWith(

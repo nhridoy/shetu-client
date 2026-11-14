@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState, useTransition } from "react";
-import { type FieldErrors, useForm } from "react-hook-form";
-import ModalForm from "@/components/common/ModalForm";
+import { useEffect, useId, useState, useTransition } from "react";
+import { useForm } from "react-hook-form";
+import SidePanel from "@/components/common/SidePanel";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import ConnectionOptionsFields from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
@@ -109,10 +110,13 @@ export default function GroupForm({
   const currentVault = currentVaultId ?? undefined;
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const fetchSnippets = useSnippetStore((s) => s.fetchSnippets);
-  const [showCredentials, setShowCredentials] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const { control, handleSubmit, reset } = useForm<GroupFormValues>({
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isDirty },
+  } = useForm<GroupFormValues>({
     resolver: zodResolver(groupFormSchema),
     defaultValues: {
       ...groupFormDefaultValues,
@@ -153,18 +157,6 @@ export default function GroupForm({
     };
   }, [groupId, reset]);
 
-  // Collapsed sections unmount their fields; reveal them so errors are visible.
-  const onInvalid = (errors: FieldErrors<GroupFormValues>) => {
-    if (errors.password || errors.keyId) setShowCredentials(true);
-    if (errors.keepaliveSecs || errors.startupSnippetId || errors.env)
-      setShowAdvanced(true);
-  };
-
-  const getButtonText = () => {
-    if (isPending) return "Saving...";
-    return group ? "Save Changes" : "Create Group";
-  };
-
   const handleGroupSubmit = async (data: GroupFormValues) => {
     const parentId = group?.parentId || defaultParentId || undefined;
     if (group) {
@@ -193,40 +185,53 @@ export default function GroupForm({
     });
   };
 
+  const formId = useId();
+  const busy = isPending || load === "loading";
   return (
-    <ModalForm
+    <SidePanel
+      title={group ? `Edit group · ${group.name}` : "New group"}
+      intro="Hosts in this group use these unless they set their own."
+      open
+      dirty={isDirty}
       onClose={onClose}
-      title={group ? "Edit Group" : "New Group"}
-      isPending={isPending || load === "loading"}
-      onSubmit={handleSubmit(onSubmit, onInvalid)}
-      cancelButtonText="Cancel"
-      submitButtonText={getButtonText()}
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={async () => {
+              if (await useUnsavedChanges.getState().confirmLeave()) onClose();
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} size="sm" disabled={busy}>
+            {isPending ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
     >
-      <FormInput
-        name="name"
-        label="Group Name"
-        control={control}
-        placeholder="Group name"
-        required
-      />
+      <form id={formId} onSubmit={handleSubmit(onSubmit)}>
+        <SidePanel.Section title="GENERAL">
+          <FormInput
+            name="name"
+            label="Group Name"
+            control={control}
+            placeholder="Group name"
+            required
+          />
 
-      {load === "failed" && (
-        <p role="alert" className="text-xs text-red-400">
-          Couldn't load this group's saved credentials and options. You can
-          still rename it; they will be left unchanged.
-        </p>
-      )}
+          {load === "failed" && (
+            <p role="alert" className="text-xs text-red-400">
+              Couldn't load this group's saved credentials and options. You can
+              still rename it; they will be left unchanged.
+            </p>
+          )}
+        </SidePanel.Section>
 
-      <Button
-        type="button"
-        variant="secondary"
-        onClick={() => setShowCredentials((v) => !v)}
-        aria-expanded={showCredentials}
-      >
-        {showCredentials ? "Hide credentials" : "Credentials"}
-      </Button>
-      {showCredentials && (
-        <div className="space-y-3">
+        <SidePanel.Section title="CREDENTIALS">
           <FormInput
             name="username"
             label="Username"
@@ -234,20 +239,12 @@ export default function GroupForm({
             placeholder="root"
           />
           <CredentialsFields control={control} mode="group" />
-        </div>
-      )}
+        </SidePanel.Section>
 
-      <Button
-        type="button"
-        variant="secondary"
-        onClick={() => setShowAdvanced((v) => !v)}
-        aria-expanded={showAdvanced}
-      >
-        {showAdvanced ? "Hide advanced" : "Advanced"}
-      </Button>
-      {showAdvanced && (
-        <ConnectionOptionsFields control={control} mode="group" />
-      )}
-    </ModalForm>
+        <SidePanel.Section title="CONNECTION">
+          <ConnectionOptionsFields control={control} mode="group" />
+        </SidePanel.Section>
+      </form>
+    </SidePanel>
   );
 }
