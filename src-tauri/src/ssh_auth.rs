@@ -214,11 +214,13 @@ where
                 .authenticate_password(user.clone(), password.clone())
                 .await
                 .map_err(|e| format!("password auth: {e}"))?;
-            password_ran = true;
             match record(auth, &mut allowed) {
                 Step::Success => return Ok(()),
-                Step::Partial => {}
+                Step::Partial => password_ran = true,
+                // `password` missing from the methods that can continue: unsupported, never checked.
+                Step::Rejected if !allows(&allowed, MethodKind::Password) => {}
                 Step::Rejected => {
+                    password_ran = true;
                     password_rejected = true;
                     last_error = "authentication rejected".to_string();
                 }
@@ -329,6 +331,12 @@ mod tests {
                 }
             } else if self.password == Some(password) {
                 russh::server::Auth::Accept
+            } else if self.methods.as_ref().is_none_or(|m| m.contains(&MethodKind::Password)) {
+                // Like OpenSSH: a wrong password keeps `password` among the methods that can continue.
+                russh::server::Auth::Reject {
+                    proceed_with_methods: Some(self.methods.clone().unwrap_or_else(MethodSet::all)),
+                    partial_success: false,
+                }
             } else {
                 russh::server::Auth::reject()
             })
@@ -508,6 +516,18 @@ mod tests {
         let log = srv.log.clone();
         run(srv, config(Some(pem(&random_key())), Some("pw")), None, None).await.unwrap();
         assert_eq!(count(&log, "password"), 0);
+        assert_eq!(count(&log, "kbdint"), 1);
+    }
+
+    #[tokio::test]
+    async fn kbdint_auto_answers_when_password_method_unsupported() {
+        let srv = Srv {
+            kbd: vec![("Password: ", "pw")],
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
+        let log = srv.log.clone();
+        within(run(srv, config(None, Some("pw")), None, None)).await.unwrap();
         assert_eq!(count(&log, "kbdint"), 1);
     }
 
