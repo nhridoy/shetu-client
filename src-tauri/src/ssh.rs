@@ -428,6 +428,12 @@ mod tests {
 
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub enum StartupAction {
+    Command(String),
+    MissingSnippet,
+}
+
 #[derive(Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct SshConfig {
@@ -439,6 +445,8 @@ pub struct SshConfig {
     pub passphrase: Option<String>,
     pub detect_os: bool,
     pub keepalive_secs: Option<u32>,
+    pub env: Vec<(String, String)>,
+    pub startup: Option<StartupAction>,
 }
 
 #[derive(serde::Serialize)]
@@ -1245,6 +1253,29 @@ pub async fn ping_host_saved(
     Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
 }
 
+fn load_startup(
+    db: &crate::db::LocalDb,
+    crypto: &crate::CryptoState,
+    vault_id: &str,
+    startup: &serde_json::Value,
+) -> Option<StartupAction> {
+    if let Some(cmd) = startup["command"].as_str() {
+        return (!cmd.trim().is_empty()).then(|| StartupAction::Command(cmd.to_string()));
+    }
+    let id = startup["snippetId"].as_str()?;
+    let command = (|| {
+        let row = crate::db::get_sync_row(db, crate::db::Table::Snippets, id).ok()??;
+        if row.deleted_at.is_some() || row.vault_id != vault_id {
+            return None;
+        }
+        let session = crypto.session.lock().ok()?;
+        let plain = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "snippets", &row.vault_id).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&plain).ok()?;
+        v["command"].as_str().filter(|c| !c.trim().is_empty()).map(String::from)
+    })();
+    Some(command.map_or(StartupAction::MissingSnippet, StartupAction::Command))
+}
+
 /// Build the SSH config entirely in Rust from the saved (encrypted) host +
 /// key rows. Sensitive material never crosses the IPC boundary.
 pub fn load_host_config(
@@ -1267,7 +1298,25 @@ pub fn load_host_config(
         private_key: None,
         passphrase: None,
         detect_os: false,
-        keepalive_secs: None,
+        keepalive_secs: payload["keepaliveSecs"]
+            .as_f64()
+            .map(|n| crate::ssh_options::clamp_keepalive(n as i64)),
+        env: payload["env"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        let name = r["name"].as_str()?;
+                        let mut ch = name.chars();
+                        let ok = ch.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            && ch.all(|c| c.is_ascii_alphanumeric() || c == '_');
+                        ok.then(|| Some((name.to_string(), r["value"].as_str()?.to_string())))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        startup: load_startup(db, crypto, &row.vault_id, &payload["startup"]),
     };
     let auth_type = row.auth_type.as_deref().unwrap_or("password");
     // Load password when auth_type is "password" or "both"
