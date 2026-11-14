@@ -576,27 +576,65 @@ describe("HostForm inherits from its group", () => {
     }
   });
 
-  it("shows inherited env vars read-only above the host's own rows", async () => {
+  it("renders env as a table with one header row and hidden per-row labels", async () => {
     await mount({
       host: existing({ env: [{ name: "TZ", value: "UTC" }] }),
       inherited: PROD,
     });
-    const text = document.body.textContent ?? "";
-    expect(text).toContain("LANG=C.UTF-8");
-    expect(text).toContain("from prod");
-    expect(text.indexOf("LANG=C.UTF-8")).toBeLessThan(
-      text.indexOf("Add variable"),
-    );
     expect(input("env.0.name")?.value).toBe("TZ");
-    expect(document.querySelector('input[value="LANG"]')).toBeNull();
+    expect(document.querySelector('label[for="env.0.name"]')?.textContent).toBe(
+      "Name 1",
+    );
+    expect(
+      document.querySelector('label[for="env.0.value"]')?.textContent,
+    ).toBe("Value 1");
+    expect(
+      document.querySelector('label[for="env.0.name"] > .sr-only')?.className,
+    ).toContain("sr-only");
+    expect(
+      document.querySelectorAll("[data-env-header]").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      [...document.querySelectorAll("[data-env-header]")].map(
+        (e) => e.textContent,
+      ),
+    ).toEqual(expect.arrayContaining(["Name", "Value"]));
+    expect(
+      document.querySelector('button[aria-label="Remove variable 1"]'),
+    ).not.toBeNull();
   });
 
-  it("marks an inherited env var overridden by the host", async () => {
-    await mount({
-      host: existing({ env: [{ name: "LANG", value: "en_US" }] }),
-      inherited: PROD,
-    });
-    expect(document.body.textContent).toContain("overridden");
+  it("shows inherited env greyed with group badge and Override", async () => {
+    await mount({ host: existing({ env: [] }), inherited: PROD });
+    const row = document.querySelector('[data-inherited-env="LANG"]');
+    expect(row?.textContent).toContain("LANG");
+    expect(row?.textContent).toContain("C.UTF-8");
+    expect(row?.textContent).toContain("prod");
+    expect(byText("button", "Override")).toBeDefined();
+  });
+
+  it("Override adds a prefilled host row; removing it restores the inherited row", async () => {
+    await mount({ host: existing({ env: [] }), inherited: PROD });
+    click(byText("button", "Override"));
+    expect(input("env.0.name")?.value).toBe("LANG");
+    expect(input("env.0.value")?.value).toBe("C.UTF-8");
+    expect(document.querySelector('[data-inherited-env="LANG"]')).toBeNull();
+    expect(document.body.textContent).toContain("overrides prod");
+    click(
+      document.querySelector(
+        'button[aria-label="Remove variable 1"]',
+      ) as Element,
+    );
+    expect(
+      document.querySelector('[data-inherited-env="LANG"]'),
+    ).not.toBeNull();
+    expect(document.body.textContent).not.toContain("overrides prod");
+  });
+
+  it("renders AcceptEnv in <code> without backticks", async () => {
+    await mount({});
+    expect(document.querySelector("code")?.textContent).toBe("AcceptEnv");
+    expect(document.body.textContent).not.toContain("`");
   });
 
   it("a group change keeps choices the user made on a new host", async () => {

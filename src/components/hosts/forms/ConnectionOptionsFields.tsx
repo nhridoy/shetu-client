@@ -1,3 +1,4 @@
+import { PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import {
   type Control,
   Controller,
@@ -5,6 +6,7 @@ import {
   useFieldArray,
   useWatch,
 } from "react-hook-form";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
@@ -113,51 +115,93 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
         <legend className="block text-dark-300 text-sm mb-2">
           Environment variables
         </legend>
-        {inherited?.env.map((v) => {
-          const overridden = env.some((row) => row.name === v.name);
-          return (
-            <p key={v.name} className="text-xs text-dark-400">
-              <span className={overridden ? "line-through" : undefined}>
-                {v.name}={v.value}
-              </span>{" "}
-              from {v.from}
-              {overridden && " (overridden)"}
-            </p>
-          );
-        })}
-        {envFields.map((field, i) => (
-          <div key={field.id} className="grid grid-cols-[1fr_1fr_auto] gap-2">
-            <FormInput
-              name={`env.${i}.name`}
-              label="Name"
-              control={control}
-              placeholder="LANG"
-            />
-            <FormInput
-              name={`env.${i}.value`}
-              label="Value"
-              control={control}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              aria-label={`Remove variable ${i + 1}`}
-              onClick={() => removeEnv(i)}
-              className="self-end"
-            >
-              Remove
-            </Button>
-          </div>
-        ))}
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-x-2 gap-y-2 items-start">
+          <span data-env-header className="text-xs text-dark-400">
+            Name
+          </span>
+          <span data-env-header className="text-xs text-dark-400">
+            Value
+          </span>
+          <span className="w-16" />
+          {inherited?.env
+            .filter((v) => !env.some((row) => row.name === v.name))
+            .map((v) => (
+              <div
+                key={v.name}
+                data-inherited-env={v.name}
+                className="col-span-3 grid grid-cols-subgrid items-center text-sm text-dark-400"
+              >
+                <span className="truncate">{v.name}</span>
+                <span className="truncate">{v.value}</span>
+                <span className="flex items-center gap-1">
+                  <Badge>{v.from}</Badge>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      appendEnv(
+                        { name: v.name, value: v.value },
+                        { shouldFocus: false },
+                      )
+                    }
+                  >
+                    Override
+                  </Button>
+                </span>
+              </div>
+            ))}
+          {envFields.map((field, i) => {
+            const from = inherited?.env.find(
+              (v) => v.name === env[i]?.name,
+            )?.from;
+            return (
+              <div
+                key={field.id}
+                className="col-span-3 grid grid-cols-subgrid items-start"
+              >
+                <div>
+                  <FormInput
+                    name={`env.${i}.name`}
+                    label={<span className="sr-only">{`Name ${i + 1}`}</span>}
+                    control={control}
+                    placeholder="LANG"
+                  />
+                  {from && (
+                    <span className="text-xs text-dark-400">
+                      overrides {from}
+                    </span>
+                  )}
+                </div>
+                <FormInput
+                  name={`env.${i}.value`}
+                  label={<span className="sr-only">{`Value ${i + 1}`}</span>}
+                  control={control}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Remove variable ${i + 1}`}
+                  onClick={() => removeEnv(i)}
+                  className="mt-1.5"
+                >
+                  <TrashIcon />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
         <Button
           type="button"
           variant="secondary"
+          size="sm"
           onClick={() => appendEnv({ name: "", value: "" })}
         >
-          Add variable
+          <PlusIcon /> Add variable
         </Button>
         <p className="text-xs text-dark-400">
-          Servers ignore variables they don't allow (`AcceptEnv` in
+          Servers ignore variables they don't allow (<code>AcceptEnv</code> in
           sshd_config); most allow only LANG and LC_*.
         </p>
       </fieldset>
