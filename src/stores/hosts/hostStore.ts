@@ -28,6 +28,9 @@ export interface Host {
   passphrase?: string;
   keyId?: string;
   jumpHostId?: string | null;
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: { snippetId: string } | { command: string } | null;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
   data?: string;
 }
@@ -76,6 +79,9 @@ interface HostPayload {
   username: string;
   password?: string;
   jumpHostId?: string | null;
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: { snippetId: string } | { command: string } | null;
 }
 
 function parseTags(tags: string | null | undefined): string[] {
@@ -113,18 +119,54 @@ function hostFromRow(row: SyncRow): Host {
   };
 }
 
-/** Full host with decrypted credentials — decrypt on demand. */
-async function decryptHostRow(row: SyncRow): Promise<Host> {
-  const payload = ((await decryptRowData(row.data)) ??
-    {}) as Partial<HostPayload>;
+/** Map a decrypted payload onto Host fields, tolerating junk stored values. */
+function hostFieldsFromPayload(
+  payload: Partial<HostPayload>,
+): Pick<
+  Host,
+  | "address"
+  | "port"
+  | "username"
+  | "password"
+  | "jumpHostId"
+  | "keepaliveSecs"
+  | "env"
+  | "startup"
+> {
+  const p = payload as Record<string, unknown>;
+  const startup = p.startup as Record<string, unknown> | null | undefined;
   return {
-    ...hostFromRow(row),
     address: payload.address ?? "",
     port: payload.port ?? 22,
     username: payload.username ?? "root",
     password: payload.password,
     jumpHostId: payload.jumpHostId ?? null,
+    keepaliveSecs:
+      typeof p.keepaliveSecs === "number" && Number.isFinite(p.keepaliveSecs)
+        ? p.keepaliveSecs
+        : null,
+    env: Array.isArray(p.env)
+      ? p.env.filter(
+          (e): e is { name: string; value: string } =>
+            typeof e?.name === "string" && typeof e?.value === "string",
+        )
+      : [],
+    startup:
+      startup && typeof startup === "object"
+        ? typeof startup.snippetId === "string" && startup.snippetId
+          ? { snippetId: startup.snippetId }
+          : typeof startup.command === "string"
+            ? { command: startup.command }
+            : null
+        : null,
   };
+}
+
+/** Full host with decrypted credentials — decrypt on demand. */
+async function decryptHostRow(row: SyncRow): Promise<Host> {
+  const payload = ((await decryptRowData(row.data)) ??
+    {}) as Partial<HostPayload>;
+  return { ...hostFromRow(row), ...hostFieldsFromPayload(payload) };
 }
 
 function newId(): string {
@@ -249,6 +291,9 @@ export const useHostStore = create<HostState>((set, get) => ({
             username: host.username ?? "root",
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
+            keepaliveSecs: host.keepaliveSecs ?? null,
+            env: host.env ?? [],
+            startup: host.startup ?? null,
           }),
           recordType: "hosts",
         },
@@ -301,6 +346,10 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (patch.password !== undefined) sensitive.password = patch.password;
       if (patch.jumpHostId !== undefined)
         sensitive.jumpHostId = patch.jumpHostId;
+      if (patch.keepaliveSecs !== undefined)
+        sensitive.keepaliveSecs = patch.keepaliveSecs;
+      if (patch.env !== undefined) sensitive.env = patch.env;
+      if (patch.startup !== undefined) sensitive.startup = patch.startup;
       const saved = await upsertRow(
         "hosts",
         {
@@ -392,14 +441,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     if (cached?.data) {
       const payload = ((await decryptRowData(cached.data)) ??
         {}) as Partial<HostPayload>;
-      return {
-        ...cached,
-        address: payload.address ?? "",
-        port: payload.port ?? 22,
-        username: payload.username ?? "root",
-        password: payload.password,
-        jumpHostId: payload.jumpHostId ?? null,
-      };
+      return { ...cached, ...hostFieldsFromPayload(payload) };
     }
     const row = await getRow("hosts", hostId);
     if (!row) {

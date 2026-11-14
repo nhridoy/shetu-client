@@ -16,6 +16,7 @@ mod session_history;
 mod sftp;
 mod ssh;
 mod ssh_config_import;
+mod ssh_options;
 mod ssh_route;
 mod sync;
 mod team_keys;
@@ -1743,6 +1744,7 @@ pub fn run() {
             ssh::resize,
             ssh::accept_host_key,
             ssh::set_trust_new_hosts,
+            ssh_options::set_ssh_defaults,
             ssh::ping_host_saved,
             sftp::sftp_connect,
             sftp::sftp_connect_saved,

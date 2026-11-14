@@ -233,6 +233,27 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn close_reason_lost_only_on_write_failure() {
+        let (tx, mut rx) = oneshot::channel::<bool>();
+        drop(tx);
+        let dropped = rx.try_recv();
+        assert!(close_reason_is_lost::<()>(Ok(true)));
+        assert!(!close_reason_is_lost::<()>(Ok(false)));
+        assert!(dropped.is_err() && !close_reason_is_lost(dropped));
+    }
+
+    #[test]
+    fn connection_lost_notice_text() {
+        assert_eq!(CONNECTION_LOST_NOTICE, "\r\n[Connection lost]\r\n");
+    }
+
+    #[test]
+    fn startup_bytes_adds_one_newline() {
+        assert_eq!(startup_bytes("tmux a"), b"tmux a\n");
+        assert_eq!(startup_bytes("a\nb\n"), b"a\nb\n");
+    }
+
     fn tmp_path() -> std::path::PathBuf {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("shetu-known-hosts-{stamp}.txt"))
@@ -428,6 +449,12 @@ mod tests {
 
 pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub enum StartupAction {
+    Command(String),
+    MissingSnippet,
+}
+
 #[derive(Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct SshConfig {
@@ -438,6 +465,9 @@ pub struct SshConfig {
     pub private_key: Option<String>,
     pub passphrase: Option<String>,
     pub detect_os: bool,
+    pub keepalive_secs: Option<u32>,
+    pub env: Vec<(String, String)>,
+    pub startup: Option<StartupAction>,
 }
 
 #[derive(serde::Serialize)]
@@ -692,7 +722,7 @@ pub(crate) async fn connect_authenticated(
         emit_progress(app, sid, "connecting");
     }
     let socket = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        crate::ssh_options::connect_timeout(&crate::ssh_options::defaults()),
         tokio::net::TcpStream::connect(addr),
     )
     .await
@@ -709,7 +739,10 @@ pub(crate) async fn authenticate_over_stream<R>(
 ) -> Result<russh::client::Handle<SshHandler>, String>
 where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let client_config = Arc::new(russh::client::Config::default());
+    let client_config = Arc::new(crate::ssh_options::client_config(
+        &crate::ssh_options::defaults(),
+        config.keepalive_secs,
+    ));
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -896,6 +929,23 @@ pub async fn connect_saved(
     Ok(())
 }
 
+const STARTUP_MISSING_NOTICE: &str = "\r\n[Startup snippet not found]\r\n";
+/// Writer reports `true` when a write failed (transport lost); a dropped sender
+/// (user disconnect) or `false` (input channel closed) is not a loss.
+fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
+    matches!(reason, Ok(true))
+}
+
+const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
+
+pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
+    let mut b = command.as_bytes().to_vec();
+    if !command.ends_with('\n') {
+        b.push(b'\n');
+    }
+    b
+}
+
 async fn run_connect_session(
     app_handle: tauri::AppHandle,
     session_id: String,
@@ -978,8 +1028,11 @@ async fn run_connect_session(
                 return;
             }
         };
+        for (name, value) in &config.env {
+            let _ = channel.set_env(false, name.as_str(), value.as_str()).await;
+        }
         if let Err(e) = channel
-            .request_pty(true, "xterm", cols, rows, 0, 0, &[])
+            .request_pty(true, &crate::ssh_options::defaults().term, cols, rows, 0, 0, &[])
             .await
         {
             emit(&app_handle, "error", &e.to_string());
@@ -994,26 +1047,30 @@ async fn run_connect_session(
 
         let (mut read_half, write_half) = channel.split();
         let (tx, rx) = mpsc::channel::<SessionCmd>(32);
-        let (close_tx, close_rx) = oneshot::channel::<()>();
+        let (close_tx, close_rx) = oneshot::channel::<bool>();
+        let startup_tx = tx.clone();
         let writer_handle = tokio::spawn(async move {
             let mut close_tx = Some(close_tx);
             let mut rx = rx;
+            let mut write_failed = false;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     SessionCmd::Input(bytes) => {
                         if let Err(_) = write_half.data_bytes(bytes).await {
+                            write_failed = true;
                             break;
                         }
                     }
                     SessionCmd::Resize(cols, rows) => {
                         if let Err(_) = write_half.window_change(cols, rows, 0, 0).await {
+                            write_failed = true;
                             break;
                         }
                     }
                 }
             }
             if let Some(tx) = close_tx.take() {
-                let _ = tx.send(());
+                let _ = tx.send(write_failed);
             }
         });
         {
@@ -1039,12 +1096,22 @@ async fn run_connect_session(
             }),
         );
 
+        match &config.startup {
+            Some(StartupAction::Command(c)) => {
+                let _ = startup_tx.send(SessionCmd::Input(startup_bytes(c))).await;
+            }
+            Some(StartupAction::MissingSnippet) => emit(&app_handle, "output", STARTUP_MISSING_NOTICE),
+            None => {}
+        }
+        drop(startup_tx);
+
         let mut pending: Vec<u8> = Vec::new();
         let mut close_rx = close_rx;
+        let mut lost = false;
         loop {
             tokio::select! {
                 msg = read_half.wait() => {
-                    let Some(msg) = msg else { break };
+                    let Some(msg) = msg else { lost = true; break };
                     match msg {
                         russh::ChannelMsg::Data { data } => {
                             if data.is_empty() {
@@ -1074,7 +1141,7 @@ async fn run_connect_session(
                         _ => {}
                     }
                 }
-                _ = &mut close_rx => break,
+                reason = &mut close_rx => { lost = close_reason_is_lost(reason); break }
             }
         }
         if !pending.is_empty() {
@@ -1083,6 +1150,9 @@ async fn run_connect_session(
         // Remove session slot and abort writer
         if let Some(slot) = sessions.lock().ok().and_then(|mut g| g.remove(&session_id)) {
             slot.writer_handle.abort();
+        }
+        if lost {
+            emit(&app_handle, "output", CONNECTION_LOST_NOTICE);
         }
         emit(&app_handle, "disconnected", "");
         // session handle drops here → connection closed
@@ -1241,6 +1311,29 @@ pub async fn ping_host_saved(
     Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
 }
 
+fn load_startup(
+    db: &crate::db::LocalDb,
+    crypto: &crate::CryptoState,
+    vault_id: &str,
+    startup: &serde_json::Value,
+) -> Option<StartupAction> {
+    if let Some(cmd) = startup["command"].as_str() {
+        return (!cmd.trim().is_empty()).then(|| StartupAction::Command(cmd.to_string()));
+    }
+    let id = startup["snippetId"].as_str()?;
+    let command = (|| {
+        let row = crate::db::get_sync_row(db, crate::db::Table::Snippets, id).ok()??;
+        if row.deleted_at.is_some() || row.vault_id != vault_id {
+            return None;
+        }
+        let session = crypto.session.lock().ok()?;
+        let plain = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "snippets", &row.vault_id).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&plain).ok()?;
+        v["command"].as_str().filter(|c| !c.trim().is_empty()).map(String::from)
+    })();
+    Some(command.map_or(StartupAction::MissingSnippet, StartupAction::Command))
+}
+
 /// Build the SSH config entirely in Rust from the saved (encrypted) host +
 /// key rows. Sensitive material never crosses the IPC boundary.
 pub fn load_host_config(
@@ -1263,6 +1356,25 @@ pub fn load_host_config(
         private_key: None,
         passphrase: None,
         detect_os: false,
+        keepalive_secs: payload["keepaliveSecs"]
+            .as_f64()
+            .map(|n| crate::ssh_options::clamp_keepalive(n as i64)),
+        env: payload["env"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        let name = r["name"].as_str()?;
+                        let mut ch = name.chars();
+                        let ok = ch.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            && ch.all(|c| c.is_ascii_alphanumeric() || c == '_');
+                        ok.then(|| Some((name.to_string(), r["value"].as_str()?.to_string())))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        startup: load_startup(db, crypto, &row.vault_id, &payload["startup"]),
     };
     let auth_type = row.auth_type.as_deref().unwrap_or("password");
     // Load password when auth_type is "password" or "both"

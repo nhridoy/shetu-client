@@ -64,8 +64,9 @@ pub async fn connect_saved_route(
         .await
         .map_err(|error| format!("bastion connection: {error}"))
         .map_err(at(RouteHop::Bastion))?;
+    let connect_timeout = crate::ssh_options::connect_timeout(&crate::ssh_options::defaults());
     let channel = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        connect_timeout,
         open_target_channel(&bastion, &route.target.host, route.target.port),
     )
     .await
@@ -88,7 +89,7 @@ pub async fn connect_saved_route(
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 if !prompt_watch.is_waiting() {
                     network_wait += std::time::Duration::from_millis(100);
-                    if network_wait >= std::time::Duration::from_secs(10) {
+                    if network_wait >= connect_timeout {
                         return Err(at(RouteHop::Target)("destination SSH handshake through bastion timed out".to_string()));
                     }
                 }
@@ -318,5 +319,81 @@ mod tests {
         for id in ["missing-target", "cross-target", "self", "chain-target"] {
             assert!(resolve_saved_route(&db, &crypto, id).is_err(), "{id}");
         }
+    }
+
+    use crate::ssh::StartupAction;
+
+    fn host_with(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, payload: serde_json::Value) {
+        let data = crypto::encrypt_secret(&payload.to_string(), "hosts", &crypto.session.lock().unwrap()).unwrap();
+        db.conn.lock().unwrap().execute(
+            "INSERT INTO hosts (id, vault_id, name, data, auth_type, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 'none', '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z')",
+            rusqlite::params![id, vault, id, data],
+        ).unwrap();
+    }
+
+    fn snippet(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, command: &str, deleted: bool) {
+        let data = crypto::encrypt_secret(&serde_json::json!({"command": command}).to_string(), "snippets", &crypto.session.lock().unwrap()).unwrap();
+        db.conn.lock().unwrap().execute(
+            "INSERT INTO snippets (id, vault_id, name, data, created_at, updated_at, deleted_at) VALUES (?1, ?2, ?1, ?3, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z', ?4)",
+            rusqlite::params![id, vault, data, deleted.then_some("2026-10-03T00:00:00Z")],
+        ).unwrap();
+    }
+
+    fn startup_of(startup: serde_json::Value) -> Option<StartupAction> {
+        let (db, crypto, vault) = fixture();
+        snippet(&db, &crypto, "s1", &vault, "htop", false);
+        snippet(&db, &crypto, "s2", "other-vault", "top", false);
+        snippet(&db, &crypto, "s3", &vault, "gone", true);
+        host_with(&db, &crypto, "h", &vault, serde_json::json!({"address": "a", "startup": startup}));
+        crate::ssh::load_host_config(&db, &crypto, "h").unwrap().startup
+    }
+
+    #[test]
+    fn host_options_parse_keepalive_env_and_command() {
+        let (db, crypto, vault) = fixture();
+        host_with(&db, &crypto, "h", &vault, serde_json::json!({"address": "a", "keepaliveSecs": 120,
+            "env": [{"name":"LANG","value":"C.UTF-8"},{"name":"1BAD","value":"x"},{"name":"OK_2","value":"y"},{"name":"NUM","value":5}],
+            "startup": {"command": "tmux a"}}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!(c.keepalive_secs, Some(120));
+        assert_eq!(c.env, vec![("LANG".to_string(), "C.UTF-8".to_string()), ("OK_2".to_string(), "y".to_string())]);
+        assert_eq!(c.startup, Some(StartupAction::Command("tmux a".into())));
+    }
+
+    #[test]
+    fn startup_snippet_resolves_in_same_vault() {
+        assert_eq!(startup_of(serde_json::json!({"snippetId": "s1"})), Some(StartupAction::Command("htop".into())));
+    }
+
+    #[test]
+    fn startup_snippet_in_other_vault_is_missing() {
+        assert_eq!(startup_of(serde_json::json!({"snippetId": "s2"})), Some(StartupAction::MissingSnippet));
+    }
+
+    #[test]
+    fn deleted_or_absent_snippet_is_missing() {
+        for id in ["s3", "nope"] {
+            assert_eq!(startup_of(serde_json::json!({"snippetId": id})), Some(StartupAction::MissingSnippet), "{id}");
+        }
+    }
+
+    #[test]
+    fn host_options_tolerate_junk_payload() {
+        let (db, crypto, vault) = fixture();
+        host_with(&db, &crypto, "h", &vault, serde_json::json!({"address": "a", "keepaliveSecs": "abc", "env": "x", "startup": {}}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!(c.keepalive_secs, None);
+        assert!(c.env.is_empty());
+        assert_eq!(c.startup, None);
+        assert!(resolve_saved_route(&db, &crypto, "h").is_ok());
+        assert_eq!(startup_of(serde_json::json!({"command": "  "})), None);
+    }
+
+    #[test]
+    fn legacy_payload_has_no_options() {
+        let (db, crypto, vault) = fixture();
+        host(&db, &crypto, "h", &vault, None);
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.keepalive_secs, c.env.is_empty(), c.startup), (None, true, None));
     }
 }

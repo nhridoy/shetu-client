@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 export type CursorStyle = "block" | "underline" | "bar";
 export type BellStyle = "none" | "sound" | "visual";
+export type SshTerminalType = "xterm-256color" | "xterm" | "vt100";
 
 export interface AppSettings {
   theme: string;
@@ -15,6 +16,9 @@ export interface AppSettings {
   bellStyle: BellStyle;
   recordTerminalOutput: boolean;
   trustNewHosts: boolean;
+  sshKeepaliveSecs: number;
+  sshConnectTimeoutSecs: number;
+  sshTerminalType: SshTerminalType;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -27,13 +31,26 @@ const DEFAULT_SETTINGS: AppSettings = {
   bellStyle: "none",
   recordTerminalOutput: false,
   trustNewHosts: false,
+  sshKeepaliveSecs: 30,
+  sshConnectTimeoutSecs: 10,
+  sshTerminalType: "xterm-256color",
 };
+
+const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
 
 const STORE_KEY = "settings.json";
 
 // Rust starts with this off, so a failed push never trusts more than the user chose.
 function pushTrustNewHosts(enabled: boolean) {
   void invoke("set_trust_new_hosts", { enabled }).catch(() => {});
+}
+
+function pushSshDefaults(s: AppSettings) {
+  void invoke("set_ssh_defaults", {
+    keepaliveSecs: s.sshKeepaliveSecs,
+    connectTimeoutSecs: s.sshConnectTimeoutSecs,
+    term: s.sshTerminalType,
+  }).catch(() => {});
 }
 
 function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
@@ -46,6 +63,15 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
       }
     }
   }
+  // Junk in settings.json must not reach Rust (NaN → null fails its i64 args).
+  const ka = merged.sshKeepaliveSecs;
+  if (!Number.isInteger(ka) || !(ka === 0 || (ka >= 5 && ka <= 600)))
+    merged.sshKeepaliveSecs = DEFAULT_SETTINGS.sshKeepaliveSecs;
+  const ct = merged.sshConnectTimeoutSecs;
+  if (!Number.isInteger(ct) || ct < 5 || ct > 60)
+    merged.sshConnectTimeoutSecs = DEFAULT_SETTINGS.sshConnectTimeoutSecs;
+  if (!SSH_TERMS.includes(merged.sshTerminalType))
+    merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;
   return merged;
 }
 
@@ -54,7 +80,12 @@ function parseValue(
   value: unknown,
 ): string | number | boolean | null {
   if (value === null || value === undefined) return null;
-  if (key === "fontSize" || key === "scrollback") {
+  if (
+    key === "fontSize" ||
+    key === "scrollback" ||
+    key === "sshKeepaliveSecs" ||
+    key === "sshConnectTimeoutSecs"
+  ) {
     return typeof value === "number"
       ? value
       : Number.parseInt(String(value), 10);
@@ -80,7 +111,7 @@ interface SettingsState {
   ) => Promise<void>;
 }
 
-export const useSettingsStore = create<SettingsState>((set) => ({
+export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isLoading: false,
   isLoaded: false,
@@ -104,12 +135,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     const settings = mergeSettings(saved);
     set({ settings, isLoading: false, isLoaded: true });
     pushTrustNewHosts(settings.trustNewHosts);
+    pushSshDefaults(settings);
   },
 
   updateSetting: async (key, value) => {
-    set((s) => ({
-      settings: { ...s.settings, [key]: value },
-    }));
+    const next = { ...get().settings, [key]: value };
+    set({ settings: next });
+    if (key.startsWith("ssh")) pushSshDefaults(next);
     if (key === "trustNewHosts") pushTrustNewHosts(value as boolean);
     try {
       const store = await load(STORE_KEY, { autoSave: false });
