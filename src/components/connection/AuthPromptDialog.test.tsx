@@ -159,6 +159,36 @@ describe("AuthPromptDialog", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
+  it("never shows answers typed for a prompt Rust ended in the next one", async () => {
+    await setup();
+    await prompt(base);
+    await prompt({
+      ...base,
+      id: "p2",
+      name: "Second",
+      prompts: [{ text: "Token: ", echo: true }],
+    });
+    await type(inputs()[0], "secret");
+    const proto = HTMLInputElement.prototype;
+    const value = Object.getOwnPropertyDescriptor(proto, "value");
+    const shown: string[] = [];
+    Object.defineProperty(proto, "value", {
+      ...value,
+      set(v: string) {
+        shown.push(v);
+        value?.set?.call(this, v);
+      },
+    });
+    try {
+      await emit("ssh-auth-prompt-closed", { id: "p1" });
+    } finally {
+      if (value) Object.defineProperty(proto, "value", value);
+    }
+    expect(document.body.textContent).toContain("Second");
+    expect(shown).not.toContain("secret");
+    expect(inputs()[0].value).toBe("");
+  });
+
   it("drops a queued prompt that Rust ended", async () => {
     await setup();
     await prompt(base);
