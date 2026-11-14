@@ -238,6 +238,10 @@ where
     let (mut password_ran, mut password_rejected) = (false, false);
     if let Some(password) = config.password.as_ref() {
         if allows(&allowed, MethodKind::Password) {
+            // Method list known before the request. With one, a failure means rejected; without
+            // one (PAM-only server, no earlier step) only the post-failure list can tell, since a
+            // discovery round trip is not allowed.
+            let listed_before = allowed.as_ref().map(|s| s.contains(&MethodKind::Password));
             let auth = session
                 .authenticate_password(user.clone(), password.clone())
                 .await
@@ -245,8 +249,8 @@ where
             match record(auth, &mut allowed) {
                 Step::Success => return Ok(()),
                 Step::Partial => password_ran = true,
-                // `password` missing from the methods that can continue: unsupported, never checked.
-                Step::Rejected if !allows(&allowed, MethodKind::Password) => {}
+                // No earlier list and `password` missing from the continue list: unsupported.
+                Step::Rejected if listed_before.is_none() && !allows(&allowed, MethodKind::Password) => {}
                 Step::Rejected => {
                     password_ran = true;
                     password_rejected = true;
@@ -331,6 +335,8 @@ mod tests {
         password: Option<&'static str>,
         kbd: Vec<(&'static str, &'static str)>,
         methods: Option<MethodSet>,
+        /// Methods listed after a failed password, when different from `methods`.
+        after_password: Option<MethodSet>,
         /// Correct password gets "partial success, continue with keyboard-interactive".
         password_partial: bool,
         /// Keyboard-interactive answers every round with another zero-prompt request.
@@ -368,7 +374,9 @@ mod tests {
             } else if self.methods.as_ref().is_none_or(|m| m.contains(&MethodKind::Password)) {
                 // Like OpenSSH: a wrong password keeps `password` among the methods that can continue.
                 russh::server::Auth::Reject {
-                    proceed_with_methods: Some(self.methods.clone().unwrap_or_else(MethodSet::all)),
+                    proceed_with_methods: Some(
+                        self.after_password.clone().or_else(|| self.methods.clone()).unwrap_or_else(MethodSet::all),
+                    ),
                     partial_success: false,
                 }
             } else {
@@ -644,6 +652,20 @@ mod tests {
         });
         run(srv, config(None, Some("pw")), None, Some(prompter)).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn kbdint_no_auto_answer_when_rejected_password_vanishes_from_methods() {
+        let srv = Srv {
+            kbd: vec![("Password: ", "pw")],
+            methods: methods(&[MethodKind::PublicKey, MethodKind::Password, MethodKind::KeyboardInteractive]),
+            after_password: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
+        let log = srv.log.clone();
+        let err = run(srv, config(Some(pem(&random_key())), Some("pw")), None, None).await.unwrap_err();
+        assert_eq!(err, "authentication rejected");
+        assert_eq!(count(&log, "kbdint"), 0);
     }
 
     #[tokio::test]
