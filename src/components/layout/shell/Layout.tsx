@@ -11,6 +11,7 @@ import SettingsModal from "@/components/settings/modal/SettingsModal";
 import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
+import { useWindowCloseGuard } from "@/hooks/layout/useWindowCloseGuard";
 import { useModal } from "@/hooks/useModal";
 import { useShortcut } from "@/hooks/useShortcut";
 import {
@@ -71,6 +72,8 @@ export default function Layout() {
       .getState()
       .confirmLeave()
       .then((ok) => ok && go());
+
+  useWindowCloseGuard();
 
   const workspaceModal = useModal();
   const presetModal = useModal();
