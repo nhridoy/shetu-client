@@ -93,8 +93,15 @@ pub fn derive_public_key(private_key: String) -> Result<String, String> {
 }
 
 /// Converts PuTTY `.ppk` text to OpenSSH text, re-encrypted with the same passphrase if given.
+/// Runs off the main thread: Argon2 and re-encryption take noticeable time.
 #[tauri::command]
-pub fn convert_ppk(text: String, passphrase: Option<String>) -> Result<String, String> {
+pub async fn convert_ppk(text: String, passphrase: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || convert_ppk_inner(text, passphrase))
+        .await
+        .map_err(|e| format!("Key conversion task failed: {e}"))?
+}
+
+fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
     use russh::keys::ssh_key::Error;
     let passphrase = passphrase.filter(|p| !p.is_empty());
     let key = PrivateKey::from_ppk(&text, passphrase.clone()).map_err(|e| match &e {
@@ -117,7 +124,7 @@ pub fn convert_ppk(text: String, passphrase: Option<String>) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_ppk, derive_public_key, generate_ssh_key, generate_ssh_key_inner,
+        convert_ppk_inner, derive_public_key, generate_ssh_key, generate_ssh_key_inner,
         inspect_private_key,
     };
     use russh::keys::{
@@ -292,7 +299,10 @@ mod tests {
                 h.update(pass.as_bytes());
                 let mut m = Hmac::<Sha1>::new_from_slice(&h.finalize()).unwrap();
                 m.update(&mac_input);
-                (m.finalize().into_bytes().to_vec(), encrypt(&aes_key, &[0u8; 16]))
+                (
+                    m.finalize().into_bytes().to_vec(),
+                    encrypt(&aes_key, &[0u8; 16]),
+                )
             }
             (3, Some(pass)) => {
                 // Small Argon2id parameters keep the test fast.
@@ -311,7 +321,10 @@ mod tests {
                 );
                 let mut m = Hmac::<sha2::Sha256>::new_from_slice(&out[48..]).unwrap();
                 m.update(&mac_input);
-                (m.finalize().into_bytes().to_vec(), encrypt(&out[..32], &out[32..48]))
+                (
+                    m.finalize().into_bytes().to_vec(),
+                    encrypt(&out[..32], &out[32..48]),
+                )
             }
             _ => panic!("unsupported fixture combination"),
         };
@@ -347,7 +360,7 @@ mod tests {
 
     #[test]
     fn ppk_v3_unencrypted_converts() {
-        let out = convert_ppk(ppk_fixture(3, None), None).unwrap();
+        let out = convert_ppk_inner(ppk_fixture(3, None), None).unwrap();
         let key = russh::keys::decode_secret_key(&out, None).unwrap();
         assert_eq!(
             key.public_key().key_data(),
@@ -357,7 +370,7 @@ mod tests {
 
     #[test]
     fn ppk_v2_encrypted_converts_with_passphrase() {
-        let out = convert_ppk(ppk_fixture(2, Some("pw")), Some("pw".into())).unwrap();
+        let out = convert_ppk_inner(ppk_fixture(2, Some("pw")), Some("pw".into())).unwrap();
         assert!(russh::keys::decode_secret_key(&out, None).is_err());
         let key = russh::keys::decode_secret_key(&out, Some("pw")).unwrap();
         assert_eq!(
@@ -369,7 +382,7 @@ mod tests {
     #[test]
     fn ppk_encrypted_without_passphrase() {
         assert_eq!(
-            convert_ppk(ppk_fixture(2, Some("pw")), None).unwrap_err(),
+            convert_ppk_inner(ppk_fixture(2, Some("pw")), None).unwrap_err(),
             "PPK_ENCRYPTED"
         );
     }
@@ -377,7 +390,7 @@ mod tests {
     #[test]
     fn ppk_wrong_passphrase() {
         assert_eq!(
-            convert_ppk(ppk_fixture(2, Some("pw")), Some("nope".into())).unwrap_err(),
+            convert_ppk_inner(ppk_fixture(2, Some("pw")), Some("nope".into())).unwrap_err(),
             "PPK_BAD_PASSPHRASE"
         );
     }
@@ -389,7 +402,7 @@ mod tests {
     fn ppk_high_bit_seed_converts_in_every_format() {
         for (version, pass) in [(2, Some("pw")), (3, None), (3, Some("pw"))] {
             let text = ppk_fixture_seeded(version, pass, HIGH_BIT_SEED);
-            let out = convert_ppk(text, pass.map(Into::into)).unwrap();
+            let out = convert_ppk_inner(text, pass.map(Into::into)).unwrap();
             let key = russh::keys::decode_secret_key(&out, pass).unwrap();
             assert_eq!(
                 key.public_key().key_data(),
@@ -404,9 +417,12 @@ mod tests {
     fn ppk_high_bit_seed_passphrase_errors() {
         for version in [2, 3] {
             let text = ppk_fixture_seeded(version, Some("pw"), HIGH_BIT_SEED);
-            assert_eq!(convert_ppk(text.clone(), None).unwrap_err(), "PPK_ENCRYPTED");
             assert_eq!(
-                convert_ppk(text, Some("nope".into())).unwrap_err(),
+                convert_ppk_inner(text.clone(), None).unwrap_err(),
+                "PPK_ENCRYPTED"
+            );
+            assert_eq!(
+                convert_ppk_inner(text, Some("nope".into())).unwrap_err(),
                 "PPK_BAD_PASSPHRASE"
             );
         }
@@ -427,11 +443,25 @@ Private-MAC: 94140d0344fad6aa1bf7b71e9c93db11ccac8a232f8a51e11c024869d608c82d
 
     #[test]
     fn real_puttygen_ed25519_with_high_bit_secret_converts() {
-        let out = convert_ppk(PUTTYGEN_ED25519.into(), None).unwrap();
+        let out = convert_ppk_inner(PUTTYGEN_ED25519.into(), None).unwrap();
         let key = russh::keys::decode_secret_key(&out, None).unwrap();
         assert_eq!(
             key.public_key().to_openssh().unwrap(),
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti user@example.com"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ppk_conversion_does_not_block_the_runtime() {
+        let task = tokio::spawn(super::convert_ppk(
+            ppk_fixture(3, Some("pw")),
+            Some("pw".into()),
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "PPK conversion blocked the runtime thread"
+        );
+        assert!(task.await.unwrap().is_ok());
     }
 }
