@@ -103,19 +103,30 @@ pub async fn convert_ppk(text: String, passphrase: Option<String>) -> Result<Str
 
 /// Rejects v3 headers whose Argon2 cost would run before the MAC check can catch a crafted file.
 fn check_argon2_limits(text: &str) -> Result<(), String> {
+    const MAX_MEMORY_KIB: u64 = 1_048_576; // 1 GiB
+    const MAX_PARALLELISM: u64 = 16;
+    // Total work (KiB × passes): 1 GiB × 64. puttygen picks passes by timing,
+    // so passes alone is not capped.
+    const MAX_WORK: u64 = MAX_MEMORY_KIB * 64;
+    let (mut memory, mut passes) = (0u64, 0u64);
+    // Unparsable values are left for ssh-key to reject.
     for (key, value) in text.lines().filter_map(|l| l.split_once(": ")) {
-        let max = match key {
-            "Argon2-Memory" => 1_048_576, // KiB, 1 GiB
-            "Argon2-Passes" => 64,
-            "Argon2-Parallelism" => 16,
-            _ => continue,
-        };
-        // An unparsable value is left for ssh-key to reject.
-        if value.parse::<u64>().is_ok_and(|v| v > max) {
-            return Err("Could not read PuTTY key: Argon2 parameters too large".into());
+        let Ok(v) = value.parse::<u64>() else { continue };
+        match key {
+            "Argon2-Memory" => memory = memory.max(v),
+            "Argon2-Passes" => passes = passes.max(v),
+            "Argon2-Parallelism" if v > MAX_PARALLELISM => return Err(too_large()),
+            _ => {}
         }
     }
+    if memory > MAX_MEMORY_KIB || memory.saturating_mul(passes) > MAX_WORK {
+        return Err(too_large());
+    }
     Ok(())
+}
+
+fn too_large() -> String {
+    "Could not read PuTTY key: Argon2 parameters too large".into()
 }
 
 fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
@@ -484,11 +495,23 @@ Private-MAC: 94140d0344fad6aa1bf7b71e9c93db11ccac8a232f8a51e11c024869d608c82d
     }
 
     #[test]
+    fn argon2_limit_allows_many_passes_at_default_memory() {
+        // puttygen picks passes by timing, so fast machines can exceed 64.
+        assert!(super::check_argon2_limits(
+            "Argon2-Memory: 8192\nArgon2-Passes: 2000\nArgon2-Parallelism: 1\n"
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn ppk_rejects_oversized_argon2_parameters() {
         let text = ppk_fixture(3, Some("pw"));
         for (from, to) in [
             ("Argon2-Memory: 256", "Argon2-Memory: 4194304"),
-            ("Argon2-Passes: 1", "Argon2-Passes: 65"),
+            (
+                "Argon2-Memory: 256\nArgon2-Passes: 1",
+                "Argon2-Memory: 1048576\nArgon2-Passes: 65",
+            ),
             ("Argon2-Parallelism: 1", "Argon2-Parallelism: 17"),
         ] {
             let started = std::time::Instant::now();
