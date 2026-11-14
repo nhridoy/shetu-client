@@ -57,6 +57,7 @@ describe("ssh defaults", () => {
       keepaliveSecs: 30,
       connectTimeoutSecs: 10,
       term: "xterm-256color",
+      agentPath: "",
     });
   });
 
@@ -66,6 +67,7 @@ describe("ssh defaults", () => {
       keepaliveSecs: 60,
       connectTimeoutSecs: 10,
       term: "xterm-256color",
+      agentPath: "",
     });
   });
 
@@ -79,6 +81,7 @@ describe("ssh defaults", () => {
       keepaliveSecs: 30,
       connectTimeoutSecs: 20,
       term: "xterm-256color",
+      agentPath: "",
     });
   });
 
@@ -93,6 +96,7 @@ describe("ssh defaults", () => {
       keepaliveSecs: 30,
       connectTimeoutSecs: 20,
       term: "vt100",
+      agentPath: "",
     });
   });
 
@@ -106,6 +110,19 @@ describe("ssh defaults", () => {
       keepaliveSecs: 30,
       connectTimeoutSecs: 10,
       term: "xterm-256color",
+      agentPath: "",
+    });
+  });
+
+  it("updateSetting sshAgentPath pushes it", async () => {
+    await useSettingsStore
+      .getState()
+      .updateSetting("sshAgentPath", "/run/user/1000/1p.sock");
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 30,
+      connectTimeoutSecs: 10,
+      term: "xterm-256color",
+      agentPath: "/run/user/1000/1p.sock",
     });
   });
 });

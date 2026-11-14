@@ -19,6 +19,7 @@ export interface AppSettings {
   sshKeepaliveSecs: number;
   sshConnectTimeoutSecs: number;
   sshTerminalType: SshTerminalType;
+  sshAgentPath: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -34,6 +35,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   sshKeepaliveSecs: 30,
   sshConnectTimeoutSecs: 10,
   sshTerminalType: "xterm-256color",
+  sshAgentPath: "",
 };
 
 const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
@@ -50,6 +52,7 @@ function pushSshDefaults(s: AppSettings) {
     keepaliveSecs: s.sshKeepaliveSecs,
     connectTimeoutSecs: s.sshConnectTimeoutSecs,
     term: s.sshTerminalType,
+    agentPath: s.sshAgentPath,
   }).catch(() => {});
 }
 
@@ -72,6 +75,8 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
     merged.sshConnectTimeoutSecs = DEFAULT_SETTINGS.sshConnectTimeoutSecs;
   if (!SSH_TERMS.includes(merged.sshTerminalType))
     merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;
+  if (typeof merged.sshAgentPath !== "string")
+    merged.sshAgentPath = DEFAULT_SETTINGS.sshAgentPath;
   return merged;
 }
 

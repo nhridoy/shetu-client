@@ -6,11 +6,12 @@ pub struct SshDefaults {
     pub keepalive_secs: u32,
     pub connect_timeout_secs: u32,
     pub term: String,
+    pub agent_path: String,
 }
 
 impl Default for SshDefaults {
     fn default() -> Self {
-        Self { keepalive_secs: 30, connect_timeout_secs: 10, term: "xterm-256color".into() }
+        Self { keepalive_secs: 30, connect_timeout_secs: 10, term: "xterm-256color".into(), agent_path: String::new() }
     }
 }
 
@@ -52,11 +53,12 @@ pub fn connect_timeout(defaults: &SshDefaults) -> Duration {
 }
 
 #[tauri::command]
-pub fn set_ssh_defaults(keepalive_secs: i64, connect_timeout_secs: i64, term: String) -> Result<(), String> {
+pub fn set_ssh_defaults(keepalive_secs: i64, connect_timeout_secs: i64, term: String, agent_path: String) -> Result<(), String> {
     let new = SshDefaults {
         keepalive_secs: clamp_keepalive(keepalive_secs),
         connect_timeout_secs: clamp_connect_timeout(connect_timeout_secs),
         term: normalize_term(&term),
+        agent_path: agent_path.trim().to_string(),
     };
     *DEFAULTS.write().map_err(|e| e.to_string())? = Some(new);
     Ok(())
@@ -69,6 +71,9 @@ mod tests {
     #[test] fn defaults_match_spec() {
         let d = SshDefaults::default();
         assert_eq!((d.keepalive_secs, d.connect_timeout_secs, d.term.as_str()), (30, 10, "xterm-256color"));
+    }
+    #[test] fn defaults_include_empty_agent_path() {
+        assert_eq!(SshDefaults::default().agent_path, "");
     }
     #[test] fn clamps_out_of_range_keepalive() {
         assert_eq!([clamp_keepalive(0), clamp_keepalive(-5), clamp_keepalive(3), clamp_keepalive(45), clamp_keepalive(99_999)], [0, 0, 5, 45, 600]);

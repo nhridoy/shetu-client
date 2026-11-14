@@ -15,6 +15,7 @@ mod offline_auth;
 mod session_history;
 mod sftp;
 mod ssh;
+mod ssh_agent;
 mod ssh_auth;
 mod ssh_config_import;
 mod ssh_options;

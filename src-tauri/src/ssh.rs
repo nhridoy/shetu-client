@@ -578,6 +578,10 @@ pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str
 }
 
 impl SshHandler {
+    pub(crate) fn auto_accept(&self) -> bool {
+        self.auto_accept
+    }
+
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
         HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port)
     }
@@ -743,6 +747,8 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         &crate::ssh_options::defaults(),
         config.keepalive_secs,
     ));
+    // Background checks (ping, OS probe) never touch the agent.
+    let use_agent = !handler.auto_accept();
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -750,11 +756,13 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         emit_progress(app, sid, "authenticating");
     }
 
-    // Task 2 and 3 wire the real agent and prompter.
-    let ctx = crate::ssh_auth::LoginContext::<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>> {
-        agent: None,
-        prompter: None,
+    let mut agent = if use_agent {
+        crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await
+    } else {
+        None
     };
+    // Task 3 wires the prompter.
+    let ctx = crate::ssh_auth::LoginContext { agent: agent.as_mut(), prompter: None };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
 }
