@@ -63,6 +63,7 @@ export default function HostForm({
   const { currentVaultId } = useVaultStore();
   const keys = useKeyStore((s) => s.keys);
   const snippets = useSnippetStore((s) => s.snippets);
+  const fetchSnippets = useSnippetStore((s) => s.fetchSnippets);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
@@ -74,6 +75,10 @@ export default function HostForm({
   useEffect(() => {
     fetchKeys(currentVaultId ?? undefined);
   }, [fetchKeys, currentVaultId]);
+
+  useEffect(() => {
+    fetchSnippets(currentVaultId ?? undefined);
+  }, [fetchSnippets, currentVaultId]);
 
   useEffect(() => {
     let cancelled = false;

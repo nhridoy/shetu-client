@@ -11,6 +11,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 }));
 
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import HostForm from "./HostForm";
 
@@ -145,5 +146,14 @@ describe("HostForm edit", () => {
     expect(patch.keepaliveSecs).toBe(120);
     expect(patch.env).toEqual([{ name: "LANG", value: "C.UTF-8" }]);
     expect(patch.startup).toEqual({ command: "tmux a" });
+  });
+});
+
+describe("HostForm snippets", () => {
+  it("loads snippets for the current vault on mount", async () => {
+    const fetchSnippets = vi.fn().mockResolvedValue(undefined);
+    useSnippetStore.setState({ fetchSnippets } as never);
+    await mountAndFill();
+    expect(fetchSnippets).toHaveBeenCalledWith("v1");
   });
 });
