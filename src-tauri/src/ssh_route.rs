@@ -10,8 +10,9 @@ pub struct RouteConnection {
     pub bastion: Option<russh::client::Handle<SshHandler>>,
 }
 
-/// Which hop of a route failed, so callers need not parse the message.
-#[derive(Debug, PartialEq)]
+/// Which hop of a route failed, so callers need not parse the message; also which hop a login prompt is for.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RouteHop {
     Bastion,
     Target,
@@ -60,7 +61,7 @@ pub async fn connect_saved_route(
             bastion: None,
         });
     };
-    let bastion = ssh::connect_authenticated(bastion_handler, bastion_config, progress)
+    let bastion = ssh::connect_authenticated(bastion_handler.at_hop(RouteHop::Bastion), bastion_config, progress)
         .await
         .map_err(|error| format!("bastion connection: {error}"))
         .map_err(at(RouteHop::Bastion))?;

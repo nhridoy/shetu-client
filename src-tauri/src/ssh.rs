@@ -621,10 +621,28 @@ fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<Strin
     }
 }
 
+/// The `ssh-auth-prompt` event body. `hop` tells a jump-host prompt from the destination's.
+fn auth_prompt_payload(
+    id: &str,
+    session_id: &str,
+    hop: crate::ssh_route::RouteHop,
+    host: &str,
+    port: u16,
+    username: &str,
+    request: &crate::ssh_auth::AuthPromptRequest,
+) -> serde_json::Value {
+    let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
+    serde_json::json!({
+        "id": id, "sessionId": session_id, "hop": hop, "kind": request.kind, "host": host, "port": port, "username": username,
+        "name": request.name, "instructions": request.instructions, "prompts": prompts,
+    })
+}
+
 pub(crate) fn make_prompter(
     app: tauri::AppHandle,
     pending: PendingPrompts,
     session_id: String,
+    hop: crate::ssh_route::RouteHop,
     host: String,
     port: u16,
     username: String,
@@ -633,12 +651,8 @@ pub(crate) fn make_prompter(
         let (app, pending, session_id, host, username) =
             (app.clone(), Arc::clone(&pending), session_id.clone(), host.clone(), username.clone());
         Box::pin(async move {
-            let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
             await_prompt_answer(&pending, |id| {
-                let _ = app.emit("ssh-auth-prompt", serde_json::json!({
-                    "id": id, "sessionId": session_id, "kind": request.kind, "host": host, "port": port, "username": username,
-                    "name": request.name, "instructions": request.instructions, "prompts": prompts,
-                }));
+                let _ = app.emit("ssh-auth-prompt", auth_prompt_payload(id, &session_id, hop, &host, port, &username, &request));
             }, |id| {
                 let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
             }, AUTH_PROMPT_TIMEOUT).await
@@ -719,6 +733,8 @@ pub struct SshHandler {
     require_known_host: bool,
     /// Set only on the target's interactive terminal handler.
     forward_agent: bool,
+    /// Which hop of a route this connection is; named in login prompts.
+    hop: crate::ssh_route::RouteHop,
 }
 
 pub(crate) struct HostKeyPromptWatch {
@@ -779,7 +795,12 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false, hop: crate::ssh_route::RouteHop::Target }
+    }
+
+    pub(crate) fn at_hop(mut self, hop: crate::ssh_route::RouteHop) -> Self {
+        self.hop = hop;
+        self
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -961,7 +982,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ));
     let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
     let prompter = handler.interactive_prompts();
-    let session_id = handler.session_id.clone();
+    let (session_id, hop) = (handler.session_id.clone(), handler.hop);
     let waits = Arc::clone(&handler.user_waits);
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
@@ -972,7 +993,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 
     let agent_path = crate::ssh_options::defaults().agent_path;
     let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
-    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, session_id, config.host.clone(), config.port, config.username.clone()));
+    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, session_id, hop, config.host.clone(), config.port, config.username.clone()));
     let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
@@ -1623,6 +1644,25 @@ pub fn load_host_config_as(
         }
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod auth_prompt_payload_tests {
+    use super::auth_prompt_payload;
+    use crate::ssh_auth::{AuthPromptRequest, PromptKind};
+    use crate::ssh_route::RouteHop;
+
+    #[test]
+    fn payload_names_the_hop_session_and_kind() {
+        let request = AuthPromptRequest { kind: PromptKind::Password, name: String::new(), instructions: String::new(), prompts: vec![("Password".into(), false)] };
+        let target = auth_prompt_payload("p1", "s1", RouteHop::Target, "h", 22, "u", &request);
+        assert_eq!(target, serde_json::json!({
+            "id": "p1", "sessionId": "s1", "hop": "target", "kind": "password", "host": "h", "port": 22, "username": "u",
+            "name": "", "instructions": "", "prompts": [{"text": "Password", "echo": false}],
+        }));
+        let bastion = auth_prompt_payload("p2", "s1", RouteHop::Bastion, "jump", 2222, "j", &request);
+        assert_eq!((bastion["hop"].as_str(), bastion["sessionId"].as_str()), (Some("bastion"), Some("s1")));
+    }
 }
 
 #[cfg(test)]

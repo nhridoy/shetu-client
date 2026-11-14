@@ -255,7 +255,8 @@ where
                 instructions: String::new(),
                 prompts: vec![("Password".to_string(), false)],
             };
-            Some(prompter(request).await.ok_or(CANCELLED)?.into_iter().next().unwrap_or_default())
+            // No answer at all is a cancel; an empty string is a (legal) password.
+            Some(prompter(request).await.and_then(|a| a.into_iter().next()).ok_or(CANCELLED)?)
         }
         _ => None,
     };
@@ -744,6 +745,32 @@ mod tests {
         let err = within(run(srv, config(None, None), None, Some(prompter))).await.unwrap_err();
         assert_eq!(err, "Login cancelled");
         assert_eq!(count(&log, "password"), 0);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_empty_answer_list_is_cancel() {
+        let srv = Srv { password: Some(""), ..Default::default() };
+        let log = srv.log.clone();
+        let prompter: Prompter = Arc::new(|_| Box::pin(async { Some(Vec::new()) }));
+        let err = within(run(srv, config(None, None), None, Some(prompter))).await.unwrap_err();
+        assert_eq!(err, "Login cancelled");
+        assert_eq!(count(&log, "password"), 0);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_counts_as_waiting_on_the_user() {
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let waits = UserWaits::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (w, s) = (waits.clone(), seen.clone());
+        let prompter: Prompter = Arc::new(move |_| {
+            s.lock().unwrap().push(w.load(Ordering::SeqCst));
+            Box::pin(async { Some(vec!["pw".to_string()]) })
+        });
+        let no_agent = None::<std::future::Ready<Option<Agent>>>;
+        within(run_with(srv, config(None, None), no_agent, Some(prompter), waits.clone())).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+        assert_eq!(waits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
