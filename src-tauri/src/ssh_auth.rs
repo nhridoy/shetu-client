@@ -216,7 +216,9 @@ where
 
     if let Some(connect) = ctx.agent.filter(|_| allows(&allowed, MethodKind::PublicKey)) {
         if let Some(mut agent) = connect.await {
-            let cap = if config.password.is_some() { AGENT_CAP_WITH_PASSWORD } else { usize::MAX };
+            let password_possible =
+                config.password.is_some() || (ctx.prompter.is_some() && allows(&allowed, MethodKind::Password));
+            let cap = if password_possible { AGENT_CAP_WITH_PASSWORD } else { usize::MAX };
             // Agent unreachable, erroring or silent ends this step. Signing stays unlimited
             // because confirmation popups are legitimate.
             let identities = tokio::time::timeout(AGENT_LIST_TIMEOUT, agent.request_identities())
@@ -637,6 +639,25 @@ mod tests {
         let agent_attempts = log.iter().take_while(|e| *e != "password").count();
         assert_eq!(agent_attempts, 3, "{log:?}");
         assert_eq!(log.last().map(String::as_str), Some("password"));
+    }
+
+    #[tokio::test]
+    async fn agent_capped_at_three_when_password_can_be_prompted() {
+        let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
+        let agent = agent_with(&agent_keys).await;
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        let prompted = log.clone();
+        let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
+            assert!(matches!(request.kind, PromptKind::Password));
+            prompted.lock().unwrap().push("prompt".into());
+            Box::pin(async { Some(vec!["pw".to_string()]) })
+        });
+        within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
+        let log = log.lock().unwrap().clone();
+        let agent_attempts = log.iter().take_while(|e| *e != "prompt").count();
+        assert_eq!(agent_attempts, 3, "{log:?}");
+        assert_eq!(log[3..], ["prompt".to_string(), "password".to_string()], "{log:?}");
     }
 
     #[tokio::test]
