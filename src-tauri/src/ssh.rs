@@ -400,6 +400,15 @@ mod tests {
     }
 
     #[test]
+    fn ping_reports_reachable_when_only_the_host_key_is_untrusted() {
+        let rejected = format!("bastion connection: ssh handshake jump:22: {}", russh::Error::UnknownKey);
+        let result = ping_failure(rejected).expect("untrusted key still means reachable");
+        assert!(result.reachable);
+        assert_eq!(result.latency_ms, None);
+        assert_eq!(ping_failure("authentication rejected".into()).err(), Some("authentication rejected".to_string()));
+    }
+
+    #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
@@ -464,6 +473,15 @@ fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
         vec![("error", "Connection cancelled: host key not trusted.".to_string())]
     } else {
         vec![("error", error.to_string()), ("disconnected", String::new())]
+    }
+}
+
+/// The server answered; only its key is not trusted yet.
+fn ping_failure(error: String) -> Result<PingResult, String> {
+    if is_host_key_rejection(&error) {
+        Ok(PingResult { reachable: true, latency_ms: None, os: None })
+    } else {
+        Err(error)
     }
 }
 
@@ -1183,7 +1201,7 @@ pub async fn ping_host_saved(
         let connected = tokio::time::timeout(std::time::Duration::from_secs(20), crate::ssh_route::connect_saved_route(&route, target_handler, bastion_handler, None)).await;
         match connected {
             Ok(Ok(connection)) => drop(connection),
-            Ok(Err(error)) => return Err(error),
+            Ok(Err(error)) => return ping_failure(error),
             Err(_) => return Ok(PingResult { reachable: false, latency_ms: None, os: None }),
         }
         let latency_ms = start.elapsed().as_millis() as u64;
