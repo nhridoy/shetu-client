@@ -243,7 +243,7 @@ export default function GroupForm({
               name="username"
               label="Username"
               control={control}
-              placeholder="root"
+              placeholder="Not set"
             />
             <CredentialsFields control={control} mode="group" />
           </SidePanel.Card>

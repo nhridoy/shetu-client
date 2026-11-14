@@ -210,7 +210,7 @@ export default function HostForm({
       setInherited(d);
       if (!isNew) return;
       const defaults = {
-        authType: d?.authType ? "inherit" : "none",
+        authType: groupId ? "inherit" : "none",
         startupMode: groupId ? "inherit" : "none",
         forwardAgentMode: groupId ? "inherit" : "off",
       } as const;
@@ -434,7 +434,7 @@ export default function HostForm({
                 name="username"
                 label="Username"
                 control={control}
-                placeholder={inherited?.username ?? "root"}
+                placeholder={inherited?.username ?? "Ask when connecting"}
               />
               {inherited?.username && (
                 <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">

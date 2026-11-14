@@ -560,6 +560,11 @@ describe("HostForm inherits from its group", () => {
     expect(input("port")?.placeholder).toBe("22");
   });
 
+  it("username placeholder says it will ask without a group default", async () => {
+    await mount({});
+    expect(input("username")?.placeholder).toBe("Ask when connecting");
+  });
+
   it("a new host without a group defaults to Ask when connecting", async () => {
     const { createHost } = await mount({});
     expect(document.getElementById("authType")?.textContent).toBe(
@@ -643,6 +648,13 @@ describe("HostForm inherits from its group", () => {
       inherited: PROD,
     });
     expect(input("password")).toBeNull();
+    await submit();
+    expect(createHost.mock.calls[0][0].authType).toBe("inherit");
+  });
+
+  it("a new host in a group whose chain sets no auth still defaults to From group", async () => {
+    const { createHost } = await mount({ defaultGroupId: "g1" });
+    expect(document.getElementById("authType")?.textContent).toBe("From group");
     await submit();
     expect(createHost.mock.calls[0][0].authType).toBe("inherit");
   });

@@ -173,6 +173,10 @@ describe("GroupForm", () => {
       (document.querySelector('input[name="port"]') as HTMLInputElement)
         .placeholder,
     ).toBe("Not set");
+    expect(
+      (document.querySelector('input[name="username"]') as HTMLInputElement)
+        .placeholder,
+    ).toBe("Not set");
     expect(document.body.textContent).toContain(
       "Seconds. Empty uses the parent group or default; 0 turns it off.",
     );
