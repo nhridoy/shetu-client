@@ -241,7 +241,8 @@ where
             .authenticate_keyboard_interactive_start(user.clone(), None)
             .await
             .map_err(kbd_err)?;
-        for _ in 0..KBD_MAX_ROUNDS {
+        // One extra pass so the reply to the last allowed round is still read.
+        for round in 0..=KBD_MAX_ROUNDS {
             let (name, instructions, prompts) = match reply {
                 Kbd::Success => return Ok(()),
                 Kbd::Failure { remaining_methods, .. } => {
@@ -253,6 +254,7 @@ where
                     }
                     return Err("authentication rejected".to_string());
                 }
+                Kbd::InfoRequest { .. } if round == KBD_MAX_ROUNDS => break,
                 Kbd::InfoRequest { name, instructions, prompts } => (name, instructions, prompts),
             };
             let answers = if prompts.is_empty() {
@@ -304,6 +306,9 @@ mod tests {
         password_partial: bool,
         /// Keyboard-interactive answers every round with another zero-prompt request.
         kbd_endless: bool,
+        /// With `kbd_endless`: accept once this many responses arrived.
+        kbd_accept_after: Option<usize>,
+        kbd_responses: usize,
         log: Arc<Mutex<Vec<String>>>,
     }
 
@@ -349,6 +354,10 @@ mod tests {
         ) -> Result<russh::server::Auth, Self::Error> {
             if self.kbd_endless {
                 self.log.lock().unwrap().push("kbdint".into());
+                self.kbd_responses += usize::from(response.is_some());
+                if Some(self.kbd_responses) == self.kbd_accept_after {
+                    return Ok(russh::server::Auth::Accept);
+                }
                 return Ok(russh::server::Auth::Partial {
                     name: "".into(),
                     instructions: "".into(),
@@ -652,6 +661,12 @@ mod tests {
         let err = within(run(srv, config(Some(pem(&random_key())), None), None, None)).await.unwrap_err();
         assert_eq!(err, "authentication rejected");
         assert!(count(&log, "kbdint") <= KBD_MAX_ROUNDS + 1, "{:?}", log.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn kbdint_success_on_the_last_round_is_accepted() {
+        let srv = Srv { kbd_endless: true, kbd_accept_after: Some(KBD_MAX_ROUNDS), ..Default::default() };
+        within(run(srv, config(Some(pem(&random_key())), None), None, None)).await.unwrap();
     }
 
     #[tokio::test]
