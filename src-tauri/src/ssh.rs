@@ -750,51 +750,13 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         emit_progress(app, sid, "authenticating");
     }
 
-    // No explicit credentials — send NONE auth request.
-    // Servers that allow passwordless login (e.g. telehack.com) accept this;
-    // others will reject it and we surface the error.
-    if config.private_key.is_none() && config.password.is_none() {
-        let auth = session
-            .authenticate_none(config.username.clone())
-            .await
-            .map_err(|e| format!("none auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication required — add a password or SSH key".to_string());
-        }
-        return Ok(session);
-    }
-
-    // Try public key first if available
-    if let Some(pem) = config.private_key.as_deref() {
-        let key = russh::keys::decode_secret_key(pem, config.passphrase.as_deref())
-            .map_err(|e| format!("decode private key: {e}"))?;
-        let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            Some(russh::keys::HashAlg::Sha256),
-        );
-        let auth = session
-            .authenticate_publickey(config.username.clone(), key_with_alg)
-            .await
-            .map_err(|e| format!("publickey auth: {e}"))?;
-        if auth.success() {
-            return Ok(session);
-        }
-        // Public key rejected — fall back to password if available
-    }
-
-    // Password auth (fallback or primary)
-    if let Some(ref password) = config.password {
-        let auth = session
-            .authenticate_password(config.username.clone(), password.clone())
-            .await
-            .map_err(|e| format!("password auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication rejected".to_string());
-        }
-        return Ok(session);
-    }
-
-    Err("no authentication method succeeded".to_string())
+    // Task 2 and 3 wire the real agent and prompter.
+    let ctx = crate::ssh_auth::LoginContext::<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>> {
+        agent: None,
+        prompter: None,
+    };
+    crate::ssh_auth::login(&mut session, config, ctx).await?;
+    Ok(session)
 }
 
 async fn probe_os(
