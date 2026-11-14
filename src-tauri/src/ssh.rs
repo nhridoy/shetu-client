@@ -234,6 +234,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn connection_lost_notice_text() {
+        assert_eq!(CONNECTION_LOST_NOTICE, "\r\n[Connection lost]\r\n");
+    }
+
+    #[test]
     fn startup_bytes_adds_one_newline() {
         assert_eq!(startup_bytes("tmux a"), b"tmux a\n");
         assert_eq!(startup_bytes("a\nb\n"), b"a\nb\n");
@@ -915,7 +920,7 @@ pub async fn connect_saved(
 }
 
 const STARTUP_MISSING_NOTICE: &str = "\r\n[Startup snippet not found]\r\n";
-const CONNECTION_LOST: &str = "Connection lost (no response from server)";
+const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
 pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
     let mut b = command.as_bytes().to_vec();
@@ -1128,7 +1133,7 @@ async fn run_connect_session(
             slot.writer_handle.abort();
         }
         if lost {
-            emit(&app_handle, "error", CONNECTION_LOST);
+            emit(&app_handle, "output", CONNECTION_LOST_NOTICE);
         }
         emit(&app_handle, "disconnected", "");
         // session handle drops here → connection closed
