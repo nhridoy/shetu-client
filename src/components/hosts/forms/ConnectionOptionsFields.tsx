@@ -57,7 +57,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
         options={[
           {
             value: "default",
-            label: mode === "group" ? "Not set" : "From group / default",
+            label: mode === "group" ? "Not set" : "From group",
           },
           { value: "off", label: "Off" },
           { value: "custom", label: "Custom" },

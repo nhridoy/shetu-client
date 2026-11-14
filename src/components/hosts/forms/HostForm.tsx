@@ -452,7 +452,7 @@ export default function HostForm({
         </SidePanel.Section>
 
         <SidePanel.Section title="CREDENTIALS">
-          <div className="relative">
+          <div>
             <FormInput
               name="username"
               label="Username"
@@ -461,7 +461,8 @@ export default function HostForm({
               required={!inherited?.username}
             />
             {inherited?.username && (
-              <div className="absolute right-2 top-7 flex items-center gap-1">
+              <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
+                <span>From group</span>
                 <Badge>{inherited.usernameFrom}</Badge>
                 {watch("username") && (
                   <Button

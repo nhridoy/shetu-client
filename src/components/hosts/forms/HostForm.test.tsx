@@ -687,6 +687,11 @@ describe("HostForm inherits from its group", () => {
     expect(text).toContain("On · prod");
   });
 
+  it("labels the host keepalive default From group", async () => {
+    await mount({ host: existing({}) });
+    expect(optionLabels("keepaliveMode")[0]).toBe("From group");
+  });
+
   it("shows the default lines when nothing is inherited", async () => {
     await mount({
       host: existing({
@@ -704,8 +709,12 @@ describe("HostForm inherits from its group", () => {
     await mount({ host: existing({}), inherited: PROD });
     const reset = () =>
       document.querySelector('button[aria-label="Use group value"]');
-    expect(document.body.textContent).toContain("prod");
     expect(reset()).not.toBeNull();
+    // Rendered beside the field, never inside the input's own wrapper.
+    const field = input("username")?.closest("[data-slot=field]");
+    expect(field?.contains(reset() ?? null)).toBe(false);
+    expect(field?.parentElement?.textContent).toContain("prod");
+    expect(field?.querySelector("[class*=absolute]")).toBeNull();
     click(reset() ?? undefined);
     expect(input("username")?.value).toBe("");
     expect(reset()).toBeNull();
