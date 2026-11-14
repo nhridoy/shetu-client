@@ -126,9 +126,9 @@ function SidePanel({
           onClick={requestClose}
         />
       )}
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal is set only together with role=dialog */}
       <aside
         ref={panelRef}
-        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal is set only together with role=dialog
         role={overlay ? "dialog" : undefined}
         aria-modal={overlay ? true : undefined}
         aria-labelledby={titleId}
