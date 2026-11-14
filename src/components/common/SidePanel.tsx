@@ -1,5 +1,12 @@
 import { XIcon } from "@phosphor-icons/react";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/common/utils";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
@@ -59,10 +66,11 @@ function SidePanel({
     return () => window.removeEventListener("beforeunload", warn);
   }, [open, dirty]);
 
-  // Pick push or overlay from the hosts page container width.
-  useEffect(() => {
+  // Pick push or overlay from the hosts page container width, measured before first paint.
+  useLayoutEffect(() => {
     const parent = panelRef.current?.parentElement;
     if (!open || !parent) return;
+    setOverlay(parent.clientWidth < OVERLAY_BELOW);
     const ro = new ResizeObserver(([entry]) =>
       setOverlay(entry.contentRect.width < OVERLAY_BELOW),
     );
@@ -134,12 +142,12 @@ function SidePanel({
         aria-labelledby={titleId}
         onKeyDown={trapTab}
         className={cn(
-          "flex h-full w-[420px] max-w-full shrink-0 flex-col border-l border-dark-700 bg-dark-900",
+          "flex h-full w-[420px] max-w-full shrink-0 flex-col border-l border-dark-800 bg-dark-900",
           "motion-safe:animate-side-panel-in",
           overlay && "absolute inset-y-0 right-0 z-30 shadow-xl",
         )}
       >
-        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-dark-700 px-4">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-dark-800 px-4">
           <h2
             id={titleId}
             className="truncate text-sm font-semibold text-white"
@@ -156,11 +164,11 @@ function SidePanel({
             <XIcon className="h-3.5 w-3.5" />
           </Button>
         </header>
-        <div ref={bodyRef} className="flex-1 overflow-y-auto">
+        <div ref={bodyRef} className="flex-1 scroll-pt-10 overflow-y-auto">
           {intro && <p className="px-4 pt-3 text-sm text-dark-400">{intro}</p>}
           {children}
         </div>
-        <footer className="flex shrink-0 justify-end gap-2 border-t border-dark-700 px-4 py-3">
+        <footer className="flex shrink-0 justify-end gap-2 border-t border-dark-800 px-4 py-3">
           {footer}
         </footer>
       </aside>

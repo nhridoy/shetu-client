@@ -12,10 +12,11 @@ import UnsavedChangesDialog from "./UnsavedChangesDialog";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 let width = 1200;
+let roReports = true;
 class RO {
   constructor(private cb: (e: unknown[]) => void) {}
   observe() {
-    this.cb([{ contentRect: { width } }]);
+    if (roReports) this.cb([{ contentRect: { width } }]);
   }
   disconnect() {}
 }
@@ -24,6 +25,7 @@ class RO {
 const roots: Root[] = [];
 beforeEach(() => {
   width = 1200;
+  roReports = true;
 });
 afterEach(() => {
   for (const r of roots.splice(0)) act(() => r.unmount());
@@ -168,6 +170,16 @@ describe("SidePanel", () => {
     key("Escape");
     await flush();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("overlays from the first paint, before ResizeObserver reports", () => {
+    roReports = false;
+    const clientWidth = vi
+      .spyOn(HTMLElement.prototype, "clientWidth", "get")
+      .mockReturnValue(800);
+    mount(<Harness onClose={() => {}} />);
+    expect(q("aside").getAttribute("role")).toBe("dialog");
+    clientWidth.mockRestore();
   });
 
   it("overlay mode under 900px", async () => {
