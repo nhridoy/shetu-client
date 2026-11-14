@@ -240,7 +240,14 @@ async function tokensAfterKeep(held: TokenPair): Promise<TokenPair> {
   };
 }
 
+// The server's code first: a 403 may mean "already scheduled", not a wrong password.
 function deletionRequestError(err: unknown): Error {
+  const code = err instanceof AuthApiError ? err.apiError.code : null;
+  if (code === "ACCOUNT_DELETION_SCHEDULED")
+    return new Error("Your account is already scheduled for deletion.");
+  // A bad or expired nonce.
+  if (code === "UNAUTHORIZED")
+    return new Error("Something went wrong. Please try again.");
   const status = err instanceof AuthApiError ? err.status : null;
   if (status === 404)
     return new Error("Your server doesn't support account deletion yet.");

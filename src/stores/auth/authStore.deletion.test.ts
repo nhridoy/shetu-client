@@ -281,6 +281,30 @@ describe("requestAccountDeletion", () => {
     expect(resetDevice).not.toHaveBeenCalled();
   });
 
+  it("request_maps_errors_by_the_server_code_first", async () => {
+    const cases: [number, string, string][] = [
+      // 403 alone would read as a wrong password.
+      [
+        403,
+        "ACCOUNT_DELETION_SCHEDULED",
+        "Your account is already scheduled for deletion.",
+      ],
+      // A bad or expired nonce.
+      [401, "UNAUTHORIZED", "Something went wrong. Please try again."],
+      [403, "FORBIDDEN", "That password is incorrect."],
+      [400, "VALIDATION_ERROR", "That email doesn't match your account."],
+    ];
+    for (const [status, code, message] of cases) {
+      vi.mocked(authApi.requestAccountDeletion).mockRejectedValueOnce(
+        apiError(status, code),
+      );
+      await expect(
+        useAuthStore.getState().requestAccountDeletion("pw", "a@example.com"),
+      ).rejects.toThrow(message);
+    }
+    expect(resetDevice).not.toHaveBeenCalled();
+  });
+
   it("request_other_failure_keeps_its_message", async () => {
     vi.mocked(authApi.requestAccountDeletion).mockRejectedValue(
       apiError(0, "NETWORK_ERROR"),
