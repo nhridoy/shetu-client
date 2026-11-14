@@ -605,13 +605,6 @@ describe("hostStore", () => {
       (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
     );
 
-  it("updateGroup keeps encrypted fields it did not patch", async () => {
-    mockGet.mockResolvedValue(groupRow);
-    mockDecrypt.mockResolvedValue({ username: "u", password: "p" });
-    await useHostStore.getState().updateGroup("g1", { name: "new" });
-    expect(plainOf()).toEqual({ username: "u", password: "p" });
-  });
-
   it("updateGroup writes patched encrypted fields over existing", async () => {
     mockGet.mockResolvedValue(groupRow);
     mockDecrypt.mockResolvedValue({ username: "u", password: "p" });
@@ -619,12 +612,88 @@ describe("hostStore", () => {
     expect(plainOf()).toEqual({ username: "z", password: "p" });
   });
 
-  it("updateGroup writes nothing when the stored data can't be decrypted", async () => {
+  it("updateGroup renames without decrypting, keeping the stored ciphertext", async () => {
     mockGet.mockResolvedValue(groupRow);
     mockDecrypt.mockRejectedValue(new Error("bad key"));
     await useHostStore.getState().updateGroup("g1", { name: "new" });
-    expect(mockUpsert).not.toHaveBeenCalled();
-    expect(useHostStore.getState().error).toContain("bad key");
+    expect(mockDecrypt).not.toHaveBeenCalled();
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "groups",
+      expect.objectContaining({ name: "new", data: "enc" }),
+      undefined,
+    );
+    expect(useHostStore.getState().error).toBeNull();
+  });
+
+  it("updateGroup keeps encrypted fields when a patch has none", async () => {
+    mockGet.mockResolvedValue(groupRow);
+    await useHostStore.getState().updateGroup("g1", { parentId: "p2" });
+    const [, row, opts] = mockUpsert.mock.calls[0];
+    expect(row).toMatchObject({ parent_id: "p2", data: "enc" });
+    expect(opts).toBeUndefined();
+  });
+
+  it("updateGroup serializes overlapping updates for the same group", async () => {
+    let stored = { username: "old" } as Record<string, unknown>;
+    mockGet.mockResolvedValue(groupRow);
+    let first = true;
+    mockDecrypt.mockImplementation(async () => {
+      const snapshot = { ...stored };
+      if (first) {
+        first = false;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return snapshot;
+    });
+    mockUpsert.mockImplementation((async (
+      _t: string,
+      _r: unknown,
+      o?: { plaintext: string },
+    ) => {
+      if (o) stored = JSON.parse(o.plaintext);
+      return {};
+    }) as never);
+    const { updateGroup } = useHostStore.getState();
+    await Promise.all([
+      updateGroup("g1", { username: "new" }),
+      updateGroup("g1", { password: "p2" }),
+    ]);
+    expect(stored).toMatchObject({ username: "new", password: "p2" });
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
+  });
+
+  it("updateHost serializes overlapping updates for the same host", async () => {
+    let stored = { address: "a", username: "old" } as Record<string, unknown>;
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "n",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    let first = true;
+    mockDecrypt.mockImplementation(async () => {
+      const snapshot = { ...stored };
+      if (first) {
+        first = false;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return snapshot;
+    });
+    mockUpsert.mockImplementation((async (
+      _t: string,
+      _r: unknown,
+      o?: { plaintext: string },
+    ) => {
+      if (o) stored = JSON.parse(o.plaintext);
+      return { data: "x" };
+    }) as never);
+    const { updateHost } = useHostStore.getState();
+    await Promise.all([
+      updateHost("h1", { username: "new" }),
+      updateHost("h1", { port: 2222 }),
+    ]);
+    expect(stored).toMatchObject({ username: "new", port: 2222 });
   });
 
   it("createGroup stores credentials only in encrypted data", async () => {

@@ -248,6 +248,20 @@ function definedFields(g: Partial<Group>): Partial<GroupFields> {
   );
 }
 
+const queues = new Map<string, Promise<unknown>>();
+
+/** Run fn after earlier work on the same key settles, so read-merge-write
+ *  updates of one encrypted row never interleave. */
+function runSerial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const run = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  queues.set(key, tail);
+  void tail.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  return run;
+}
+
 function newId(): string {
   return crypto.randomUUID();
 }
@@ -407,73 +421,75 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  updateHost: async (id, patch) => {
-    set({ isLoading: true, error: null });
-    try {
-      const row = await getRow("hosts", id);
-      if (!row) {
-        set({ isLoading: false, error: "Host not found" });
+  updateHost: (id, patch) =>
+    runSerial(`hosts:${id}`, async () => {
+      set({ isLoading: true, error: null });
+      try {
+        const row = await getRow("hosts", id);
+        if (!row) {
+          set({ isLoading: false, error: "Host not found" });
+          return false;
+        }
+        const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const sensitive: Record<string, unknown> = {};
+        if (patch.address !== undefined) sensitive.address = patch.address;
+        if (patch.port !== undefined) sensitive.port = patch.port;
+        if (patch.username !== undefined) sensitive.username = patch.username;
+        if (patch.password !== undefined) sensitive.password = patch.password;
+        if (patch.jumpHostId !== undefined)
+          sensitive.jumpHostId = patch.jumpHostId;
+        if (patch.keepaliveSecs !== undefined)
+          sensitive.keepaliveSecs = patch.keepaliveSecs;
+        if (patch.forwardAgent !== undefined)
+          sensitive.forwardAgent = patch.forwardAgent;
+        if (patch.env !== undefined) sensitive.env = patch.env;
+        if (patch.startup !== undefined) sensitive.startup = patch.startup;
+        const saved = await upsertRow(
+          "hosts",
+          {
+            id: row.id,
+            vault_id: row.vault_id,
+            name: patch.name ?? row.name,
+            os: patch.os !== undefined ? patch.os : (row.os ?? null),
+            auth_type:
+              patch.authType !== undefined
+                ? patch.authType
+                : (row.auth_type ?? "password"),
+            tags:
+              patch.tags !== undefined
+                ? JSON.stringify(patch.tags)
+                : (row.tags ?? "[]"),
+            color:
+              patch.color !== undefined ? patch.color : (row.color ?? null),
+            group_id:
+              patch.groupId !== undefined
+                ? patch.groupId
+                : (row.group_id ?? null),
+            key_id:
+              patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
+            sort_order: patch.sortOrder ?? row.sort_order,
+          },
+          {
+            plaintext: JSON.stringify({ ...existing, ...sensitive }),
+            recordType: "hosts",
+          },
+        );
+        set({
+          hosts: get().hosts.map((h) =>
+            h.id === id ? { ...h, ...patch, data: saved.data } : h,
+          ),
+          isLoading: false,
+        });
+        void probeHostOs(id);
+        return true;
+      } catch (err) {
+        set({ isLoading: false, error: errorMessage(err) });
         return false;
       }
-      const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const sensitive: Record<string, unknown> = {};
-      if (patch.address !== undefined) sensitive.address = patch.address;
-      if (patch.port !== undefined) sensitive.port = patch.port;
-      if (patch.username !== undefined) sensitive.username = patch.username;
-      if (patch.password !== undefined) sensitive.password = patch.password;
-      if (patch.jumpHostId !== undefined)
-        sensitive.jumpHostId = patch.jumpHostId;
-      if (patch.keepaliveSecs !== undefined)
-        sensitive.keepaliveSecs = patch.keepaliveSecs;
-      if (patch.forwardAgent !== undefined)
-        sensitive.forwardAgent = patch.forwardAgent;
-      if (patch.env !== undefined) sensitive.env = patch.env;
-      if (patch.startup !== undefined) sensitive.startup = patch.startup;
-      const saved = await upsertRow(
-        "hosts",
-        {
-          id: row.id,
-          vault_id: row.vault_id,
-          name: patch.name ?? row.name,
-          os: patch.os !== undefined ? patch.os : (row.os ?? null),
-          auth_type:
-            patch.authType !== undefined
-              ? patch.authType
-              : (row.auth_type ?? "password"),
-          tags:
-            patch.tags !== undefined
-              ? JSON.stringify(patch.tags)
-              : (row.tags ?? "[]"),
-          color: patch.color !== undefined ? patch.color : (row.color ?? null),
-          group_id:
-            patch.groupId !== undefined
-              ? patch.groupId
-              : (row.group_id ?? null),
-          key_id:
-            patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
-          sort_order: patch.sortOrder ?? row.sort_order,
-        },
-        {
-          plaintext: JSON.stringify({ ...existing, ...sensitive }),
-          recordType: "hosts",
-        },
-      );
-      set({
-        hosts: get().hosts.map((h) =>
-          h.id === id ? { ...h, ...patch, data: saved.data } : h,
-        ),
-        isLoading: false,
-      });
-      void probeHostOs(id);
-      return true;
-    } catch (err) {
-      set({ isLoading: false, error: errorMessage(err) });
-      return false;
-    }
-  },
+    }),
 
   deleteHost: async (id) => {
     set({ isLoading: true, error: null });
@@ -648,54 +664,63 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  updateGroup: async (id, patch) => {
-    set({ isLoading: true, error: null });
-    try {
-      const row = await getRow("groups", id);
-      if (!row) {
-        set({ isLoading: false, error: "Group not found" });
-        return;
-      }
-      const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      await upsertRow(
-        "groups",
-        {
-          id: row.id,
-          vault_id: row.vault_id,
-          name: patch.name ?? row.name,
-          parent_id:
-            patch.parentId !== undefined
-              ? patch.parentId
-              : (row.parent_id ?? null),
-          sort_order: patch.sortOrder ?? row.sort_order,
-        },
-        {
-          plaintext: JSON.stringify({ ...existing, ...definedFields(patch) }),
-          recordType: "groups",
-        },
-      );
-      // Keep secrets out of the list state; they live only in the encrypted row.
-      const { name, parentId, sortOrder } = patch;
-      set({
-        groups: get().groups.map((g) =>
-          g.id === id
+  updateGroup: (id, patch) =>
+    runSerial(`groups:${id}`, async () => {
+      set({ isLoading: true, error: null });
+      try {
+        const row = await getRow("groups", id);
+        if (!row) {
+          set({ isLoading: false, error: "Group not found" });
+          return;
+        }
+        const fields = definedFields(patch);
+        // Plain-column edits keep the stored ciphertext as is (no decrypt needed).
+        const credentialsPatched = Object.keys(fields).length > 0;
+        const existing = credentialsPatched
+          ? (((await decryptRowData(row.data)) ?? {}) as Record<
+              string,
+              unknown
+            >)
+          : {};
+        await upsertRow(
+          "groups",
+          {
+            id: row.id,
+            vault_id: row.vault_id,
+            name: patch.name ?? row.name,
+            parent_id:
+              patch.parentId !== undefined
+                ? patch.parentId
+                : (row.parent_id ?? null),
+            sort_order: patch.sortOrder ?? row.sort_order,
+            ...(!credentialsPatched && { data: row.data }),
+          },
+          credentialsPatched
             ? {
-                ...g,
-                ...(name !== undefined && { name }),
-                ...(parentId !== undefined && { parentId }),
-                ...(sortOrder !== undefined && { sortOrder }),
+                plaintext: JSON.stringify({ ...existing, ...fields }),
+                recordType: "groups",
               }
-            : g,
-        ),
-        isLoading: false,
-      });
-    } catch (err) {
-      set({ isLoading: false, error: errorMessage(err) });
-    }
-  },
+            : undefined,
+        );
+        // Keep secrets out of the list state; they live only in the encrypted row.
+        const { name, parentId, sortOrder } = patch;
+        set({
+          groups: get().groups.map((g) =>
+            g.id === id
+              ? {
+                  ...g,
+                  ...(name !== undefined && { name }),
+                  ...(parentId !== undefined && { parentId }),
+                  ...(sortOrder !== undefined && { sortOrder }),
+                }
+              : g,
+          ),
+          isLoading: false,
+        });
+      } catch (err) {
+        set({ isLoading: false, error: errorMessage(err) });
+      }
+    }),
 
   deleteGroup: async (id) => {
     set({ isLoading: true, error: null });
