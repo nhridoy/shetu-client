@@ -9,6 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 pub struct KnownHosts {
     path: PathBuf,
     entries: Vec<KnownHostEntry>,
+    /// User setting: interactive connections save first-seen keys without asking.
+    pub trust_new_hosts: bool,
 }
 
 struct KnownHostEntry {
@@ -22,6 +24,19 @@ pub enum HostKeyStatus {
     Unknown,
     Known,
     Changed,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum HostKeyPromptKind {
+    New,
+    Changed,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum HostKeyDecision {
+    Accept,
+    Reject,
+    Prompt(HostKeyPromptKind),
 }
 
 impl KnownHosts {
@@ -43,7 +58,22 @@ impl KnownHosts {
                     .collect()
             })
             .unwrap_or_default();
-        Self { path: path.to_path_buf(), entries }
+        Self { path: path.to_path_buf(), entries, trust_new_hosts: false }
+    }
+
+    /// Background (non-interactive) connections never trust a key the user has not seen.
+    /// A first-seen key accepted via `trust_new_hosts` is saved here.
+    pub fn decide(&mut self, host: &str, port: u16, fingerprint: &str, interactive: bool) -> HostKeyDecision {
+        match self.check(host, port, fingerprint) {
+            HostKeyStatus::Known => HostKeyDecision::Accept,
+            _ if !interactive => HostKeyDecision::Reject,
+            HostKeyStatus::Unknown if self.trust_new_hosts => {
+                self.accept(host, port, fingerprint);
+                HostKeyDecision::Accept
+            }
+            HostKeyStatus::Unknown => HostKeyDecision::Prompt(HostKeyPromptKind::New),
+            HostKeyStatus::Changed => HostKeyDecision::Prompt(HostKeyPromptKind::Changed),
+        }
     }
 
     pub fn check(&self, host: &str, port: u16, fingerprint: &str) -> HostKeyStatus {
@@ -294,6 +324,57 @@ mod tests {
     }
 
     #[test]
+    fn unknown_key_on_interactive_connection_prompts_without_saving() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Prompt(HostKeyPromptKind::New));
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unknown_key_on_background_connection_is_rejected_and_not_saved() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-a", false), HostKeyDecision::Reject);
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn trust_new_hosts_saves_unknown_key_without_prompt() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Accept);
+        assert_eq!(KnownHosts::load(&path).check("web", 22, "fp-a"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn changed_key_still_prompts_with_trust_new_hosts() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-b", true), HostKeyDecision::Prompt(HostKeyPromptKind::Changed));
+        assert_eq!(kh.decide("web", 22, "fp-b", false), HostKeyDecision::Reject);
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn known_key_is_accepted_everywhere() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Accept);
+        assert_eq!(kh.decide("web", 22, "fp-a", false), HostKeyDecision::Accept);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
@@ -463,34 +544,19 @@ impl russh::client::Handler for SshHandler {
         emit_progress(&self.app, &self.session_id, "host_key");
         let fingerprint = fingerprint_of(server_public_key);
         let (host, port) = (self.host.clone(), self.port);
-        let known = {
-            let kh = self
+        let (kind, old) = {
+            let mut kh = self
                 .known_hosts
                 .lock()
                 .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?;
-            kh.check(&host, port, &fingerprint)
+            let interactive = !self.auto_accept && !self.require_known_host;
+            match kh.decide(&host, port, &fingerprint, interactive) {
+                HostKeyDecision::Accept => return Ok(true),
+                HostKeyDecision::Reject => return Ok(false),
+                HostKeyDecision::Prompt(HostKeyPromptKind::New) => ("new", None),
+                HostKeyDecision::Prompt(HostKeyPromptKind::Changed) => ("changed", kh.get_fingerprint(&host, port)),
+            }
         };
-        match known {
-            HostKeyStatus::Unknown => {
-                if self.require_known_host { return Ok(false); }
-                self.known_hosts
-                    .lock()
-                    .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
-                    .accept(&host, port, &fingerprint);
-                return Ok(true);
-            }
-            HostKeyStatus::Known => return Ok(true),
-            HostKeyStatus::Changed => {
-                if self.auto_accept {
-                    return Ok(false);
-                }
-            }
-        }
-        let old = self
-            .known_hosts
-            .lock()
-            .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
-            .get_fingerprint(&host, port);
         let host_port_key = format!("{}:{}", host, port);
         let (tx, rx) = oneshot::channel();
         {
@@ -503,13 +569,14 @@ impl russh::client::Handler for SshHandler {
             } else {
                 pending.insert(host_port_key.clone(), vec![tx]);
                 let _ = self.app.emit(
-                    "ssh-host-key-changed",
+                    "ssh-host-key-prompt",
                     serde_json::json!({
+                        "kind": kind,
                         "host": host,
                         "port": port,
-                        "sessionId": self.session_id.clone(),
-                        "oldFingerprint": old.unwrap_or_default(),
-                        "newFingerprint": fingerprint,
+                        "keyType": server_public_key.algorithm().as_str(),
+                        "fingerprint": fingerprint,
+                        "oldFingerprint": old,
                     }),
                 );
             }
@@ -1036,6 +1103,12 @@ pub async fn accept_host_key(
             let _ = tx.send(accepted);
         }
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_trust_new_hosts(enabled: bool, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
+    state.known_hosts.lock().map_err(|e| e.to_string())?.trust_new_hosts = enabled;
     Ok(())
 }
 
