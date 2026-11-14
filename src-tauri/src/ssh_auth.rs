@@ -12,6 +12,7 @@ pub(crate) const NON_INTERACTIVE: &str =
 pub(crate) const CANCELLED: &str = "Login cancelled";
 const AGENT_CAP_WITH_PASSWORD: usize = 3;
 const KBD_MAX_ROUNDS: usize = 10;
+const AGENT_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One keyboard-interactive round; each prompt is `(text, echo)`.
 pub(crate) struct AuthPromptRequest {
@@ -169,8 +170,13 @@ where
     if let Some(agent) = ctx.agent {
         if allows(&allowed, MethodKind::PublicKey) {
             let cap = if config.password.is_some() { AGENT_CAP_WITH_PASSWORD } else { usize::MAX };
-            // Agent unreachable or erroring ends this step silently.
-            let identities = agent.request_identities().await.unwrap_or_default();
+            // Agent unreachable, erroring or silent ends this step. Signing stays unlimited
+            // because confirmation popups are legitimate.
+            let identities = tokio::time::timeout(AGENT_LIST_TIMEOUT, agent.request_identities())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             let mut signer = AgentSigner { agent, refused: false };
             for identity in identities.into_iter().take(cap) {
                 if signer.refused || !allows(&allowed, MethodKind::PublicKey) {
@@ -550,6 +556,17 @@ mod tests {
     #[tokio::test]
     async fn agent_sign_refusal_does_not_wedge_session() {
         let mut agent = agent_serving(&[random_key()], RefuseSign).await;
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        within(run(srv, config(None, Some("pw")), Some(&mut agent), None)).await.unwrap();
+        assert_eq!(count(&log, "password"), 1);
+    }
+
+    #[tokio::test]
+    async fn silent_agent_is_skipped_after_timeout() {
+        // The peer accepts the connection but never answers the identities request.
+        let (_silent_peer, client_io) = tokio::io::duplex(1 << 16);
+        let mut agent: Agent = AgentClient::connect(client_io).dynamic();
         let srv = Srv { password: Some("pw"), ..Default::default() };
         let log = srv.log.clone();
         within(run(srv, config(None, Some("pw")), Some(&mut agent), None)).await.unwrap();
