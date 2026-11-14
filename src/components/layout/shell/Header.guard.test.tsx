@@ -98,4 +98,10 @@ describe("Header navigation guard", () => {
     expect(navigate).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().tabs).toHaveLength(1);
   });
+
+  it("clicking the current view while dirty does not ask", async () => {
+    setup();
+    await click(byText("Vaults"));
+    expect(document.body.textContent).not.toContain("Discard changes?");
+  });
 });

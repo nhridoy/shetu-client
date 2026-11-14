@@ -69,7 +69,11 @@ export default function AppSidebar({
                 key={item.path}
                 aria-current={active ? "page" : undefined}
                 onClick={async () => {
-                  if (!(await useUnsavedChanges.getState().confirmLeave()))
+                  // The current page stays mounted, so there is nothing to discard.
+                  if (
+                    !active &&
+                    !(await useUnsavedChanges.getState().confirmLeave())
+                  )
                     return;
                   navigate(item.path);
                   if (isMobile) onClose();
@@ -119,7 +123,9 @@ export default function AppSidebar({
             type="button"
             variant="ghost"
             size="icon-xs"
-            onClick={logout}
+            onClick={async () => {
+              if (await useUnsavedChanges.getState().confirmLeave()) logout();
+            }}
             aria-label="Log Out"
             title="Log Out"
             className="shrink-0"

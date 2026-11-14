@@ -4,12 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const navigate = vi.fn();
+const logout = vi.fn();
 vi.mock("react-router", () => ({
   useLocation: () => ({ pathname: "/hosts" }),
   useNavigate: () => navigate,
 }));
 vi.mock("@/stores/auth/authStore", () => ({
-  useAuthStore: () => ({ user: { full_name: "Ada" }, logout: vi.fn() }),
+  useAuthStore: () => ({ user: { full_name: "Ada" }, logout }),
 }));
 
 import UnsavedChangesDialog from "@/components/common/UnsavedChangesDialog";
@@ -27,6 +28,7 @@ afterEach(() => {
   useUnsavedChanges.getState().answer(false);
   useUnsavedChanges.getState().setDirty(false);
   navigate.mockClear();
+  logout.mockClear();
 });
 
 const byText = (t: string) =>
@@ -74,5 +76,26 @@ describe("sidebar navigation guard", () => {
     await click(byText("Keys"));
     await click(byText("Discard"));
     expect(navigate).toHaveBeenCalledWith("/keys");
+  });
+
+  it("clicking the current page while dirty does not ask", async () => {
+    setup(true);
+    await click(byText("Hosts"));
+    expect(document.body.textContent).not.toContain("Discard changes?");
+  });
+
+  it("Log Out asks when dirty", async () => {
+    setup(true);
+    await click(
+      document.querySelector('[aria-label="Log Out"]') as HTMLElement,
+    );
+    expect(document.body.textContent).toContain("Discard changes?");
+    await click(byText("Keep editing"));
+    expect(logout).not.toHaveBeenCalled();
+    await click(
+      document.querySelector('[aria-label="Log Out"]') as HTMLElement,
+    );
+    await click(byText("Discard"));
+    expect(logout).toHaveBeenCalled();
   });
 });

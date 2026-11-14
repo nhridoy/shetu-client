@@ -105,7 +105,10 @@ export default function Header({
               variant="ghost"
               size="sm"
               onClick={async () => {
-                if (!(await useUnsavedChanges.getState().confirmLeave()))
+                if (
+                  !selected &&
+                  !(await useUnsavedChanges.getState().confirmLeave())
+                )
                   return;
                 setActiveView(id);
                 navigate(path);

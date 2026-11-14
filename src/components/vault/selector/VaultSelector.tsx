@@ -14,6 +14,7 @@ import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import Input from "@/components/ui/Input";
 import VaultForm from "@/components/vault/forms/VaultForm";
 import { useModal } from "@/hooks/useModal";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
 interface VaultItem {
@@ -184,9 +185,13 @@ export function VaultSelector({ compact = false }: { compact?: boolean }) {
                   <Button
                     type="button"
                     variant="ghost"
-                    onClick={() => {
-                      switchVault(vault.id);
+                    onClick={async () => {
                       setOpen(false);
+                      if (
+                        active ||
+                        (await useUnsavedChanges.getState().confirmLeave())
+                      )
+                        switchVault(vault.id);
                     }}
                     className={`w-full h-auto px-2.5 py-2 justify-start rounded-md ${
                       active ? "bg-primary-600/15" : ""
