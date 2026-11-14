@@ -65,10 +65,10 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
   }
   // Junk in settings.json must not reach Rust (NaN → null fails its i64 args).
   const ka = merged.sshKeepaliveSecs;
-  if (!Number.isFinite(ka) || !(ka === 0 || (ka >= 5 && ka <= 600)))
+  if (!Number.isInteger(ka) || !(ka === 0 || (ka >= 5 && ka <= 600)))
     merged.sshKeepaliveSecs = DEFAULT_SETTINGS.sshKeepaliveSecs;
   const ct = merged.sshConnectTimeoutSecs;
-  if (!Number.isFinite(ct) || ct < 5 || ct > 60)
+  if (!Number.isInteger(ct) || ct < 5 || ct > 60)
     merged.sshConnectTimeoutSecs = DEFAULT_SETTINGS.sshConnectTimeoutSecs;
   if (!SSH_TERMS.includes(merged.sshTerminalType))
     merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;

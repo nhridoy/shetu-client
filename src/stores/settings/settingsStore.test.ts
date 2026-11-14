@@ -82,6 +82,20 @@ describe("ssh defaults", () => {
     });
   });
 
+  it("falls back to the default keepalive for a non-integer saved value", async () => {
+    mocks.entries = [
+      ["sshKeepaliveSecs", 30.5],
+      ["sshConnectTimeoutSecs", 20],
+      ["sshTerminalType", "vt100"],
+    ];
+    await useSettingsStore.getState().initSettings();
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 30,
+      connectTimeoutSecs: 20,
+      term: "vt100",
+    });
+  });
+
   it("falls back to xterm-256color for an unknown saved terminal type", async () => {
     mocks.entries = [["sshTerminalType", "foo"]];
     await useSettingsStore.getState().initSettings();
