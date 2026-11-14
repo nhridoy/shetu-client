@@ -132,10 +132,20 @@ pub fn resolve_saved_route(
     crypto: &CryptoState,
     host_id: &str,
 ) -> Result<SavedRoute, String> {
+    resolve_saved_route_as(db, crypto, host_id, None)
+}
+
+/// `username` applies to the destination only, as in [`ssh::load_host_config_as`].
+pub fn resolve_saved_route_as(
+    db: &LocalDb,
+    crypto: &CryptoState,
+    host_id: &str,
+    username: Option<&str>,
+) -> Result<SavedRoute, String> {
     let row = db::get_sync_row(db, Table::Hosts, host_id)?
         .filter(|row| row.deleted_at.is_none())
         .ok_or("destination host unavailable")?;
-    let target = ssh::load_host_config(db, crypto, host_id)?;
+    let target = ssh::load_host_config_as(db, crypto, host_id, username)?;
     let Some(bastion_id) = jump_host_id(db, crypto, &row)? else {
         return Ok(SavedRoute {
             target_id: host_id.into(),
@@ -521,5 +531,38 @@ mod tests {
         assert!(out.get("forwardAgent").is_none() && out.get("keepaliveSecs").is_none());
         let empty = crate::host_inherit::defaults(&db, &crypto, None, &vault);
         assert_eq!(empty, serde_json::json!({"hasPassword": false, "startupKind": null, "env": []}));
+    }
+
+    #[test]
+    fn defaults_include_port() {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "root", &vault, None, serde_json::json!({"port": 2222}), false);
+        group_with(&db, &crypto, "team", &vault, Some("root"), serde_json::json!({}), false);
+        let out = crate::host_inherit::defaults(&db, &crypto, Some("team"), &vault);
+        assert_eq!((out["port"].as_u64(), out["portFrom"].as_str()), (Some(2222), Some("root")));
+        assert!(crate::host_inherit::defaults(&db, &crypto, None, &vault).get("port").is_none());
+        host_in(&db, &crypto, "h", &vault, "none", None, Some("team"), serde_json::json!({"address": "a", "port": null}));
+        assert_eq!(crate::ssh::load_host_config(&db, &crypto, "h").unwrap().port, 2222);
+    }
+
+    #[test]
+    fn username_override_used_when_unresolved() {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "g", &vault, None, serde_json::json!({"username": ""}), false);
+        host_in(&db, &crypto, "h", &vault, "none", None, Some("g"), serde_json::json!({"address": "a", "username": ""}));
+        let route = resolve_saved_route_as(&db, &crypto, "h", Some("typed")).unwrap();
+        assert_eq!(route.target.username, "typed");
+        assert_eq!(crate::ssh::load_host_config(&db, &crypto, "h").unwrap().username, "root");
+        assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "h", Some("  ")).unwrap().username, "root");
+    }
+
+    #[test]
+    fn username_override_ignored_when_resolved() {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "g", &vault, None, serde_json::json!({"username": "grp"}), false);
+        host_in(&db, &crypto, "own", &vault, "none", None, Some("g"), serde_json::json!({"address": "a", "username": "me"}));
+        host_in(&db, &crypto, "inh", &vault, "none", None, Some("g"), serde_json::json!({"address": "a"}));
+        assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "own", Some("typed")).unwrap().username, "me");
+        assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "inh", Some("typed")).unwrap().username, "grp");
     }
 }

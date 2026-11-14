@@ -15,8 +15,16 @@ const AGENT_CAP_WITH_PASSWORD: usize = 3;
 const KBD_MAX_ROUNDS: usize = 10;
 const AGENT_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// One keyboard-interactive round; each prompt is `(text, echo)`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PromptKind {
+    Password,
+    KeyboardInteractive,
+}
+
+/// A login password prompt or one keyboard-interactive round; each prompt is `(text, echo)`.
 pub(crate) struct AuthPromptRequest {
+    pub kind: PromptKind,
     pub name: String,
     pub instructions: String,
     pub prompts: Vec<(String, bool)>,
@@ -236,14 +244,29 @@ where
     }
 
     let (mut password_ran, mut password_rejected) = (false, false);
-    if let Some(password) = config.password.as_ref() {
+    // No saved password: ask once (interactive only); a wrong answer goes on to keyboard-interactive.
+    let password = match (&config.password, &ctx.prompter) {
+        (Some(saved), _) => Some(saved.clone()),
+        (None, Some(prompter)) if allows(&allowed, MethodKind::Password) => {
+            let _waiting = UserWait::start(&ctx.waits);
+            let request = AuthPromptRequest {
+                kind: PromptKind::Password,
+                name: String::new(),
+                instructions: String::new(),
+                prompts: vec![("Password".to_string(), false)],
+            };
+            Some(prompter(request).await.ok_or(CANCELLED)?.into_iter().next().unwrap_or_default())
+        }
+        _ => None,
+    };
+    if let Some(password) = password {
         if allows(&allowed, MethodKind::Password) {
             // Method list known before the request. With one, a failure means rejected; without
             // one (PAM-only server, no earlier step) only the post-failure list can tell, since a
             // discovery round trip is not allowed.
             let listed_before = allowed.as_ref().map(|s| s.contains(&MethodKind::Password));
             let auth = session
-                .authenticate_password(user.clone(), password.clone())
+                .authenticate_password(user.clone(), password)
                 .await
                 .map_err(|e| format!("password auth: {e}"))?;
             match record(auth, &mut allowed) {
@@ -297,7 +320,7 @@ where
             } else if let Some(prompter) = &ctx.prompter {
                 let prompts = prompts.into_iter().map(|p| (p.prompt, p.echo)).collect();
                 let _waiting = UserWait::start(&ctx.waits);
-                prompter(AuthPromptRequest { name, instructions, prompts }).await.ok_or(CANCELLED)?
+                prompter(AuthPromptRequest { kind: PromptKind::KeyboardInteractive, name, instructions, prompts }).await.ok_or(CANCELLED)?
             } else {
                 return Err(NON_INTERACTIVE.to_string());
             };
@@ -573,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_prompt_counts_as_waiting_only_for_its_connection() {
-        let srv = Srv { kbd: vec![("Code: ", "1")], ..Default::default() };
+        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]), ..Default::default() };
         let (mine, other) = (UserWaits::default(), UserWaits::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (m, o, s) = (mine.clone(), other.clone(), seen.clone());
@@ -684,10 +707,78 @@ mod tests {
 
     #[tokio::test]
     async fn kbdint_cancel_is_login_cancelled() {
-        let srv = Srv { kbd: vec![("Code: ", "1")], ..Default::default() };
+        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]), ..Default::default() };
         let prompter: Prompter = Arc::new(|_| Box::pin(async { None }));
         let err = run(srv, config(Some(pem(&random_key())), None), None, Some(prompter)).await.unwrap_err();
         assert_eq!(err, "Login cancelled");
+    }
+
+    #[tokio::test]
+    async fn password_prompted_when_none_saved() {
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
+            s.lock().unwrap().push((request.kind, request.prompts));
+            Box::pin(async { Some(vec!["pw".to_string()]) })
+        });
+        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![(PromptKind::Password, vec![("Password".to_string(), false)])]);
+        assert_eq!(count(&log, "password"), 1);
+    }
+
+    #[tokio::test]
+    async fn non_interactive_skips_password_prompt() {
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        assert!(within(run(srv, config(None, None), None, None)).await.is_err());
+        assert_eq!(count(&log, "password"), 0);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_cancel_is_login_cancelled() {
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        let prompter: Prompter = Arc::new(|_| Box::pin(async { None }));
+        let err = within(run(srv, config(None, None), None, Some(prompter))).await.unwrap_err();
+        assert_eq!(err, "Login cancelled");
+        assert_eq!(count(&log, "password"), 0);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_skipped_when_server_lacks_password() {
+        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
+            s.lock().unwrap().push(request.kind);
+            Box::pin(async { Some(vec!["1".to_string()]) })
+        });
+        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![PromptKind::KeyboardInteractive]);
+    }
+
+    #[tokio::test]
+    async fn wrong_prompted_password_moves_on_to_kbdint() {
+        let srv = Srv { password: Some("right"), kbd: vec![("Code: ", "1")], ..Default::default() };
+        let log = srv.log.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
+            let password = request.kind == PromptKind::Password;
+            s.lock().unwrap().push(request.kind);
+            Box::pin(async move { Some(vec![if password { "wrong" } else { "1" }.to_string()]) })
+        });
+        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![PromptKind::Password, PromptKind::KeyboardInteractive]);
+        assert_eq!(count(&log, "password"), 1);
+    }
+
+    #[test]
+    fn prompt_kind_serializes_for_the_event() {
+        assert_eq!(serde_json::to_value(PromptKind::Password).unwrap(), "password");
+        assert_eq!(serde_json::to_value(PromptKind::KeyboardInteractive).unwrap(), "keyboard-interactive");
     }
 
     #[tokio::test]

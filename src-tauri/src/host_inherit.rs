@@ -50,6 +50,7 @@ pub(crate) fn group_chain(
 /// (`None` = the host's own, or the default).
 pub(crate) struct Effective {
     pub username: Option<(String, Option<String>)>,
+    pub port: (u16, Option<String>),
     pub auth_type: String,
     pub password: Option<String>,
     pub key_id: Option<String>,
@@ -116,6 +117,8 @@ pub(crate) fn resolve(
 
     Effective {
         username: nearest(host_payload, chain, "username", |v| v.as_str().filter(|s| !s.is_empty()).map(String::from)),
+        port: nearest(host_payload, chain, "port", |v| v.as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0))
+            .unwrap_or((22, None)),
         password: password.filter(|_| uses_password).map(String::from),
         key_id: key_id.filter(|_| uses_key).map(String::from),
         auth_type,
@@ -171,6 +174,10 @@ pub(crate) fn defaults(db: &LocalDb, crypto: &CryptoState, group_id: Option<&str
         out["keepaliveSecs"] = json!(secs);
         out["keepaliveFrom"] = json!(from);
     }
+    if let (port, Some(from)) = e.port {
+        out["port"] = json!(port);
+        out["portFrom"] = json!(from);
+    }
     let (startup, startup_from) = &e.startup;
     // Same precedence as ssh::load_startup: command, then snippet.
     let kind = if startup["command"].is_string() {
@@ -207,6 +214,30 @@ mod tests {
         let e = resolve(&json!({}), "password", None, &chain);
         assert_eq!(e.username, Some(("b".into(), Some("child".into()))));
         assert_eq!(e.keepalive_secs, Some((60, Some("parent".into()))));
+    }
+
+    #[test]
+    fn port_inherits_from_group() {
+        let chain = [layer("child", json!({})), layer("parent", json!({"port": 2222}))];
+        assert_eq!(resolve(&json!({"port": null}), "none", None, &chain).port, (2222, Some("parent".into())));
+        assert_eq!(resolve(&json!({}), "none", None, &[]).port, (22, None));
+    }
+
+    #[test]
+    fn legacy_port_unchanged() {
+        let chain = [layer("g", json!({"port": 2222}))];
+        assert_eq!(resolve(&json!({"port": 2200}), "none", None, &chain).port, (2200, None));
+    }
+
+    #[test]
+    fn invalid_port_ignored() {
+        let chain = [layer("g", json!({"port": 2222}))];
+        for bad in [json!(0), json!(70000), json!("22"), json!(-1)] {
+            assert_eq!(resolve(&json!({"port": bad}), "none", None, &chain).port, (2222, Some("g".into())), "{bad}");
+            assert_eq!(resolve(&json!({"port": bad}), "none", None, &[]).port, (22, None), "{bad}");
+        }
+        let bad_group = [layer("g", json!({"port": 70000}))];
+        assert_eq!(resolve(&json!({}), "none", None, &bad_group).port, (22, None));
     }
 
     #[test]

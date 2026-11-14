@@ -624,17 +624,19 @@ fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<Strin
 pub(crate) fn make_prompter(
     app: tauri::AppHandle,
     pending: PendingPrompts,
+    session_id: String,
     host: String,
     port: u16,
     username: String,
 ) -> crate::ssh_auth::Prompter {
     Arc::new(move |request: crate::ssh_auth::AuthPromptRequest| {
-        let (app, pending, host, username) = (app.clone(), Arc::clone(&pending), host.clone(), username.clone());
+        let (app, pending, session_id, host, username) =
+            (app.clone(), Arc::clone(&pending), session_id.clone(), host.clone(), username.clone());
         Box::pin(async move {
             let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
             await_prompt_answer(&pending, |id| {
                 let _ = app.emit("ssh-auth-prompt", serde_json::json!({
-                    "id": id, "host": host, "port": port, "username": username,
+                    "id": id, "sessionId": session_id, "kind": request.kind, "host": host, "port": port, "username": username,
                     "name": request.name, "instructions": request.instructions, "prompts": prompts,
                 }));
             }, |id| {
@@ -959,6 +961,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ));
     let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
     let prompter = handler.interactive_prompts();
+    let session_id = handler.session_id.clone();
     let waits = Arc::clone(&handler.user_waits);
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
@@ -969,7 +972,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 
     let agent_path = crate::ssh_options::defaults().agent_path;
     let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
-    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
+    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, session_id, config.host.clone(), config.port, config.username.clone()));
     let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
@@ -1074,11 +1077,12 @@ pub async fn connect_saved(
     cols: u32,
     rows: u32,
     allow_agent_forwarding: Option<bool>,
+    username: Option<String>,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let mut route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let mut config = route.target.clone();
     // Gates both the handler flag and the agent_forward request in run_connect_session.
     config.forward_agent = agent_forwarding_on(config.forward_agent, allow_agent_forwarding);
@@ -1557,6 +1561,16 @@ pub fn load_host_config(
     crypto: &crate::CryptoState,
     host_id: &str,
 ) -> Result<SshConfig, String> {
+    load_host_config_as(db, crypto, host_id, None)
+}
+
+/// `username` (typed at connect) is used only when neither the host nor its groups give one.
+pub fn load_host_config_as(
+    db: &crate::db::LocalDb,
+    crypto: &crate::CryptoState,
+    host_id: &str,
+    username: Option<&str>,
+) -> Result<SshConfig, String> {
     let row = crate::db::get_sync_row(db, crate::db::Table::Hosts, host_id)?
         .ok_or_else(|| "host not found".to_string())?;
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
@@ -1573,8 +1587,12 @@ pub fn load_host_config(
     );
     let mut config = SshConfig {
         host: payload["address"].as_str().unwrap_or_default().to_string(),
-        port: payload["port"].as_u64().unwrap_or(22) as u16,
-        username: effective.username.map_or_else(|| "root".to_string(), |(name, _)| name),
+        port: effective.port.0,
+        username: effective
+            .username
+            .map(|(name, _)| name)
+            .or_else(|| username.filter(|u| !u.trim().is_empty()).map(String::from))
+            .unwrap_or_else(|| "root".to_string()),
         password: effective.password,
         private_key: None,
         passphrase: None,
