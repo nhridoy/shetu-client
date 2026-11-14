@@ -233,6 +233,12 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn startup_bytes_adds_one_newline() {
+        assert_eq!(startup_bytes("tmux a"), b"tmux a\n");
+        assert_eq!(startup_bytes("a\nb\n"), b"a\nb\n");
+    }
+
     fn tmp_path() -> std::path::PathBuf {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("shetu-known-hosts-{stamp}.txt"))
@@ -908,6 +914,17 @@ pub async fn connect_saved(
     Ok(())
 }
 
+const STARTUP_MISSING_NOTICE: &str = "\r\n[Startup snippet not found]\r\n";
+const CONNECTION_LOST: &str = "Connection lost (no response from server)";
+
+pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
+    let mut b = command.as_bytes().to_vec();
+    if !command.ends_with('\n') {
+        b.push(b'\n');
+    }
+    b
+}
+
 async fn run_connect_session(
     app_handle: tauri::AppHandle,
     session_id: String,
@@ -990,8 +1007,11 @@ async fn run_connect_session(
                 return;
             }
         };
+        for (name, value) in &config.env {
+            let _ = channel.set_env(false, name.as_str(), value.as_str()).await;
+        }
         if let Err(e) = channel
-            .request_pty(true, "xterm", cols, rows, 0, 0, &[])
+            .request_pty(true, &crate::ssh_options::defaults().term, cols, rows, 0, 0, &[])
             .await
         {
             emit(&app_handle, "error", &e.to_string());
@@ -1007,6 +1027,7 @@ async fn run_connect_session(
         let (mut read_half, write_half) = channel.split();
         let (tx, rx) = mpsc::channel::<SessionCmd>(32);
         let (close_tx, close_rx) = oneshot::channel::<()>();
+        let startup_tx = tx.clone();
         let writer_handle = tokio::spawn(async move {
             let mut close_tx = Some(close_tx);
             let mut rx = rx;
@@ -1051,12 +1072,22 @@ async fn run_connect_session(
             }),
         );
 
+        match &config.startup {
+            Some(StartupAction::Command(c)) => {
+                let _ = startup_tx.send(SessionCmd::Input(startup_bytes(c))).await;
+            }
+            Some(StartupAction::MissingSnippet) => emit(&app_handle, "output", STARTUP_MISSING_NOTICE),
+            None => {}
+        }
+        drop(startup_tx);
+
         let mut pending: Vec<u8> = Vec::new();
         let mut close_rx = close_rx;
+        let mut lost = false;
         loop {
             tokio::select! {
                 msg = read_half.wait() => {
-                    let Some(msg) = msg else { break };
+                    let Some(msg) = msg else { lost = true; break };
                     match msg {
                         russh::ChannelMsg::Data { data } => {
                             if data.is_empty() {
@@ -1095,6 +1126,9 @@ async fn run_connect_session(
         // Remove session slot and abort writer
         if let Some(slot) = sessions.lock().ok().and_then(|mut g| g.remove(&session_id)) {
             slot.writer_handle.abort();
+        }
+        if lost {
+            emit(&app_handle, "error", CONNECTION_LOST);
         }
         emit(&app_handle, "disconnected", "");
         // session handle drops here → connection closed
