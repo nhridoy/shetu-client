@@ -387,6 +387,19 @@ mod tests {
     }
 
     #[test]
+    fn rejected_host_key_ends_connect_without_reconnect() {
+        let rejected = format!("destination connection: ssh handshake web:22: {}", russh::Error::UnknownKey);
+        assert_eq!(
+            connect_failure_events(&rejected),
+            vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+        );
+        assert_eq!(
+            connect_failure_events("connect web:22: refused"),
+            vec![("error", "connect web:22: refused".to_string()), ("disconnected", String::new())]
+        );
+    }
+
+    #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
@@ -437,6 +450,20 @@ pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bo
 fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str, accepted: bool) {
     for (fingerprint, tx) in waiters {
         let _ = tx.send(accepted && fingerprint == approved);
+    }
+}
+
+/// True when the connection failed because we refused the server's host key.
+fn is_host_key_rejection(error: &str) -> bool {
+    error.contains(&russh::Error::UnknownKey.to_string())
+}
+
+/// No `disconnected` for a refused key, so the terminal does not reconnect and prompt again.
+fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
+    if is_host_key_rejection(error) {
+        vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+    } else {
+        vec![("error", error.to_string()), ("disconnected", String::new())]
     }
 }
 
@@ -910,8 +937,9 @@ async fn run_connect_session(
         let connection = match routed {
             Ok(connection) => connection,
             Err(e) => {
-                emit(&app_handle, "error", &e);
-                emit(&app_handle, "disconnected", "");
+                for (type_, data) in connect_failure_events(&e) {
+                    emit(&app_handle, type_, &data);
+                }
                 return;
             }
         };
