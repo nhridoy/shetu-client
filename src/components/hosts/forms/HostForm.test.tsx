@@ -86,6 +86,12 @@ const pick = (id: string, label: string) => {
       );
   });
 };
+const optionLabels = (id: string) => {
+  click(document.getElementById(id) ?? undefined);
+  return [...document.querySelectorAll("[role=option]")].map(
+    (e) => e.textContent,
+  );
+};
 const input = (name: string) =>
   document.querySelector(`input[name="${name}"]`) as HTMLInputElement | null;
 const changeInput = (el: HTMLInputElement, value: string) =>
@@ -446,7 +452,7 @@ describe("HostForm inherits from its group", () => {
       inherited: PROD,
     });
     expect(fetchInherited).toHaveBeenCalledWith("g1", "v1");
-    expect(input("username")?.placeholder).toBe("From group 'prod': deploy");
+    expect(input("username")?.placeholder).toBe("deploy");
     await submit();
     expect(createHost).toHaveBeenCalledTimes(1);
     expect(createHost.mock.calls[0][0]).toMatchObject({ username: "" });
@@ -488,9 +494,12 @@ describe("HostForm inherits from its group", () => {
   it("offers From group auth only when the host has a group", async () => {
     await mount({});
     // Connection options have their own From group choices; check the login choices only.
-    expect(byText("fieldset", "Authentication")?.textContent).not.toContain(
-      "From group",
-    );
+    expect(optionLabels("authType")).toEqual([
+      "Password",
+      "SSH key",
+      "Password + key",
+      "None",
+    ]);
   });
 
   it("choosing From group hides secrets and saves inherit", async () => {
@@ -500,12 +509,9 @@ describe("HostForm inherits from its group", () => {
     });
     // An existing password host keeps Password.
     expect(input("password")).not.toBeNull();
-    click(byText("button", "From group"));
+    pick("authType", "From group");
     expect(input("password")).toBeNull();
-    expect(document.body.textContent).toContain(
-      "Using credentials from 'prod'",
-    );
-    expect(document.body.textContent).toContain("deploy-key");
+    expect(document.body.textContent).toContain("SSH key 'deploy-key' · prod");
     expect(document.body.textContent).not.toContain("pw");
     await submit();
     expect(updateHost.mock.calls[0][1].authType).toBe("inherit");
@@ -525,7 +531,7 @@ describe("HostForm inherits from its group", () => {
     const { updateHost } = await mount({
       host: existing({ authType: "inherit", groupId: undefined }),
     });
-    expect(byText("button", "From group")).toBeDefined();
+    expect(document.getElementById("authType")?.textContent).toBe("From group");
     await submit();
     expect(updateHost).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("Pick credentials or a group");
@@ -622,6 +628,93 @@ describe("HostForm inherits from its group", () => {
     await act(async () => {});
     expect(fetchInherited).toHaveBeenLastCalledWith("g2", "v1");
     await act(async () => resolveFirst(PROD));
-    expect(input("username")?.placeholder).toBe("From group 'dev': dev-user");
+    expect(input("username")?.placeholder).toBe("dev-user");
+  });
+  const GROUP_ALL: InheritedDefaults = {
+    ...PROD,
+    hasPassword: true,
+    keepaliveSecs: 30,
+    keepaliveFrom: "prod",
+    startupKind: "command",
+    startupFrom: "prod",
+    forwardAgent: true,
+    forwardAgentFrom: "prod",
+  };
+
+  it("shows the resolved login line under From group and never a password", async () => {
+    await mount({
+      host: existing({ authType: "inherit" }),
+      inherited: GROUP_ALL,
+    });
+    expect(document.body.textContent).toContain("SSH key 'deploy-key' · prod");
+    expect(document.body.textContent).not.toContain("pw");
+    expect(input("password")).toBeNull();
+  });
+
+  it("explains an unset group login", async () => {
+    await mount({ host: existing({ authType: "inherit" }) });
+    expect(document.body.textContent).toContain(
+      "No group sets a login — uses agent/none",
+    );
+  });
+
+  it("shows password and key fields only for their methods", async () => {
+    await mount({ host: existing({}), inherited: GROUP_ALL });
+    expect(input("password")).not.toBeNull();
+    pick("authType", "SSH key");
+    expect(input("password")).toBeNull();
+    expect(document.getElementById("keyId")).not.toBeNull();
+    pick("authType", "Password + key");
+    expect(input("password")).not.toBeNull();
+    expect(document.getElementById("keyId")).not.toBeNull();
+    pick("authType", "None");
+    expect(input("password")).toBeNull();
+    expect(document.getElementById("keyId")).toBeNull();
+  });
+
+  it("shows resolved lines under the connection From group choices", async () => {
+    await mount({
+      host: existing({
+        keepaliveSecs: undefined,
+        startup: undefined,
+        forwardAgent: undefined,
+      }),
+      inherited: GROUP_ALL,
+    });
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("30s · prod");
+    expect(text).toContain("runs a command · prod");
+    expect(text).toContain("On · prod");
+  });
+
+  it("shows the default lines when nothing is inherited", async () => {
+    await mount({
+      host: existing({
+        keepaliveSecs: undefined,
+        startup: undefined,
+        forwardAgent: undefined,
+      }),
+    });
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Default");
+    expect(text).toContain("Nothing");
+  });
+
+  it("shows a group badge on the username and a reset only when both have one", async () => {
+    await mount({ host: existing({}), inherited: PROD });
+    const reset = () =>
+      document.querySelector('button[aria-label="Use group value"]');
+    expect(document.body.textContent).toContain("prod");
+    expect(reset()).not.toBeNull();
+    click(reset() ?? undefined);
+    expect(input("username")?.value).toBe("");
+    expect(reset()).toBeNull();
+  });
+
+  it("hides the reset when the group has no username", async () => {
+    await mount({ host: existing({}) });
+    expect(
+      document.querySelector('button[aria-label="Use group value"]'),
+    ).toBeNull();
   });
 });

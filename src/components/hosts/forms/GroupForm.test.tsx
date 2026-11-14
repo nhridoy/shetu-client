@@ -45,6 +45,16 @@ const byText = (sel: string, text: string) =>
   [...document.querySelectorAll(sel)].find((e) =>
     e.textContent?.includes(text),
   );
+const pick = (id: string, label: string) => {
+  click(document.getElementById(id) ?? undefined);
+  act(() => {
+    [...document.querySelectorAll("[role=option]")]
+      .find((e) => e.textContent === label)
+      ?.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+      );
+  });
+};
 const changeInput = (el: Element | null, value: string) =>
   act(() => {
     const set = Object.getOwnPropertyDescriptor(
@@ -133,7 +143,7 @@ describe("GroupForm", () => {
     const { createGroup } = await mount();
     fillName("Prod");
     changeInput(document.querySelector('input[id$="username"]'), "deploy");
-    click(byText("button", "Password"));
+    pick("authType", "Password");
     changeInput(document.querySelector('input[type="password"]'), "pw");
     await submit();
     expect(createGroup).toHaveBeenCalledWith(
@@ -151,8 +161,17 @@ describe("GroupForm", () => {
 
   it("offers Not set but never From group as an auth method", async () => {
     await mount();
-    expect(byText("button", "Not set")).toBeTruthy();
-    expect(document.body.textContent).not.toContain("From group");
+    click(document.getElementById("authType") ?? undefined);
+    const labels = [...document.querySelectorAll("[role=option]")].map(
+      (e) => e.textContent,
+    );
+    expect(labels).toEqual([
+      "Not set",
+      "Password",
+      "SSH key",
+      "Password + key",
+      "None",
+    ]);
   });
 
   it("labels the null startup choice Not set", async () => {
@@ -168,7 +187,7 @@ describe("GroupForm", () => {
   it("requires a password for password auth", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    click(byText("button", "Password"));
+    pick("authType", "Password");
     await submit();
     expect(document.body.textContent).toContain("Password is required");
     expect(createGroup).not.toHaveBeenCalled();
@@ -177,7 +196,7 @@ describe("GroupForm", () => {
   it("requires a key for key auth", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    click(byText("button", "SSH Key"));
+    pick("authType", "SSH key");
     await submit();
     expect(document.body.textContent).toContain("Please select an SSH key");
     expect(createGroup).not.toHaveBeenCalled();
@@ -227,7 +246,7 @@ describe("GroupForm", () => {
       { id: "g1", name: "Prod" },
       { username: "deploy", authType: "password", password: "pw" },
     );
-    click(byText("button", "Not set"));
+    pick("authType", "Not set");
     await submit();
     expect(updateGroup).toHaveBeenCalledWith(
       "g1",

@@ -1,8 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import SidePanel from "@/components/common/SidePanel";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
@@ -128,6 +130,7 @@ export default function HostForm({
     watch,
     reset,
     resetField,
+    setValue,
     trigger,
     formState: { isSubmitted, isDirty },
   } = useForm<HostFormValues>({
@@ -449,17 +452,33 @@ export default function HostForm({
         </SidePanel.Section>
 
         <SidePanel.Section title="CREDENTIALS">
-          <FormInput
-            name="username"
-            label="Username"
-            control={control}
-            placeholder={
-              inherited?.username
-                ? `From group '${inherited.usernameFrom}': ${inherited.username}`
-                : "root"
-            }
-            required={!inherited?.username}
-          />
+          <div className="relative">
+            <FormInput
+              name="username"
+              label="Username"
+              control={control}
+              placeholder={inherited?.username ?? "root"}
+              required={!inherited?.username}
+            />
+            {inherited?.username && (
+              <div className="absolute right-2 top-7 flex items-center gap-1">
+                <Badge>{inherited.usernameFrom}</Badge>
+                {watch("username") && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Use group value"
+                    onClick={() =>
+                      setValue("username", "", { shouldDirty: true })
+                    }
+                  >
+                    <ArrowCounterClockwiseIcon />
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
           <CredentialsFields
             control={control}
             mode="host"

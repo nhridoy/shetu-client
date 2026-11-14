@@ -10,6 +10,11 @@ import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
 import Textarea from "@/components/ui/Textarea";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
+import {
+  forwardLine,
+  keepaliveLine,
+  startupLine,
+} from "@/lib/hosts/inheritedLabels";
 import { AGENT_FORWARD_HELP } from "@/lib/terminal/agentForwarding";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -40,6 +45,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
   } = useFieldArray({ control, name: "env" });
   const keepaliveMode = useWatch({ control, name: "keepaliveMode" });
   const startupMode = useWatch({ control, name: "startupMode" });
+  const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
 
   return (
@@ -57,6 +63,11 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
           { value: "custom", label: "Custom" },
         ]}
       />
+      {mode === "host" && keepaliveMode === "default" && (
+        <p className="text-xs text-dark-400 -mt-2">
+          {keepaliveLine(inherited)}
+        </p>
+      )}
       {keepaliveMode === "custom" && (
         <FormInput
           name="keepaliveSecs"
@@ -89,6 +100,11 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
               { value: "off", label: "Off" },
             ]}
           />
+          {forwardMode === "inherit" && (
+            <p className="text-xs text-dark-400 mt-1">
+              {forwardLine(inherited)}
+            </p>
+          )}
           <p className="text-xs text-dark-400">{AGENT_FORWARD_HELP}</p>
         </div>
       )}
@@ -159,6 +175,9 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
           { value: "command", label: "Command" },
         ]}
       />
+      {mode === "host" && startupMode === "inherit" && (
+        <p className="text-xs text-dark-400 -mt-2">{startupLine(inherited)}</p>
+      )}
       {startupMode === "snippet" && (
         <FormSelect
           name="startupSnippetId"

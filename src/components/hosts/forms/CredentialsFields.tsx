@@ -1,13 +1,8 @@
-import {
-  type Control,
-  Controller,
-  type FieldValues,
-  useWatch,
-} from "react-hook-form";
-import { Button } from "@/components/ui/Button";
+import { type Control, type FieldValues, useWatch } from "react-hook-form";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
+import { loginLine } from "@/lib/hosts/inheritedLabels";
 import { useKeyStore } from "@/stores/keys/keyStore";
 
 interface Props<T extends FieldValues> {
@@ -19,8 +14,8 @@ interface Props<T extends FieldValues> {
 const LABELS = {
   inherit: "From group",
   password: "Password",
-  key: "SSH Key",
-  both: "Both",
+  key: "SSH key",
+  both: "Password + key",
   none: "None",
 } as const;
 
@@ -50,49 +45,18 @@ export default function CredentialsFields<T extends FieldValues>({
 
   return (
     <>
-      <fieldset>
-        <legend className="block text-dark-300 text-sm mb-2">
-          Authentication{" "}
-          {mode === "host" && <span className="text-red-400 ml-0.5">*</span>}
-        </legend>
-        <Controller
+      <div>
+        <FormSelect
           name="authType"
+          label="Authentication"
+          required={mode === "host"}
           control={control}
-          render={({ field, fieldState }) => (
-            <>
-              <div
-                className={`grid gap-2 ${choices.length === 5 ? "grid-cols-5" : "grid-cols-4"}`}
-              >
-                {choices.map(([type, label]) => (
-                  <Button
-                    key={type}
-                    type="button"
-                    onClick={() => field.onChange(type)}
-                    variant={field.value === type ? "default" : "secondary"}
-                    className="flex-1"
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-              {fieldState.error && (
-                <p role="alert" className="text-xs text-red-400 mt-1">
-                  {fieldState.error.message}
-                </p>
-              )}
-            </>
-          )}
+          options={choices.map(([value, label]) => ({ value, label }))}
         />
-      </fieldset>
-
-      {authType === "inherit" && groupId && (
-        <p className="text-xs text-dark-400">
-          {inherited?.authType
-            ? `Using credentials from '${inherited.authFrom}'`
-            : "No group sets credentials"}
-          {inherited?.keyName && ` (key: ${inherited.keyName})`}
-        </p>
-      )}
+        {authType === "inherit" && (
+          <p className="text-xs text-dark-400 mt-1">{loginLine(inherited)}</p>
+        )}
+      </div>
 
       {(authType === "password" || authType === "both") && (
         <FormInput
