@@ -68,4 +68,30 @@ describe("ssh defaults", () => {
       term: "xterm-256color",
     });
   });
+
+  it("falls back to defaults for junk saved ssh numbers", async () => {
+    mocks.entries = [
+      ["sshKeepaliveSecs", "abc"],
+      ["sshConnectTimeoutSecs", 20],
+    ];
+    await useSettingsStore.getState().initSettings();
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 30,
+      connectTimeoutSecs: 20,
+      term: "xterm-256color",
+    });
+  });
+
+  it("falls back to xterm-256color for an unknown saved terminal type", async () => {
+    mocks.entries = [["sshTerminalType", "foo"]];
+    await useSettingsStore.getState().initSettings();
+    expect(useSettingsStore.getState().settings.sshTerminalType).toBe(
+      "xterm-256color",
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 30,
+      connectTimeoutSecs: 10,
+      term: "xterm-256color",
+    });
+  });
 });
