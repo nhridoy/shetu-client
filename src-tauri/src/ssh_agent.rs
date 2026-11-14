@@ -33,7 +33,7 @@ pub(crate) async fn connect_agent(override_path: &str) -> Option<Agent> {
     if !override_path.is_empty() {
         return None;
     }
-    bounded(async { Ok(AgentClient::connect_pageant().await.dynamic()) }).await
+    bounded(async { Ok(AgentClient::connect_pageant().await?.dynamic()) }).await
 }
 
 #[cfg(test)]

@@ -735,6 +735,11 @@ pub(crate) async fn connect_authenticated(
     authenticate_over_stream(handler, config, socket, progress).await
 }
 
+/// Background checks (ping, OS probe) are auto_accept and never touch the agent.
+fn uses_agent(auto_accept: bool) -> bool {
+    !auto_accept
+}
+
 pub(crate) async fn authenticate_over_stream<R>(
     handler: SshHandler,
     config: &SshConfig,
@@ -748,7 +753,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         config.keepalive_secs,
     ));
     // Background checks (ping, OS probe) never touch the agent.
-    let use_agent = !handler.auto_accept();
+    let use_agent = uses_agent(handler.auto_accept());
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -1366,4 +1371,15 @@ pub fn load_host_config(
         }
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod agent_use_tests {
+    use super::uses_agent;
+
+    #[test]
+    fn background_handlers_skip_the_agent() {
+        assert!(!uses_agent(true));
+        assert!(uses_agent(false));
+    }
 }
