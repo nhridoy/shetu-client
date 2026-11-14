@@ -56,23 +56,26 @@ impl HttpState {
     }
     /// A sign-in from the webview: the keychain refresh token, generation and access
     /// token change under one lock, so no refresh pairs the old token with the new generation.
+    /// A failed keychain write is returned, after the session started in memory anyway.
     pub fn start_session(
         &self,
         token: String,
         refresh_token: Option<&str>,
         refresh: &dyn RefreshProvider,
-    ) {
+    ) -> Result<(), String> {
         let mut current = self.access_token.lock().unwrap();
         // Keychain first, as in clear_session; without a new token the old one must not stay.
-        match refresh_token {
+        let saved = match refresh_token {
             Some(rt) => refresh.persist_rotated_token(rt),
             None => {
                 let _ = refresh.clear();
+                Ok(())
             }
-        }
+        };
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.signed_out.store(false, Ordering::SeqCst);
         *current = Some(token);
+        saved
     }
     /// Suspend (and tests): starts a new session generation, keychain untouched.
     pub fn replace_session(&self, token: Option<String>) {
@@ -126,7 +129,7 @@ impl HttpState {
 
 pub trait RefreshProvider: Send + Sync {
     fn get_refresh_token(&self) -> Option<String>;
-    fn persist_rotated_token(&self, token: &str);
+    fn persist_rotated_token(&self, token: &str) -> Result<(), String>;
     fn clear(&self) -> Result<(), String>;
 }
 
@@ -146,12 +149,12 @@ impl RefreshProvider for KeyringRefreshProvider {
             .ok()
             .flatten()
     }
-    fn persist_rotated_token(&self, token: &str) {
-        let _ = self
-            .app
+    fn persist_rotated_token(&self, token: &str) -> Result<(), String> {
+        self.app
             .keyring()
             .store
-            .set_password(REFRESH_TOKEN_ACCOUNT, token);
+            .set_password(REFRESH_TOKEN_ACCOUNT, token)
+            .map_err(|e| e.to_string())
     }
     fn clear(&self) -> Result<(), String> {
         self.app
@@ -402,7 +405,7 @@ impl HttpClient {
         if let Some(new_refresh) = new_refresh {
             // Persist NOW: the server's reuse detection would otherwise revoke
             // the stored copy and log the user out on the next launch.
-            self.refresh.persist_rotated_token(&new_refresh);
+            let _ = self.refresh.persist_rotated_token(&new_refresh);
         }
         *access = new_access;
         RefreshOutcome::Ok
@@ -490,22 +493,26 @@ pub fn restore_sign_out(state: &HttpState, dir: &Path, refresh: &dyn RefreshProv
     }
 }
 
+/// Returns whether the refresh token was saved; the session starts either way.
 #[tauri::command]
 pub fn set_auth_tokens(
     app: AppHandle,
     state: tauri::State<'_, HttpState>,
     access_token: String,
     refresh_token: Option<String>,
-) -> Result<(), String> {
-    state.start_session(
+) -> Result<bool, String> {
+    let saved = state.start_session(
         access_token,
         refresh_token.as_deref(),
         &KeyringRefreshProvider { app: app.clone() },
     );
+    if let Err(e) = &saved {
+        log::warn!("http: cannot save the refresh token: {e}");
+    }
     if let Ok(dir) = app.path().app_data_dir() {
         forget_sign_out(&dir);
     }
-    Ok(())
+    Ok(saved.is_ok())
 }
 
 #[tauri::command]
@@ -615,8 +622,9 @@ pub(crate) mod tests {
         fn get_refresh_token(&self) -> Option<String> {
             self.token.lock().unwrap().clone()
         }
-        fn persist_rotated_token(&self, t: &str) {
+        fn persist_rotated_token(&self, t: &str) -> Result<(), String> {
             self.persisted.lock().unwrap().push(t.to_string());
+            Ok(())
         }
         fn clear(&self) -> Result<(), String> {
             *self.token.lock().unwrap() = None;
@@ -823,7 +831,9 @@ pub(crate) mod tests {
         fn get_refresh_token(&self) -> Option<String> {
             Some("r1".into())
         }
-        fn persist_rotated_token(&self, _: &str) {}
+        fn persist_rotated_token(&self, _: &str) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
         fn clear(&self) -> Result<(), String> {
             Err("keychain locked".into())
         }
@@ -892,7 +902,7 @@ pub(crate) mod tests {
         assert_eq!(refresh.get_refresh_token(), None, "delete retried");
         assert!(state.signed_out.load(Ordering::SeqCst));
 
-        state.start_session("a2".into(), Some("r2"), &*refresh);
+        state.start_session("a2".into(), Some("r2"), &*refresh).unwrap();
         forget_sign_out(&dir);
         let relaunched = HttpState::new(String::new());
         restore_sign_out(&relaunched, &dir, &*refresh);
@@ -907,6 +917,18 @@ pub(crate) mod tests {
         let state = HttpState::new(String::new());
         restore_sign_out(&state, &dir, &*mem_refresh(Some("r1")));
         assert!(!state.signed_out.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn sign_in_starts_the_session_even_when_the_keychain_write_fails() {
+        let state = HttpState::new(String::new());
+        state.signed_out.store(true, Ordering::SeqCst);
+        let before = state.generation();
+        assert!(state.start_session("a2".into(), Some("r2"), &StuckKeychain).is_err());
+        assert_eq!(state.token().as_deref(), Some("a2"));
+        assert!(!state.signed_out.load(Ordering::SeqCst));
+        assert_eq!(state.generation(), before + 1);
+        assert!(state.start_session("a3".into(), Some("r3"), &*mem_refresh(None)).is_ok());
     }
 
     /// Records whether the session lock was held at each keychain write.
@@ -927,9 +949,10 @@ pub(crate) mod tests {
         fn get_refresh_token(&self) -> Option<String> {
             self.token.lock().unwrap().clone()
         }
-        fn persist_rotated_token(&self, t: &str) {
+        fn persist_rotated_token(&self, t: &str) -> Result<(), String> {
             self.note();
             *self.token.lock().unwrap() = Some(t.to_string());
+            Ok(())
         }
         fn clear(&self) -> Result<(), String> {
             self.note();
@@ -949,10 +972,10 @@ pub(crate) mod tests {
             locked: Mutex::new(vec![]),
         };
         let before = state.generation();
-        state.start_session("a2".into(), Some("r2"), &probe);
+        state.start_session("a2".into(), Some("r2"), &probe).unwrap();
         assert_eq!(probe.get_refresh_token().as_deref(), Some("r2"));
         // No refresh token handed over: the old one must not stay readable.
-        state.start_session("a3".into(), None, &probe);
+        state.start_session("a3".into(), None, &probe).unwrap();
         assert_eq!(probe.get_refresh_token(), None);
         assert_eq!(*probe.locked.lock().unwrap(), vec![true, true]);
         assert_eq!(state.token().as_deref(), Some("a3"));

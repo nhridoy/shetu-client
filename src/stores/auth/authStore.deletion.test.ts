@@ -914,6 +914,7 @@ describe("token writes racing a teardown", () => {
     const write = (a: string, r?: string) => {
       access = a;
       if (r) keychain = r;
+      return true;
     };
     vi.mocked(setAuthTokens).mockImplementation(async (a, r) => write(a, r));
     useAuthStore.setState({
@@ -941,7 +942,7 @@ describe("token writes racing a teardown", () => {
     vi.mocked(setAuthTokens).mockImplementationOnce(
       (a, r) =>
         new Promise((done) => {
-          landStaleWrite = () => done(write?.(a, r));
+          landStaleWrite = () => done(write?.(a, r) ?? true);
         }),
     );
     const retry = useAuthStore.getState().retryServerSession();

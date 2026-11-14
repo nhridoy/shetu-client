@@ -256,7 +256,9 @@ mod cycle_tests {
         fn get_refresh_token(&self) -> Option<String> {
             None
         }
-        fn persist_rotated_token(&self, _: &str) {}
+        fn persist_rotated_token(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
         fn clear(&self) -> Result<(), String> {
             Ok(())
         }

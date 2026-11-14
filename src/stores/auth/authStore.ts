@@ -1,4 +1,5 @@
 import { load } from "@tauri-apps/plugin-store";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
@@ -102,12 +103,19 @@ function writeTokens(fn: () => Promise<void>, owner: number): Promise<void> {
   });
 }
 
+// A keychain that can't save the refresh token still signs in for this run.
 function setAuthTokens(
   accessToken: string,
   refreshToken: string | undefined,
   owner: number,
 ): Promise<void> {
-  return writeTokens(() => handOverTokens(accessToken, refreshToken), owner);
+  return writeTokens(async () => {
+    if ((await handOverTokens(accessToken, refreshToken)) === false) {
+      toast.warning(
+        "Couldn't save your sign-in. You'll need to sign in again next time.",
+      );
+    }
+  }, owner);
 }
 
 // Overlapping revoked events (each rejected refresh re-fires one) join the run in flight.

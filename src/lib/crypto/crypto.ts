@@ -210,11 +210,12 @@ export async function setBaseUrl(url: string): Promise<void> {
   await invoke("set_base_url", { url });
 }
 
+// Resolves whether the keychain saved the refresh token; the session starts either way.
 export async function setAuthTokens(
   accessToken: string,
   refreshToken?: string,
-): Promise<void> {
-  await invoke("set_auth_tokens", {
+): Promise<boolean> {
+  return invoke<boolean>("set_auth_tokens", {
     accessToken,
     refreshToken: refreshToken ?? null,
   });

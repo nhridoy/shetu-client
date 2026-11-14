@@ -349,6 +349,13 @@ describe("token custody handoff", () => {
     });
   });
 
+  it("setAuthTokens reports whether Rust saved the refresh token", async () => {
+    mockInvoke.mockResolvedValueOnce(false);
+    expect(await setAuthTokens("at", "rt")).toBe(false);
+    mockInvoke.mockResolvedValueOnce(true);
+    expect(await setAuthTokens("at", "rt")).toBe(true);
+  });
+
   it("setAuthTokens sends null when no refresh token is provided", async () => {
     mockInvoke.mockResolvedValue(undefined);
 
