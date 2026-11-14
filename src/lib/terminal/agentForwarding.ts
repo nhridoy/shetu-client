@@ -60,14 +60,19 @@ async function agentForwardingAllowed(hostId: string): Promise<boolean> {
   return pending;
 }
 
-/** Opens a terminal to a saved host; every terminal connect and reconnect goes through here. */
-export async function connectSavedTerminal(args: {
-  sessionId: string;
-  hostId: string;
-  detectOs: boolean;
-  cols: number;
-  rows: number;
-}) {
+/** Opens a terminal to a saved host; every terminal connect and reconnect goes through here.
+ * `isCancelled` is checked after the consent question, so a closed pane opens no session. */
+export async function connectSavedTerminal(
+  args: {
+    sessionId: string;
+    hostId: string;
+    detectOs: boolean;
+    cols: number;
+    rows: number;
+  },
+  isCancelled: () => boolean = () => false,
+) {
   const allowAgentForwarding = await agentForwardingAllowed(args.hostId);
+  if (isCancelled()) return;
   await invoke("connect_saved", { ...args, allowAgentForwarding });
 }

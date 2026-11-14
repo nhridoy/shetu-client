@@ -43,6 +43,8 @@ export interface Session {
   unlisten: (() => void) | null;
   cancelReconnect: (() => void) | null;
   historyAttemptId: string | null;
+  /** Set as soon as the pane starts closing, so a pending connect gives up. */
+  closed: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -81,6 +83,7 @@ function createSession(params: SessionParams): Session {
     unlisten: null,
     cancelReconnect: null,
     historyAttemptId: null,
+    closed: false,
   };
 
   return session;
@@ -124,13 +127,16 @@ async function connectViaTauri(session: Session) {
 
     try {
       if (savedHost) {
-        await connectSavedTerminal({
-          sessionId: params.paneId,
-          hostId: params.hostId,
-          detectOs: !savedHost.os,
-          cols,
-          rows,
-        });
+        await connectSavedTerminal(
+          {
+            sessionId: params.paneId,
+            hostId: params.hostId,
+            detectOs: !savedHost.os,
+            cols,
+            rows,
+          },
+          () => destroyed || session.closed,
+        );
       } else {
         const config = {
           host: params.hostAddress || "",
@@ -517,6 +523,8 @@ useThemeStore.subscribe((state, prev) => {
 });
 
 export async function destroySession(paneId: string) {
+  const closing = sessions.get(paneId);
+  if (closing) closing.closed = true;
   // Forward definitions remain saved, but their listeners belong to this pane.
   try {
     const { invoke } = await import("@tauri-apps/api/core");

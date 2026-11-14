@@ -332,13 +332,16 @@ export default function Terminal({
                     .hosts.find((h) => h.id === hostId);
                   try {
                     if (savedHost) {
-                      await connectSavedTerminal({
-                        sessionId: paneId,
-                        hostId,
-                        detectOs: !savedHost.os,
-                        cols: session.xterm.cols,
-                        rows: session.xterm.rows,
-                      });
+                      await connectSavedTerminal(
+                        {
+                          sessionId: paneId,
+                          hostId,
+                          detectOs: !savedHost.os,
+                          cols: session.xterm.cols,
+                          rows: session.xterm.rows,
+                        },
+                        () => session.closed,
+                      );
                     } else {
                       await invoke("connect", {
                         sessionId: paneId,

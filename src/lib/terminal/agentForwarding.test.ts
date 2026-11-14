@@ -118,6 +118,20 @@ describe("connectSavedTerminal", () => {
     expect(asked()).toHaveLength(0);
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
   });
+
+  it("does not connect a pane closed while the question was open", async () => {
+    hostWith(true);
+    let closed = false;
+    const pending = connectSavedTerminal(args, () => closed);
+    await nextAsk();
+    closed = true;
+    answerAgentForwarding(true);
+    await pending;
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "connect_saved",
+      expect.anything(),
+    );
+  });
 });
 
 describe("recordAgentForwarding", () => {
