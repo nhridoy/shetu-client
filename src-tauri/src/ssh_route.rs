@@ -64,8 +64,9 @@ pub async fn connect_saved_route(
         .await
         .map_err(|error| format!("bastion connection: {error}"))
         .map_err(at(RouteHop::Bastion))?;
+    let connect_timeout = crate::ssh_options::connect_timeout(&crate::ssh_options::defaults());
     let channel = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        connect_timeout,
         open_target_channel(&bastion, &route.target.host, route.target.port),
     )
     .await
@@ -88,7 +89,7 @@ pub async fn connect_saved_route(
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 if !prompt_watch.is_waiting() {
                     network_wait += std::time::Duration::from_millis(100);
-                    if network_wait >= std::time::Duration::from_secs(10) {
+                    if network_wait >= connect_timeout {
                         return Err(at(RouteHop::Target)("destination SSH handshake through bastion timed out".to_string()));
                     }
                 }

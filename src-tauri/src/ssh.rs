@@ -438,6 +438,7 @@ pub struct SshConfig {
     pub private_key: Option<String>,
     pub passphrase: Option<String>,
     pub detect_os: bool,
+    pub keepalive_secs: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -692,7 +693,7 @@ pub(crate) async fn connect_authenticated(
         emit_progress(app, sid, "connecting");
     }
     let socket = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        crate::ssh_options::connect_timeout(&crate::ssh_options::defaults()),
         tokio::net::TcpStream::connect(addr),
     )
     .await
@@ -709,7 +710,10 @@ pub(crate) async fn authenticate_over_stream<R>(
 ) -> Result<russh::client::Handle<SshHandler>, String>
 where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let client_config = Arc::new(russh::client::Config::default());
+    let client_config = Arc::new(crate::ssh_options::client_config(
+        &crate::ssh_options::defaults(),
+        config.keepalive_secs,
+    ));
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -1263,6 +1267,7 @@ pub fn load_host_config(
         private_key: None,
         passphrase: None,
         detect_os: false,
+        keepalive_secs: None,
     };
     let auth_type = row.auth_type.as_deref().unwrap_or("password");
     // Load password when auth_type is "password" or "both"

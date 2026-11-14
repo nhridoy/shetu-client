@@ -126,13 +126,18 @@ pub async fn sftp_connect(
         Arc::clone(&ssh_sessions.pending_keys),
         false,
     );
-    let client_config = Arc::new(russh::client::Config::default());
+    let defaults = crate::ssh_options::defaults();
+    let client_config = Arc::new(crate::ssh_options::client_config(&defaults, config.keepalive_secs));
     crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
     let mut ssh = russh::client::connect_stream(
         client_config,
-        tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port))
-            .await
-            .map_err(|e| format!("tcp connect: {e}"))?,
+        tokio::time::timeout(
+            crate::ssh_options::connect_timeout(&defaults),
+            tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port)),
+        )
+        .await
+        .map_err(|_| format!("connection timeout to {}:{}", config.host, config.port))?
+        .map_err(|e| format!("tcp connect: {e}"))?,
         handler,
     )
     .await
