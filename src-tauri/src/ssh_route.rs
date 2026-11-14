@@ -167,7 +167,7 @@ pub fn resolve_saved_route_as(
     if jump_host_id(db, crypto, &bastion_row)?.is_some() {
         return Err("bastion cannot use another jump host".into());
     }
-    let bastion = ssh::load_host_config(db, crypto, &bastion_id)?;
+    let bastion = ssh::load_host_config(db, crypto, &bastion_id).map_err(|e| format!("Jump host: {e}"))?;
     Ok(SavedRoute {
         target_id: host_id.into(),
         target,
@@ -569,6 +569,15 @@ mod tests {
         assert_eq!(resolve_saved_route(&db, &crypto, "new").err().as_deref(), Some("No username set for this host"));
         assert_eq!(resolve_saved_route_as(&db, &crypto, "new", Some("typed")).unwrap().target.username, "typed");
         assert_eq!(resolve_saved_route(&db, &crypto, "old").unwrap().target.username, "root");
+    }
+
+    #[test]
+    fn bastion_without_username_is_named_in_the_error() {
+        let (db, crypto, vault) = fixture();
+        host_in(&db, &crypto, "jump", &vault, "none", None, None, serde_json::json!({"address": "j", "username": ""}));
+        host_in(&db, &crypto, "t", &vault, "none", None, None, serde_json::json!({"address": "a", "username": "me", "jumpHostId": "jump"}));
+        let err = resolve_saved_route(&db, &crypto, "t").err().unwrap();
+        assert!(err.starts_with("Jump host: No username set for this host"), "{err}");
     }
 
     #[test]
