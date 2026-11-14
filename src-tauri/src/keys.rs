@@ -101,8 +101,26 @@ pub async fn convert_ppk(text: String, passphrase: Option<String>) -> Result<Str
         .map_err(|e| format!("Key conversion task failed: {e}"))?
 }
 
+/// Rejects v3 headers whose Argon2 cost would run before the MAC check can catch a crafted file.
+fn check_argon2_limits(text: &str) -> Result<(), String> {
+    for (key, value) in text.lines().filter_map(|l| l.split_once(": ")) {
+        let max = match key {
+            "Argon2-Memory" => 1_048_576, // KiB, 1 GiB
+            "Argon2-Passes" => 64,
+            "Argon2-Parallelism" => 16,
+            _ => continue,
+        };
+        // An unparsable value is left for ssh-key to reject.
+        if value.parse::<u64>().is_ok_and(|v| v > max) {
+            return Err("Could not read PuTTY key: Argon2 parameters too large".into());
+        }
+    }
+    Ok(())
+}
+
 fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
     use russh::keys::ssh_key::Error;
+    check_argon2_limits(&text)?;
     let passphrase = passphrase.filter(|p| !p.is_empty());
     let key = PrivateKey::from_ppk(&text, passphrase.clone()).map_err(|e| match &e {
         // PpkParseError is not re-exported by ssh-key, so match its variant name.
@@ -463,5 +481,26 @@ Private-MAC: 94140d0344fad6aa1bf7b71e9c93db11ccac8a232f8a51e11c024869d608c82d
             "PPK conversion blocked the runtime thread"
         );
         assert!(task.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn ppk_rejects_oversized_argon2_parameters() {
+        let text = ppk_fixture(3, Some("pw"));
+        for (from, to) in [
+            ("Argon2-Memory: 256", "Argon2-Memory: 4194304"),
+            ("Argon2-Passes: 1", "Argon2-Passes: 65"),
+            ("Argon2-Parallelism: 1", "Argon2-Parallelism: 17"),
+        ] {
+            let started = std::time::Instant::now();
+            assert_eq!(
+                convert_ppk_inner(text.replace(from, to), Some("pw".into())).unwrap_err(),
+                "Could not read PuTTY key: Argon2 parameters too large",
+                "{to}"
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{to}"
+            );
+        }
     }
 }
