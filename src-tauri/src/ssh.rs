@@ -230,6 +230,16 @@ pub fn fingerprint_of(server_public_key: &russh::keys::PublicKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn bridge_ends_when_one_side_closes_and_other_never_sends_eof() {
+        let (agent, _agent_peer) = tokio::io::duplex(64);
+        let (chan, chan_peer) = tokio::io::duplex(64);
+        drop(chan_peer);
+        tokio::time::timeout(std::time::Duration::from_secs(2), bridge(agent, chan))
+            .await
+            .expect("bridge returns");
+    }
+
     #[test]
     fn agent_channel_rejected_without_flag() {
         assert!(accept_agent_channel(true));
@@ -835,13 +845,12 @@ impl russh::client::Handler for SshHandler {
             reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
             return Ok(());
         }
+        let Some(agent) = crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await else {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        };
         reply.accept().await;
-        tokio::spawn(async move {
-            let Some(agent) = crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await else { return };
-            let (mut local, mut remote) = (agent.into_inner(), channel.into_stream());
-            // Errors just end the bridge; the data is never logged.
-            let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
-        });
+        tokio::spawn(bridge(agent.into_inner(), channel.into_stream()));
         Ok(())
     }
 
@@ -1117,6 +1126,21 @@ fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
 const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
 pub(crate) const NO_AGENT_NOTICE: &str = "\r\n[Agent forwarding unavailable: no SSH agent found]\r\n";
+
+/// Pipes `a` and `b` until either direction ends, then drops both. The agent protocol is
+/// request/response, and a Windows named pipe never sees EOF from `copy_bidirectional`.
+async fn bridge<A, B>(a: A, b: B)
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
+    let ((mut ar, mut aw), (mut br, mut bw)) = (tokio::io::split(a), tokio::io::split(b));
+    // Errors just end the bridge; the data is never logged.
+    tokio::select! {
+        _ = tokio::io::copy(&mut ar, &mut bw) => {}
+        _ = tokio::io::copy(&mut br, &mut aw) => {}
+    }
+}
 
 /// Agent channels are only served when the user turned forwarding on for this session.
 fn accept_agent_channel(forward_agent: bool) -> bool {

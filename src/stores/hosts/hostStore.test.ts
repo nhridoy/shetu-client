@@ -415,6 +415,28 @@ describe("hostStore", () => {
     expect(opts.recordType).toBe("hosts");
   });
 
+  it("updateHost writes forwardAgent into the encrypted payload only", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+      forwardAgent: true,
+    });
+    await useHostStore.getState().updateHost("h1", { forwardAgent: false });
+    const plain = JSON.parse(
+      (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+    );
+    expect(plain.forwardAgent).toBe(false);
+    expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty("forwardAgent");
+  });
+
   it("deleteHost tombstones and clears selection", async () => {
     useHostStore.setState({
       hosts: [
