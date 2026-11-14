@@ -480,9 +480,21 @@ pub fn remember_sign_out(dir: &Path, cleared: &Result<(), String>) {
     }
 }
 
-/// Sign-in: the session it starts replaces the one a failed sign-out left behind.
-pub fn forget_sign_out(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(SIGNED_OUT_MARKER));
+/// Sign-in: the session it starts replaces the one a failed sign-out left behind,
+/// once its refresh token is saved; until then the stale one stays refused.
+pub fn forget_sign_out(dir: &Path, saved: &Result<(), String>) {
+    if saved.is_ok() {
+        if let Some(e) = remove_marker(dir) {
+            log::warn!("http: cannot remove the {SIGNED_OUT_MARKER} marker: {e}");
+        }
+    }
+}
+
+/// A removal error, unless there was no marker to remove.
+fn remove_marker(dir: &Path) -> Option<std::io::Error> {
+    std::fs::remove_file(dir.join(SIGNED_OUT_MARKER))
+        .err()
+        .filter(|e| e.kind() != std::io::ErrorKind::NotFound)
 }
 
 /// Launch: a failed sign-out retries its keychain delete and stays signed out until the next sign-in.
@@ -510,7 +522,7 @@ pub fn set_auth_tokens(
         log::warn!("http: cannot save the refresh token: {e}");
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        forget_sign_out(&dir);
+        forget_sign_out(&dir, &saved);
     }
     Ok(saved.is_ok())
 }
@@ -902,11 +914,27 @@ pub(crate) mod tests {
         assert_eq!(refresh.get_refresh_token(), None, "delete retried");
         assert!(state.signed_out.load(Ordering::SeqCst));
 
-        state.start_session("a2".into(), Some("r2"), &*refresh).unwrap();
-        forget_sign_out(&dir);
+        // A sign-in whose keychain save fails would leave the stale token readable: keep refusing it.
+        let saved = state.start_session("a2".into(), Some("r2"), &StuckKeychain);
+        forget_sign_out(&dir, &saved);
+        assert!(dir.join(SIGNED_OUT_MARKER).exists(), "marker kept");
+
+        let saved = state.start_session("a2".into(), Some("r2"), &*refresh);
+        forget_sign_out(&dir, &saved);
+        assert!(!dir.join(SIGNED_OUT_MARKER).exists(), "marker removed");
         let relaunched = HttpState::new(String::new());
         restore_sign_out(&relaunched, &dir, &*refresh);
         assert!(!relaunched.signed_out.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_real_marker_removal_failure_is_reported() {
+        let dir = marker_dir();
+        assert!(remove_marker(&dir).is_none(), "no marker is not a failure");
+        // A directory in its place can't be removed as a file.
+        std::fs::create_dir_all(dir.join(SIGNED_OUT_MARKER)).unwrap();
+        assert!(remove_marker(&dir).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
