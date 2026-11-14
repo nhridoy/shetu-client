@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
@@ -29,9 +29,14 @@ export default function HostsPage() {
   const [panelKey, setPanelKey] = useState(0);
   const importModal = useModal();
 
+  const openSeq = useRef(0);
   const openPanel = async (next: Panel | (() => Promise<Panel>)) => {
-    if (!(await confirmLeave())) return;
-    setPanel(typeof next === "function" ? await next() : next);
+    const seq = ++openSeq.current;
+    const resolved = typeof next === "function" ? await next() : next;
+    // Ask after loading so edits typed meanwhile are covered; drop superseded opens.
+    if (seq !== openSeq.current || !(await confirmLeave())) return;
+    if (seq !== openSeq.current) return;
+    setPanel(resolved);
     setPanelKey((k) => k + 1);
   };
   const closePanel = () => setPanel(null);
@@ -73,8 +78,10 @@ export default function HostsPage() {
               kind: "host",
               id: host.id,
               host:
-                (await useHostStore.getState().getDecryptedHost(host.id)) ??
-                host,
+                (await useHostStore
+                  .getState()
+                  .getDecryptedHost(host.id)
+                  .catch(() => undefined)) ?? host,
             }))
           }
           onConnect={handleConnect}

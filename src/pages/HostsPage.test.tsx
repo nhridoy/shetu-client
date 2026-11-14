@@ -254,3 +254,73 @@ describe("HostsPage side panel", () => {
     expect(document.body.textContent).toContain("terminal page");
   });
 });
+
+describe("HostsPage late edit-host loads", () => {
+  // Decrypts resolve only when the test says so (the form's bastion list decrypts too).
+  function deferDecrypt() {
+    const pending: [string, (v: unknown) => void][] = [];
+    useHostStore.setState({
+      getDecryptedHost: vi.fn(
+        (id: string) => new Promise((r) => pending.push([id, r])),
+      ),
+    } as never);
+    return async (id: string) => {
+      await act(async () => {
+        for (const [pid, r] of pending)
+          if (pid === id) r(HOSTS.find((h) => h.id === id));
+      });
+    };
+  }
+  const nameValue = () =>
+    (document.querySelector('input[name="name"]') as HTMLInputElement).value;
+
+  it("ignores an earlier edit open that resolves last", async () => {
+    const resolve = deferDecrypt();
+    await mount();
+    await click(button("Edit web"));
+    await click(button("Edit db"));
+    await resolve("h2");
+    expect(title()).toBe("Edit host · db");
+    type("name", "db2");
+    await resolve("h1");
+    expect(asking()).toBe(false);
+    expect(title()).toBe("Edit host · db");
+    expect(nameValue()).toBe("db2");
+  });
+
+  it("an older edit open never replaces a newer New group panel", async () => {
+    const resolve = deferDecrypt();
+    await mount();
+    await click(button("Edit web"));
+    await click(button("List new group"));
+    expect(title()).toBe("New group");
+    await resolve("h1");
+    expect(asking()).toBe(false);
+    expect(title()).toBe("New group");
+  });
+
+  it("asks when the open panel was edited while the next host loaded", async () => {
+    const resolve = deferDecrypt();
+    await mount();
+    await click(button("List new host"));
+    await click(button("Edit db"));
+    type("name", "typed");
+    await resolve("h2");
+    expect(asking()).toBe(true);
+    await click(button("Keep editing"));
+    expect(title()).toBe("New host");
+    expect(nameValue()).toBe("typed");
+  });
+
+  it("opens with the list host when decrypting fails", async () => {
+    useHostStore.setState({
+      getDecryptedHost: vi.fn(async () => {
+        throw new Error("locked");
+      }),
+    } as never);
+    await mount();
+    await click(button("Edit web"));
+    expect(title()).toBe("Edit host · web");
+    expect(nameValue()).toBe("web");
+  });
+});
