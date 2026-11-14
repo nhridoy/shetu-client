@@ -210,12 +210,12 @@ function Card({
           <span
             data-card-summary
             title={summary}
-            className="min-w-0 truncate text-xs text-dark-400"
+            className="ml-auto min-w-0 truncate text-xs text-dark-400"
           >
             {summary}
           </span>
         )}
-        {action && <div className="ml-auto shrink-0">{action}</div>}
+        {action && <div className="shrink-0">{action}</div>}
       </header>
       <div className="space-y-3">{children}</div>
     </section>

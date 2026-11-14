@@ -256,4 +256,24 @@ describe("SidePanel", () => {
     expect(sum.className).toContain("truncate");
     expect(sum.getAttribute("title")).toBe(long);
   });
+
+  it("Card keeps the summary next to the action on the right", () => {
+    mount(
+      <SidePanel title="t" open dirty={false} onClose={() => {}} footer={null}>
+        <SidePanel.Card
+          icon={<span />}
+          title="Environment"
+          summary="2 vars"
+          action={<button type="button">Add</button>}
+        >
+          <input aria-label="x" />
+        </SidePanel.Card>
+      </SidePanel>,
+    );
+    const sum = q("[data-card-summary]");
+    const action = sum.nextElementSibling as HTMLElement;
+    expect(action.textContent).toBe("Add");
+    expect(sum.className).toContain("ml-auto");
+    expect(action.className).not.toContain("ml-auto");
+  });
 });
