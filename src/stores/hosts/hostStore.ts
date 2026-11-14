@@ -119,21 +119,54 @@ function hostFromRow(row: SyncRow): Host {
   };
 }
 
-/** Full host with decrypted credentials — decrypt on demand. */
-async function decryptHostRow(row: SyncRow): Promise<Host> {
-  const payload = ((await decryptRowData(row.data)) ??
-    {}) as Partial<HostPayload>;
+/** Map a decrypted payload onto Host fields, tolerating junk stored values. */
+function hostFieldsFromPayload(
+  payload: Partial<HostPayload>,
+): Pick<
+  Host,
+  | "address"
+  | "port"
+  | "username"
+  | "password"
+  | "jumpHostId"
+  | "keepaliveSecs"
+  | "env"
+  | "startup"
+> {
+  const p = payload as Record<string, unknown>;
+  const startup = p.startup as Record<string, unknown> | null | undefined;
   return {
-    ...hostFromRow(row),
     address: payload.address ?? "",
     port: payload.port ?? 22,
     username: payload.username ?? "root",
     password: payload.password,
     jumpHostId: payload.jumpHostId ?? null,
-    keepaliveSecs: payload.keepaliveSecs ?? null,
-    env: payload.env ?? [],
-    startup: payload.startup ?? null,
+    keepaliveSecs:
+      typeof p.keepaliveSecs === "number" && Number.isFinite(p.keepaliveSecs)
+        ? p.keepaliveSecs
+        : null,
+    env: Array.isArray(p.env)
+      ? p.env.filter(
+          (e): e is { name: string; value: string } =>
+            typeof e?.name === "string" && typeof e?.value === "string",
+        )
+      : [],
+    startup:
+      startup && typeof startup === "object"
+        ? typeof startup.snippetId === "string" && startup.snippetId
+          ? { snippetId: startup.snippetId }
+          : typeof startup.command === "string"
+            ? { command: startup.command }
+            : null
+        : null,
   };
+}
+
+/** Full host with decrypted credentials — decrypt on demand. */
+async function decryptHostRow(row: SyncRow): Promise<Host> {
+  const payload = ((await decryptRowData(row.data)) ??
+    {}) as Partial<HostPayload>;
+  return { ...hostFromRow(row), ...hostFieldsFromPayload(payload) };
 }
 
 function newId(): string {
@@ -408,14 +441,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     if (cached?.data) {
       const payload = ((await decryptRowData(cached.data)) ??
         {}) as Partial<HostPayload>;
-      return {
-        ...cached,
-        address: payload.address ?? "",
-        port: payload.port ?? 22,
-        username: payload.username ?? "root",
-        password: payload.password,
-        jumpHostId: payload.jumpHostId ?? null,
-      };
+      return { ...cached, ...hostFieldsFromPayload(payload) };
     }
     const row = await getRow("hosts", hostId);
     if (!row) {

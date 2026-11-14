@@ -112,3 +112,38 @@ describe("HostForm advanced validation", () => {
     expect(document.body.textContent).toContain("no leading digit");
   });
 });
+
+describe("HostForm edit", () => {
+  it("submits existing connection options unchanged", async () => {
+    const updateHost = vi.fn();
+    useHostStore.setState({ updateHost, hosts: [], groups: [] } as never);
+    useVaultStore.setState({ currentVaultId: "v1" });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const host = {
+      id: "h1",
+      name: "n",
+      address: "a",
+      port: 22,
+      username: "u",
+      password: "pw",
+      authType: "password",
+      color: "#64748b",
+      tags: "[]",
+      keepaliveSecs: 120,
+      env: [{ name: "LANG", value: "C.UTF-8" }],
+      startup: { command: "tmux a" },
+    };
+    await act(async () => {
+      root.render(<HostForm host={host as never} onClose={() => {}} />);
+    });
+    await submit();
+    expect(updateHost).toHaveBeenCalledTimes(1);
+    const patch = updateHost.mock.calls[0][1];
+    expect(patch.keepaliveSecs).toBe(120);
+    expect(patch.env).toEqual([{ name: "LANG", value: "C.UTF-8" }]);
+    expect(patch.startup).toEqual({ command: "tmux a" });
+  });
+});

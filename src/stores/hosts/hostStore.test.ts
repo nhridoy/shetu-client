@@ -318,6 +318,60 @@ describe("hostStore", () => {
     expect(host?.startup).toEqual({ snippetId: "s1" });
   });
 
+  it("getDecryptedHost returns connection options for a cached host", async () => {
+    mockList.mockResolvedValue([
+      {
+        id: "h1",
+        revision: 1,
+        vault_id: "v1",
+        created_at: "1970-01-01T00:00:01.000Z",
+        updated_at: "1970-01-01T00:00:01.000Z",
+        deleted_at: null,
+        name: "prod",
+        os: null,
+        auth_type: "password",
+        tags: "[]",
+        color: null,
+        group_id: null,
+        key_id: null,
+        sort_order: 0,
+        data: "enc",
+      },
+    ]);
+    await useHostStore.getState().fetchHosts("v1");
+    mockDecrypt.mockResolvedValue({
+      address: "a",
+      keepaliveSecs: 45,
+      env: [{ name: "A", value: "b" }],
+      startup: { snippetId: "s1" },
+    });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.env).toEqual([{ name: "A", value: "b" }]);
+    expect(host?.startup).toEqual({ snippetId: "s1" });
+  });
+
+  it("getDecryptedHost sanitizes junk connection options", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "a",
+      keepaliveSecs: "abc",
+      env: "x",
+      startup: "tmux",
+    });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(host?.keepaliveSecs).toBeNull();
+    expect(host?.env).toEqual([]);
+    expect(host?.startup).toBeNull();
+  });
+
   it("updateHost preserves unpatched encrypted fields", async () => {
     mockGet.mockResolvedValue({
       id: "h1",
