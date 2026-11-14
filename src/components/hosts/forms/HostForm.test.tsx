@@ -79,11 +79,13 @@ const byText = (sel: string, text: string) =>
 const pick = (id: string, label: string) => {
   click(document.getElementById(id) ?? undefined);
   act(() => {
-    [...document.querySelectorAll("[role=option]")]
-      .find((e) => e.textContent === label)
-      ?.dispatchEvent(
-        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
-      );
+    const option = [...document.querySelectorAll("[role=option]")].find(
+      (e) => e.textContent === label,
+    );
+    if (!option) throw new Error(`option "${label}" not found in ${id}`);
+    option.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
   });
 };
 const optionLabels = (id: string) => {
@@ -110,9 +112,9 @@ const changeInput = (el: HTMLInputElement, value: string) =>
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-async function mountAndFill() {
+async function mountAndFill(groups: { id: string; name: string }[] = []) {
   const createHost = vi.fn();
-  useHostStore.setState({ createHost, hosts: [], groups: [] } as never);
+  useHostStore.setState({ createHost, hosts: [], groups } as never);
   useVaultStore.setState({ currentVaultId: "v1" });
   const container = document.createElement("div");
   document.body.append(container);
@@ -267,7 +269,14 @@ describe("HostForm agent forwarding consent", () => {
     groupId?: string,
   ) {
     const updateHost = vi.fn(async () => true);
-    useHostStore.setState({ updateHost, hosts: [], groups: [] } as never);
+    useHostStore.setState({
+      updateHost,
+      hosts: [],
+      groups: [
+        { id: "g1", name: "one" },
+        { id: "g2", name: "two" },
+      ],
+    } as never);
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -328,19 +337,23 @@ describe("HostForm agent forwarding consent", () => {
   it("a new host inheriting On records no decision", async () => {
     setDecisions({});
     fetchInherited.mockResolvedValue({ ...EMPTY, forwardAgent: true });
-    const createHost = await mountAndFill();
+    const createHost = await mountAndFill([{ id: "g1", name: "one" }]);
     createHost.mockResolvedValue({ id: "new1" });
+    pick("groupId", "one");
+    await act(async () => {});
     await submit();
+    expect(createHost.mock.calls[0][0].forwardAgent).toBeNull();
     expect(decisions()).toEqual({});
   });
 
   it("moving between groups that both inherit On keeps Don't allow", async () => {
     setDecisions({ h1: false });
     fetchInherited.mockResolvedValue({ ...EMPTY, forwardAgent: true });
-    await mountEdit(null, () => {}, "g1");
+    const updateHost = await mountEdit(null, () => {}, "g1");
     pick("groupId", "two");
     await act(async () => {});
     await submit();
+    expect(updateHost.mock.calls[0][1]).toMatchObject({ groupId: "g2" });
     expect(decisions()).toEqual({ h1: false });
   });
 
