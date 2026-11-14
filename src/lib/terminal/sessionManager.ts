@@ -115,12 +115,18 @@ async function connectViaTauri(session: Session) {
   };
 
   const doConnect = async () => {
-    session.historyAttemptId = await beginHistoryAttempt(
+    const attemptId = await beginHistoryAttempt(
       params.hostId,
       params.hostName,
       "ssh",
       params.paneId,
     );
+    // Pane closed while the start was pending: destroySession saw no attempt to finish.
+    if (destroyed || session.closed) {
+      await finishHistoryAttempt(attemptId, "ended", "pane closed");
+      return;
+    }
+    session.historyAttemptId = attemptId;
     const savedHost = params.hostId
       ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)
       : undefined;
@@ -319,12 +325,17 @@ async function connectLocal(session: Session) {
   update(params.tabId, params.paneId, "connecting");
 
   try {
-    session.historyAttemptId = await beginHistoryAttempt(
+    const attemptId = await beginHistoryAttempt(
       params.hostId,
       params.hostName,
       "local",
       params.paneId,
     );
+    if (session.closed) {
+      await finishHistoryAttempt(attemptId, "ended", "pane closed");
+      return;
+    }
+    session.historyAttemptId = attemptId;
     const unlisten = await listen<{
       sessionId: string;
       type: string;
