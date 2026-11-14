@@ -1,9 +1,16 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: async () => ({
+    entries: async () => [],
+    set: async () => {},
+    save: async () => {},
+  }),
+}));
 vi.mock("@/lib/db/db");
 vi.mock("@/lib/crypto/crypto");
 vi.mock("@/stores/auth/authStore", () => ({
@@ -11,6 +18,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 }));
 
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import HostForm from "./HostForm";
@@ -18,6 +26,8 @@ import HostForm from "./HostForm";
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeAll(() => useSettingsStore.getState().initSettings());
 
 const roots: Root[] = [];
 afterEach(() => {
@@ -101,6 +111,19 @@ describe("HostForm advanced validation", () => {
     expect(createHost).not.toHaveBeenCalled();
   });
 
+  it("has an agent forwarding toggle in Advanced, off by default", async () => {
+    await mountAndFill();
+    expect(document.body.textContent).not.toContain("Forward SSH agent");
+    click(byText("button", "Advanced"));
+    expect(document.body.textContent).toContain(
+      "Lets this server use your local SSH keys while you're connected. Anyone with root on the server can use them too. Only enable for servers you trust.",
+    );
+    const toggle = document.querySelector(
+      'input[aria-label="Forward SSH agent"]',
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+  });
+
   it("renders nested env name errors", async () => {
     await mountAndFill();
     click(byText("button", "Advanced"));
@@ -134,6 +157,7 @@ describe("HostForm edit", () => {
       color: "#64748b",
       tags: "[]",
       keepaliveSecs: 120,
+      forwardAgent: true,
       env: [{ name: "LANG", value: "C.UTF-8" }],
       startup: { command: "tmux a" },
     };
@@ -144,8 +168,92 @@ describe("HostForm edit", () => {
     expect(updateHost).toHaveBeenCalledTimes(1);
     const patch = updateHost.mock.calls[0][1];
     expect(patch.keepaliveSecs).toBe(120);
+    expect(patch.forwardAgent).toBe(true);
     expect(patch.env).toEqual([{ name: "LANG", value: "C.UTF-8" }]);
     expect(patch.startup).toEqual({ command: "tmux a" });
+  });
+});
+
+describe("HostForm agent forwarding consent", () => {
+  const decisions = () =>
+    useSettingsStore.getState().settings.agentForwardingDecisions;
+  const setDecisions = (d: Record<string, boolean>) =>
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, agentForwardingDecisions: d },
+    }));
+  const toggle = () => {
+    click(byText("button", "Advanced"));
+    click(
+      document.querySelector('input[aria-label="Forward SSH agent"]') ??
+        undefined,
+    );
+  };
+  async function mountEdit(forwardAgent: boolean, onClose = () => {}) {
+    const updateHost = vi.fn(async () => true);
+    useHostStore.setState({ updateHost, hosts: [], groups: [] } as never);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const host = {
+      id: "h1",
+      name: "n",
+      address: "a",
+      port: 22,
+      username: "u",
+      password: "pw",
+      authType: "password",
+      forwardAgent,
+    };
+    await act(async () => {
+      root.render(<HostForm host={host as never} onClose={onClose} />);
+    });
+    return updateHost;
+  }
+
+  it("turning it on for a new host allows it on this device", async () => {
+    setDecisions({});
+    const createHost = await mountAndFill();
+    createHost.mockResolvedValue({ id: "new1" });
+    toggle();
+    await submit();
+    expect(createHost.mock.calls[0][0].forwardAgent).toBe(true);
+    expect(decisions()).toEqual({ new1: true });
+  });
+
+  it("turning it on for an existing host allows it on this device", async () => {
+    setDecisions({ h1: false });
+    await mountEdit(false);
+    toggle();
+    await submit();
+    expect(decisions()).toEqual({ h1: true });
+  });
+
+  it("turning it off forgets this device's answer", async () => {
+    setDecisions({ h1: false, other: true });
+    await mountEdit(true);
+    toggle();
+    await submit();
+    expect(decisions()).toEqual({ other: true });
+  });
+
+  it("a failed save keeps the answer and the form open", async () => {
+    setDecisions({ h1: false });
+    const onClose = vi.fn();
+    const updateHost = await mountEdit(false, onClose);
+    updateHost.mockResolvedValue(false);
+    toggle();
+    await submit();
+    expect(updateHost).toHaveBeenCalledTimes(1);
+    expect(decisions()).toEqual({ h1: false });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("saving without touching it keeps the answer", async () => {
+    setDecisions({ h1: false });
+    await mountEdit(true);
+    await submit();
+    expect(decisions()).toEqual({ h1: false });
   });
 });
 

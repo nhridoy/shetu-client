@@ -262,6 +262,7 @@ describe("hostStore", () => {
       name: "x",
       address: "1.2.3.4",
       keepaliveSecs: 0,
+      forwardAgent: true,
       env: [{ name: "LANG", value: "C" }],
       startup: { snippetId: "s1" },
     });
@@ -269,9 +270,10 @@ describe("hostStore", () => {
       (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
     );
     expect(plain.keepaliveSecs).toBe(0);
+    expect(plain.forwardAgent).toBe(true);
     expect(plain.env).toEqual([{ name: "LANG", value: "C" }]);
     expect(plain.startup).toEqual({ snippetId: "s1" });
-    for (const k of ["keepaliveSecs", "env", "startup"])
+    for (const k of ["keepaliveSecs", "forwardAgent", "env", "startup"])
       expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty(k);
   });
 
@@ -309,11 +311,13 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: 45,
+      forwardAgent: true,
       env: [{ name: "A", value: "b" }],
       startup: { snippetId: "s1" },
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.forwardAgent).toBe(true);
     expect(host?.env).toEqual([{ name: "A", value: "b" }]);
     expect(host?.startup).toEqual({ snippetId: "s1" });
   });
@@ -342,12 +346,14 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: 45,
+      forwardAgent: true,
       env: [{ name: "A", value: "b" }],
       startup: { snippetId: "s1" },
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(mockGet).not.toHaveBeenCalled();
     expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.forwardAgent).toBe(true);
     expect(host?.env).toEqual([{ name: "A", value: "b" }]);
     expect(host?.startup).toEqual({ snippetId: "s1" });
   });
@@ -363,11 +369,13 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: "abc",
+      forwardAgent: "yes",
       env: "x",
       startup: "tmux",
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(host?.keepaliveSecs).toBeNull();
+    expect(host?.forwardAgent).toBe(false);
     expect(host?.env).toEqual([]);
     expect(host?.startup).toBeNull();
   });
@@ -405,6 +413,46 @@ describe("hostStore", () => {
       password: "pw",
     });
     expect(opts.recordType).toBe("hosts");
+  });
+
+  it("updateHost writes forwardAgent into the encrypted payload only", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+      forwardAgent: true,
+    });
+    await useHostStore.getState().updateHost("h1", { forwardAgent: false });
+    const plain = JSON.parse(
+      (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+    );
+    expect(plain.forwardAgent).toBe(false);
+    expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty("forwardAgent");
+  });
+
+  it("updateHost reports whether the save succeeded", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({});
+    mockUpsert.mockRejectedValueOnce(new Error("disk full"));
+    const update = () =>
+      useHostStore.getState().updateHost("h1", { name: "p2" });
+    expect(await update()).toBe(false);
+    expect(useHostStore.getState().error).toContain("disk full");
+    mockUpsert.mockResolvedValueOnce({ data: "enc2" } as never);
+    expect(await update()).toBe(true);
   });
 
   it("deleteHost tombstones and clears selection", async () => {

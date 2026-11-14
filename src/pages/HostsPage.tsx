@@ -87,6 +87,7 @@ export default function HostsPage() {
                   keyId: editingHost.keyId || undefined,
                   jumpHostId: editingHost.jumpHostId ?? null,
                   keepaliveSecs: editingHost.keepaliveSecs,
+                  forwardAgent: editingHost.forwardAgent,
                   env: editingHost.env,
                   startup: editingHost.startup,
                   color: editingHost.color,

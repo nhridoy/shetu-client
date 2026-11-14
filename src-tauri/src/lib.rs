@@ -15,6 +15,8 @@ mod offline_auth;
 mod session_history;
 mod sftp;
 mod ssh;
+mod ssh_agent;
+mod ssh_auth;
 mod ssh_config_import;
 mod ssh_options;
 mod ssh_route;
@@ -1735,6 +1737,7 @@ pub fn run() {
             ssh::connect,
             keys::derive_public_key,
             keys::inspect_private_key,
+            keys::convert_ppk,
             ssh_config_import::ssh_config_preview,
             ssh_config_import::ssh_config_read_key,
             keys::generate_ssh_key,
@@ -1743,6 +1746,7 @@ pub fn run() {
             ssh::send_input,
             ssh::resize,
             ssh::accept_host_key,
+            ssh::answer_auth_prompt,
             ssh::set_trust_new_hosts,
             ssh_options::set_ssh_defaults,
             ssh::ping_host_saved,

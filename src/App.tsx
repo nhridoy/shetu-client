@@ -5,6 +5,8 @@ import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
 import PendingDeletionDialog from "@/components/auth/PendingDeletionDialog";
 import UnlockDialog from "@/components/auth/UnlockDialog";
+import AgentForwardDialog from "@/components/connection/AgentForwardDialog";
+import AuthPromptDialog from "@/components/connection/AuthPromptDialog";
 import HostKeyDialog from "@/components/connection/HostKeyDialog";
 import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
@@ -110,6 +112,8 @@ function App() {
       <UnlockDialog />
       <PendingDeletionDialog />
       <HostKeyDialog />
+      <AuthPromptDialog />
+      <AgentForwardDialog />
       <UpdateNotification />
       <Toaster
         richColors

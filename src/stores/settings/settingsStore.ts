@@ -19,6 +19,9 @@ export interface AppSettings {
   sshKeepaliveSecs: number;
   sshConnectTimeoutSecs: number;
   sshTerminalType: SshTerminalType;
+  sshAgentPath: string;
+  /** Host id → whether this device allows agent forwarding to it. Device-local, never synced. */
+  agentForwardingDecisions: Record<string, boolean>;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -34,6 +37,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   sshKeepaliveSecs: 30,
   sshConnectTimeoutSecs: 10,
   sshTerminalType: "xterm-256color",
+  sshAgentPath: "",
+  agentForwardingDecisions: {},
 };
 
 const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
@@ -50,6 +55,7 @@ function pushSshDefaults(s: AppSettings) {
     keepaliveSecs: s.sshKeepaliveSecs,
     connectTimeoutSecs: s.sshConnectTimeoutSecs,
     term: s.sshTerminalType,
+    agentPath: s.sshAgentPath,
   }).catch(() => {});
 }
 
@@ -72,14 +78,21 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
     merged.sshConnectTimeoutSecs = DEFAULT_SETTINGS.sshConnectTimeoutSecs;
   if (!SSH_TERMS.includes(merged.sshTerminalType))
     merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;
+  if (typeof merged.sshAgentPath !== "string")
+    merged.sshAgentPath = DEFAULT_SETTINGS.sshAgentPath;
+  const decisions: unknown = merged.agentForwardingDecisions;
+  merged.agentForwardingDecisions =
+    decisions && typeof decisions === "object" && !Array.isArray(decisions)
+      ? Object.fromEntries(
+          Object.entries(decisions).filter(([, v]) => typeof v === "boolean"),
+        )
+      : {};
   return merged;
 }
 
-function parseValue(
-  key: string,
-  value: unknown,
-): string | number | boolean | null {
+function parseValue(key: string, value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (key === "agentForwardingDecisions") return value; // validated in mergeSettings
   if (
     key === "fontSize" ||
     key === "scrollback" ||
@@ -100,11 +113,19 @@ function parseValue(
   return String(value);
 }
 
+// initSettings is started without awaiting, so readers of saved values wait on this.
+let markLoaded = () => {};
+const loaded = new Promise<void>((resolve) => {
+  markLoaded = resolve;
+});
+
 interface SettingsState {
   settings: AppSettings;
   isLoading: boolean;
   isLoaded: boolean;
   initSettings: () => Promise<void>;
+  /** Resolves once saved settings have loaded the first time. */
+  whenLoaded: () => Promise<void>;
   updateSetting: <K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K],
@@ -115,6 +136,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isLoading: false,
   isLoaded: false,
+  whenLoaded: () => loaded,
 
   initSettings: async () => {
     set({ isLoading: true });
@@ -134,6 +156,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     const settings = mergeSettings(saved);
     set({ settings, isLoading: false, isLoaded: true });
+    markLoaded();
     pushTrustNewHosts(settings.trustNewHosts);
     pushSshDefaults(settings);
   },

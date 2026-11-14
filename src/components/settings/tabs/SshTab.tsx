@@ -71,8 +71,11 @@ export default function SshTab({
   sshKeepaliveSecs,
   sshConnectTimeoutSecs,
   sshTerminalType,
+  sshAgentPath,
   onSshSettingChange,
 }: SshTabProps) {
+  // Local draft so a space typed mid-path survives the trimmed commit.
+  const [agentDraft, setAgentDraft] = useState(sshAgentPath);
   return (
     <div className="space-y-6">
       <div>
@@ -113,6 +116,26 @@ export default function SshTab({
                 onSshSettingChange("sshTerminalType", v as SshTerminalType)
               }
             />
+          </div>
+          <div>
+            <label
+              htmlFor="ssh-agent-path"
+              className="block text-sm text-white mb-1"
+            >
+              SSH agent socket
+            </label>
+            <Input
+              id="ssh-agent-path"
+              value={agentDraft}
+              onChange={(e) => {
+                setAgentDraft(e.target.value);
+                onSshSettingChange("sshAgentPath", e.target.value.trim());
+              }}
+            />
+            <span className="block text-xs text-dark-400 mt-1">
+              Leave empty to use the system agent (SSH_AUTH_SOCK, Windows
+              OpenSSH agent or Pageant).
+            </span>
           </div>
           <label
             htmlFor="trust-new-hosts"

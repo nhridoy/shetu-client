@@ -29,6 +29,7 @@ export interface Host {
   keyId?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
+  forwardAgent?: boolean;
   env?: { name: string; value: string }[];
   startup?: { snippetId: string } | { command: string } | null;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
@@ -57,7 +58,8 @@ interface HostState {
     host: Partial<Host>,
     opts?: { probeOs?: boolean },
   ) => Promise<Host | null>;
-  updateHost: (id: string, host: Partial<Host>) => Promise<void>;
+  /** False when the save failed (the reason is in `error`). */
+  updateHost: (id: string, host: Partial<Host>) => Promise<boolean>;
   deleteHost: (id: string) => Promise<void>;
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
@@ -80,6 +82,7 @@ interface HostPayload {
   password?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
+  forwardAgent?: boolean;
   env?: { name: string; value: string }[];
   startup?: { snippetId: string } | { command: string } | null;
 }
@@ -130,6 +133,7 @@ function hostFieldsFromPayload(
   | "password"
   | "jumpHostId"
   | "keepaliveSecs"
+  | "forwardAgent"
   | "env"
   | "startup"
 > {
@@ -145,6 +149,7 @@ function hostFieldsFromPayload(
       typeof p.keepaliveSecs === "number" && Number.isFinite(p.keepaliveSecs)
         ? p.keepaliveSecs
         : null,
+    forwardAgent: p.forwardAgent === true,
     env: Array.isArray(p.env)
       ? p.env.filter(
           (e): e is { name: string; value: string } =>
@@ -292,6 +297,7 @@ export const useHostStore = create<HostState>((set, get) => ({
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
             keepaliveSecs: host.keepaliveSecs ?? null,
+            forwardAgent: host.forwardAgent ?? false,
             env: host.env ?? [],
             startup: host.startup ?? null,
           }),
@@ -333,7 +339,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       const row = await getRow("hosts", id);
       if (!row) {
         set({ isLoading: false, error: "Host not found" });
-        return;
+        return false;
       }
       const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
         string,
@@ -348,6 +354,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         sensitive.jumpHostId = patch.jumpHostId;
       if (patch.keepaliveSecs !== undefined)
         sensitive.keepaliveSecs = patch.keepaliveSecs;
+      if (patch.forwardAgent !== undefined)
+        sensitive.forwardAgent = patch.forwardAgent;
       if (patch.env !== undefined) sensitive.env = patch.env;
       if (patch.startup !== undefined) sensitive.startup = patch.startup;
       const saved = await upsertRow(
@@ -386,8 +394,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         isLoading: false,
       });
       void probeHostOs(id);
+      return true;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      return false;
     }
   },
 

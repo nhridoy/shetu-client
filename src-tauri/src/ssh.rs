@@ -230,6 +230,22 @@ pub fn fingerprint_of(server_public_key: &russh::keys::PublicKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn bridge_ends_when_one_side_closes_and_other_never_sends_eof() {
+        let (agent, _agent_peer) = tokio::io::duplex(64);
+        let (chan, chan_peer) = tokio::io::duplex(64);
+        drop(chan_peer);
+        tokio::time::timeout(std::time::Duration::from_secs(2), bridge(agent, chan))
+            .await
+            .expect("bridge returns");
+    }
+
+    #[test]
+    fn agent_channel_rejected_without_flag() {
+        assert!(accept_agent_channel(true));
+        assert!(!accept_agent_channel(false));
+    }
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -434,6 +450,69 @@ mod tests {
         assert_eq!(other.err(), Some("authentication rejected".to_string()));
     }
 
+    #[tokio::test]
+    async fn prompter_round_trip() {
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let answerer = Arc::clone(&pending);
+        let answer = await_prompt_answer(&pending, move |id| {
+            assert_eq!(answerer.lock().unwrap().len(), 1);
+            settle_prompt(&answerer, id, Some(vec!["x".into()]));
+        }, |_| panic!("answered prompt must not close"), AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, Some(vec!["x".to_string()]));
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_answer_after_timeout_is_ignored() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let seen = Arc::new(Mutex::new(String::new()));
+        let seen_in = Arc::clone(&seen);
+        let answer = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(), |_| {}, AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, None);
+        assert!(pending.lock().unwrap().is_empty());
+        settle_prompt(&pending, &seen.lock().unwrap(), Some(vec!["late".into()]));
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_prompt_future_clears_entry_and_reports_closed() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let seen = Arc::new(Mutex::new(String::new()));
+        let closed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (seen_in, closed_in) = (Arc::clone(&seen), Arc::clone(&closed));
+        let waiting = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(),
+            move |id| closed_in.lock().unwrap().push(id.to_string()), AUTH_PROMPT_TIMEOUT);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await; // dropped mid-wait, as disconnect does
+        assert!(pending.lock().unwrap().is_empty());
+        assert_eq!(*closed.lock().unwrap(), vec![seen.lock().unwrap().clone()]);
+    }
+
+    #[tokio::test]
+    async fn timed_out_prompt_reports_closed() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let closed = Arc::new(Mutex::new(0));
+        let closed_in = Arc::clone(&closed);
+        let answer = await_prompt_answer(&pending, |_| {}, move |_| *closed_in.lock().unwrap() += 1, AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, None);
+        assert_eq!(*closed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn prompt_watch_waits_only_for_its_own_connection() {
+        let keys: PendingKeys = Arc::new(Mutex::new(HashMap::new()));
+        let mut mine = HostKeyPromptWatch::new(Arc::clone(&keys), "target.internal", 22);
+        let other = HostKeyPromptWatch::new(keys, "target.internal", 22);
+        let waits = crate::ssh_auth::UserWaits::default();
+        mine.waits = Arc::clone(&waits);
+        assert!(!mine.is_waiting());
+        waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(mine.is_waiting());
+        assert!(!other.is_waiting(), "a login prompt on another connection to the same host");
+    }
+
     #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
@@ -468,6 +547,7 @@ pub struct SshConfig {
     pub keepalive_secs: Option<u32>,
     pub env: Vec<(String, String)>,
     pub startup: Option<StartupAction>,
+    pub forward_agent: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -489,6 +569,86 @@ pub struct SessionSlot {
 
 /// Waiting host-key prompts per host:port; each waiter keeps the fingerprint it got.
 pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bool>)>>>>;
+
+/// Waiting login prompts by id.
+pub type PendingPrompts = Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>;
+
+const AUTH_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Removes the prompt on every exit (answer, timeout, dropped future); an unanswered one tells the dialog to close.
+struct PromptGuard<C: FnOnce(&str)> {
+    pending: PendingPrompts,
+    id: String,
+    answered: bool,
+    closed: Option<C>,
+}
+
+impl<C: FnOnce(&str)> Drop for PromptGuard<C> {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.pending.lock() {
+            map.remove(&self.id);
+        }
+        if !self.answered {
+            if let Some(closed) = self.closed.take() {
+                closed(&self.id);
+            }
+        }
+    }
+}
+
+/// Registers a prompt, lets `emit` announce its id, then waits. `closed` runs if it ends unanswered.
+async fn await_prompt_answer(
+    pending: &PendingPrompts,
+    emit: impl FnOnce(&str),
+    closed: impl FnOnce(&str),
+    timeout: std::time::Duration,
+) -> Option<Vec<String>> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    pending.lock().ok()?.insert(id.clone(), tx);
+    let mut guard = PromptGuard { pending: Arc::clone(pending), id, answered: false, closed: Some(closed) };
+    emit(&guard.id);
+    let answer = tokio::time::timeout(timeout, rx).await;
+    guard.answered = matches!(answer, Ok(Ok(_)));
+    answer.ok()?.ok()?
+}
+
+/// Delivers a dialog answer; an unknown or expired id is ignored.
+fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<String>>) {
+    let entry = pending.lock().ok().and_then(|mut map| map.remove(id));
+    if let Some(tx) = entry {
+        let _ = tx.send(responses);
+    }
+}
+
+pub(crate) fn make_prompter(
+    app: tauri::AppHandle,
+    pending: PendingPrompts,
+    host: String,
+    port: u16,
+    username: String,
+) -> crate::ssh_auth::Prompter {
+    Arc::new(move |request: crate::ssh_auth::AuthPromptRequest| {
+        let (app, pending, host, username) = (app.clone(), Arc::clone(&pending), host.clone(), username.clone());
+        Box::pin(async move {
+            let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
+            await_prompt_answer(&pending, |id| {
+                let _ = app.emit("ssh-auth-prompt", serde_json::json!({
+                    "id": id, "host": host, "port": port, "username": username,
+                    "name": request.name, "instructions": request.instructions, "prompts": prompts,
+                }));
+            }, |id| {
+                let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
+            }, AUTH_PROMPT_TIMEOUT).await
+        })
+    })
+}
+
+#[tauri::command]
+pub fn answer_auth_prompt(id: String, responses: Option<Vec<String>>, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
+    settle_prompt(&state.pending_prompts, &id, responses);
+    Ok(())
+}
 
 /// A waiter is approved only for the fingerprint the user was shown.
 fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str, accepted: bool) {
@@ -524,6 +684,7 @@ pub struct SshSessions {
     pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
     pub inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     pub pending_keys: PendingKeys,
+    pub pending_prompts: PendingPrompts,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -533,6 +694,7 @@ impl SshSessions {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             inflight: Arc::new(Mutex::new(HashMap::new())),
             pending_keys: Arc::new(Mutex::new(HashMap::new())),
+            pending_prompts: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(KnownHosts::load(&data_dir.join(KNOWN_HOSTS_FILE)))),
         }
     }
@@ -545,14 +707,21 @@ pub struct SshHandler {
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: PendingKeys,
+    /// Set only where a user is present to answer login prompts.
+    pending_prompts: Option<PendingPrompts>,
+    /// This connection only, so another terminal's prompt to the same host does not pause its timeout.
+    user_waits: crate::ssh_auth::UserWaits,
     auto_accept: bool,
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
     require_known_host: bool,
+    /// Set only on the target's interactive terminal handler.
+    forward_agent: bool,
 }
 
 pub(crate) struct HostKeyPromptWatch {
     pending: PendingKeys,
+    waits: crate::ssh_auth::UserWaits,
     key: String,
 }
 
@@ -562,11 +731,12 @@ impl HostKeyPromptWatch {
         host: &str,
         port: u16,
     ) -> Self {
-        Self { pending, key: format!("{host}:{port}") }
+        Self { pending, waits: Default::default(), key: format!("{host}:{port}") }
     }
 
     pub(crate) fn is_waiting(&self) -> bool {
         self.pending.lock().map(|pending| pending.contains_key(&self.key)).unwrap_or(false)
+            || self.waits.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
 
@@ -578,8 +748,22 @@ pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str
 }
 
 impl SshHandler {
+    /// The prompt map and app, only for interactive handlers (the host-key rule).
+    fn interactive_prompts(&self) -> Option<(tauri::AppHandle, PendingPrompts)> {
+        let pending = self.pending_prompts.clone()?;
+        (!self.auto_accept && !self.require_known_host).then(|| (self.app.clone(), pending))
+    }
+
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
-        HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port)
+        let mut watch = HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
+        watch.waits = Arc::clone(&self.user_waits);
+        watch
+    }
+
+    /// Lets this connection ask the user for login prompts.
+    pub(crate) fn with_prompts(mut self, prompts: &PendingPrompts) -> Self {
+        self.pending_prompts = Some(Arc::clone(prompts));
+        self
     }
 
     pub fn new(
@@ -593,7 +777,7 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -603,6 +787,11 @@ impl SshHandler {
     ) -> Self {
         self.forwarded = Some(sender);
         self.forward_bind = Some((address, port));
+        self
+    }
+
+    pub(crate) fn with_forward_agent(mut self, on: bool) -> Self {
+        self.forward_agent = on;
         self
     }
 
@@ -636,6 +825,25 @@ impl russh::client::Handler for SshHandler {
                 let _ = sender.send((channel, reply)).await;
             }
         }
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if !accept_agent_channel(self.forward_agent) {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        }
+        let Some(agent) = crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await else {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(bridge(agent.into_inner(), channel.into_stream()));
         Ok(())
     }
 
@@ -731,6 +939,12 @@ pub(crate) async fn connect_authenticated(
     authenticate_over_stream(handler, config, socket, progress).await
 }
 
+/// Ping and the OS probe (auto_accept without require_known_host) never touch the agent;
+/// port forwards (auto_accept + require_known_host) do.
+fn uses_agent(auto_accept: bool, require_known_host: bool) -> bool {
+    !auto_accept || require_known_host
+}
+
 pub(crate) async fn authenticate_over_stream<R>(
     handler: SshHandler,
     config: &SshConfig,
@@ -743,6 +957,9 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         &crate::ssh_options::defaults(),
         config.keepalive_secs,
     ));
+    let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
+    let prompter = handler.interactive_prompts();
+    let waits = Arc::clone(&handler.user_waits);
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -750,51 +967,12 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         emit_progress(app, sid, "authenticating");
     }
 
-    // No explicit credentials — send NONE auth request.
-    // Servers that allow passwordless login (e.g. telehack.com) accept this;
-    // others will reject it and we surface the error.
-    if config.private_key.is_none() && config.password.is_none() {
-        let auth = session
-            .authenticate_none(config.username.clone())
-            .await
-            .map_err(|e| format!("none auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication required — add a password or SSH key".to_string());
-        }
-        return Ok(session);
-    }
-
-    // Try public key first if available
-    if let Some(pem) = config.private_key.as_deref() {
-        let key = russh::keys::decode_secret_key(pem, config.passphrase.as_deref())
-            .map_err(|e| format!("decode private key: {e}"))?;
-        let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            Some(russh::keys::HashAlg::Sha256),
-        );
-        let auth = session
-            .authenticate_publickey(config.username.clone(), key_with_alg)
-            .await
-            .map_err(|e| format!("publickey auth: {e}"))?;
-        if auth.success() {
-            return Ok(session);
-        }
-        // Public key rejected — fall back to password if available
-    }
-
-    // Password auth (fallback or primary)
-    if let Some(ref password) = config.password {
-        let auth = session
-            .authenticate_password(config.username.clone(), password.clone())
-            .await
-            .map_err(|e| format!("password auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication rejected".to_string());
-        }
-        return Ok(session);
-    }
-
-    Err("no authentication method succeeded".to_string())
+    let agent_path = crate::ssh_options::defaults().agent_path;
+    let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
+    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
+    let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
+    crate::ssh_auth::login(&mut session, config, ctx).await?;
+    Ok(session)
 }
 
 async fn probe_os(
@@ -895,12 +1073,15 @@ pub async fn connect_saved(
     detect_os: bool,
     cols: u32,
     rows: u32,
+    allow_agent_forwarding: Option<bool>,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
     let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
     let mut config = route.target.clone();
+    // Gates both the handler flag and the agent_forward request in run_connect_session.
+    config.forward_agent = agent_forwarding_on(config.forward_agent, allow_agent_forwarding);
     config.detect_os = detect_os;
     route.target.detect_os = detect_os;
     let os = if detect_os {
@@ -938,6 +1119,33 @@ fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
 
 const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
+pub(crate) const NO_AGENT_NOTICE: &str = "\r\n[Agent forwarding unavailable: no SSH agent found]\r\n";
+
+/// Pipes `a` and `b` until either direction ends, then drops both. The agent protocol is
+/// request/response, and a Windows named pipe never sees EOF from `copy_bidirectional`.
+async fn bridge<A, B>(a: A, b: B)
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
+    let ((mut ar, mut aw), (mut br, mut bw)) = (tokio::io::split(a), tokio::io::split(b));
+    // Errors just end the bridge; the data is never logged.
+    tokio::select! {
+        _ = tokio::io::copy(&mut ar, &mut bw) => {}
+        _ = tokio::io::copy(&mut br, &mut aw) => {}
+    }
+}
+
+/// The synced host flag alone never forwards: this device must have allowed it too.
+fn agent_forwarding_on(forward_agent: bool, allowed_on_device: Option<bool>) -> bool {
+    forward_agent && allowed_on_device == Some(true)
+}
+
+/// Agent channels are only served when the user turned forwarding on for this session.
+fn accept_agent_channel(forward_agent: bool) -> bool {
+    forward_agent
+}
+
 pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
     let mut b = command.as_bytes().to_vec();
     if !command.ends_with('\n') {
@@ -958,6 +1166,7 @@ async fn run_connect_session(
 ) {
     let known_hosts = Arc::clone(&state.known_hosts);
     let pending_keys = Arc::clone(&state.pending_keys);
+    let pending_prompts = Arc::clone(&state.pending_prompts);
     let sessions = Arc::clone(&state.sessions);
     let inflight_for_spawn = Arc::clone(&state.inflight);
     let inflight_for_insert = Arc::clone(&state.inflight);
@@ -997,11 +1206,11 @@ async fn run_connect_session(
             Arc::clone(&known_hosts),
             Arc::clone(&pending_keys),
             false,
-        );
+        ).with_prompts(&pending_prompts).with_forward_agent(config.forward_agent);
 
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
-            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false);
+            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false).with_prompts(&pending_prompts);
             crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await.map_err(String::from)
         } else {
             connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await
@@ -1038,6 +1247,13 @@ async fn run_connect_session(
             emit(&app_handle, "error", &e.to_string());
             emit(&app_handle, "disconnected", "");
             return;
+        }
+        if config.forward_agent {
+            if crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await.is_none() {
+                emit(&app_handle, "output", NO_AGENT_NOTICE);
+            } else if channel.agent_forward(false).await.is_err() {
+                emit(&app_handle, "output", NO_AGENT_NOTICE);
+            }
         }
         if let Err(e) = channel.request_shell(true).await {
             emit(&app_handle, "error", &e.to_string());
@@ -1359,6 +1575,7 @@ pub fn load_host_config(
         keepalive_secs: payload["keepaliveSecs"]
             .as_f64()
             .map(|n| crate::ssh_options::clamp_keepalive(n as i64)),
+        forward_agent: payload["forwardAgent"].as_bool() == Some(true),
         env: payload["env"]
             .as_array()
             .map(|rows| {
@@ -1396,4 +1613,25 @@ pub fn load_host_config(
         }
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod agent_use_tests {
+    use super::{agent_forwarding_on, uses_agent};
+
+    #[test]
+    fn forwarding_needs_host_flag_and_device_consent() {
+        assert!(!agent_forwarding_on(true, None));
+        assert!(!agent_forwarding_on(true, Some(false)));
+        assert!(!agent_forwarding_on(false, Some(true)));
+        assert!(agent_forwarding_on(true, Some(true)));
+    }
+
+    #[test]
+    fn only_ping_and_os_probe_skip_the_agent() {
+        // (auto_accept, require_known_host)
+        assert!(!uses_agent(true, false), "ping / OS probe");
+        assert!(uses_agent(true, true), "port forward");
+        assert!(uses_agent(false, false), "terminal / SFTP");
+    }
 }

@@ -186,6 +186,7 @@ export default function SettingsPanel() {
             sshKeepaliveSecs={settings.sshKeepaliveSecs}
             sshConnectTimeoutSecs={settings.sshConnectTimeoutSecs}
             sshTerminalType={settings.sshTerminalType}
+            sshAgentPath={settings.sshAgentPath}
             onSshSettingChange={updateSetting}
           />
         )}

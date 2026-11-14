@@ -6,6 +6,7 @@ import {
   useFieldArray,
   useForm,
 } from "react-hook-form";
+import { toast } from "sonner";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -17,6 +18,10 @@ import {
   hostFormSchema,
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
+import {
+  AGENT_FORWARD_HELP,
+  recordAgentForwarding,
+} from "@/lib/terminal/agentForwarding";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
@@ -36,6 +41,7 @@ export interface HostData {
   groupId?: string;
   tags?: string[];
   keepaliveSecs?: number | null;
+  forwardAgent?: boolean;
   env?: { name: string; value: string }[];
   startup?: { snippetId: string } | { command: string } | null;
 }
@@ -113,41 +119,46 @@ export default function HostForm({
     };
   }, [hosts, currentVaultId, host?.id]);
 
-  const { control, handleSubmit, watch, reset } = useForm<HostFormValues>({
-    resolver: zodResolver(hostFormSchema),
-    defaultValues: {
-      name: host?.name || hostFormDefaultValues.name,
-      address: host?.address || hostFormDefaultValues.address,
-      port: host?.port || hostFormDefaultValues.port,
-      username: host?.username || hostFormDefaultValues.username,
-      authType: host?.authType || hostFormDefaultValues.authType,
-      password: host?.password ?? hostFormDefaultValues.password,
-      keyId: host?.keyId || hostFormDefaultValues.keyId,
-      jumpHostId: host?.jumpHostId || "",
-      color: host?.color || hostFormDefaultValues.color,
-      groupId: host?.groupId || defaultGroupId || hostFormDefaultValues.groupId,
-      tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
-      keepaliveMode:
-        host?.keepaliveSecs == null
-          ? "default"
-          : host.keepaliveSecs === 0
-            ? "off"
-            : "custom",
-      keepaliveSecs: host?.keepaliveSecs || undefined,
-      env: host?.env ?? [],
-      startupMode: !host?.startup
-        ? "none"
-        : "snippetId" in host.startup
-          ? "snippet"
-          : "command",
-      startupSnippetId:
-        host?.startup && "snippetId" in host.startup
-          ? host.startup.snippetId
-          : "",
-      startupCommand:
-        host?.startup && "command" in host.startup ? host.startup.command : "",
-    },
-  });
+  const { control, handleSubmit, watch, reset, register } =
+    useForm<HostFormValues>({
+      resolver: zodResolver(hostFormSchema),
+      defaultValues: {
+        name: host?.name || hostFormDefaultValues.name,
+        address: host?.address || hostFormDefaultValues.address,
+        port: host?.port || hostFormDefaultValues.port,
+        username: host?.username || hostFormDefaultValues.username,
+        authType: host?.authType || hostFormDefaultValues.authType,
+        password: host?.password ?? hostFormDefaultValues.password,
+        keyId: host?.keyId || hostFormDefaultValues.keyId,
+        jumpHostId: host?.jumpHostId || "",
+        color: host?.color || hostFormDefaultValues.color,
+        groupId:
+          host?.groupId || defaultGroupId || hostFormDefaultValues.groupId,
+        tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
+        keepaliveMode:
+          host?.keepaliveSecs == null
+            ? "default"
+            : host.keepaliveSecs === 0
+              ? "off"
+              : "custom",
+        keepaliveSecs: host?.keepaliveSecs || undefined,
+        forwardAgent: host?.forwardAgent === true,
+        env: host?.env ?? [],
+        startupMode: !host?.startup
+          ? "none"
+          : "snippetId" in host.startup
+            ? "snippet"
+            : "command",
+        startupSnippetId:
+          host?.startup && "snippetId" in host.startup
+            ? host.startup.snippetId
+            : "",
+        startupCommand:
+          host?.startup && "command" in host.startup
+            ? host.startup.command
+            : "",
+      },
+    });
   const {
     fields: envFields,
     append: appendEnv,
@@ -219,14 +230,23 @@ export default function HostForm({
           : data.keepaliveMode === "custom"
             ? Number(data.keepaliveSecs)
             : null,
+      forwardAgent: data.forwardAgent,
       env: data.env.filter((row) => row.name !== ""),
       startup: startupFromForm(data),
     };
 
+    // Turning the toggle on here is this device's "Allow"; off forgets it so re-enabling asks again.
+    const turnedOn = data.forwardAgent && !host?.forwardAgent;
     if (host) {
-      await updateHost(host.id, hostData);
+      if (!(await updateHost(host.id, hostData))) {
+        toast.error(useHostStore.getState().error ?? "Couldn't save host");
+        return;
+      }
+      if (turnedOn) await recordAgentForwarding(host.id, true);
+      else if (!data.forwardAgent) await recordAgentForwarding(host.id, null);
     } else {
-      await createHost(hostData);
+      const created = await createHost(hostData);
+      if (created && turnedOn) await recordAgentForwarding(created.id, true);
     }
     reset();
     onClose();
@@ -439,6 +459,19 @@ export default function HostForm({
               type="number"
             />
           )}
+
+          <div>
+            <label className="flex items-center gap-2 text-sm text-white">
+              <input
+                type="checkbox"
+                aria-label="Forward SSH agent"
+                className="accent-primary-500"
+                {...register("forwardAgent")}
+              />
+              <span>Forward SSH agent</span>
+            </label>
+            <p className="text-xs text-dark-400">{AGENT_FORWARD_HELP}</p>
+          </div>
 
           <fieldset className="space-y-2">
             <legend className="block text-dark-300 text-sm mb-2">

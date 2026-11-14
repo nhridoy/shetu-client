@@ -12,6 +12,7 @@ const sshProps = {
   sshKeepaliveSecs: 30,
   sshConnectTimeoutSecs: 10,
   sshTerminalType: "xterm-256color" as const,
+  sshAgentPath: "",
   onSshSettingChange: () => {},
 };
 
@@ -100,5 +101,19 @@ it("rejects an out-of-range keepalive and accepts 0", async () => {
   expect(onChange).not.toHaveBeenCalled();
   await act(async () => type(input, "0"));
   expect(onChange).toHaveBeenCalledWith("sshKeepaliveSecs", 0);
+  act(() => root.unmount());
+});
+
+it("renders the SSH agent socket field and reports changes", async () => {
+  const onChange = vi.fn();
+  const { container, root } = await mount(onChange);
+  expect(container.textContent).toContain("SSH agent socket");
+  expect(container.textContent).toContain(
+    "Leave empty to use the system agent (SSH_AUTH_SOCK, Windows OpenSSH agent or Pageant).",
+  );
+  const input = container.querySelector<HTMLInputElement>("#ssh-agent-path");
+  if (!input) throw new Error("missing agent input");
+  await act(async () => type(input, " /run/agent.sock "));
+  expect(onChange).toHaveBeenCalledWith("sshAgentPath", "/run/agent.sock");
   act(() => root.unmount());
 });

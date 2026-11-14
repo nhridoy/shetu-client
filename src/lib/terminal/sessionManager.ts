@@ -9,6 +9,7 @@ import {
   terminalThemeFor,
   useThemeStore,
 } from "@/stores/themeStore";
+import { connectSavedTerminal } from "./agentForwarding";
 import {
   beginHistoryAttempt,
   captureHistoryOutput,
@@ -42,6 +43,8 @@ export interface Session {
   unlisten: (() => void) | null;
   cancelReconnect: (() => void) | null;
   historyAttemptId: string | null;
+  /** Set as soon as the pane starts closing, so a pending connect gives up. */
+  closed: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -80,6 +83,7 @@ function createSession(params: SessionParams): Session {
     unlisten: null,
     cancelReconnect: null,
     historyAttemptId: null,
+    closed: false,
   };
 
   return session;
@@ -111,25 +115,34 @@ async function connectViaTauri(session: Session) {
   };
 
   const doConnect = async () => {
-    session.historyAttemptId = await beginHistoryAttempt(
+    const attemptId = await beginHistoryAttempt(
       params.hostId,
       params.hostName,
       "ssh",
       params.paneId,
     );
+    // Pane closed while the start was pending: destroySession saw no attempt to finish.
+    if (destroyed || session.closed) {
+      await finishHistoryAttempt(attemptId, "ended", "pane closed");
+      return;
+    }
+    session.historyAttemptId = attemptId;
     const savedHost = params.hostId
       ? useHostStore.getState().hosts.find((h) => h.id === params.hostId)
       : undefined;
 
     try {
       if (savedHost) {
-        await invoke("connect_saved", {
-          sessionId: params.paneId,
-          hostId: params.hostId,
-          detectOs: !savedHost.os,
-          cols,
-          rows,
-        });
+        await connectSavedTerminal(
+          {
+            sessionId: params.paneId,
+            hostId: params.hostId,
+            detectOs: !savedHost.os,
+            cols,
+            rows,
+          },
+          () => destroyed || session.closed,
+        );
       } else {
         const config = {
           host: params.hostAddress || "",
@@ -312,12 +325,17 @@ async function connectLocal(session: Session) {
   update(params.tabId, params.paneId, "connecting");
 
   try {
-    session.historyAttemptId = await beginHistoryAttempt(
+    const attemptId = await beginHistoryAttempt(
       params.hostId,
       params.hostName,
       "local",
       params.paneId,
     );
+    if (session.closed) {
+      await finishHistoryAttempt(attemptId, "ended", "pane closed");
+      return;
+    }
+    session.historyAttemptId = attemptId;
     const unlisten = await listen<{
       sessionId: string;
       type: string;
@@ -516,6 +534,8 @@ useThemeStore.subscribe((state, prev) => {
 });
 
 export async function destroySession(paneId: string) {
+  const closing = sessions.get(paneId);
+  if (closing) closing.closed = true;
   // Forward definitions remain saved, but their listeners belong to this pane.
   try {
     const { invoke } = await import("@tauri-apps/api/core");

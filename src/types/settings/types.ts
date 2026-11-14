@@ -39,8 +39,13 @@ export interface SshTabProps {
   sshKeepaliveSecs: number;
   sshConnectTimeoutSecs: number;
   sshTerminalType: SshTerminalType;
+  sshAgentPath: string;
   onSshSettingChange: <
-    K extends "sshKeepaliveSecs" | "sshConnectTimeoutSecs" | "sshTerminalType",
+    K extends
+      | "sshKeepaliveSecs"
+      | "sshConnectTimeoutSecs"
+      | "sshTerminalType"
+      | "sshAgentPath",
   >(
     key: K,
     value: AppSettings[K],

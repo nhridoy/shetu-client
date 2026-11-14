@@ -60,3 +60,9 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
 rand10 = { package = "rand", version = "0.10" }
+futures = "0.3"
+tokio = { version = "1.53.1", features = ["test-util"] }
+# Test-only: hand-build .ppk fixtures (no puttygen available).
+sha1 = "0.10"
+aes = "0.9"
+cbc = "0.2"
