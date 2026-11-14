@@ -437,6 +437,24 @@ describe("hostStore", () => {
     expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty("forwardAgent");
   });
 
+  it("updateHost reports whether the save succeeded", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({});
+    mockUpsert.mockRejectedValueOnce(new Error("disk full"));
+    const update = () =>
+      useHostStore.getState().updateHost("h1", { name: "p2" });
+    expect(await update()).toBe(false);
+    expect(useHostStore.getState().error).toContain("disk full");
+    mockUpsert.mockResolvedValueOnce({ data: "enc2" } as never);
+    expect(await update()).toBe(true);
+  });
+
   it("deleteHost tombstones and clears selection", async () => {
     useHostStore.setState({
       hosts: [

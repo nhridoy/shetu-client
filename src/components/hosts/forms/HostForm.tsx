@@ -6,6 +6,7 @@ import {
   useFieldArray,
   useForm,
 } from "react-hook-form";
+import { toast } from "sonner";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -237,7 +238,10 @@ export default function HostForm({
     // Turning the toggle on here is this device's "Allow"; off forgets it so re-enabling asks again.
     const turnedOn = data.forwardAgent && !host?.forwardAgent;
     if (host) {
-      await updateHost(host.id, hostData);
+      if (!(await updateHost(host.id, hostData))) {
+        toast.error(useHostStore.getState().error ?? "Couldn't save host");
+        return;
+      }
       if (turnedOn) await recordAgentForwarding(host.id, true);
       else if (!data.forwardAgent) await recordAgentForwarding(host.id, null);
     } else {

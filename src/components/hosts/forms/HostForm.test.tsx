@@ -188,8 +188,8 @@ describe("HostForm agent forwarding consent", () => {
         undefined,
     );
   };
-  async function mountEdit(forwardAgent: boolean) {
-    const updateHost = vi.fn();
+  async function mountEdit(forwardAgent: boolean, onClose = () => {}) {
+    const updateHost = vi.fn(async () => true);
     useHostStore.setState({ updateHost, hosts: [], groups: [] } as never);
     const container = document.createElement("div");
     document.body.append(container);
@@ -206,7 +206,7 @@ describe("HostForm agent forwarding consent", () => {
       forwardAgent,
     };
     await act(async () => {
-      root.render(<HostForm host={host as never} onClose={() => {}} />);
+      root.render(<HostForm host={host as never} onClose={onClose} />);
     });
     return updateHost;
   }
@@ -235,6 +235,18 @@ describe("HostForm agent forwarding consent", () => {
     toggle();
     await submit();
     expect(decisions()).toEqual({ other: true });
+  });
+
+  it("a failed save keeps the answer and the form open", async () => {
+    setDecisions({ h1: false });
+    const onClose = vi.fn();
+    const updateHost = await mountEdit(false, onClose);
+    updateHost.mockResolvedValue(false);
+    toggle();
+    await submit();
+    expect(updateHost).toHaveBeenCalledTimes(1);
+    expect(decisions()).toEqual({ h1: false });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("saving without touching it keeps the answer", async () => {

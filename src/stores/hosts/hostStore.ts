@@ -58,7 +58,8 @@ interface HostState {
     host: Partial<Host>,
     opts?: { probeOs?: boolean },
   ) => Promise<Host | null>;
-  updateHost: (id: string, host: Partial<Host>) => Promise<void>;
+  /** False when the save failed (the reason is in `error`). */
+  updateHost: (id: string, host: Partial<Host>) => Promise<boolean>;
   deleteHost: (id: string) => Promise<void>;
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
@@ -338,7 +339,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       const row = await getRow("hosts", id);
       if (!row) {
         set({ isLoading: false, error: "Host not found" });
-        return;
+        return false;
       }
       const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
         string,
@@ -393,8 +394,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         isLoading: false,
       });
       void probeHostOs(id);
+      return true;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      return false;
     }
   },
 
