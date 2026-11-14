@@ -90,6 +90,12 @@ async fn open_sftp_from_handle(
         .map_err(|e| format!("init sftp session: {e}"))
 }
 
+/// Reuse an existing SFTP session only while its SSH connection is open
+/// (`Some(false)` = handle present and not closed).
+fn should_reuse(handle_closed: Option<bool>) -> bool {
+    handle_closed == Some(false)
+}
+
 #[tauri::command]
 pub async fn sftp_connect(
     session_id: String,
@@ -103,7 +109,14 @@ pub async fn sftp_connect(
     crate::logging::hide(&config.username);
     // Check if we already have an SFTP session for this session_id
     {
-        let sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
+        let mut sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
+        let reusable = sessions
+            .get(&session_id)
+            .map(|e| should_reuse(e.ssh_handle.as_ref().map(|h| h.is_closed())));
+        if reusable == Some(false) {
+            // Stale (keepalive closed it): drop and reconnect.
+            sessions.remove(&session_id);
+        }
         if let Some(existing) = sessions.get(&session_id) {
             return Ok(SftpConnectResult {
                 session_id,
@@ -223,7 +236,14 @@ pub async fn sftp_connect_saved(
 
     // Check if we already have an SFTP session for this session_id
     {
-        let sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
+        let mut sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
+        let reusable = sessions
+            .get(&session_id)
+            .map(|e| should_reuse(e.ssh_handle.as_ref().map(|h| h.is_closed())));
+        if reusable == Some(false) {
+            // Stale (keepalive closed it): drop and reconnect.
+            sessions.remove(&session_id);
+        }
         if let Some(existing) = sessions.get(&session_id) {
             return Ok(SftpConnectResult {
                 session_id,
@@ -904,6 +924,13 @@ fn search_recursive<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuse_only_when_connection_open() {
+        assert!(should_reuse(Some(false)));
+        assert!(!should_reuse(Some(true)));
+        assert!(!should_reuse(None));
+    }
 
     #[test]
     fn join_sftp_path_handles_trailing_slash() {
