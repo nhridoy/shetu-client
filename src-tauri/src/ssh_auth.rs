@@ -106,6 +106,12 @@ fn append_dummy_signature(mut data: Vec<u8>, key: &russh::keys::PublicKey, hash_
     data
 }
 
+/// Saved password used to auto-answer keyboard-interactive: never once the password step ran
+/// (rejected or partial), and never after any partial success (the server wants a second factor).
+fn auto_answer_password(config: &crate::ssh::SshConfig, password_ran: bool, partial_seen: bool) -> Option<String> {
+    config.password.clone().filter(|_| !password_ran && !partial_seen)
+}
+
 pub(crate) async fn login<H, A>(
     session: &mut russh::client::Handle<H>,
     config: &crate::ssh::SshConfig,
@@ -138,12 +144,15 @@ where
     let mut allowed: Option<MethodSet> = None;
     let allows = |allowed: &Option<MethodSet>, m: MethodKind| allowed.as_ref().is_none_or(|s| s.contains(&m));
     let mut last_error = "no authentication method succeeded".to_string();
+    let mut partial_seen = false;
 
     // No explicit credentials — send NONE auth request (servers like telehack.com accept it).
     if config.private_key.is_none() && config.password.is_none() {
         let auth = session.authenticate_none(user.clone()).await.map_err(|e| format!("none auth: {e}"))?;
-        if let Step::Success = record(auth, &mut allowed) {
-            return Ok(());
+        match record(auth, &mut allowed) {
+            Step::Success => return Ok(()),
+            Step::Partial => partial_seen = true,
+            Step::Rejected => {}
         }
         last_error = "authentication required — add a password or SSH key".to_string();
     }
@@ -159,8 +168,10 @@ where
                     .authenticate_publickey(user.clone(), key)
                     .await
                     .map_err(|e| format!("publickey auth: {e}"))?;
-                if let Step::Success = record(auth, &mut allowed) {
-                    return Ok(());
+                match record(auth, &mut allowed) {
+                    Step::Success => return Ok(()),
+                    Step::Partial => partial_seen = true,
+                    Step::Rejected => {}
                 }
             }
             Err(e) => *key_error = Some(format!("decode private key: {e}")),
@@ -185,11 +196,11 @@ where
                 let key = identity.public_key().into_owned();
                 let hash = key.algorithm().is_rsa().then_some(russh::keys::HashAlg::Sha256);
                 match session.authenticate_publickey_with(user.clone(), key, hash, &mut signer).await {
-                    Ok(auth) => {
-                        if let Step::Success = record(auth, &mut allowed) {
-                            return Ok(());
-                        }
-                    }
+                    Ok(auth) => match record(auth, &mut allowed) {
+                        Step::Success => return Ok(()),
+                        Step::Partial => partial_seen = true,
+                        Step::Rejected => {}
+                    },
                     Err(_) => break,
                 }
             }
@@ -220,8 +231,7 @@ where
         return Err(last_error);
     }
     let kbd_err = |e: russh::Error| format!("keyboard-interactive auth: {e}");
-    // Never resend the password once the password step ran (rejected or partial).
-    let mut auto_answer = config.password.clone().filter(|_| !password_ran);
+    let mut auto_answer = auto_answer_password(config, password_ran, partial_seen);
     // A second attempt happens only after a wrong auto-answer, with auto-answer gone.
     'attempt: loop {
         let mut auto_answered = false;
@@ -571,6 +581,16 @@ mod tests {
         let log = srv.log.clone();
         within(run(srv, config(None, Some("pw")), Some(&mut agent), None)).await.unwrap();
         assert_eq!(count(&log, "password"), 1);
+    }
+
+    // russh's server clears partial_success on publickey replies too (server/encrypted.rs ~990,
+    // ~1038), so the "publickey partial, then a code prompt" case is tested at the decision.
+    #[test]
+    fn no_auto_answer_after_any_partial_success() {
+        let cfg = config(None, Some("pw"));
+        assert_eq!(auto_answer_password(&cfg, false, false).as_deref(), Some("pw"), "plain PAM");
+        assert_eq!(auto_answer_password(&cfg, false, true), None, "after a partial success");
+        assert_eq!(auto_answer_password(&cfg, true, false), None, "after the password step");
     }
 
     #[test]
