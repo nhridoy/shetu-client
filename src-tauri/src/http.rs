@@ -34,7 +34,8 @@ pub struct HttpState {
     pub refreshing: Arc<AtomicBool>,
     /// Bumped by every sign-in and sign-out; a refresh started before one can't store tokens.
     pub generation: Arc<AtomicU64>,
-    /// Set by sign-out, cleared by sign-in: no refresh runs, whatever the keychain still holds.
+    /// Set by sign-out (and a sign-in the keychain could not save), cleared by a saved sign-in:
+    /// no refresh runs, whatever the keychain still holds.
     pub signed_out: Arc<AtomicBool>,
     pub request_log: Arc<Mutex<Vec<RequestLogEntry>>>,
 }
@@ -56,7 +57,8 @@ impl HttpState {
     }
     /// A sign-in from the webview: the keychain refresh token, generation and access
     /// token change under one lock, so no refresh pairs the old token with the new generation.
-    /// A failed keychain write is returned, after the session started in memory anyway.
+    /// A failed keychain write or delete is returned, after the session started in memory anyway;
+    /// refresh then stays off, as the keychain may still hold an old session's token.
     pub fn start_session(
         &self,
         token: String,
@@ -67,13 +69,10 @@ impl HttpState {
         // Keychain first, as in clear_session; without a new token the old one must not stay.
         let saved = match refresh_token {
             Some(rt) => refresh.persist_rotated_token(rt),
-            None => {
-                let _ = refresh.clear();
-                Ok(())
-            }
+            None => refresh.clear(),
         };
         self.generation.fetch_add(1, Ordering::SeqCst);
-        self.signed_out.store(false, Ordering::SeqCst);
+        self.signed_out.store(saved.is_err(), Ordering::SeqCst);
         *current = Some(token);
         saved
     }
@@ -519,7 +518,7 @@ pub fn set_auth_tokens(
         &KeyringRefreshProvider { app: app.clone() },
     );
     if let Err(e) = &saved {
-        log::warn!("http: cannot save the refresh token: {e}");
+        log::warn!("http: cannot update the saved refresh token: {e}");
     }
     if let Ok(dir) = app.path().app_data_dir() {
         forget_sign_out(&dir, &saved);
@@ -954,9 +953,52 @@ pub(crate) mod tests {
         let before = state.generation();
         assert!(state.start_session("a2".into(), Some("r2"), &StuckKeychain).is_err());
         assert_eq!(state.token().as_deref(), Some("a2"));
-        assert!(!state.signed_out.load(Ordering::SeqCst));
         assert_eq!(state.generation(), before + 1);
         assert!(state.start_session("a3".into(), Some("r3"), &*mem_refresh(None)).is_ok());
+        assert!(!state.signed_out.load(Ordering::SeqCst));
+    }
+
+    /// After a failed sign-out, a sign-in whose keychain write or delete fails:
+    /// the access token works, but the stale refresh token must never be used.
+    async fn assert_no_refresh_after(refresh_token: Option<&str>) {
+        let (url, hits) = spawn_mock(|path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, ROTATED.to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let dir = marker_dir();
+        let state = HttpState::new(url);
+        let cleared = state.clear_session(&StuckKeychain);
+        remember_sign_out(&dir, &cleared);
+
+        let saved = state.start_session("a2".into(), refresh_token, &StuckKeychain);
+        assert!(saved.is_err(), "reported as not saved");
+        forget_sign_out(&dir, &saved);
+        assert!(dir.join(SIGNED_OUT_MARKER).exists(), "marker kept");
+        assert_eq!(state.token().as_deref(), Some("a2"));
+
+        let client = HttpClient::new(state.clone(), Arc::new(StuckKeychain));
+        let res = client.request("GET", "/api/v1/a", None, true).await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        let res = client
+            .request("POST", "/api/v1/auth/refresh", Some(json!({ "refresh_token": "r1" })), false)
+            .await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
+        assert_eq!(state.token().as_deref(), Some("a2"), "not replaced by the old session");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_token_save_keeps_refresh_blocked() {
+        assert_no_refresh_after(Some("r2")).await;
+    }
+
+    #[tokio::test]
+    async fn failed_old_token_delete_keeps_refresh_blocked() {
+        assert_no_refresh_after(None).await;
     }
 
     /// Records whether the session lock was held at each keychain write.
