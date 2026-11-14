@@ -454,7 +454,7 @@ mod tests {
     async fn prompter_round_trip() {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let answerer = Arc::clone(&pending);
-        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| {
+        let answer = await_prompt_answer(&pending, move |id| {
             assert_eq!(answerer.lock().unwrap().len(), 1);
             settle_prompt(&answerer, id, Some(vec!["x".into()]));
         }, |_| panic!("answered prompt must not close"), AUTH_PROMPT_TIMEOUT).await;
@@ -468,7 +468,7 @@ mod tests {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let seen = Arc::new(Mutex::new(String::new()));
         let seen_in = Arc::clone(&seen);
-        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(), |_| {}, AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(), |_| {}, AUTH_PROMPT_TIMEOUT).await;
         assert_eq!(answer, None);
         assert!(pending.lock().unwrap().is_empty());
         settle_prompt(&pending, &seen.lock().unwrap(), Some(vec!["late".into()]));
@@ -482,7 +482,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(String::new()));
         let closed = Arc::new(Mutex::new(Vec::<String>::new()));
         let (seen_in, closed_in) = (Arc::clone(&seen), Arc::clone(&closed));
-        let waiting = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(),
+        let waiting = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(),
             move |id| closed_in.lock().unwrap().push(id.to_string()), AUTH_PROMPT_TIMEOUT);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await; // dropped mid-wait, as disconnect does
         assert!(pending.lock().unwrap().is_empty());
@@ -495,24 +495,22 @@ mod tests {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let closed = Arc::new(Mutex::new(0));
         let closed_in = Arc::clone(&closed);
-        let answer = await_prompt_answer(&pending, "h:22".into(), |_| {}, move |_| *closed_in.lock().unwrap() += 1, AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(&pending, |_| {}, move |_| *closed_in.lock().unwrap() += 1, AUTH_PROMPT_TIMEOUT).await;
         assert_eq!(answer, None);
         assert_eq!(*closed.lock().unwrap(), 1);
     }
 
     #[test]
-    fn prompt_watch_waits_while_a_prompt_for_its_host_is_pending() {
+    fn prompt_watch_waits_only_for_its_own_connection() {
         let keys: PendingKeys = Arc::new(Mutex::new(HashMap::new()));
-        let prompts: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
-        let mut watch = HostKeyPromptWatch::new(keys, "target.internal", 22);
-        watch.prompts = Some(Arc::clone(&prompts));
-        assert!(!watch.is_waiting());
-        let (tx, _rx) = oneshot::channel();
-        prompts.lock().unwrap().insert("p".into(), ("other:22".into(), tx));
-        assert!(!watch.is_waiting());
-        let (tx, _rx) = oneshot::channel();
-        prompts.lock().unwrap().insert("q".into(), ("target.internal:22".into(), tx));
-        assert!(watch.is_waiting());
+        let mut mine = HostKeyPromptWatch::new(Arc::clone(&keys), "target.internal", 22);
+        let other = HostKeyPromptWatch::new(keys, "target.internal", 22);
+        let waits = crate::ssh_auth::UserWaits::default();
+        mine.waits = Arc::clone(&waits);
+        assert!(!mine.is_waiting());
+        waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(mine.is_waiting());
+        assert!(!other.is_waiting(), "a login prompt on another connection to the same host");
     }
 
     #[test]
@@ -572,8 +570,8 @@ pub struct SessionSlot {
 /// Waiting host-key prompts per host:port; each waiter keeps the fingerprint it got.
 pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bool>)>>>>;
 
-/// Waiting login prompts by id; each remembers its host:port so the connect timeout can pause for it.
-pub type PendingPrompts = Arc<Mutex<HashMap<String, (String, oneshot::Sender<Option<Vec<String>>>)>>>;
+/// Waiting login prompts by id.
+pub type PendingPrompts = Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>;
 
 const AUTH_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -601,14 +599,13 @@ impl<C: FnOnce(&str)> Drop for PromptGuard<C> {
 /// Registers a prompt, lets `emit` announce its id, then waits. `closed` runs if it ends unanswered.
 async fn await_prompt_answer(
     pending: &PendingPrompts,
-    host_port: String,
     emit: impl FnOnce(&str),
     closed: impl FnOnce(&str),
     timeout: std::time::Duration,
 ) -> Option<Vec<String>> {
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
-    pending.lock().ok()?.insert(id.clone(), (host_port, tx));
+    pending.lock().ok()?.insert(id.clone(), tx);
     let mut guard = PromptGuard { pending: Arc::clone(pending), id, answered: false, closed: Some(closed) };
     emit(&guard.id);
     let answer = tokio::time::timeout(timeout, rx).await;
@@ -619,7 +616,7 @@ async fn await_prompt_answer(
 /// Delivers a dialog answer; an unknown or expired id is ignored.
 fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<String>>) {
     let entry = pending.lock().ok().and_then(|mut map| map.remove(id));
-    if let Some((_, tx)) = entry {
+    if let Some(tx) = entry {
         let _ = tx.send(responses);
     }
 }
@@ -635,7 +632,7 @@ pub(crate) fn make_prompter(
         let (app, pending, host, username) = (app.clone(), Arc::clone(&pending), host.clone(), username.clone());
         Box::pin(async move {
             let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
-            await_prompt_answer(&pending, format!("{host}:{port}"), |id| {
+            await_prompt_answer(&pending, |id| {
                 let _ = app.emit("ssh-auth-prompt", serde_json::json!({
                     "id": id, "host": host, "port": port, "username": username,
                     "name": request.name, "instructions": request.instructions, "prompts": prompts,
@@ -712,6 +709,8 @@ pub struct SshHandler {
     pending_keys: PendingKeys,
     /// Set only where a user is present to answer login prompts.
     pending_prompts: Option<PendingPrompts>,
+    /// This connection only, so another terminal's prompt to the same host does not pause its timeout.
+    user_waits: crate::ssh_auth::UserWaits,
     auto_accept: bool,
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
@@ -722,7 +721,7 @@ pub struct SshHandler {
 
 pub(crate) struct HostKeyPromptWatch {
     pending: PendingKeys,
-    prompts: Option<PendingPrompts>,
+    waits: crate::ssh_auth::UserWaits,
     key: String,
 }
 
@@ -732,14 +731,12 @@ impl HostKeyPromptWatch {
         host: &str,
         port: u16,
     ) -> Self {
-        Self { pending, prompts: None, key: format!("{host}:{port}") }
+        Self { pending, waits: Default::default(), key: format!("{host}:{port}") }
     }
 
     pub(crate) fn is_waiting(&self) -> bool {
         self.pending.lock().map(|pending| pending.contains_key(&self.key)).unwrap_or(false)
-            || self.prompts.as_ref().is_some_and(|prompts| {
-                prompts.lock().map(|map| map.values().any(|(host_port, _)| *host_port == self.key)).unwrap_or(false)
-            })
+            || self.waits.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
 
@@ -759,7 +756,7 @@ impl SshHandler {
 
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
         let mut watch = HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
-        watch.prompts = self.pending_prompts.clone();
+        watch.waits = Arc::clone(&self.user_waits);
         watch
     }
 
@@ -780,7 +777,7 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -962,6 +959,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ));
     let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
     let prompter = handler.interactive_prompts();
+    let waits = Arc::clone(&handler.user_waits);
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -972,7 +970,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     let agent_path = crate::ssh_options::defaults().agent_path;
     let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
     let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
-    let ctx = crate::ssh_auth::LoginContext { agent, prompter };
+    let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
 }

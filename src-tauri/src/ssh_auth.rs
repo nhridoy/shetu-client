@@ -5,6 +5,7 @@ use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::{client::AuthResult, MethodKind, MethodSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub(crate) const NON_INTERACTIVE: &str =
@@ -28,11 +29,32 @@ pub(crate) type Prompter = Arc<
         + Sync,
 >;
 
+/// How many times this connection is waiting on the user (login prompt, agent confirmation);
+/// a connect timeout pauses while it is above zero.
+pub(crate) type UserWaits = Arc<AtomicUsize>;
+
+/// Counts one wait on the user for as long as it lives.
+struct UserWait(UserWaits);
+
+impl UserWait {
+    fn start(waits: &UserWaits) -> Self {
+        waits.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(waits))
+    }
+}
+
+impl Drop for UserWait {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub(crate) struct LoginContext<F> {
     /// Connects to the agent; awaited only when the agent step is reached.
     pub agent: Option<F>,
     /// `None` = non-interactive.
     pub prompter: Option<Prompter>,
+    pub waits: UserWaits,
 }
 
 enum Step {
@@ -59,6 +81,7 @@ fn record(result: AuthResult, allowed: &mut Option<MethodSet>) -> Step {
 struct AgentSigner<'a, A: AgentStream + Unpin> {
     agent: &'a mut AgentClient<A>,
     refused: bool,
+    waits: UserWaits,
 }
 
 impl<A: AgentStream + Send + Unpin> russh::Signer for AgentSigner<'_, A> {
@@ -70,6 +93,8 @@ impl<A: AgentStream + Send + Unpin> russh::Signer for AgentSigner<'_, A> {
         hash_alg: Option<russh::keys::HashAlg>,
         to_sign: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
+        // The agent may be showing a confirmation popup.
+        let _waiting = UserWait::start(&self.waits);
         match self.agent.sign_request(key, hash_alg, to_sign.clone()).await {
             Ok(signed) => Ok(signed),
             Err(_) => {
@@ -191,7 +216,7 @@ where
                 .ok()
                 .and_then(Result::ok)
                 .unwrap_or_default();
-            let mut signer = AgentSigner { agent: &mut agent, refused: false };
+            let mut signer = AgentSigner { agent: &mut agent, refused: false, waits: Arc::clone(&ctx.waits) };
             for identity in identities.into_iter().take(cap) {
                 if signer.refused || !allows(&allowed, MethodKind::PublicKey) {
                     break;
@@ -267,6 +292,7 @@ where
                 vec![auto_answer.take().unwrap_or_default()]
             } else if let Some(prompter) = &ctx.prompter {
                 let prompts = prompts.into_iter().map(|p| (p.prompt, p.echo)).collect();
+                let _waiting = UserWait::start(&ctx.waits);
                 prompter(AuthPromptRequest { name, instructions, prompts }).await.ok_or(CANCELLED)?
             } else {
                 return Err(NON_INTERACTIVE.to_string());
@@ -409,7 +435,7 @@ mod tests {
     }
 
     async fn run(srv: Srv, config: SshConfig, agent: Option<Agent>, prompter: Option<Prompter>) -> Result<(), String> {
-        run_with(srv, config, agent.map(|agent| async move { Some(agent) }), prompter).await
+        run_with(srv, config, agent.map(|agent| async move { Some(agent) }), prompter, UserWaits::default()).await
     }
 
     async fn run_with(
@@ -417,6 +443,7 @@ mod tests {
         config: SshConfig,
         agent: Option<impl std::future::Future<Output = Option<Agent>> + Send>,
         prompter: Option<Prompter>,
+        waits: UserWaits,
     ) -> Result<(), String> {
         let (server_io, client_io) = tokio::io::duplex(1 << 16);
         let mut server_config = russh::server::Config::default();
@@ -435,7 +462,7 @@ mod tests {
             russh::client::connect_stream(Arc::new(russh::client::Config::default()), client_io, Client)
                 .await
                 .unwrap();
-        login(&mut session, &config, LoginContext { agent, prompter }).await
+        login(&mut session, &config, LoginContext { agent, prompter, waits }).await
     }
 
     #[derive(Clone)]
@@ -448,6 +475,18 @@ mod tests {
     impl russh::keys::agent::server::Agent for RefuseSign {
         async fn confirm_request(&self, msg: russh::keys::agent::server::MessageType) -> bool {
             !matches!(msg, russh::keys::agent::server::MessageType::Sign)
+        }
+    }
+
+    /// Agent that records the connection's wait count while it asks the user to confirm a signature.
+    #[derive(Clone)]
+    struct ConfirmWatch(UserWaits, Arc<Mutex<Vec<usize>>>);
+    impl russh::keys::agent::server::Agent for ConfirmWatch {
+        async fn confirm_request(&self, msg: russh::keys::agent::server::MessageType) -> bool {
+            if matches!(msg, russh::keys::agent::server::MessageType::Sign) {
+                self.1.lock().unwrap().push(self.0.load(Ordering::SeqCst));
+            }
+            true
         }
     }
 
@@ -506,8 +545,40 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
             None::<Agent>
         };
-        run_with(srv, config(Some(pem(&host_key)), None), Some(discover), None).await.unwrap();
+        run_with(srv, config(Some(pem(&host_key)), None), Some(discover), None, UserWaits::default()).await.unwrap();
         assert_eq!(discovered.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn agent_confirmation_counts_as_waiting_on_the_user() {
+        let key = random_key();
+        let waits = UserWaits::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let agent = agent_serving(&[key.clone()], ConfirmWatch(waits.clone(), seen.clone())).await;
+        let srv = Srv { keys: vec![key.public_key().clone()], ..Default::default() };
+        within(run_with(srv, config(None, None), Some(async move { Some(agent) }), None, waits.clone()))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+        assert_eq!(waits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn login_prompt_counts_as_waiting_only_for_its_connection() {
+        let srv = Srv { kbd: vec![("Code: ", "1")], ..Default::default() };
+        let (mine, other) = (UserWaits::default(), UserWaits::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (m, o, s) = (mine.clone(), other.clone(), seen.clone());
+        let prompter: Prompter = Arc::new(move |_| {
+            s.lock().unwrap().push((m.load(Ordering::SeqCst), o.load(Ordering::SeqCst)));
+            Box::pin(async { Some(vec!["1".to_string()]) })
+        });
+        let no_agent = None::<std::future::Ready<Option<Agent>>>;
+        within(run_with(srv, config(Some(pem(&random_key())), None), no_agent, Some(prompter), mine.clone()))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 0)]);
+        assert_eq!(mine.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
