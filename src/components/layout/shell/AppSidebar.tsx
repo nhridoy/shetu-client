@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from "react-router";
 import { Avatar } from "@/components/common/Avatar";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/auth/authStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 
 const sidebarItems = [
   { path: "/hosts", label: "Hosts", icon: DesktopTowerIcon },
@@ -67,7 +68,9 @@ export default function AppSidebar({
                 variant="ghost"
                 key={item.path}
                 aria-current={active ? "page" : undefined}
-                onClick={() => {
+                onClick={async () => {
+                  if (!(await useUnsavedChanges.getState().confirmLeave()))
+                    return;
                   navigate(item.path);
                   if (isMobile) onClose();
                 }}

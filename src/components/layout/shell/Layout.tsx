@@ -3,6 +3,7 @@ import { DragDropProvider, KeyboardSensor } from "@dnd-kit/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
+import UnsavedChangesDialog from "@/components/common/UnsavedChangesDialog";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
 import Header from "@/components/layout/shell/Header";
 
@@ -36,6 +37,7 @@ import {
   serializeWorkspaceLayout,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import { useWorkspaceStore } from "@/stores/workspaces/workspaceStore";
 
@@ -58,7 +60,8 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [activeView, setActiveView] = useState("vault");
-  const showTerminalTab = (tabId: string) => {
+  const showTerminalTab = async (tabId: string) => {
+    if (!(await useUnsavedChanges.getState().confirmLeave())) return;
     setActiveView(tabId);
     navigate("/terminal");
   };
@@ -360,6 +363,7 @@ export default function Layout() {
           <SettingsModal onClose={() => settingsModal.hide()} />
         )}
       </div>
+      <UnsavedChangesDialog />
       {/* Opened with Ctrl/Cmd+K from any view; no on-screen trigger. */}
       <QuickConnect
         onConnect={(host) =>
