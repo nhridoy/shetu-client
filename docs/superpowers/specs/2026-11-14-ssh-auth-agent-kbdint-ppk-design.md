@@ -182,3 +182,27 @@ common cases.
   own fresh local connection.
 - Whether the Settings agent-path field validates that the path exists. Recommended: no, just try
   it at connect.
+
+## Changes after the final review
+
+1. **Agent forwarding asks once per device (user's decision).**
+   - The host toggle alone no longer forwards. The first time a host with `forwardAgent: true`
+     opens a terminal on this device, Shetu asks:
+     - title: "Forward your SSH agent to {host}?";
+     - body: the existing warning text;
+     - buttons: **Allow** / **Don't allow**.
+   - The answer is remembered **per device**, in local settings (not synced), keyed by host id.
+   - Turning the toggle on in the host form on this device counts as "Allow" for that host.
+   - "Don't allow" connects without forwarding, and the answer is remembered. The user can change
+     it by toggling the host's setting off and on again on this device.
+   - Rust forwards only when the host has `forwardAgent` **and** the connect call says this device
+     allowed it.
+2. **No auto-answer after a partial login (user's decision).** Once any step returned partial
+   success (the server accepted a first factor and wants more), keyboard-interactive never
+   auto-fills; the prompts go to the dialog (or fail on non-interactive paths).
+3. **Port forwards use the agent.** This fixes the premise above: forwards are built with
+   `auto_accept = true` too. The agent rule becomes "skip the agent only for ping and the OS
+   probe", meaning `auto_accept && !require_known_host`.
+4. **Agent identity listing is time-limited** to 2 s. A socket that accepts the connection and never
+   answers is treated as "no agent". Signing stays unlimited, because confirmation popups are
+   legitimate.
