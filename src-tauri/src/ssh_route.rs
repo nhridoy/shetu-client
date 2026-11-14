@@ -10,6 +10,29 @@ pub struct RouteConnection {
     pub bastion: Option<russh::client::Handle<SshHandler>>,
 }
 
+/// Which hop of a route failed, so callers need not parse the message.
+#[derive(Debug, PartialEq)]
+pub enum RouteHop {
+    Bastion,
+    Target,
+}
+
+#[derive(Debug)]
+pub struct RouteError {
+    pub hop: RouteHop,
+    pub message: String,
+}
+
+impl From<RouteError> for String {
+    fn from(error: RouteError) -> Self {
+        error.message
+    }
+}
+
+fn at(hop: RouteHop) -> impl FnOnce(String) -> RouteError {
+    move |message| RouteError { hop, message }
+}
+
 async fn open_target_channel<H: russh::client::Handler>(
     bastion: &russh::client::Handle<H>,
     target_host: &str,
@@ -27,9 +50,11 @@ pub async fn connect_saved_route(
     target_handler: SshHandler,
     bastion_handler: SshHandler,
     progress: Option<(&tauri::AppHandle, &str)>,
-) -> Result<RouteConnection, String> {
+) -> Result<RouteConnection, RouteError> {
     let Some(bastion_config) = route.bastion.as_ref() else {
-        let target = ssh::connect_authenticated(target_handler, &route.target, progress).await?;
+        let target = ssh::connect_authenticated(target_handler, &route.target, progress)
+            .await
+            .map_err(at(RouteHop::Target))?;
         return Ok(RouteConnection {
             target,
             bastion: None,
@@ -37,13 +62,16 @@ pub async fn connect_saved_route(
     };
     let bastion = ssh::connect_authenticated(bastion_handler, bastion_config, progress)
         .await
-        .map_err(|error| format!("bastion connection: {error}"))?;
+        .map_err(|error| format!("bastion connection: {error}"))
+        .map_err(at(RouteHop::Bastion))?;
     let channel = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         open_target_channel(&bastion, &route.target.host, route.target.port),
     )
     .await
-    .map_err(|_| "destination channel through bastion timed out".to_string())??;
+    .map_err(|_| "destination channel through bastion timed out".to_string())
+    .and_then(|opened| opened)
+    .map_err(at(RouteHop::Bastion))?;
     let prompt_watch = target_handler.prompt_watch();
     let mut connection = Box::pin(ssh::authenticate_over_stream(
         target_handler,
@@ -54,12 +82,14 @@ pub async fn connect_saved_route(
     let mut network_wait = std::time::Duration::ZERO;
     let target = loop {
         tokio::select! {
-            result = &mut connection => break result.map_err(|error| format!("destination connection: {error}"))?,
+            result = &mut connection => break result
+                .map_err(|error| format!("destination connection: {error}"))
+                .map_err(at(RouteHop::Target))?,
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 if !prompt_watch.is_waiting() {
                     network_wait += std::time::Duration::from_millis(100);
                     if network_wait >= std::time::Duration::from_secs(10) {
-                        return Err("destination SSH handshake through bastion timed out".to_string());
+                        return Err(at(RouteHop::Target)("destination SSH handshake through bastion timed out".to_string()));
                     }
                 }
             }

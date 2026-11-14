@@ -30,6 +30,8 @@ export interface SshTabProps {
   onLoadKnownHosts: () => void;
   onRemoveKnownHost: (host: string, port: number) => void;
   onClearAllKnownHosts: () => void;
+  trustNewHosts: boolean;
+  setTrustNewHosts: (enabled: boolean) => void;
 }
 
 export interface SecurityTabProps {

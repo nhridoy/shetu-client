@@ -179,6 +179,10 @@ export default function SettingsPanel() {
             onLoadKnownHosts={loadKnownHosts}
             onRemoveKnownHost={handleRemoveKnownHost}
             onClearAllKnownHosts={handleClearAllKnownHosts}
+            trustNewHosts={settings.trustNewHosts}
+            setTrustNewHosts={(enabled) =>
+              updateSetting("trustNewHosts", enabled)
+            }
           />
         )}
         {activeTab === "security" && (

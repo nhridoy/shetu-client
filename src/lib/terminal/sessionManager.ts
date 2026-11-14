@@ -2,7 +2,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { confirm } from "@tauri-apps/plugin-dialog";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import {
@@ -41,7 +40,6 @@ export interface Session {
   resizeObserver: ResizeObserver | null;
   resizeRaf: number;
   unlisten: (() => void) | null;
-  unlistenHostKey: (() => void) | null;
   cancelReconnect: (() => void) | null;
   historyAttemptId: string | null;
 }
@@ -80,7 +78,6 @@ function createSession(params: SessionParams): Session {
     resizeObserver: null,
     resizeRaf: 0,
     unlisten: null,
-    unlistenHostKey: null,
     cancelReconnect: null,
     historyAttemptId: null,
   };
@@ -228,29 +225,6 @@ async function connectViaTauri(session: Session) {
   };
 
   try {
-    const unlistenHostKey = await listen<{
-      host: string;
-      port: number;
-      sessionId: string;
-      oldFingerprint: string;
-      newFingerprint: string;
-    }>("ssh-host-key-changed", async (event) => {
-      const { host, port, oldFingerprint, newFingerprint } = event.payload;
-
-      const confirmed = await confirm(
-        `SSH Host Key Changed!\n\n` +
-          `Host: ${host}:${port}\n\n` +
-          `Old fingerprint:\n${oldFingerprint}\n\n` +
-          `New fingerprint:\n${newFingerprint}\n\n` +
-          `This could indicate a MITM attack. Do you trust this new key?`,
-        { title: "Security Warning", kind: "warning" },
-      );
-
-      await invoke("accept_host_key", { host, port, accepted: confirmed });
-    });
-
-    session.unlistenHostKey = unlistenHostKey;
-
     const unlisten = await listen<{
       sessionId: string;
       type: string;
@@ -559,7 +533,6 @@ export async function destroySession(paneId: string) {
   if (session.resizeRaf) cancelAnimationFrame(session.resizeRaf);
 
   session.unlisten?.();
-  session.unlistenHostKey?.();
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");

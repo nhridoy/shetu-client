@@ -1742,6 +1742,7 @@ pub fn run() {
             ssh::send_input,
             ssh::resize,
             ssh::accept_host_key,
+            ssh::set_trust_new_hosts,
             ssh::ping_host_saved,
             sftp::sftp_connect,
             sftp::sftp_connect_saved,

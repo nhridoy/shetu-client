@@ -9,6 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 pub struct KnownHosts {
     path: PathBuf,
     entries: Vec<KnownHostEntry>,
+    /// User setting: interactive connections save first-seen keys without asking.
+    pub trust_new_hosts: bool,
 }
 
 struct KnownHostEntry {
@@ -22,6 +24,19 @@ pub enum HostKeyStatus {
     Unknown,
     Known,
     Changed,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum HostKeyPromptKind {
+    New,
+    Changed,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum HostKeyDecision {
+    Accept,
+    Reject,
+    Prompt(HostKeyPromptKind),
 }
 
 impl KnownHosts {
@@ -43,7 +58,22 @@ impl KnownHosts {
                     .collect()
             })
             .unwrap_or_default();
-        Self { path: path.to_path_buf(), entries }
+        Self { path: path.to_path_buf(), entries, trust_new_hosts: false }
+    }
+
+    /// Background (non-interactive) connections never trust a key the user has not seen.
+    /// A first-seen key accepted via `trust_new_hosts` is saved here.
+    pub fn decide(&mut self, host: &str, port: u16, fingerprint: &str, interactive: bool) -> HostKeyDecision {
+        match self.check(host, port, fingerprint) {
+            HostKeyStatus::Known => HostKeyDecision::Accept,
+            _ if !interactive => HostKeyDecision::Reject,
+            HostKeyStatus::Unknown if self.trust_new_hosts => {
+                self.accept(host, port, fingerprint);
+                HostKeyDecision::Accept
+            }
+            HostKeyStatus::Unknown => HostKeyDecision::Prompt(HostKeyPromptKind::New),
+            HostKeyStatus::Changed => HostKeyDecision::Prompt(HostKeyPromptKind::Changed),
+        }
     }
 
     pub fn check(&self, host: &str, port: u16, fingerprint: &str) -> HostKeyStatus {
@@ -294,12 +324,102 @@ mod tests {
     }
 
     #[test]
+    fn unknown_key_on_interactive_connection_prompts_without_saving() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Prompt(HostKeyPromptKind::New));
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unknown_key_on_background_connection_is_rejected_and_not_saved() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-a", false), HostKeyDecision::Reject);
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn trust_new_hosts_saves_unknown_key_without_prompt() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Accept);
+        assert_eq!(KnownHosts::load(&path).check("web", 22, "fp-a"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn changed_key_still_prompts_with_trust_new_hosts() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        kh.trust_new_hosts = true;
+        assert_eq!(kh.decide("web", 22, "fp-b", true), HostKeyDecision::Prompt(HostKeyPromptKind::Changed));
+        assert_eq!(kh.decide("web", 22, "fp-b", false), HostKeyDecision::Reject);
+        assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Known);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn known_key_is_accepted_everywhere() {
+        let path = tmp_path();
+        let mut kh = KnownHosts::load(&path);
+        kh.accept("web", 22, "fp-a");
+        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Accept);
+        assert_eq!(kh.decide("web", 22, "fp-a", false), HostKeyDecision::Accept);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn host_key_answer_only_approves_the_fingerprint_shown() {
+        let (tx_a, mut rx_a) = oneshot::channel();
+        let (tx_b, mut rx_b) = oneshot::channel();
+        settle_pending(vec![("fp-a".into(), tx_a), ("fp-b".into(), tx_b)], "fp-a", true);
+        assert_eq!(rx_a.try_recv(), Ok(true));
+        assert_eq!(rx_b.try_recv(), Ok(false));
+        let (tx, mut rx) = oneshot::channel();
+        settle_pending(vec![("fp-a".into(), tx)], "fp-a", false);
+        assert_eq!(rx.try_recv(), Ok(false));
+    }
+
+    #[test]
+    fn rejected_host_key_ends_connect_without_reconnect() {
+        let rejected = format!("destination connection: ssh handshake web:22: {}", russh::Error::UnknownKey);
+        assert_eq!(
+            connect_failure_events(&rejected),
+            vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+        );
+        assert_eq!(
+            connect_failure_events("connect web:22: refused"),
+            vec![("error", "connect web:22: refused".to_string()), ("disconnected", String::new())]
+        );
+    }
+
+    #[test]
+    fn ping_reports_reachable_only_when_the_destination_key_is_untrusted() {
+        use crate::ssh_route::{RouteError, RouteHop};
+        let refused = format!("ssh handshake web:22: {}", russh::Error::UnknownKey);
+        let target = ping_failure(RouteError { hop: RouteHop::Target, message: refused.clone() })
+            .expect("the destination answered");
+        assert!(target.reachable);
+        assert_eq!(target.latency_ms, None);
+        let bastion = ping_failure(RouteError { hop: RouteHop::Bastion, message: refused });
+        assert_eq!(bastion.err(), Some("Jump host key not trusted".to_string()));
+        let other = ping_failure(RouteError { hop: RouteHop::Target, message: "authentication rejected".into() });
+        assert_eq!(other.err(), Some("authentication rejected".to_string()));
+    }
+
+    #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
         assert!(!watch.is_waiting());
         let (tx, _rx) = oneshot::channel();
-        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![tx]);
+        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![("fp".to_string(), tx)]);
         assert!(watch.is_waiting());
         pending.lock().unwrap().remove("target.internal:22");
         assert!(!watch.is_waiting());
@@ -337,10 +457,43 @@ pub struct SessionSlot {
     pub writer_handle: tokio::task::JoinHandle<()>,
 }
 
+/// Waiting host-key prompts per host:port; each waiter keeps the fingerprint it got.
+pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bool>)>>>>;
+
+/// A waiter is approved only for the fingerprint the user was shown.
+fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str, accepted: bool) {
+    for (fingerprint, tx) in waiters {
+        let _ = tx.send(accepted && fingerprint == approved);
+    }
+}
+
+/// True when the connection failed because we refused the server's host key.
+fn is_host_key_rejection(error: &str) -> bool {
+    error.contains(&russh::Error::UnknownKey.to_string())
+}
+
+/// No `disconnected` for a refused key, so the terminal does not reconnect and prompt again.
+fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
+    if is_host_key_rejection(error) {
+        vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+    } else {
+        vec![("error", error.to_string()), ("disconnected", String::new())]
+    }
+}
+
+/// A refused destination key means the destination answered; a refused jump-host key means it was never reached.
+fn ping_failure(error: crate::ssh_route::RouteError) -> Result<PingResult, String> {
+    match error.hop {
+        _ if !is_host_key_rejection(&error.message) => Err(error.message),
+        crate::ssh_route::RouteHop::Target => Ok(PingResult { reachable: true, latency_ms: None, os: None }),
+        crate::ssh_route::RouteHop::Bastion => Err("Jump host key not trusted".to_string()),
+    }
+}
+
 pub struct SshSessions {
     pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
     pub inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    pub pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pub pending_keys: PendingKeys,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -361,7 +514,7 @@ pub struct SshHandler {
     session_id: String,
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
     auto_accept: bool,
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
@@ -369,13 +522,13 @@ pub struct SshHandler {
 }
 
 pub(crate) struct HostKeyPromptWatch {
-    pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending: PendingKeys,
     key: String,
 }
 
 impl HostKeyPromptWatch {
     pub(crate) fn new(
-        pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        pending: PendingKeys,
         host: &str,
         port: u16,
     ) -> Self {
@@ -405,7 +558,7 @@ impl SshHandler {
         session_id: String,
         app: tauri::AppHandle,
         known_hosts: Arc<Mutex<KnownHosts>>,
-        pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        pending_keys: PendingKeys,
         auto_accept: bool,
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
@@ -463,34 +616,19 @@ impl russh::client::Handler for SshHandler {
         emit_progress(&self.app, &self.session_id, "host_key");
         let fingerprint = fingerprint_of(server_public_key);
         let (host, port) = (self.host.clone(), self.port);
-        let known = {
-            let kh = self
+        let (kind, old) = {
+            let mut kh = self
                 .known_hosts
                 .lock()
                 .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?;
-            kh.check(&host, port, &fingerprint)
+            let interactive = !self.auto_accept && !self.require_known_host;
+            match kh.decide(&host, port, &fingerprint, interactive) {
+                HostKeyDecision::Accept => return Ok(true),
+                HostKeyDecision::Reject => return Ok(false),
+                HostKeyDecision::Prompt(HostKeyPromptKind::New) => ("new", None),
+                HostKeyDecision::Prompt(HostKeyPromptKind::Changed) => ("changed", kh.get_fingerprint(&host, port)),
+            }
         };
-        match known {
-            HostKeyStatus::Unknown => {
-                if self.require_known_host { return Ok(false); }
-                self.known_hosts
-                    .lock()
-                    .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
-                    .accept(&host, port, &fingerprint);
-                return Ok(true);
-            }
-            HostKeyStatus::Known => return Ok(true),
-            HostKeyStatus::Changed => {
-                if self.auto_accept {
-                    return Ok(false);
-                }
-            }
-        }
-        let old = self
-            .known_hosts
-            .lock()
-            .map_err(|_| std::io::Error::other("known_hosts lock poisoned"))?
-            .get_fingerprint(&host, port);
         let host_port_key = format!("{}:{}", host, port);
         let (tx, rx) = oneshot::channel();
         {
@@ -499,17 +637,18 @@ impl russh::client::Handler for SshHandler {
                 .lock()
                 .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?;
             if let Some(existing) = pending.get_mut(&host_port_key) {
-                existing.push(tx);
+                existing.push((fingerprint.clone(), tx));
             } else {
-                pending.insert(host_port_key.clone(), vec![tx]);
+                pending.insert(host_port_key.clone(), vec![(fingerprint.clone(), tx)]);
                 let _ = self.app.emit(
-                    "ssh-host-key-changed",
+                    "ssh-host-key-prompt",
                     serde_json::json!({
+                        "kind": kind,
                         "host": host,
                         "port": port,
-                        "sessionId": self.session_id.clone(),
-                        "oldFingerprint": old.unwrap_or_default(),
-                        "newFingerprint": fingerprint,
+                        "keyType": server_public_key.algorithm().as_str(),
+                        "fingerprint": fingerprint,
+                        "oldFingerprint": old,
                     }),
                 );
             }
@@ -630,7 +769,7 @@ async fn probe_os(
     session_id: String,
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
 ) -> Option<String> {
     let handler = SshHandler::new(
         config.host.clone(),
@@ -675,7 +814,7 @@ async fn probe_os_saved(
     session_id: String,
     route: &crate::ssh_route::SavedRoute,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
 ) -> Option<String> {
     if route.bastion.is_none() {
         return probe_os(app, session_id, &route.target, known_hosts, pending_keys).await;
@@ -813,7 +952,7 @@ async fn run_connect_session(
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
             let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false);
-            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await
+            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await.map_err(String::from)
         } else {
             connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await
                 .map(|target| crate::ssh_route::RouteConnection { target, bastion: None })
@@ -821,8 +960,9 @@ async fn run_connect_session(
         let connection = match routed {
             Ok(connection) => connection,
             Err(e) => {
-                emit(&app_handle, "error", &e);
-                emit(&app_handle, "disconnected", "");
+                for (type_, data) in connect_failure_events(&e) {
+                    emit(&app_handle, type_, &data);
+                }
                 return;
             }
         };
@@ -1022,6 +1162,7 @@ pub async fn disconnect(
 pub async fn accept_host_key(
     host: String,
     port: u16,
+    fingerprint: String,
     accepted: bool,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
@@ -1032,10 +1173,14 @@ pub async fn accept_host_key(
         .map_err(|e| e.to_string())?
         .remove(&host_port_key);
     if let Some(senders) = senders {
-        for tx in senders {
-            let _ = tx.send(accepted);
-        }
+        settle_pending(senders, &fingerprint, accepted);
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_trust_new_hosts(enabled: bool, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
+    state.known_hosts.lock().map_err(|e| e.to_string())?.trust_new_hosts = enabled;
     Ok(())
 }
 
@@ -1061,7 +1206,7 @@ pub async fn ping_host_saved(
         let connected = tokio::time::timeout(std::time::Duration::from_secs(20), crate::ssh_route::connect_saved_route(&route, target_handler, bastion_handler, None)).await;
         match connected {
             Ok(Ok(connection)) => drop(connection),
-            Ok(Err(error)) => return Err(error),
+            Ok(Err(error)) => return ping_failure(error),
             Err(_) => return Ok(PingResult { reachable: false, latency_ms: None, os: None }),
         }
         let latency_ms = start.elapsed().as_millis() as u64;
