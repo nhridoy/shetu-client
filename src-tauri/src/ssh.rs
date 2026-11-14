@@ -441,7 +441,7 @@ mod tests {
         let answer = await_prompt_answer(&pending, "h:22".into(), move |id| {
             assert_eq!(answerer.lock().unwrap().len(), 1);
             settle_prompt(&answerer, id, Some(vec!["x".into()]));
-        }, AUTH_PROMPT_TIMEOUT).await;
+        }, |_| panic!("answered prompt must not close"), AUTH_PROMPT_TIMEOUT).await;
         assert_eq!(answer, Some(vec!["x".to_string()]));
         assert!(pending.lock().unwrap().is_empty());
     }
@@ -452,11 +452,36 @@ mod tests {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let seen = Arc::new(Mutex::new(String::new()));
         let seen_in = Arc::clone(&seen);
-        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(), AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(), |_| {}, AUTH_PROMPT_TIMEOUT).await;
         assert_eq!(answer, None);
         assert!(pending.lock().unwrap().is_empty());
         settle_prompt(&pending, &seen.lock().unwrap(), Some(vec!["late".into()]));
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_prompt_future_clears_entry_and_reports_closed() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let seen = Arc::new(Mutex::new(String::new()));
+        let closed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (seen_in, closed_in) = (Arc::clone(&seen), Arc::clone(&closed));
+        let waiting = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(),
+            move |id| closed_in.lock().unwrap().push(id.to_string()), AUTH_PROMPT_TIMEOUT);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await; // dropped mid-wait, as disconnect does
+        assert!(pending.lock().unwrap().is_empty());
+        assert_eq!(*closed.lock().unwrap(), vec![seen.lock().unwrap().clone()]);
+    }
+
+    #[tokio::test]
+    async fn timed_out_prompt_reports_closed() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let closed = Arc::new(Mutex::new(0));
+        let closed_in = Arc::clone(&closed);
+        let answer = await_prompt_answer(&pending, "h:22".into(), |_| {}, move |_| *closed_in.lock().unwrap() += 1, AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, None);
+        assert_eq!(*closed.lock().unwrap(), 1);
     }
 
     #[test]
@@ -535,21 +560,42 @@ pub type PendingPrompts = Arc<Mutex<HashMap<String, (String, oneshot::Sender<Opt
 
 const AUTH_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Registers a prompt, lets `emit` announce its id, then waits; every exit removes the entry.
+/// Removes the prompt on every exit (answer, timeout, dropped future); an unanswered one tells the dialog to close.
+struct PromptGuard<C: FnOnce(&str)> {
+    pending: PendingPrompts,
+    id: String,
+    answered: bool,
+    closed: Option<C>,
+}
+
+impl<C: FnOnce(&str)> Drop for PromptGuard<C> {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.pending.lock() {
+            map.remove(&self.id);
+        }
+        if !self.answered {
+            if let Some(closed) = self.closed.take() {
+                closed(&self.id);
+            }
+        }
+    }
+}
+
+/// Registers a prompt, lets `emit` announce its id, then waits. `closed` runs if it ends unanswered.
 async fn await_prompt_answer(
     pending: &PendingPrompts,
     host_port: String,
     emit: impl FnOnce(&str),
+    closed: impl FnOnce(&str),
     timeout: std::time::Duration,
 ) -> Option<Vec<String>> {
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     pending.lock().ok()?.insert(id.clone(), (host_port, tx));
-    emit(&id);
+    let mut guard = PromptGuard { pending: Arc::clone(pending), id, answered: false, closed: Some(closed) };
+    emit(&guard.id);
     let answer = tokio::time::timeout(timeout, rx).await;
-    if let Ok(mut map) = pending.lock() {
-        map.remove(&id);
-    }
+    guard.answered = matches!(answer, Ok(Ok(_)));
     answer.ok()?.ok()?
 }
 
@@ -577,6 +623,8 @@ pub(crate) fn make_prompter(
                     "id": id, "host": host, "port": port, "username": username,
                     "name": request.name, "instructions": request.instructions, "prompts": prompts,
                 }));
+            }, |id| {
+                let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
             }, AUTH_PROMPT_TIMEOUT).await
         })
     })

@@ -139,58 +139,7 @@ pub async fn sftp_connect(
         Arc::clone(&ssh_sessions.pending_keys),
         false,
     ).with_prompts(&ssh_sessions.pending_prompts);
-    let defaults = crate::ssh_options::defaults();
-    let client_config = Arc::new(crate::ssh_options::client_config(&defaults, config.keepalive_secs));
-    crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
-    let mut ssh = russh::client::connect_stream(
-        client_config,
-        tokio::time::timeout(
-            crate::ssh_options::connect_timeout(&defaults),
-            tokio::net::TcpStream::connect(format!("{}:{}", config.host, config.port)),
-        )
-        .await
-        .map_err(|_| format!("connection timeout to {}:{}", config.host, config.port))?
-        .map_err(|e| format!("tcp connect: {e}"))?,
-        handler,
-    )
-    .await
-    .map_err(|e| format!("ssh handshake: {e}"))?;
-
-    // Authenticate
-    if let Some(ref key) = config.private_key {
-        let key = russh::keys::decode_secret_key(key, config.passphrase.as_deref())
-            .map_err(|e| format!("decode key: {e}"))?;
-        let key_with_alg = russh::keys::key::PrivateKeyWithHashAlg::new(
-            Arc::new(key),
-            Some(russh::keys::HashAlg::Sha256),
-        );
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_publickey(config.username.clone(), key_with_alg)
-            .await
-            .map_err(|e| format!("publickey auth: {e}"))?;
-        if !auth.success() {
-            return Err("public key authentication rejected".to_string());
-        }
-    } else if let Some(ref password) = config.password {
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_password(config.username.clone(), password.clone())
-            .await
-            .map_err(|e| format!("password auth: {e}"))?;
-        if !auth.success() {
-            return Err("password authentication rejected".to_string());
-        }
-    } else {
-        crate::ssh::emit_progress(&app_handle, &session_id, "authenticating");
-        let auth = ssh
-            .authenticate_none(config.username.clone())
-            .await
-            .map_err(|e| format!("none auth: {e}"))?;
-        if !auth.success() {
-            return Err("authentication required".to_string());
-        }
-    }
+    let ssh = crate::ssh::connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await?;
 
     crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
     let sftp = open_sftp_from_handle(&ssh).await?;

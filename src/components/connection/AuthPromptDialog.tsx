@@ -23,12 +23,19 @@ export default function AuthPromptDialog() {
     const off = listen<AuthPrompt>("ssh-auth-prompt", (event) =>
       setQueue((q) => [...q, event.payload]),
     );
+    const closed = listen<{ id: string }>("ssh-auth-prompt-closed", (event) => {
+      setQueue((q) => q.filter((p) => p.id !== event.payload.id));
+    });
     return () => {
       void off.then((unlisten) => unlisten());
+      void closed.then((unlisten) => unlisten());
     };
   }, []);
 
   const prompt = queue[0];
+  const shownId = prompt?.id;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: typed values must not outlive the prompt they were typed for
+  useEffect(() => setValues([]), [shownId]);
   if (!prompt) return null;
 
   const answer = (responses: string[] | null) => {
@@ -44,7 +51,6 @@ export default function AuthPromptDialog() {
       key={prompt.id}
       onClose={() => answer(null)}
       title={`Login required — ${prompt.username}@${prompt.host}:${prompt.port}`}
-      hideClose
       zClass="z-[60]"
     >
       <form

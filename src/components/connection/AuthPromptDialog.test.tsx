@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   handlers: [] as ((event: { payload: unknown }) => void)[],
+  names: [] as string[],
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
@@ -20,8 +21,10 @@ import AuthPromptDialog from "./AuthPromptDialog";
 const roots: Root[] = [];
 beforeEach(() => {
   mocks.handlers.length = 0;
+  mocks.names.length = 0;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
-  mocks.listen.mockReset().mockImplementation(async (_name, handler) => {
+  mocks.listen.mockReset().mockImplementation(async (name, handler) => {
+    mocks.names.push(name);
     mocks.handlers.push(handler);
     return () => {};
   });
@@ -39,10 +42,14 @@ async function setup() {
   await act(async () => root.render(<AuthPromptDialog />));
 }
 
-const prompt = (payload: Record<string, unknown>) =>
+const emit = (name: string, payload: Record<string, unknown>) =>
   act(async () => {
-    for (const h of mocks.handlers) h({ payload });
+    mocks.handlers.forEach((h, i) => {
+      if (mocks.names[i] === name) h({ payload });
+    });
   });
+const prompt = (payload: Record<string, unknown>) =>
+  emit("ssh-auth-prompt", payload);
 const btn = (text: string) =>
   Array.from(document.querySelectorAll("button")).find(
     (b) => b.textContent === text,
@@ -130,5 +137,34 @@ describe("AuthPromptDialog", () => {
     expect(document.body.textContent).toContain("Second");
     expect(inputs()).toHaveLength(1);
     expect(inputs()[0].value).toBe("");
+  });
+
+  it("Escape cancels", async () => {
+    await setup();
+    await prompt(base);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("answer_auth_prompt", {
+      id: "p1",
+      responses: null,
+    });
+  });
+
+  it("closes the shown prompt when Rust ends it, without answering", async () => {
+    await setup();
+    await prompt(base);
+    await emit("ssh-auth-prompt-closed", { id: "p1" });
+    expect(document.body.textContent).not.toContain("Login required");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("drops a queued prompt that Rust ended", async () => {
+    await setup();
+    await prompt(base);
+    await prompt({ ...base, id: "p2", name: "Second" });
+    await emit("ssh-auth-prompt-closed", { id: "p2" });
+    await click("Continue");
+    expect(document.body.textContent).not.toContain("Login required");
   });
 });
