@@ -375,12 +375,24 @@ mod tests {
     }
 
     #[test]
+    fn host_key_answer_only_approves_the_fingerprint_shown() {
+        let (tx_a, mut rx_a) = oneshot::channel();
+        let (tx_b, mut rx_b) = oneshot::channel();
+        settle_pending(vec![("fp-a".into(), tx_a), ("fp-b".into(), tx_b)], "fp-a", true);
+        assert_eq!(rx_a.try_recv(), Ok(true));
+        assert_eq!(rx_b.try_recv(), Ok(false));
+        let (tx, mut rx) = oneshot::channel();
+        settle_pending(vec![("fp-a".into(), tx)], "fp-a", false);
+        assert_eq!(rx.try_recv(), Ok(false));
+    }
+
+    #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
         assert!(!watch.is_waiting());
         let (tx, _rx) = oneshot::channel();
-        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![tx]);
+        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![("fp".to_string(), tx)]);
         assert!(watch.is_waiting());
         pending.lock().unwrap().remove("target.internal:22");
         assert!(!watch.is_waiting());
@@ -418,10 +430,20 @@ pub struct SessionSlot {
     pub writer_handle: tokio::task::JoinHandle<()>,
 }
 
+/// Waiting host-key prompts per host:port; each waiter keeps the fingerprint it got.
+pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bool>)>>>>;
+
+/// A waiter is approved only for the fingerprint the user was shown.
+fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str, accepted: bool) {
+    for (fingerprint, tx) in waiters {
+        let _ = tx.send(accepted && fingerprint == approved);
+    }
+}
+
 pub struct SshSessions {
     pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
     pub inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    pub pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pub pending_keys: PendingKeys,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -442,7 +464,7 @@ pub struct SshHandler {
     session_id: String,
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
     auto_accept: bool,
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
@@ -450,13 +472,13 @@ pub struct SshHandler {
 }
 
 pub(crate) struct HostKeyPromptWatch {
-    pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending: PendingKeys,
     key: String,
 }
 
 impl HostKeyPromptWatch {
     pub(crate) fn new(
-        pending: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        pending: PendingKeys,
         host: &str,
         port: u16,
     ) -> Self {
@@ -486,7 +508,7 @@ impl SshHandler {
         session_id: String,
         app: tauri::AppHandle,
         known_hosts: Arc<Mutex<KnownHosts>>,
-        pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+        pending_keys: PendingKeys,
         auto_accept: bool,
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
@@ -565,9 +587,9 @@ impl russh::client::Handler for SshHandler {
                 .lock()
                 .map_err(|_| std::io::Error::other("pending_keys lock poisoned"))?;
             if let Some(existing) = pending.get_mut(&host_port_key) {
-                existing.push(tx);
+                existing.push((fingerprint.clone(), tx));
             } else {
-                pending.insert(host_port_key.clone(), vec![tx]);
+                pending.insert(host_port_key.clone(), vec![(fingerprint.clone(), tx)]);
                 let _ = self.app.emit(
                     "ssh-host-key-prompt",
                     serde_json::json!({
@@ -697,7 +719,7 @@ async fn probe_os(
     session_id: String,
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
 ) -> Option<String> {
     let handler = SshHandler::new(
         config.host.clone(),
@@ -742,7 +764,7 @@ async fn probe_os_saved(
     session_id: String,
     route: &crate::ssh_route::SavedRoute,
     known_hosts: Arc<Mutex<KnownHosts>>,
-    pending_keys: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<bool>>>>>,
+    pending_keys: PendingKeys,
 ) -> Option<String> {
     if route.bastion.is_none() {
         return probe_os(app, session_id, &route.target, known_hosts, pending_keys).await;
@@ -1089,6 +1111,7 @@ pub async fn disconnect(
 pub async fn accept_host_key(
     host: String,
     port: u16,
+    fingerprint: String,
     accepted: bool,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
@@ -1099,9 +1122,7 @@ pub async fn accept_host_key(
         .map_err(|e| e.to_string())?
         .remove(&host_port_key);
     if let Some(senders) = senders {
-        for tx in senders {
-            let _ = tx.send(accepted);
-        }
+        settle_pending(senders, &fingerprint, accepted);
     }
     Ok(())
 }

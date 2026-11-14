@@ -34,6 +34,7 @@ export default function HostKeyDialog() {
     void invoke("accept_host_key", {
       host: prompt.host,
       port: prompt.port,
+      fingerprint: prompt.fingerprint,
       accepted,
     }).catch(() => {});
   };

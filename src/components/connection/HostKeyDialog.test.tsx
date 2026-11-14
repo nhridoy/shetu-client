@@ -78,6 +78,7 @@ describe("HostKeyDialog", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("accept_host_key", {
       host: "web.example",
       port: 22,
+      fingerprint: "SHA256:newfp",
       accepted: true,
     });
     expect(document.body.textContent).not.toContain("Verify host key");
@@ -105,6 +106,7 @@ describe("HostKeyDialog", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("accept_host_key", {
       host: "db.example",
       port: 2222,
+      fingerprint: "SHA256:new",
       accepted: false,
     });
   });
@@ -132,6 +134,7 @@ describe("HostKeyDialog", () => {
     expect(mocks.invoke).toHaveBeenLastCalledWith("accept_host_key", {
       host: "second.example",
       port: 22,
+      fingerprint: "SHA256:newfp",
       accepted: true,
     });
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
