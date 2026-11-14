@@ -28,8 +28,9 @@ pub(crate) type Prompter = Arc<
         + Sync,
 >;
 
-pub(crate) struct LoginContext<'a, A: AgentStream + Unpin> {
-    pub agent: Option<&'a mut AgentClient<A>>,
+pub(crate) struct LoginContext<F> {
+    /// Connects to the agent; awaited only when the agent step is reached.
+    pub agent: Option<F>,
     /// `None` = non-interactive.
     pub prompter: Option<Prompter>,
 }
@@ -112,14 +113,15 @@ fn auto_answer_password(config: &crate::ssh::SshConfig, password_ran: bool, part
     config.password.clone().filter(|_| !password_ran && !partial_seen)
 }
 
-pub(crate) async fn login<H, A>(
+pub(crate) async fn login<H, A, F>(
     session: &mut russh::client::Handle<H>,
     config: &crate::ssh::SshConfig,
-    ctx: LoginContext<'_, A>,
+    ctx: LoginContext<F>,
 ) -> Result<(), String>
 where
     H: russh::client::Handler,
     A: AgentStream + Send + Unpin + 'static,
+    F: Future<Output = Option<AgentClient<A>>>,
 {
     let mut key_error = None;
     let result = try_login(session, config, ctx, &mut key_error).await;
@@ -129,15 +131,16 @@ where
     }
 }
 
-async fn try_login<H, A>(
+async fn try_login<H, A, F>(
     session: &mut russh::client::Handle<H>,
     config: &crate::ssh::SshConfig,
-    ctx: LoginContext<'_, A>,
+    ctx: LoginContext<F>,
     key_error: &mut Option<String>,
 ) -> Result<(), String>
 where
     H: russh::client::Handler,
     A: AgentStream + Send + Unpin + 'static,
+    F: Future<Output = Option<AgentClient<A>>>,
 {
     let user = &config.username;
     // Methods the server still allows; unknown until the first failure lists them.
@@ -178,8 +181,8 @@ where
         }
     }
 
-    if let Some(agent) = ctx.agent {
-        if allows(&allowed, MethodKind::PublicKey) {
+    if let Some(connect) = ctx.agent.filter(|_| allows(&allowed, MethodKind::PublicKey)) {
+        if let Some(mut agent) = connect.await {
             let cap = if config.password.is_some() { AGENT_CAP_WITH_PASSWORD } else { usize::MAX };
             // Agent unreachable, erroring or silent ends this step. Signing stays unlimited
             // because confirmation popups are legitimate.
@@ -188,7 +191,7 @@ where
                 .ok()
                 .and_then(Result::ok)
                 .unwrap_or_default();
-            let mut signer = AgentSigner { agent, refused: false };
+            let mut signer = AgentSigner { agent: &mut agent, refused: false };
             for identity in identities.into_iter().take(cap) {
                 if signer.refused || !allows(&allowed, MethodKind::PublicKey) {
                     break;
@@ -405,10 +408,14 @@ mod tests {
         key.to_openssh(LineEnding::LF).unwrap().to_string()
     }
 
-    async fn run(
+    async fn run(srv: Srv, config: SshConfig, agent: Option<Agent>, prompter: Option<Prompter>) -> Result<(), String> {
+        run_with(srv, config, agent.map(|agent| async move { Some(agent) }), prompter).await
+    }
+
+    async fn run_with(
         srv: Srv,
         config: SshConfig,
-        agent: Option<&mut Agent>,
+        agent: Option<impl std::future::Future<Output = Option<Agent>> + Send>,
         prompter: Option<Prompter>,
     ) -> Result<(), String> {
         let (server_io, client_io) = tokio::io::duplex(1 << 16);
@@ -474,10 +481,10 @@ mod tests {
     async fn key_host_skips_agent_on_success() {
         let host_key = random_key();
         let agent_keys = [random_key(), random_key()];
-        let mut agent = agent_with(&agent_keys).await;
+        let agent = agent_with(&agent_keys).await;
         let srv = Srv { keys: vec![host_key.public_key().clone()], ..Default::default() };
         let log = srv.log.clone();
-        run(srv, config(Some(pem(&host_key)), None), Some(&mut agent), None).await.unwrap();
+        run(srv, config(Some(pem(&host_key)), None), Some(agent), None).await.unwrap();
         assert_eq!(*log.lock().unwrap(), vec![fp(host_key.public_key())]);
     }
 
@@ -490,13 +497,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_key_never_discovers_the_agent() {
+        let host_key = random_key();
+        let srv = Srv { keys: vec![host_key.public_key().clone()], ..Default::default() };
+        let discovered = Arc::new(AtomicUsize::new(0));
+        let seen = discovered.clone();
+        let discover = async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            None::<Agent>
+        };
+        run_with(srv, config(Some(pem(&host_key)), None), Some(discover), None).await.unwrap();
+        assert_eq!(discovered.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn agent_keys_tried_after_host_key() {
         let host_key = random_key();
         let agent_keys = [random_key(), random_key()];
-        let mut agent = agent_with(&agent_keys).await;
+        let agent = agent_with(&agent_keys).await;
         let srv = Srv { keys: vec![agent_keys[1].public_key().clone()], ..Default::default() };
         let log = srv.log.clone();
-        run(srv, config(Some(pem(&host_key)), None), Some(&mut agent), None).await.unwrap();
+        run(srv, config(Some(pem(&host_key)), None), Some(agent), None).await.unwrap();
         let log = log.lock().unwrap().clone();
         assert_eq!(log.first(), Some(&fp(host_key.public_key())));
         assert_eq!(log.last(), Some(&fp(agent_keys[1].public_key())));
@@ -505,10 +526,10 @@ mod tests {
     #[tokio::test]
     async fn agent_capped_at_three_when_password_saved() {
         let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
-        let mut agent = agent_with(&agent_keys).await;
+        let agent = agent_with(&agent_keys).await;
         let srv = Srv { password: Some("pw"), ..Default::default() };
         let log = srv.log.clone();
-        run(srv, config(None, Some("pw")), Some(&mut agent), None).await.unwrap();
+        run(srv, config(None, Some("pw")), Some(agent), None).await.unwrap();
         let log = log.lock().unwrap().clone();
         let agent_attempts = log.iter().take_while(|e| *e != "password").count();
         assert_eq!(agent_attempts, 3, "{log:?}");
@@ -594,10 +615,10 @@ mod tests {
 
     #[tokio::test]
     async fn agent_sign_refusal_does_not_wedge_session() {
-        let mut agent = agent_serving(&[random_key()], RefuseSign).await;
+        let agent = agent_serving(&[random_key()], RefuseSign).await;
         let srv = Srv { password: Some("pw"), ..Default::default() };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), Some(&mut agent), None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), Some(agent), None)).await.unwrap();
         assert_eq!(count(&log, "password"), 1);
     }
 
@@ -605,10 +626,10 @@ mod tests {
     async fn silent_agent_is_skipped_after_timeout() {
         // The peer accepts the connection but never answers the identities request.
         let (_silent_peer, client_io) = tokio::io::duplex(1 << 16);
-        let mut agent: Agent = AgentClient::connect(client_io).dynamic();
+        let agent: Agent = AgentClient::connect(client_io).dynamic();
         let srv = Srv { password: Some("pw"), ..Default::default() };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), Some(&mut agent), None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), Some(agent), None)).await.unwrap();
         assert_eq!(count(&log, "password"), 1);
     }
 

@@ -969,13 +969,10 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         emit_progress(app, sid, "authenticating");
     }
 
-    let mut agent = if use_agent {
-        crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await
-    } else {
-        None
-    };
+    let agent_path = crate::ssh_options::defaults().agent_path;
+    let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
     let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
-    let ctx = crate::ssh_auth::LoginContext { agent: agent.as_mut(), prompter };
+    let ctx = crate::ssh_auth::LoginContext { agent, prompter };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
 }
