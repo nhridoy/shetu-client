@@ -21,3 +21,19 @@ jobs:
       - run: bun run vitest run
       - run: node --test scripts/build-update-manifest.test.mjs
       - run: node --test scripts/install.test.mjs scripts/install-windows.test.mjs
+
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev
+      # tauri::generate_context! needs the frontendDist folder to exist.
+      - run: mkdir -p dist
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
