@@ -1,8 +1,9 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_keyring_store::KeyringExt;
 
 pub const REFRESH_TOKEN_ACCOUNT: &str = "auth.refresh_token";
@@ -11,6 +12,9 @@ pub const NETWORK_ERROR_MESSAGE: &str =
     "Cannot reach the server. Check that it is running and your connection is online.";
 pub const INVALID_URL_MESSAGE: &str =
     "The server URL is missing or invalid. Set it under \"Connect to custom server\".";
+/// In the app data dir while a sign-out's keychain delete hasn't gone through.
+const SIGNED_OUT_MARKER: &str = "signed-out";
+const SIGNED_OUT_BODY: &str = r#"{"error":{"code":"UNAUTHORIZED","message":"signed out"}}"#;
 const REFRESH_WAIT_MS: u64 = 50;
 const REFRESH_WAIT_MAX_STEPS: u32 = 160;
 
@@ -231,6 +235,13 @@ impl HttpClient {
                 HttpErrorKind::InvalidUrl
             })
         };
+
+        // Signed out: a refresh token the keychain failed to delete must not start a session again.
+        if self.state.signed_out.load(Ordering::SeqCst)
+            && path.trim_start_matches('/') == "api/v1/auth/refresh"
+        {
+            return Err(HttpErrorKind::Http(401, SIGNED_OUT_BODY.to_string()));
+        }
 
         // Unauthenticated calls (login, refresh, server checks) never carry the session token.
         let token = if auth { self.state.token() } else { None };
@@ -456,6 +467,29 @@ pub(crate) fn notify_if_revoked<T>(outcome: &Result<T, HttpErrorKind>, emit: imp
     }
 }
 
+/// Sign-out: a keychain delete that failed is remembered across restarts.
+pub fn remember_sign_out(dir: &Path, cleared: &Result<(), String>) {
+    if cleared.is_err() {
+        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = std::fs::write(dir.join(SIGNED_OUT_MARKER), b"") {
+            log::warn!("http: cannot save the sign-out marker: {e}");
+        }
+    }
+}
+
+/// Sign-in: the session it starts replaces the one a failed sign-out left behind.
+pub fn forget_sign_out(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(SIGNED_OUT_MARKER));
+}
+
+/// Launch: a failed sign-out retries its keychain delete and stays signed out until the next sign-in.
+pub fn restore_sign_out(state: &HttpState, dir: &Path, refresh: &dyn RefreshProvider) {
+    if dir.join(SIGNED_OUT_MARKER).exists() {
+        state.signed_out.store(true, Ordering::SeqCst);
+        let _ = refresh.clear();
+    }
+}
+
 #[tauri::command]
 pub fn set_auth_tokens(
     app: AppHandle,
@@ -466,8 +500,11 @@ pub fn set_auth_tokens(
     state.start_session(
         access_token,
         refresh_token.as_deref(),
-        &KeyringRefreshProvider { app },
+        &KeyringRefreshProvider { app: app.clone() },
     );
+    if let Ok(dir) = app.path().app_data_dir() {
+        forget_sign_out(&dir);
+    }
     Ok(())
 }
 
@@ -476,7 +513,11 @@ pub fn clear_auth_tokens(
     app: AppHandle,
     state: tauri::State<'_, HttpState>,
 ) -> Result<(), String> {
-    state.clear_session(&KeyringRefreshProvider { app })
+    let cleared = state.clear_session(&KeyringRefreshProvider { app: app.clone() });
+    if let Ok(dir) = app.path().app_data_dir() {
+        remember_sign_out(&dir, &cleared);
+    }
+    cleared
 }
 
 /// Suspend after a revoked session: the keychain refresh token may still work.
@@ -806,6 +847,66 @@ pub(crate) mod tests {
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
         assert_eq!(state.token(), None);
+    }
+
+    fn marker_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("shetu-signout-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn failed_sign_out_stays_signed_out_after_a_restart() {
+        let (url, hits) = spawn_mock(|path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, ROTATED.to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let dir = marker_dir();
+        let cleared = HttpState::new(url.clone()).clear_session(&StuckKeychain);
+        remember_sign_out(&dir, &cleared);
+
+        // Next launch: a fresh state, the old refresh token still in the keychain.
+        let state = HttpState::new(url);
+        restore_sign_out(&state, &dir, &StuckKeychain);
+        let client = HttpClient::new(state.clone(), Arc::new(StuckKeychain));
+        let res = client.request("GET", "/api/v1/a", None, true).await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        // The webview's own refresh with the leftover token is refused too.
+        let res = client
+            .request("POST", "/api/v1/auth/refresh", Some(json!({ "refresh_token": "r1" })), false)
+            .await;
+        assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
+        assert_eq!(state.token(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_retries_the_keychain_delete_and_sign_in_clears_the_marker() {
+        let dir = marker_dir();
+        remember_sign_out(&dir, &Err("keychain locked".into()));
+        let state = HttpState::new(String::new());
+        let refresh = mem_refresh(Some("r1"));
+        restore_sign_out(&state, &dir, &*refresh);
+        assert_eq!(refresh.get_refresh_token(), None, "delete retried");
+        assert!(state.signed_out.load(Ordering::SeqCst));
+
+        state.start_session("a2".into(), Some("r2"), &*refresh);
+        forget_sign_out(&dir);
+        let relaunched = HttpState::new(String::new());
+        restore_sign_out(&relaunched, &dir, &*refresh);
+        assert!(!relaunched.signed_out.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn successful_sign_out_leaves_no_marker() {
+        let dir = marker_dir();
+        remember_sign_out(&dir, &Ok(()));
+        let state = HttpState::new(String::new());
+        restore_sign_out(&state, &dir, &*mem_refresh(Some("r1")));
+        assert!(!state.signed_out.load(Ordering::SeqCst));
     }
 
     /// Records whether the session lock was held at each keychain write.
