@@ -12,7 +12,11 @@ import {
   vi,
 } from "vitest";
 
-const { fetchInherited } = vi.hoisted(() => ({ fetchInherited: vi.fn() }));
+const { fetchInherited, toastError } = vi.hoisted(() => ({
+  fetchInherited: vi.fn(),
+  toastError: vi.fn(),
+}));
+vi.mock("sonner", () => ({ toast: { error: toastError, success: vi.fn() } }));
 vi.mock("@/lib/hosts/inherited", () => ({
   fetchInheritedDefaults: fetchInherited,
 }));
@@ -55,6 +59,9 @@ vi.mock("@/components/hosts/panels/HostsPanel", () => ({
       </button>
       <button type="button" onClick={() => p.onConnect(HOSTS[0])}>
         Connect web
+      </button>
+      <button type="button" onClick={() => p.onConnect(HOSTS[1])}>
+        Connect db
       </button>
     </div>
   ),
@@ -238,20 +245,29 @@ describe("HostsPage side panel", () => {
     expect(title()).toBe("New group");
   });
 
-  it("Connect while dirty asks before leaving the page", async () => {
+  it("card click connects when no panel is open", async () => {
     await mount();
-    await click(button("Edit web"));
-    type("name", "web2");
+    await click(button("Connect web"));
+    expect(addTab).toHaveBeenCalledWith("h1", "web", expect.anything());
+    expect(document.body.textContent).toContain("terminal page");
+  });
+
+  it("card click while a panel is open switches the panel to that host", async () => {
+    await mount();
+    await click(button("List new host"));
+    await click(button("Connect db"));
+    expect(title()).toBe("Edit host · db");
+    expect(addTab).not.toHaveBeenCalled();
+
+    type("name", "db2");
     await click(button("Connect web"));
     expect(asking()).toBe(true);
     await click(button("Keep editing"));
-    expect(addTab).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("terminal page");
-
+    expect(title()).toBe("Edit host · db");
     await click(button("Connect web"));
     await click(button("Discard"));
-    expect(addTab).toHaveBeenCalledWith("h1", "web", expect.anything());
-    expect(document.body.textContent).toContain("terminal page");
+    expect(title()).toBe("Edit host · web");
+    expect(addTab).not.toHaveBeenCalled();
   });
 });
 
@@ -312,7 +328,18 @@ describe("HostsPage late edit-host loads", () => {
     expect(nameValue()).toBe("typed");
   });
 
-  it("opens with the list host when decrypting fails", async () => {
+  it("a pending edit open is dropped once the panel is closed", async () => {
+    const resolve = deferDecrypt();
+    await mount();
+    await click(button("List new host"));
+    await click(button("Edit db"));
+    await click(document.querySelector('[aria-label="Close panel"]'));
+    expect(document.querySelector("aside")).toBeNull();
+    await resolve("h2");
+    expect(document.querySelector("aside")).toBeNull();
+  });
+
+  it("shows an error and opens nothing when decrypting fails", async () => {
     useHostStore.setState({
       getDecryptedHost: vi.fn(async () => {
         throw new Error("locked");
@@ -320,7 +347,7 @@ describe("HostsPage late edit-host loads", () => {
     } as never);
     await mount();
     await click(button("Edit web"));
-    expect(title()).toBe("Edit host · web");
-    expect(nameValue()).toBe("web");
+    expect(toastError).toHaveBeenCalledWith("Couldn't read this host");
+    expect(document.querySelector("aside")).toBeNull();
   });
 });

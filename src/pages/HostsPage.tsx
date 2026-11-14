@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
 import SshConfigImportModal from "@/components/hosts/modals/SshConfigImportModal";
@@ -30,16 +31,30 @@ export default function HostsPage() {
   const importModal = useModal();
 
   const openSeq = useRef(0);
-  const openPanel = async (next: Panel | (() => Promise<Panel>)) => {
+  const openPanel = async (next: Panel | (() => Promise<Panel | null>)) => {
     const seq = ++openSeq.current;
     const resolved = typeof next === "function" ? await next() : next;
+    if (!resolved) return;
     // Ask after loading so edits typed meanwhile are covered; drop superseded opens.
     if (seq !== openSeq.current || !(await confirmLeave())) return;
     if (seq !== openSeq.current) return;
     setPanel(resolved);
     setPanelKey((k) => k + 1);
   };
-  const closePanel = () => setPanel(null);
+  const closePanel = () => {
+    openSeq.current++; // drop an edit-host open still loading
+    setPanel(null);
+  };
+  const editHost = (host: Host) =>
+    openPanel(async () => {
+      const full = await useHostStore
+        .getState()
+        .getDecryptedHost(host.id)
+        .catch(() => null);
+      // The list row lacks address/credentials; editing it would save blanks.
+      if (!full) toast.error("Couldn't read this host");
+      return full && { kind: "host", id: host.id, host: full };
+    });
   const editingGroup =
     panel?.kind === "group" && panel.id
       ? groups.find((g) => g.id === panel.id)
@@ -47,6 +62,7 @@ export default function HostsPage() {
 
   const handleConnect = async (host: Host) => {
     if (!(await confirmLeave())) return;
+    openSeq.current++;
     addTab(host.id, host.name, {
       hostAddress: host.address,
       hostPort: host.port,
@@ -73,18 +89,9 @@ export default function HostsPage() {
           }
           onImport={importModal.show}
           onEditGroup={(group) => openPanel({ kind: "group", id: group.id })}
-          onEditHost={(host) =>
-            openPanel(async () => ({
-              kind: "host",
-              id: host.id,
-              host:
-                (await useHostStore
-                  .getState()
-                  .getDecryptedHost(host.id)
-                  .catch(() => undefined)) ?? host,
-            }))
-          }
-          onConnect={handleConnect}
+          onEditHost={editHost}
+          // With a panel open, a card click switches the panel instead of connecting.
+          onConnect={panel ? editHost : handleConnect}
           onDeleteGroup={(id) => {
             deleteGroup(id);
             if (selectedGroupId === id) setSelectedGroupId(null);
