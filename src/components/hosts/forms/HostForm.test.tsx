@@ -268,7 +268,9 @@ describe("HostForm agent forwarding consent", () => {
     onClose = () => {},
     groupId?: string,
   ) {
-    const updateHost = vi.fn(async () => true);
+    const updateHost = vi.fn(
+      async (_id: string, _p: Record<string, unknown>) => true,
+    );
     useHostStore.setState({
       updateHost,
       hosts: [],
