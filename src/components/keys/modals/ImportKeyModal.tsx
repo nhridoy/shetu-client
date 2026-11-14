@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
@@ -13,6 +14,14 @@ import {
   importKeyFormDefaultValues,
   importKeyFormSchema,
 } from "@/lib/schema/keys/importKeyFormSchema";
+
+const isPpk = (text: string) =>
+  text.trimStart().startsWith("PuTTY-User-Key-File-");
+
+const PPK_ERRORS: Record<string, string> = {
+  PPK_ENCRYPTED: "This PuTTY key is encrypted — enter its passphrase",
+  PPK_BAD_PASSPHRASE: "Wrong passphrase",
+};
 
 export default function ImportKeyModal({
   onClose,
@@ -50,13 +59,13 @@ export default function ImportKeyModal({
 
     try {
       const content = await file.text();
-      const lowerName = file.name.toLowerCase();
       const lowerContent = content.trim().toLowerCase();
 
-      if (lowerName.endsWith(".ppk")) {
-        setError(
-          "PuTTY (.ppk) format is not yet supported. Please convert to OpenSSH format first.",
-        );
+      if (isPpk(content)) {
+        setValue("privateKey", content);
+        const currentName = watch("name");
+        if (!currentName) setValue("name", file.name.replace(/\.ppk$/i, ""));
+        setMode("paste");
         return;
       }
 
@@ -123,11 +132,25 @@ export default function ImportKeyModal({
       return;
     }
 
+    let privateKey = data.privateKey;
+    if (isPpk(privateKey)) {
+      try {
+        privateKey = await invoke<string>("convert_ppk", {
+          text: privateKey,
+          passphrase: data.passphrase || null,
+        });
+      } catch (e: unknown) {
+        const msg = extractError(e);
+        setError(PPK_ERRORS[msg] ?? msg);
+        return;
+      }
+    }
+
     await onImport({
       name: data.name,
       description: data.description || "",
       publicKey: data.publicKey || "",
-      encryptedPrivateKey: data.privateKey,
+      encryptedPrivateKey: privateKey,
       passphrase: data.passphrase || undefined,
     });
     onClose();
@@ -156,7 +179,7 @@ export default function ImportKeyModal({
         <FileInput
           value={selectedFile}
           onValueChange={setSelectedFile}
-          description="Supports PEM and OpenSSH formats"
+          description="Supports PEM, OpenSSH and PuTTY (.ppk) formats"
         />
       ) : (
         <form

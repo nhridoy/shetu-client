@@ -52,5 +52,6 @@ export function looksLikePrivateKey(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   if (PEM_HEADERS.some((h) => trimmed.includes(h))) return true;
   if (trimmed.startsWith("openssh-key-v1")) return true;
+  if (trimmed.startsWith("putty-user-key-file-")) return true;
   return false;
 }

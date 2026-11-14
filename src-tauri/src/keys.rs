@@ -92,9 +92,34 @@ pub fn derive_public_key(private_key: String) -> Result<String, String> {
         .map_err(|e| format!("Could not encode public key: {e}"))
 }
 
+/// Converts PuTTY `.ppk` text to OpenSSH text, re-encrypted with the same passphrase if given.
+#[tauri::command]
+pub fn convert_ppk(text: String, passphrase: Option<String>) -> Result<String, String> {
+    use russh::keys::ssh_key::Error;
+    let passphrase = passphrase.filter(|p| !p.is_empty());
+    let key = PrivateKey::from_ppk(&text, passphrase.clone()).map_err(|e| match &e {
+        // PpkParseError is not re-exported by ssh-key, so match its variant name.
+        Error::Ppk(p) if format!("{p:?}") == "Encrypted" => "PPK_ENCRYPTED".to_string(),
+        Error::Ppk(p) if format!("{p:?}") == "IncorrectMac" => "PPK_BAD_PASSPHRASE".to_string(),
+        e => format!("Could not read PuTTY key: {e}"),
+    })?;
+    let key = match passphrase {
+        Some(p) => key
+            .encrypt(&mut UnwrapErr(SysRng), p)
+            .map_err(|e| format!("Could not encrypt key: {e}"))?,
+        None => key,
+    };
+    key.to_openssh(LineEnding::LF)
+        .map(|s| s.to_string())
+        .map_err(|e| format!("Could not encode key: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{derive_public_key, generate_ssh_key, generate_ssh_key_inner, inspect_private_key};
+    use super::{
+        convert_ppk, derive_public_key, generate_ssh_key, generate_ssh_key_inner,
+        inspect_private_key,
+    };
     use russh::keys::{
         ssh_key::private::{Ed25519Keypair, KeypairData},
         PrivateKey,
@@ -186,5 +211,151 @@ mod tests {
             assert!(!generated.fingerprint.is_empty());
         }
         assert!(generate_ssh_key_inner("unsupported".into()).is_err());
+    }
+
+    // PPK fixtures are generated at test time (no puttygen available) following the
+    // PuTTY format spec, from a fixed ed25519 seed, and validated by ssh-key's parser.
+    fn ppk_fixture(version: u8, passphrase: Option<&str>) -> String {
+        use aes::Aes256;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use cbc::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
+        use hmac::{Hmac, Mac};
+        use sha1::{Digest, Sha1};
+
+        fn string(buf: &mut Vec<u8>, data: &[u8]) {
+            buf.extend((data.len() as u32).to_be_bytes());
+            buf.extend(data);
+        }
+        let key = ed_key(5);
+        let KeypairData::Ed25519(kp) = key.key_data() else {
+            unreachable!()
+        };
+        let mut public = vec![];
+        string(&mut public, b"ssh-ed25519");
+        string(&mut public, &kp.public.0);
+        let seed = kp.private.to_bytes();
+        let mut mpint = vec![];
+        if seed[0] & 0x80 != 0 {
+            mpint.push(0);
+        }
+        mpint.extend(seed);
+        let mut private = vec![];
+        string(&mut private, &mpint);
+        private.resize(private.len().div_ceil(16) * 16, 0);
+
+        let (encryption, comment) = (
+            if passphrase.is_some() {
+                "aes256-cbc"
+            } else {
+                "none"
+            },
+            "fixture",
+        );
+        let mut mac_input = vec![];
+        for field in [
+            &b"ssh-ed25519"[..],
+            encryption.as_bytes(),
+            comment.as_bytes(),
+            &public,
+            &private,
+        ] {
+            string(&mut mac_input, field);
+        }
+        let (mac, stored_private) = match (version, passphrase) {
+            (3, None) => {
+                let mut m = Hmac::<sha2::Sha256>::new_from_slice(&[]).unwrap();
+                m.update(&mac_input);
+                (m.finalize().into_bytes().to_vec(), private)
+            }
+            (2, Some(pass)) => {
+                let sha = |n: u32| {
+                    let mut h = Sha1::new();
+                    h.update(n.to_be_bytes());
+                    h.update(pass.as_bytes());
+                    h.finalize()
+                };
+                let mut aes_key = sha(0).to_vec();
+                aes_key.extend(sha(1));
+                aes_key.truncate(32);
+                let mut h = Sha1::new();
+                h.update(b"putty-private-key-file-mac-key");
+                h.update(pass.as_bytes());
+                let mut m = Hmac::<Sha1>::new_from_slice(&h.finalize()).unwrap();
+                m.update(&mac_input);
+                let mut enc = private.clone();
+                let len = enc.len();
+                cbc::Encryptor::<Aes256>::new_from_slices(&aes_key, &[0u8; 16])
+                    .unwrap()
+                    .encrypt_padded::<NoPadding>(&mut enc, len)
+                    .unwrap();
+                (m.finalize().into_bytes().to_vec(), enc)
+            }
+            _ => panic!("unsupported fixture combination"),
+        };
+        let lines = |b: &[u8]| {
+            let e = STANDARD.encode(b);
+            let l: Vec<&str> = e
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            format!("{}\n{}\n", l.len(), l.join("\n"))
+        };
+        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+        let (pub_l, priv_l) = (lines(&public), lines(&stored_private));
+        format!(
+            "PuTTY-User-Key-File-{version}: ssh-ed25519\nEncryption: {encryption}\nComment: {comment}\nPublic-Lines: {pub_l}Private-Lines: {priv_l}Private-MAC: {hex}\n"
+        )
+    }
+
+    fn ed_key(seed: u8) -> PrivateKey {
+        PrivateKey::new(
+            KeypairData::Ed25519(Ed25519Keypair::from_seed(&[seed; 32])),
+            "",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ppk_fixtures_parse_with_ssh_key() {
+        PrivateKey::from_ppk(ppk_fixture(3, None), None).unwrap();
+        PrivateKey::from_ppk(ppk_fixture(2, Some("pw")), Some("pw".into())).unwrap();
+    }
+
+    #[test]
+    fn ppk_v3_unencrypted_converts() {
+        let out = convert_ppk(ppk_fixture(3, None), None).unwrap();
+        let key = russh::keys::decode_secret_key(&out, None).unwrap();
+        assert_eq!(
+            key.public_key().key_data(),
+            ed_key(5).public_key().key_data()
+        );
+    }
+
+    #[test]
+    fn ppk_v2_encrypted_converts_with_passphrase() {
+        let out = convert_ppk(ppk_fixture(2, Some("pw")), Some("pw".into())).unwrap();
+        assert!(russh::keys::decode_secret_key(&out, None).is_err());
+        let key = russh::keys::decode_secret_key(&out, Some("pw")).unwrap();
+        assert_eq!(
+            key.public_key().key_data(),
+            ed_key(5).public_key().key_data()
+        );
+    }
+
+    #[test]
+    fn ppk_encrypted_without_passphrase() {
+        assert_eq!(
+            convert_ppk(ppk_fixture(2, Some("pw")), None).unwrap_err(),
+            "PPK_ENCRYPTED"
+        );
+    }
+
+    #[test]
+    fn ppk_wrong_passphrase() {
+        assert_eq!(
+            convert_ppk(ppk_fixture(2, Some("pw")), Some("nope".into())).unwrap_err(),
+            "PPK_BAD_PASSPHRASE"
+        );
     }
 }

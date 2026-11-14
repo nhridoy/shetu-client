@@ -1737,6 +1737,7 @@ pub fn run() {
             ssh::connect,
             keys::derive_public_key,
             keys::inspect_private_key,
+            keys::convert_ppk,
             ssh_config_import::ssh_config_preview,
             ssh_config_import::ssh_config_read_key,
             keys::generate_ssh_key,
