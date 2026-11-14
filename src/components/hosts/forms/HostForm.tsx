@@ -337,7 +337,7 @@ export default function HostForm({
   };
 
   const formId = useId();
-  const summaries = useCardSummaries(control as never, inherited);
+  const summaries = useCardSummaries(control, inherited);
   return (
     <SidePanel
       title={host ? `Edit host · ${host.name}` : "New host"}

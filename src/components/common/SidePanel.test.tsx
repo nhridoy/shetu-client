@@ -239,4 +239,21 @@ describe("SidePanel", () => {
     expect(document.getElementById(id)?.textContent).toBe("Credentials");
     expect(region?.textContent).toContain("from prod");
   });
+
+  it("Card keeps its title whole and truncates a long summary", () => {
+    const long = `from ${"g".repeat(60)}`;
+    mount(
+      <SidePanel title="t" open dirty={false} onClose={() => {}} footer={null}>
+        <SidePanel.Card icon={<span />} title="Credentials" summary={long}>
+          <input aria-label="x" />
+        </SidePanel.Card>
+      </SidePanel>,
+    );
+    const h3 = q("section h3");
+    expect(h3.textContent).toBe("Credentials");
+    expect(h3.parentElement?.className).toContain("shrink-0");
+    const sum = q("[data-card-summary]");
+    expect(sum.className).toContain("truncate");
+    expect(sum.getAttribute("title")).toBe(long);
+  });
 });

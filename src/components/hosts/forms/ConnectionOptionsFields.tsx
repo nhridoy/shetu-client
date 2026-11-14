@@ -21,6 +21,7 @@ import {
 import { AGENT_FORWARD_HELP } from "@/lib/terminal/agentForwarding";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
+import { visibleInheritedEnv } from "./useCardSummaries";
 
 interface Props<T extends FieldValues> {
   control: Control<T>;
@@ -53,8 +54,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
   const startupMode = useWatch({ control, name: "startupMode" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
-  const visibleInherited =
-    inherited?.env.filter((v) => !env.some((row) => row.name === v.name)) ?? [];
+  const visibleInherited = visibleInheritedEnv(inherited, env);
 
   // A removed row takes its focused button with it; hand focus to the next row or Add.
   const envRef = useRef<HTMLFieldSetElement>(null);

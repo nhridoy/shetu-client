@@ -105,6 +105,10 @@ async function mount(
   return { createGroup, updateGroup };
 }
 
+const card = (title: string) =>
+  [...document.querySelectorAll("aside section")].find(
+    (c) => c.querySelector("h3")?.textContent === title,
+  );
 const fillName = (v: string) =>
   changeInput(document.querySelector('input[id$="name"]'), v);
 
@@ -297,6 +301,7 @@ describe("GroupForm", () => {
     it("saves only the name when the group can't be read", async () => {
       const { updateGroup } = await mount(group, {}, async () => null);
       expect(document.body.textContent).toContain("Couldn't load");
+      expect(card("General")?.textContent).not.toContain("Couldn't load");
       await submit();
       nameOnly(updateGroup);
     });

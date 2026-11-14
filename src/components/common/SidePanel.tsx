@@ -194,19 +194,21 @@ function Card({
       className="rounded-lg border border-dark-700/60 bg-dark-800 p-3"
     >
       <header className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-white">
+        <div className="flex shrink-0 items-center gap-2 text-sm font-medium text-white">
           <span
             aria-hidden
-            className="shrink-0 text-dark-300 [&>svg]:h-4 [&>svg]:w-4"
+            className="shrink-0 text-primary-400 [&>svg]:h-4 [&>svg]:w-4"
           >
             {icon}
           </span>
-          <h3 id={id} className="truncate">
-            {title}
-          </h3>
+          <h3 id={id}>{title}</h3>
         </div>
         {summary && (
-          <span data-card-summary className="truncate text-xs text-dark-400">
+          <span
+            data-card-summary
+            title={summary}
+            className="min-w-0 truncate text-xs text-dark-400"
+          >
             {summary}
           </span>
         )}

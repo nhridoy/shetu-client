@@ -194,7 +194,7 @@ export default function GroupForm({
   };
 
   const formId = useId();
-  const summaries = useCardSummaries(control as never);
+  const summaries = useCardSummaries(control);
   const busy = isPending || load === "loading";
   return (
     <SidePanel
@@ -224,6 +224,15 @@ export default function GroupForm({
     >
       <form id={formId} onSubmit={handleSubmit(onSubmit)}>
         <div className="space-y-3 p-4">
+          {load === "failed" && (
+            <p
+              role="alert"
+              className="rounded-lg border border-red-500/50 bg-red-500/20 p-3 text-xs text-red-400"
+            >
+              Couldn't load this group's saved credentials and options. You can
+              still rename it; they will be left unchanged.
+            </p>
+          )}
           <SidePanel.Card icon={<SlidersHorizontalIcon />} title="General">
             <FormInput
               name="name"
@@ -232,13 +241,6 @@ export default function GroupForm({
               placeholder="Group name"
               required
             />
-
-            {load === "failed" && (
-              <p role="alert" className="text-xs text-red-400">
-                Couldn't load this group's saved credentials and options. You
-                can still rename it; they will be left unchanged.
-              </p>
-            )}
           </SidePanel.Card>
           <SidePanel.Card icon={<KeyIcon />} title="Credentials">
             <FormInput

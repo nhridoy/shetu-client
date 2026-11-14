@@ -488,12 +488,14 @@ describe("HostForm inherits from its group", () => {
 
   it("counts env vars across host and inherited rows", async () => {
     await mount({ host: existing({}), inherited: PROD });
-    expect(summary("Environment")).toBe("1 vars");
+    expect(summary("Environment")).toBe("1 var");
     click(byText("button", "Add variable"));
+    // A blank row is not counted yet.
+    expect(summary("Environment")).toBe("1 var");
     changeInput(input("env.0.name") as HTMLInputElement, "X");
     expect(summary("Environment")).toBe("2 vars");
     changeInput(input("env.0.name") as HTMLInputElement, "LANG");
-    expect(summary("Environment")).toBe("1 vars");
+    expect(summary("Environment")).toBe("1 var");
     document.body.innerHTML = "";
     await mount({ host: existing({}), inherited: EMPTY });
     expect(summary("Environment")).toBeUndefined();
@@ -776,6 +778,8 @@ describe("HostForm inherits from its group", () => {
     expect(text).toContain("30s · prod");
     expect(text).toContain("runs a command · prod");
     expect(text).toContain("On · prod");
+    expect(summary("Connection")).toBe("from prod");
+    expect(summary("On connect")).toBe("from prod");
   });
 
   it("labels the host keepalive default From group", async () => {
