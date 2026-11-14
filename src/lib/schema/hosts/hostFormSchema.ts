@@ -33,6 +33,7 @@ export const hostFormSchema = z
     tags: z.string().optional(),
     keepaliveMode: z.enum(["default", "off", "custom"]),
     keepaliveSecs: z.coerce.number().optional(),
+    forwardAgent: z.boolean(),
     env: z.array(
       z.object({
         name: z.string().refine((n) => n === "" || ENV_NAME.test(n), {
@@ -94,6 +95,7 @@ export const hostFormDefaultValues: HostFormSchema = {
   tags: "",
   keepaliveMode: "default",
   keepaliveSecs: undefined,
+  forwardAgent: false,
   env: [],
   startupMode: "none",
   startupSnippetId: "",

@@ -101,6 +101,19 @@ describe("HostForm advanced validation", () => {
     expect(createHost).not.toHaveBeenCalled();
   });
 
+  it("has an agent forwarding toggle in Advanced, off by default", async () => {
+    await mountAndFill();
+    expect(document.body.textContent).not.toContain("Forward SSH agent");
+    click(byText("button", "Advanced"));
+    expect(document.body.textContent).toContain(
+      "Lets this server use your local SSH keys while you're connected. Anyone with root on the server can use them too. Only enable for servers you trust.",
+    );
+    const toggle = document.querySelector(
+      'input[aria-label="Forward SSH agent"]',
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+  });
+
   it("renders nested env name errors", async () => {
     await mountAndFill();
     click(byText("button", "Advanced"));
@@ -134,6 +147,7 @@ describe("HostForm edit", () => {
       color: "#64748b",
       tags: "[]",
       keepaliveSecs: 120,
+      forwardAgent: true,
       env: [{ name: "LANG", value: "C.UTF-8" }],
       startup: { command: "tmux a" },
     };
@@ -144,6 +158,7 @@ describe("HostForm edit", () => {
     expect(updateHost).toHaveBeenCalledTimes(1);
     const patch = updateHost.mock.calls[0][1];
     expect(patch.keepaliveSecs).toBe(120);
+    expect(patch.forwardAgent).toBe(true);
     expect(patch.env).toEqual([{ name: "LANG", value: "C.UTF-8" }]);
     expect(patch.startup).toEqual({ command: "tmux a" });
   });

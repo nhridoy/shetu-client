@@ -230,6 +230,12 @@ pub fn fingerprint_of(server_public_key: &russh::keys::PublicKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_channel_rejected_without_flag() {
+        assert!(accept_agent_channel(true));
+        assert!(!accept_agent_channel(false));
+    }
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -533,6 +539,7 @@ pub struct SshConfig {
     pub keepalive_secs: Option<u32>,
     pub env: Vec<(String, String)>,
     pub startup: Option<StartupAction>,
+    pub forward_agent: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -699,6 +706,8 @@ pub struct SshHandler {
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
     require_known_host: bool,
+    /// Set only on the target's interactive terminal handler.
+    forward_agent: bool,
 }
 
 pub(crate) struct HostKeyPromptWatch {
@@ -765,7 +774,7 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -775,6 +784,11 @@ impl SshHandler {
     ) -> Self {
         self.forwarded = Some(sender);
         self.forward_bind = Some((address, port));
+        self
+    }
+
+    pub(crate) fn with_forward_agent(mut self, on: bool) -> Self {
+        self.forward_agent = on;
         self
     }
 
@@ -808,6 +822,26 @@ impl russh::client::Handler for SshHandler {
                 let _ = sender.send((channel, reply)).await;
             }
         }
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if !accept_agent_channel(self.forward_agent) {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        }
+        reply.accept().await;
+        tokio::spawn(async move {
+            let Some(agent) = crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await else { return };
+            let (mut local, mut remote) = (agent.into_inner(), channel.into_stream());
+            // Errors just end the bridge; the data is never logged.
+            let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
+        });
         Ok(())
     }
 
@@ -1082,6 +1116,13 @@ fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
 
 const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
+pub(crate) const NO_AGENT_NOTICE: &str = "\r\n[Agent forwarding unavailable: no SSH agent found]\r\n";
+
+/// Agent channels are only served when the user turned forwarding on for this session.
+fn accept_agent_channel(forward_agent: bool) -> bool {
+    forward_agent
+}
+
 pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
     let mut b = command.as_bytes().to_vec();
     if !command.ends_with('\n') {
@@ -1142,7 +1183,7 @@ async fn run_connect_session(
             Arc::clone(&known_hosts),
             Arc::clone(&pending_keys),
             false,
-        ).with_prompts(&pending_prompts);
+        ).with_prompts(&pending_prompts).with_forward_agent(config.forward_agent);
 
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
@@ -1183,6 +1224,13 @@ async fn run_connect_session(
             emit(&app_handle, "error", &e.to_string());
             emit(&app_handle, "disconnected", "");
             return;
+        }
+        if config.forward_agent {
+            if crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await.is_none() {
+                emit(&app_handle, "output", NO_AGENT_NOTICE);
+            } else if channel.agent_forward(false).await.is_err() {
+                emit(&app_handle, "output", NO_AGENT_NOTICE);
+            }
         }
         if let Err(e) = channel.request_shell(true).await {
             emit(&app_handle, "error", &e.to_string());
@@ -1504,6 +1552,7 @@ pub fn load_host_config(
         keepalive_secs: payload["keepaliveSecs"]
             .as_f64()
             .map(|n| crate::ssh_options::clamp_keepalive(n as i64)),
+        forward_agent: payload["forwardAgent"].as_bool() == Some(true),
         env: payload["env"]
             .as_array()
             .map(|rows| {

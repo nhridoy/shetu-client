@@ -262,6 +262,7 @@ describe("hostStore", () => {
       name: "x",
       address: "1.2.3.4",
       keepaliveSecs: 0,
+      forwardAgent: true,
       env: [{ name: "LANG", value: "C" }],
       startup: { snippetId: "s1" },
     });
@@ -269,9 +270,10 @@ describe("hostStore", () => {
       (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
     );
     expect(plain.keepaliveSecs).toBe(0);
+    expect(plain.forwardAgent).toBe(true);
     expect(plain.env).toEqual([{ name: "LANG", value: "C" }]);
     expect(plain.startup).toEqual({ snippetId: "s1" });
-    for (const k of ["keepaliveSecs", "env", "startup"])
+    for (const k of ["keepaliveSecs", "forwardAgent", "env", "startup"])
       expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty(k);
   });
 
@@ -309,11 +311,13 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: 45,
+      forwardAgent: true,
       env: [{ name: "A", value: "b" }],
       startup: { snippetId: "s1" },
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.forwardAgent).toBe(true);
     expect(host?.env).toEqual([{ name: "A", value: "b" }]);
     expect(host?.startup).toEqual({ snippetId: "s1" });
   });
@@ -342,12 +346,14 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: 45,
+      forwardAgent: true,
       env: [{ name: "A", value: "b" }],
       startup: { snippetId: "s1" },
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(mockGet).not.toHaveBeenCalled();
     expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.forwardAgent).toBe(true);
     expect(host?.env).toEqual([{ name: "A", value: "b" }]);
     expect(host?.startup).toEqual({ snippetId: "s1" });
   });
@@ -363,11 +369,13 @@ describe("hostStore", () => {
     mockDecrypt.mockResolvedValue({
       address: "a",
       keepaliveSecs: "abc",
+      forwardAgent: "yes",
       env: "x",
       startup: "tmux",
     });
     const host = await useHostStore.getState().getDecryptedHost("h1");
     expect(host?.keepaliveSecs).toBeNull();
+    expect(host?.forwardAgent).toBe(false);
     expect(host?.env).toEqual([]);
     expect(host?.startup).toBeNull();
   });

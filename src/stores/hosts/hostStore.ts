@@ -29,6 +29,7 @@ export interface Host {
   keyId?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
+  forwardAgent?: boolean;
   env?: { name: string; value: string }[];
   startup?: { snippetId: string } | { command: string } | null;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
@@ -80,6 +81,7 @@ interface HostPayload {
   password?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
+  forwardAgent?: boolean;
   env?: { name: string; value: string }[];
   startup?: { snippetId: string } | { command: string } | null;
 }
@@ -130,6 +132,7 @@ function hostFieldsFromPayload(
   | "password"
   | "jumpHostId"
   | "keepaliveSecs"
+  | "forwardAgent"
   | "env"
   | "startup"
 > {
@@ -145,6 +148,7 @@ function hostFieldsFromPayload(
       typeof p.keepaliveSecs === "number" && Number.isFinite(p.keepaliveSecs)
         ? p.keepaliveSecs
         : null,
+    forwardAgent: p.forwardAgent === true,
     env: Array.isArray(p.env)
       ? p.env.filter(
           (e): e is { name: string; value: string } =>
@@ -292,6 +296,7 @@ export const useHostStore = create<HostState>((set, get) => ({
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
             keepaliveSecs: host.keepaliveSecs ?? null,
+            forwardAgent: host.forwardAgent ?? false,
             env: host.env ?? [],
             startup: host.startup ?? null,
           }),
@@ -348,6 +353,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         sensitive.jumpHostId = patch.jumpHostId;
       if (patch.keepaliveSecs !== undefined)
         sensitive.keepaliveSecs = patch.keepaliveSecs;
+      if (patch.forwardAgent !== undefined)
+        sensitive.forwardAgent = patch.forwardAgent;
       if (patch.env !== undefined) sensitive.env = patch.env;
       if (patch.startup !== undefined) sensitive.startup = patch.startup;
       const saved = await upsertRow(

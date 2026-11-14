@@ -396,4 +396,14 @@ mod tests {
         let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
         assert_eq!((c.keepalive_secs, c.env.is_empty(), c.startup), (None, true, None));
     }
+
+    #[test]
+    fn forward_agent_parsed_from_payload() {
+        let (db, crypto, vault) = fixture();
+        for (i, (v, want)) in [(serde_json::json!(true), true), (serde_json::json!("yes"), false), (serde_json::Value::Null, false)].into_iter().enumerate() {
+            let id = format!("h{i}");
+            host_with(&db, &crypto, &id, &vault, serde_json::json!({"address": "a", "forwardAgent": v}));
+            assert_eq!(crate::ssh::load_host_config(&db, &crypto, &id).unwrap().forward_agent, want);
+        }
+    }
 }
