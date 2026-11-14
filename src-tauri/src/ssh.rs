@@ -757,10 +757,6 @@ impl SshHandler {
         (!self.auto_accept && !self.require_known_host).then(|| (self.app.clone(), pending))
     }
 
-    pub(crate) fn auto_accept(&self) -> bool {
-        self.auto_accept
-    }
-
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
         let mut watch = HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
         watch.prompts = self.pending_prompts.clone();
@@ -946,9 +942,10 @@ pub(crate) async fn connect_authenticated(
     authenticate_over_stream(handler, config, socket, progress).await
 }
 
-/// Background checks (ping, OS probe) are auto_accept and never touch the agent.
-fn uses_agent(auto_accept: bool) -> bool {
-    !auto_accept
+/// Ping and the OS probe (auto_accept without require_known_host) never touch the agent;
+/// port forwards (auto_accept + require_known_host) do.
+fn uses_agent(auto_accept: bool, require_known_host: bool) -> bool {
+    !auto_accept || require_known_host
 }
 
 pub(crate) async fn authenticate_over_stream<R>(
@@ -963,8 +960,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
         &crate::ssh_options::defaults(),
         config.keepalive_secs,
     ));
-    // Background checks (ping, OS probe) never touch the agent.
-    let use_agent = uses_agent(handler.auto_accept());
+    let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
     let prompter = handler.interactive_prompts();
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
@@ -1621,8 +1617,10 @@ mod agent_use_tests {
     use super::uses_agent;
 
     #[test]
-    fn background_handlers_skip_the_agent() {
-        assert!(!uses_agent(true));
-        assert!(uses_agent(false));
+    fn only_ping_and_os_probe_skip_the_agent() {
+        // (auto_accept, require_known_host)
+        assert!(!uses_agent(true, false), "ping / OS probe");
+        assert!(uses_agent(true, true), "port forward");
+        assert!(uses_agent(false, false), "terminal / SFTP");
     }
 }
