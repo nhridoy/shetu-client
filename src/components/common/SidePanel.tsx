@@ -87,7 +87,9 @@ function SidePanel({
       // An open select or dialog consumes this Escape.
       if (
         panel.querySelector('[aria-expanded="true"]') ||
-        document.querySelector('[role="dialog"]')
+        Array.from(document.querySelectorAll('[role="dialog"]')).some(
+          (d) => d !== panel,
+        )
       )
         return;
       requestCloseRef.current();
@@ -126,10 +128,14 @@ function SidePanel({
       )}
       <aside
         ref={panelRef}
+        role={overlay ? "dialog" : undefined}
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: role is dialog whenever aria-modal is set
+        aria-modal={overlay ? true : undefined}
         aria-labelledby={titleId}
         onKeyDown={trapTab}
         className={cn(
           "flex h-full w-[420px] max-w-full shrink-0 flex-col border-l border-dark-700 bg-dark-900",
+          "motion-safe:animate-side-panel-in",
           overlay && "absolute inset-y-0 right-0 z-30 shadow-xl",
         )}
       >

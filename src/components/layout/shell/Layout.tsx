@@ -60,11 +60,17 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [activeView, setActiveView] = useState("vault");
-  const showTerminalTab = async (tabId: string) => {
-    if (!(await useUnsavedChanges.getState().confirmLeave())) return;
+  const showTerminalTab = (tabId: string) => {
     setActiveView(tabId);
     navigate("/terminal");
   };
+
+  // Ask before leaving a dirty editor; `go` runs only after the user agrees.
+  const guarded = (go: () => void) =>
+    void useUnsavedChanges
+      .getState()
+      .confirmLeave()
+      .then((ok) => ok && go());
 
   const workspaceModal = useModal();
   const presetModal = useModal();
@@ -203,19 +209,23 @@ export default function Layout() {
     appActionRef.current = (id) => {
       if (id === "settings") settingsModal.show();
       else if (id === "new-tab")
-        showTerminalTab(useTerminalStore.getState().addEmptyTab());
+        guarded(() =>
+          showTerminalTab(useTerminalStore.getState().addEmptyTab()),
+        );
       else if (
         id === "close-tab" &&
         location.pathname === "/terminal" &&
         // Never close a live session hidden behind a dialog.
         !isModalOpen()
       ) {
-        const next = useTerminalStore.getState().closeActivePane();
-        if (next) showTerminalTab(next);
-        else {
-          setActiveView("vault");
-          navigate("/hosts");
-        }
+        guarded(() => {
+          const next = useTerminalStore.getState().closeActivePane();
+          if (next) showTerminalTab(next);
+          else {
+            setActiveView("vault");
+            navigate("/hosts");
+          }
+        });
       }
       // "quick-connect" is handled by QuickConnect itself.
     };
@@ -367,24 +377,28 @@ export default function Layout() {
       {/* Opened with Ctrl/Cmd+K from any view; no on-screen trigger. */}
       <QuickConnect
         onConnect={(host) =>
-          showTerminalTab(
-            useTerminalStore.getState().openConnection(host.id, host.name, {
-              hostAddress: host.address,
-              hostPort: host.port,
-              hostUsername: host.username,
-              authType: host.authType,
-              keyId: host.keyId,
-            }),
+          guarded(() =>
+            showTerminalTab(
+              useTerminalStore.getState().openConnection(host.id, host.name, {
+                hostAddress: host.address,
+                hostPort: host.port,
+                hostUsername: host.username,
+                authType: host.authType,
+                keyId: host.keyId,
+              }),
+            ),
           )
         }
         onConnectLocal={(shell) =>
-          showTerminalTab(
-            useTerminalStore
-              .getState()
-              .openConnection(`local_${Date.now()}`, "Local", {
-                connectionType: "local",
-                shell,
-              }),
+          guarded(() =>
+            showTerminalTab(
+              useTerminalStore
+                .getState()
+                .openConnection(`local_${Date.now()}`, "Local", {
+                  connectionType: "local",
+                  shell,
+                }),
+            ),
           )
         }
       />

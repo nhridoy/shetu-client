@@ -43,6 +43,15 @@
   /* macOS body text size. */
   --text-sm: 0.8125rem;
 
+  --animate-side-panel-in: side-panel-in 150ms ease-out;
+
+  @keyframes side-panel-in {
+    from {
+      transform: translateX(24px);
+      opacity: 0;
+    }
+  }
+
   --animate-caret-blink: caret-blink 1s ease-in-out infinite;
 
   @keyframes caret-blink {

@@ -150,6 +150,15 @@ describe("SidePanel", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("escape closes an overlay panel despite its own dialog role", async () => {
+    width = 800;
+    const onClose = vi.fn();
+    mount(<Harness onClose={onClose} />);
+    key("Escape");
+    await flush();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("escape with focus outside panel does nothing", async () => {
     const onClose = vi.fn();
     mount(<Harness onClose={onClose} />);
@@ -167,6 +176,9 @@ describe("SidePanel", () => {
     mount(<Harness dirty onClose={onClose} />);
     const backdrop = q('[data-testid="side-panel-backdrop"]');
     expect(backdrop).toBeTruthy();
+    const aside = q("aside");
+    expect(aside.getAttribute("role")).toBe("dialog");
+    expect(aside.getAttribute("aria-modal")).toBe("true");
     // Tab from the last focusable (Save) wraps to the first (Close).
     act(() => byText("Save").focus());
     act(() => {
@@ -183,6 +195,7 @@ describe("SidePanel", () => {
 
   it("no backdrop at 900px or wider", () => {
     mount(<Harness onClose={() => {}} />);
+    expect(q("aside").getAttribute("role")).toBeNull();
     expect(q('[data-testid="side-panel-backdrop"]')).toBeNull();
   });
 
