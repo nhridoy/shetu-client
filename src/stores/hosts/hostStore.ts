@@ -28,6 +28,9 @@ export interface Host {
   passphrase?: string;
   keyId?: string;
   jumpHostId?: string | null;
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: { snippetId: string } | { command: string } | null;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
   data?: string;
 }
@@ -76,6 +79,9 @@ interface HostPayload {
   username: string;
   password?: string;
   jumpHostId?: string | null;
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: { snippetId: string } | { command: string } | null;
 }
 
 function parseTags(tags: string | null | undefined): string[] {
@@ -124,6 +130,9 @@ async function decryptHostRow(row: SyncRow): Promise<Host> {
     username: payload.username ?? "root",
     password: payload.password,
     jumpHostId: payload.jumpHostId ?? null,
+    keepaliveSecs: payload.keepaliveSecs ?? null,
+    env: payload.env ?? [],
+    startup: payload.startup ?? null,
   };
 }
 
@@ -249,6 +258,9 @@ export const useHostStore = create<HostState>((set, get) => ({
             username: host.username ?? "root",
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
+            keepaliveSecs: host.keepaliveSecs ?? null,
+            env: host.env ?? [],
+            startup: host.startup ?? null,
           }),
           recordType: "hosts",
         },
@@ -301,6 +313,10 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (patch.password !== undefined) sensitive.password = patch.password;
       if (patch.jumpHostId !== undefined)
         sensitive.jumpHostId = patch.jumpHostId;
+      if (patch.keepaliveSecs !== undefined)
+        sensitive.keepaliveSecs = patch.keepaliveSecs;
+      if (patch.env !== undefined) sensitive.env = patch.env;
+      if (patch.startup !== undefined) sensitive.startup = patch.startup;
       const saved = await upsertRow(
         "hosts",
         {

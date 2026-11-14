@@ -248,6 +248,76 @@ describe("hostStore", () => {
     ).toBeNull();
   });
 
+  it("createHost stores connection options in encrypted payload", async () => {
+    mockUpsert.mockResolvedValue({
+      id: "new",
+      vault_id: "v1",
+      data: "enc",
+      created_at: "1970-01-01T00:00:00.001Z",
+      updated_at: "1970-01-01T00:00:00.001Z",
+      sort_order: 0,
+    } as never);
+    useVaultStore.setState({ currentVaultId: "v1" });
+    await useHostStore.getState().createHost({
+      name: "x",
+      address: "1.2.3.4",
+      keepaliveSecs: 0,
+      env: [{ name: "LANG", value: "C" }],
+      startup: { snippetId: "s1" },
+    });
+    const plain = JSON.parse(
+      (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+    );
+    expect(plain.keepaliveSecs).toBe(0);
+    expect(plain.env).toEqual([{ name: "LANG", value: "C" }]);
+    expect(plain.startup).toEqual({ snippetId: "s1" });
+    for (const k of ["keepaliveSecs", "env", "startup"])
+      expect(mockUpsert.mock.calls[0][1]).not.toHaveProperty(k);
+  });
+
+  it("updateHost keeps connection options it did not patch", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "1.2.3.4",
+      port: 22,
+      username: "root",
+      env: [{ name: "LANG", value: "C" }],
+      startup: { command: "ls" },
+    });
+    await useHostStore.getState().updateHost("h1", { name: "p2" });
+    const plain = JSON.parse(
+      (mockUpsert.mock.calls[0][2] as { plaintext: string }).plaintext,
+    );
+    expect(plain.env).toEqual([{ name: "LANG", value: "C" }]);
+    expect(plain.startup).toEqual({ command: "ls" });
+  });
+
+  it("getDecryptedHost returns connection options", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({
+      address: "a",
+      keepaliveSecs: 45,
+      env: [{ name: "A", value: "b" }],
+      startup: { snippetId: "s1" },
+    });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(host?.keepaliveSecs).toBe(45);
+    expect(host?.env).toEqual([{ name: "A", value: "b" }]);
+    expect(host?.startup).toEqual({ snippetId: "s1" });
+  });
+
   it("updateHost preserves unpatched encrypted fields", async () => {
     mockGet.mockResolvedValue({
       id: "h1",

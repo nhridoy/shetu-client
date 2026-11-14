@@ -1,10 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState, useTransition } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useFieldArray, useForm } from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
+import Textarea from "@/components/ui/Textarea";
 import {
   type HostFormValues,
   hostFormDefaultValues,
@@ -13,6 +14,7 @@ import {
 import { parseTags } from "@/lib/snippets/parseTags";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
+import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
 export interface HostData {
@@ -28,12 +30,23 @@ export interface HostData {
   color?: string;
   groupId?: string;
   tags?: string[];
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: { snippetId: string } | { command: string } | null;
 }
 
 interface HostFormProps {
   host?: HostData;
   defaultGroupId?: string;
   onClose: () => void;
+}
+
+function startupFromForm(data: HostFormValues): HostData["startup"] {
+  if (data.startupMode === "snippet" && data.startupSnippetId)
+    return { snippetId: data.startupSnippetId };
+  const command = data.startupCommand?.trim();
+  if (data.startupMode === "command" && command) return { command };
+  return null;
 }
 
 export default function HostForm({
@@ -44,6 +57,8 @@ export default function HostForm({
   const { createHost, updateHost, groups, hosts } = useHostStore();
   const { currentVaultId } = useVaultStore();
   const keys = useKeyStore((s) => s.keys);
+  const snippets = useSnippetStore((s) => s.snippets);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
   const [bastions, setBastions] = useState<
@@ -102,8 +117,34 @@ export default function HostForm({
       color: host?.color || hostFormDefaultValues.color,
       groupId: host?.groupId || defaultGroupId || hostFormDefaultValues.groupId,
       tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
+      keepaliveMode:
+        host?.keepaliveSecs == null
+          ? "default"
+          : host.keepaliveSecs === 0
+            ? "off"
+            : "custom",
+      keepaliveSecs: host?.keepaliveSecs || undefined,
+      env: host?.env ?? [],
+      startupMode: !host?.startup
+        ? "none"
+        : "snippetId" in host.startup
+          ? "snippet"
+          : "command",
+      startupSnippetId:
+        host?.startup && "snippetId" in host.startup
+          ? host.startup.snippetId
+          : "",
+      startupCommand:
+        host?.startup && "command" in host.startup ? host.startup.command : "",
     },
   });
+  const {
+    fields: envFields,
+    append: appendEnv,
+    remove: removeEnv,
+  } = useFieldArray({ control, name: "env" });
+  const keepaliveMode = watch("keepaliveMode");
+  const startupMode = watch("startupMode");
 
   const authType = watch("authType");
   const selectedJumpHostId = watch("jumpHostId");
@@ -162,6 +203,14 @@ export default function HostForm({
             .map((t) => t.trim())
             .filter(Boolean)
         : [],
+      keepaliveSecs:
+        data.keepaliveMode === "off"
+          ? 0
+          : data.keepaliveMode === "custom"
+            ? Number(data.keepaliveSecs)
+            : null,
+      env: data.env.filter((row) => row.name !== ""),
+      startup: startupFromForm(data),
     };
 
     if (host) {
@@ -344,6 +393,120 @@ export default function HostForm({
             ...groups.map((g) => ({ value: g.id, label: g.name })),
           ]}
         />
+      )}
+
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => setShowAdvanced((v) => !v)}
+        aria-expanded={showAdvanced}
+      >
+        {showAdvanced ? "Hide advanced" : "Advanced"}
+      </Button>
+      {showAdvanced && (
+        <div className="space-y-3">
+          <FormSelect
+            name="keepaliveMode"
+            label="Keepalive"
+            control={control}
+            options={[
+              { value: "default", label: "Use default" },
+              { value: "off", label: "Off" },
+              { value: "custom", label: "Custom" },
+            ]}
+          />
+          {keepaliveMode === "custom" && (
+            <FormInput
+              name="keepaliveSecs"
+              label="Keepalive interval (seconds, 5-600)"
+              control={control}
+              type="number"
+            />
+          )}
+
+          <fieldset className="space-y-2">
+            <legend className="block text-dark-300 text-sm mb-2">
+              Environment variables
+            </legend>
+            {envFields.map((field, i) => (
+              <div
+                key={field.id}
+                className="grid grid-cols-[1fr_1fr_auto] gap-2"
+              >
+                <FormInput
+                  name={`env.${i}.name`}
+                  label="Name"
+                  control={control}
+                  placeholder="LANG"
+                />
+                <FormInput
+                  name={`env.${i}.value`}
+                  label="Value"
+                  control={control}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  aria-label={`Remove variable ${i + 1}`}
+                  onClick={() => removeEnv(i)}
+                  className="self-end"
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => appendEnv({ name: "", value: "" })}
+            >
+              Add variable
+            </Button>
+            <p className="text-xs text-dark-400">
+              Servers ignore variables they don't allow (`AcceptEnv` in
+              sshd_config); most allow only LANG and LC_*.
+            </p>
+          </fieldset>
+
+          <FormSelect
+            name="startupMode"
+            label="On connect"
+            control={control}
+            options={[
+              { value: "none", label: "None" },
+              { value: "snippet", label: "Snippet" },
+              { value: "command", label: "Command" },
+            ]}
+          />
+          {startupMode === "snippet" && (
+            <FormSelect
+              name="startupSnippetId"
+              label="Snippet"
+              control={control}
+              options={[
+                { value: "", label: "Select a snippet" },
+                ...snippets
+                  .filter((sn) => sn.vaultId === currentVaultId)
+                  .map((sn) => ({ value: sn.id, label: sn.name })),
+              ]}
+            />
+          )}
+          {startupMode === "command" && (
+            <Controller
+              name="startupCommand"
+              control={control}
+              render={({ field }) => (
+                <Textarea
+                  {...field}
+                  value={field.value ?? ""}
+                  aria-label="Startup command"
+                  rows={3}
+                  placeholder="cd /var/www && ls"
+                />
+              )}
+            />
+          )}
+        </div>
       )}
     </ModalForm>
   );

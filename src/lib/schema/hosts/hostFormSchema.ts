@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export const hostFormSchema = z
   .object({
     name: z
@@ -29,6 +31,19 @@ export const hostFormSchema = z
     color: z.string().optional(),
     groupId: z.string().optional(),
     tags: z.string().optional(),
+    keepaliveMode: z.enum(["default", "off", "custom"]),
+    keepaliveSecs: z.coerce.number().optional(),
+    env: z.array(
+      z.object({
+        name: z.string().refine((n) => n === "" || ENV_NAME.test(n), {
+          error: "Use letters, digits and underscores; no leading digit",
+        }),
+        value: z.string(),
+      }),
+    ),
+    startupMode: z.enum(["none", "snippet", "command"]),
+    startupSnippetId: z.string().optional(),
+    startupCommand: z.string().optional(),
   })
   .refine(
     (data) => {
@@ -48,7 +63,19 @@ export const hostFormSchema = z
       return true;
     },
     { error: "Please select an SSH key", path: ["keyId"] },
-  );
+  )
+  .refine(
+    (d) =>
+      d.keepaliveMode !== "custom" ||
+      (Number.isInteger(d.keepaliveSecs) &&
+        (d.keepaliveSecs as number) >= 5 &&
+        (d.keepaliveSecs as number) <= 600),
+    { error: "Keepalive must be 5-600 seconds", path: ["keepaliveSecs"] },
+  )
+  .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
+    error: "Select a snippet",
+    path: ["startupSnippetId"],
+  });
 
 export type HostFormSchema = z.infer<typeof hostFormSchema>;
 export type HostFormValues = z.input<typeof hostFormSchema>;
@@ -65,4 +92,10 @@ export const hostFormDefaultValues: HostFormSchema = {
   color: "#64748b",
   groupId: "",
   tags: "",
+  keepaliveMode: "default",
+  keepaliveSecs: undefined,
+  env: [],
+  startupMode: "none",
+  startupSnippetId: "",
+  startupCommand: "",
 };
