@@ -131,6 +131,7 @@ export default function HostForm({
     reset,
     resetField,
     setValue,
+    setFocus,
     trigger,
     formState: { isSubmitted, isDirty },
   } = useForm<HostFormValues>({
@@ -395,31 +396,35 @@ export default function HostForm({
             />
           )}
 
-          <FormSelect
-            name="jumpHostId"
-            label="Connect through"
-            control={control}
-            options={[
-              { value: "", label: "Direct connection" },
-              ...bastions.map((candidate) => ({
-                value: candidate.id,
-                label: candidate.name,
-              })),
-            ]}
-          />
-          <p className="text-xs text-dark-400">
-            The bastion uses its own SSH credentials and host-key check before
-            connecting to this host.
-          </p>
-          {(missingBastion || routeError) && (
-            <p role="alert" className="text-xs text-red-400">
-              {routeError ??
-                "Selected bastion is unavailable. Choose another route before saving."}
+          <div>
+            <FormSelect
+              name="jumpHostId"
+              label="Connect through"
+              control={control}
+              options={[
+                { value: "", label: "Direct connection" },
+                ...bastions.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.name,
+                })),
+              ]}
+            />
+            <p className="mt-1 text-xs text-dark-500">
+              The bastion uses its own SSH credentials and host-key check before
+              connecting to this host.
             </p>
-          )}
+            {(missingBastion || routeError) && (
+              <p role="alert" className="mt-1 text-xs text-red-400">
+                {routeError ??
+                  "Selected bastion is unavailable. Choose another route before saving."}
+              </p>
+            )}
+          </div>
 
           <fieldset>
-            <legend className="block text-dark-300 text-sm mb-2">Color</legend>
+            <legend className="mb-2 block text-sm font-medium leading-none text-dark-300">
+              Color
+            </legend>
             <Controller
               name="color"
               control={control}
@@ -462,17 +467,21 @@ export default function HostForm({
             />
             {inherited?.username && (
               <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
-                <span>From group</span>
-                <Badge>{inherited.usernameFrom}</Badge>
+                <span>{watch("username") ? "Overrides" : "From group"}</span>
+                <Badge className="max-w-32">
+                  <span className="truncate">{inherited.usernameFrom}</span>
+                </Badge>
                 {watch("username") && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon-xs"
                     aria-label="Use group value"
-                    onClick={() =>
-                      setValue("username", "", { shouldDirty: true })
-                    }
+                    onClick={() => {
+                      setValue("username", "", { shouldDirty: true });
+                      // The button hides once the field is empty; keep focus in the panel.
+                      setFocus("username");
+                    }}
                   >
                     <ArrowCounterClockwiseIcon />
                   </Button>

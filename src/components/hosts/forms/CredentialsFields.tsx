@@ -54,7 +54,7 @@ export default function CredentialsFields<T extends FieldValues>({
           options={choices.map(([value, label]) => ({ value, label }))}
         />
         {authType === "inherit" && (
-          <p className="text-xs text-dark-400 mt-1">{loginLine(inherited)}</p>
+          <p className="mt-1 text-xs text-dark-300">{loginLine(inherited)}</p>
         )}
       </div>
 

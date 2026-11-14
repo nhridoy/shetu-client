@@ -764,4 +764,67 @@ describe("HostForm inherits from its group", () => {
       document.querySelector('button[aria-label="Use group value"]'),
     ).toBeNull();
   });
+
+  it("Override moves focus to the new row's value and names its variable", async () => {
+    await mount({ host: existing({ env: [] }), inherited: PROD });
+    const override = document.querySelector(
+      'button[aria-label="Override LANG"]',
+    );
+    expect(override).not.toBeNull();
+    expect(
+      document.querySelector('[data-inherited-env="LANG"] [title="C.UTF-8"]'),
+    ).not.toBeNull();
+    click(override ?? undefined);
+    await act(async () => {});
+    expect(document.activeElement).toBe(input("env.0.value"));
+  });
+
+  it("removing a variable focuses the next row's remove button, or Add variable", async () => {
+    await mount({
+      host: existing({
+        env: [
+          { name: "A", value: "1" },
+          { name: "B", value: "2" },
+        ],
+      }),
+    });
+    const remove = (n: number) =>
+      document.querySelector(
+        `button[aria-label="Remove variable ${n}"]`,
+      ) as HTMLElement;
+    click(remove(1));
+    await act(async () => {});
+    expect(document.activeElement).toBe(remove(1));
+    click(remove(1));
+    await act(async () => {});
+    expect(document.activeElement).toBe(byText("button", "Add variable"));
+  });
+
+  it("Use group value moves focus to the username", async () => {
+    await mount({ host: existing({}), inherited: PROD });
+    click(
+      document.querySelector('button[aria-label="Use group value"]') ??
+        undefined,
+    );
+    await act(async () => {});
+    expect(document.activeElement).toBe(input("username"));
+  });
+
+  it("says Overrides while the host has its own username", async () => {
+    await mount({ host: existing({}), inherited: PROD });
+    const hint = () =>
+      input("username")?.closest("[data-slot=field]")?.parentElement
+        ?.textContent;
+    expect(hint()).toContain("Overrides");
+    expect(hint()).not.toContain("From group");
+    changeInput(input("username") as HTMLInputElement, "");
+    expect(hint()).toContain("From group");
+  });
+
+  it("hides the env header until there is a row", async () => {
+    await mount({ host: existing({ env: [] }) });
+    expect(document.querySelector("[data-env-header]")).toBeNull();
+    click(byText("button", "Add variable"));
+    expect(document.querySelector("[data-env-header]")).not.toBeNull();
+  });
 });
