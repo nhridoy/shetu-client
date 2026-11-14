@@ -1,6 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState, useTransition } from "react";
-import { Controller, useFieldArray, useForm } from "react-hook-form";
+import {
+  Controller,
+  type FieldErrors,
+  useFieldArray,
+  useForm,
+} from "react-hook-form";
 import ModalForm from "@/components/common/ModalForm";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -222,6 +227,12 @@ export default function HostForm({
     onClose();
   };
 
+  // Advanced fields unmount while collapsed; reveal them so errors are visible.
+  const onInvalid = (errors: FieldErrors<HostFormValues>) => {
+    if (errors.keepaliveSecs || errors.startupSnippetId || errors.env)
+      setShowAdvanced(true);
+  };
+
   const onSubmit = async (data: HostFormValues) => {
     startTransition(async () => {
       await handleHostSubmit(data);
@@ -233,7 +244,7 @@ export default function HostForm({
       onClose={onClose}
       title={host ? "Edit Host" : "Add Host"}
       isPending={isPending}
-      onSubmit={handleSubmit(onSubmit)}
+      onSubmit={handleSubmit(onSubmit, onInvalid)}
       submitButtonText={getButtonText()}
     >
       <FormInput
