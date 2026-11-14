@@ -54,6 +54,10 @@ onSessionRevoked(() => {
 
 let revokedRun: Promise<void> | null = null;
 
+// When a device without a refresh token may next ask for its account status.
+const STATUS_CHECK_INTERVAL_MS = 15 * 60_000;
+let nextStatusCheck = 0;
+
 // One owner of the session at a time. It advances on every sign-out or reset
 // and every sign-in takeover; an auth flow that no longer owns the session
 // stops before its next token write, enrollment or state change.
@@ -1014,8 +1018,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!refreshToken) {
           // An enrolled device whose token is gone (a rejected refresh cleared
           // it) must still learn of a deletion; this suspends, asks, keeps on doubt.
-          if (!get().serverAuthenticated && currentAccountId())
+          // Once per launch, then every 15 minutes, not on every sync retry.
+          if (
+            !get().serverAuthenticated &&
+            currentAccountId() &&
+            Date.now() >= nextStatusCheck
+          ) {
+            nextStatusCheck = Date.now() + STATUS_CHECK_INTERVAL_MS;
             void handleRevokedSession();
+          }
           return "auth-required" as const;
         }
         const identity = await loadOfflineIdentity();

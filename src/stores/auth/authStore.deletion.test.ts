@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(() => ({
@@ -477,7 +477,14 @@ describe("grace-period sign-in", () => {
 });
 
 describe("restore with a revoked refresh token", () => {
+  // Each test starts past the status-check throttle window of the one before.
+  let now = Date.now();
+  afterAll(() => {
+    vi.useRealTimers();
+  });
   beforeEach(() => {
+    now += 16 * 60_000;
+    vi.setSystemTime(now);
     vi.clearAllMocks();
     vi.mocked(resetDevice).mockResolvedValue([]);
     vi.mocked(loadOfflineIdentity).mockResolvedValue({
@@ -640,6 +647,35 @@ describe("restore with a revoked refresh token", () => {
     await handleRevokedSession(); // let the run in flight finish
     expect(resetDevice).not.toHaveBeenCalled();
     expect(useAuthStore.getState().localAccessAccountId).toBe("u1");
+  });
+
+  it("missing_token_status_check_runs_once_then_every_15_minutes", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "active" });
+    const retry = async () => {
+      await useAuthStore.getState().retryServerSession();
+      await new Promise((r) => setTimeout(r, 0)); // let any status check finish
+    };
+    await retry();
+    expect(authApi.accountStatus).toHaveBeenCalledTimes(1);
+    // Sync retries every 30 seconds; they don't ask again within 15 minutes.
+    vi.mocked(authApi.accountStatus).mockClear();
+    await retry();
+    vi.setSystemTime(now + 14 * 60_000);
+    await retry();
+    expect(authApi.accountStatus).not.toHaveBeenCalled();
+    vi.setSystemTime(now + 15 * 60_000);
+    await retry();
+    expect(authApi.accountStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("session_revoked_event_asks_even_when_the_check_is_throttled", async () => {
+    vi.mocked(authApi.accountStatus).mockResolvedValue({ status: "active" });
+    await useAuthStore.getState().retryServerSession();
+    await new Promise((r) => setTimeout(r, 0));
+    await useAuthStore.getState().retryServerSession();
+    vi.mocked(authApi.accountStatus).mockClear();
+    revokedListener?.();
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
   });
 
   it("fresh_install_without_refresh_token_does_not_ask_status", async () => {
