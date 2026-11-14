@@ -69,7 +69,7 @@ export default function Pane({
   const handleConnect = (host: Host) => {
     connectPane(tabId, pane.id, host.id, host.name, {
       hostAddress: host.address,
-      hostPort: host.port,
+      hostPort: host.port ?? undefined,
       hostUsername: host.username,
       authType: host.authType,
       keyId: host.keyId,

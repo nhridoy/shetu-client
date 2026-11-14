@@ -384,7 +384,7 @@ export default function Layout() {
             showTerminalTab(
               useTerminalStore.getState().openConnection(host.id, host.name, {
                 hostAddress: host.address,
-                hostPort: host.port,
+                hostPort: host.port ?? undefined,
                 hostUsername: host.username,
                 authType: host.authType,
                 keyId: host.keyId,

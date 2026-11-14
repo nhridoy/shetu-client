@@ -16,7 +16,7 @@ export function useCardSummaries<T extends FieldValues>(
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
   const authType = useWatch({ control, name: "authType" });
-  const keepaliveMode = useWatch({ control, name: "keepaliveMode" });
+  const keepalive = useWatch({ control, name: "keepaliveSecs" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const startupMode = useWatch({ control, name: "startupMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
@@ -28,7 +28,7 @@ export function useCardSummaries<T extends FieldValues>(
   return {
     credentials: from(authType === "inherit", inherited?.authFrom),
     connection:
-      from(keepaliveMode === "default", inherited?.keepaliveFrom) ??
+      from(keepalive == null || keepalive === "", inherited?.keepaliveFrom) ??
       from(forwardMode === "inherit", inherited?.forwardAgentFrom),
     startup: from(startupMode === "inherit", inherited?.startupFrom),
     env: count > 0 ? `${count} ${count === 1 ? "var" : "vars"}` : undefined,

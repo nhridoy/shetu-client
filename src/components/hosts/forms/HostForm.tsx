@@ -24,6 +24,7 @@ import {
   type HostFormValues,
   hostFormDefaultValues,
   hostFormSchemaFor,
+  isBlank,
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
 import { recordAgentForwarding } from "@/lib/terminal/agentForwarding";
@@ -40,7 +41,7 @@ export interface HostData {
   id: string;
   name: string;
   address: string;
-  port: number;
+  port: number | null;
   username: string;
   authType: "inherit" | "password" | "key" | "both" | "none";
   password?: string;
@@ -153,7 +154,7 @@ export default function HostForm({
     defaultValues: {
       name: host?.name || hostFormDefaultValues.name,
       address: host?.address || hostFormDefaultValues.address,
-      port: host?.port || hostFormDefaultValues.port,
+      port: host?.port ?? hostFormDefaultValues.port,
       username: host?.username || hostFormDefaultValues.username,
       authType: host?.authType || hostFormDefaultValues.authType,
       password: host?.password ?? hostFormDefaultValues.password,
@@ -162,13 +163,7 @@ export default function HostForm({
       color: host?.color || hostFormDefaultValues.color,
       groupId: initialGroupId,
       tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
-      keepaliveMode:
-        host?.keepaliveSecs == null
-          ? "default"
-          : host.keepaliveSecs === 0
-            ? "off"
-            : "custom",
-      keepaliveSecs: host?.keepaliveSecs || undefined,
+      keepaliveSecs: host?.keepaliveSecs ?? "",
       forwardAgentMode: host
         ? host.forwardAgent == null
           ? "inherit"
@@ -272,9 +267,9 @@ export default function HostForm({
     setRouteError(null);
     const forwardAgent = FORWARD[data.forwardAgentMode];
     const hostData = {
-      name: data.name,
+      name: data.name || data.address,
       address: data.address,
-      port: Number(data.port),
+      port: isBlank(data.port) ? null : Number(data.port),
       username: data.username,
       authType: data.authType,
       keyId:
@@ -295,12 +290,9 @@ export default function HostForm({
             .map((t) => t.trim())
             .filter(Boolean)
         : [],
-      keepaliveSecs:
-        data.keepaliveMode === "off"
-          ? 0
-          : data.keepaliveMode === "custom"
-            ? Number(data.keepaliveSecs)
-            : null,
+      keepaliveSecs: isBlank(data.keepaliveSecs)
+        ? null
+        : Number(data.keepaliveSecs),
       forwardAgent,
       env: data.env.filter((row) => row.name !== ""),
       startup: startupFromForm(data),
@@ -390,7 +382,6 @@ export default function HostForm({
                   label="Port"
                   control={control}
                   type="number"
-                  required
                 />
               </div>
             </div>

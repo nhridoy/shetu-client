@@ -17,7 +17,7 @@ export interface Host {
   id: string;
   name: string;
   address: string;
-  port: number;
+  port: number | null;
   username?: string;
   groupId?: string | null;
   tags: string[];
@@ -51,6 +51,7 @@ export interface Group {
   createdAt: string;
   // Encrypted fields: only populated by getDecryptedGroup.
   username?: string | null;
+  port?: number | null;
   authType?: "password" | "key" | "both" | "none" | null;
   password?: string | null;
   keyId?: string | null;
@@ -93,7 +94,7 @@ interface HostState {
 
 interface HostPayload {
   address: string;
-  port: number;
+  port: number | null;
   username: string;
   password?: string;
   jumpHostId?: string | null;
@@ -106,6 +107,7 @@ interface HostPayload {
 type GroupFields = Pick<
   Group,
   | "username"
+  | "port"
   | "authType"
   | "password"
   | "keyId"
@@ -116,6 +118,7 @@ type GroupFields = Pick<
 >;
 const GROUP_KEYS: (keyof GroupFields)[] = [
   "username",
+  "port",
   "authType",
   "password",
   "keyId",
@@ -171,6 +174,11 @@ function cleanStartup(v: unknown): Startup {
 const cleanKeepalive = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
+const cleanPort = (v: unknown): number | null =>
+  typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 65535
+    ? v
+    : null;
+
 const cleanForward = (v: unknown): boolean | null =>
   typeof v === "boolean" ? v : null;
 
@@ -200,7 +208,7 @@ function hostFieldsFromPayload(
   const p = payload as Record<string, unknown>;
   return {
     address: payload.address ?? "",
-    port: payload.port ?? 22,
+    port: cleanPort(payload.port),
     username: payload.username ?? "root",
     password: payload.password,
     jumpHostId: payload.jumpHostId ?? null,
@@ -218,6 +226,7 @@ function groupFieldsFromPayload(p: Record<string, unknown>): GroupFields {
   const auth = p.authType;
   return {
     username: str(p.username),
+    port: cleanPort(p.port),
     authType:
       auth === "password" ||
       auth === "key" ||
@@ -380,7 +389,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         {
           plaintext: JSON.stringify({
             address: host.address,
-            port: host.port ?? 22,
+            port: host.port ?? null,
             username: host.username ?? "root",
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
@@ -396,7 +405,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         id: row.id,
         name: row.name ?? "",
         address: "",
-        port: 22,
+        port: null,
         username: undefined,
         groupId: host.groupId ?? null,
         tags: host.tags ?? [],

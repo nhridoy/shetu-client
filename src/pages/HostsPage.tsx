@@ -65,7 +65,7 @@ export default function HostsPage() {
     openSeq.current++;
     addTab(host.id, host.name, {
       hostAddress: host.address,
-      hostPort: host.port,
+      hostPort: host.port ?? undefined,
       hostUsername: host.username,
       authType: host.authType,
       keyId: host.keyId,

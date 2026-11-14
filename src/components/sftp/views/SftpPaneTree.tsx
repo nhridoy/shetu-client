@@ -93,7 +93,7 @@ export default function SftpPaneTree({
                   host.id,
                   host.name,
                   host.address,
-                  host.port,
+                  host.port ?? undefined,
                   host.username,
                 )
               }

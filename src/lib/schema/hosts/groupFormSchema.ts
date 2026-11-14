@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { envRowsSchema } from "./hostFormSchema";
+import {
+  envRowsSchema,
+  KEEPALIVE_ERROR,
+  keepaliveOk,
+  PORT_ERROR,
+  portOk,
+} from "./hostFormSchema";
 
 // Every field except the name is optional: empty means "this group doesn't set it".
 export const groupFormSchema = z
@@ -17,8 +23,14 @@ export const groupFormSchema = z
     authType: z.enum(["", "password", "key", "both", "none"]),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
-    keepaliveMode: z.enum(["default", "off", "custom"]),
-    keepaliveSecs: z.coerce.number().optional(),
+    port: z
+      .union([z.number(), z.string()])
+      .nullish()
+      .refine(portOk, { error: PORT_ERROR }),
+    keepaliveSecs: z
+      .union([z.number(), z.string()])
+      .nullish()
+      .refine(keepaliveOk, { error: KEEPALIVE_ERROR }),
     forwardAgent: z.enum(["unset", "on", "off"]),
     env: envRowsSchema,
     startupMode: z.enum(["none", "snippet", "command"]),
@@ -37,14 +49,6 @@ export const groupFormSchema = z
       path: ["keyId"],
     },
   )
-  .refine(
-    (d) =>
-      d.keepaliveMode !== "custom" ||
-      (Number.isInteger(d.keepaliveSecs) &&
-        (d.keepaliveSecs as number) >= 5 &&
-        (d.keepaliveSecs as number) <= 600),
-    { error: "Keepalive must be 5-600 seconds", path: ["keepaliveSecs"] },
-  )
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -59,8 +63,8 @@ export const groupFormDefaultValues: GroupFormValues = {
   authType: "",
   password: "",
   keyId: "",
-  keepaliveMode: "default",
-  keepaliveSecs: undefined,
+  port: "",
+  keepaliveSecs: "",
   forwardAgent: "unset",
   env: [],
   startupMode: "none",

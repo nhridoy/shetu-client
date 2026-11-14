@@ -152,7 +152,7 @@ export default function SftpHostPicker({
                   <div className="text-sm text-white">{host.name}</div>
                   <div className="text-xs text-dark-400">
                     {host.username ? `${host.username}@` : ""}
-                    {host.address}:{host.port}
+                    {host.address}:{host.port ?? 22}
                   </div>
                 </div>
                 {host.tags && host.tags.length > 0 && (

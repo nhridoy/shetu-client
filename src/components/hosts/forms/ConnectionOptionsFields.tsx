@@ -15,7 +15,7 @@ import Textarea from "@/components/ui/Textarea";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import {
   forwardLine,
-  keepaliveLine,
+  keepalivePlaceholder,
   startupLine,
 } from "@/lib/hosts/inheritedLabels";
 import { AGENT_FORWARD_HELP } from "@/lib/terminal/agentForwarding";
@@ -50,7 +50,6 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     append: appendEnv,
     remove: removeEnv,
   } = useFieldArray({ control, name: "env" });
-  const keepaliveMode = useWatch({ control, name: "keepaliveMode" });
   const startupMode = useWatch({ control, name: "startupMode" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
@@ -74,34 +73,15 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
   if (part === "connection")
     return (
       <div className="space-y-3">
-        <div>
-          <FormSelect
-            name="keepaliveMode"
-            label="Keepalive"
-            control={control}
-            options={[
-              {
-                value: "default",
-                label: mode === "group" ? "Not set" : "From group",
-              },
-              { value: "off", label: "Off" },
-              { value: "custom", label: "Custom" },
-            ]}
-          />
-          {mode === "host" && keepaliveMode === "default" && (
-            <p className="mt-1 text-xs text-dark-300">
-              {keepaliveLine(inherited)}
-            </p>
-          )}
-        </div>
-        {keepaliveMode === "custom" && (
-          <FormInput
-            name="keepaliveSecs"
-            label="Keepalive interval (seconds, 5-600)"
-            control={control}
-            type="number"
-          />
-        )}
+        <FormInput
+          name="keepaliveSecs"
+          label="Keepalive (seconds, 0 = off)"
+          control={control}
+          type="number"
+          placeholder={
+            mode === "host" ? keepalivePlaceholder(inherited) : "Not set"
+          }
+        />
 
         {mode === "group" ? (
           <FormSelect

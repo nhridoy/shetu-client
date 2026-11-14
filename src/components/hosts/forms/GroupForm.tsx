@@ -16,6 +16,7 @@ import {
   groupFormDefaultValues,
   groupFormSchema,
 } from "@/lib/schema/hosts/groupFormSchema";
+import { isBlank } from "@/lib/schema/hosts/hostFormSchema";
 import {
   type Group as StoredGroup,
   useHostStore,
@@ -51,13 +52,8 @@ function valuesFromGroup(g: StoredGroup): GroupFormValues {
     authType: g.authType ?? "",
     password: g.password ?? "",
     keyId: g.keyId ?? "",
-    keepaliveMode:
-      g.keepaliveSecs == null
-        ? "default"
-        : g.keepaliveSecs === 0
-          ? "off"
-          : "custom",
-    keepaliveSecs: g.keepaliveSecs || undefined,
+    port: g.port ?? "",
+    keepaliveSecs: g.keepaliveSecs ?? "",
     forwardAgent:
       g.forwardAgent == null ? "unset" : g.forwardAgent ? "on" : "off",
     env: g.env ?? [],
@@ -88,12 +84,8 @@ function payloadFromForm(
     authType: auth ?? unset,
     password: (usesPassword && d.password) || unset,
     keyId: (usesKey && d.keyId) || unset,
-    keepaliveSecs:
-      d.keepaliveMode === "off"
-        ? 0
-        : d.keepaliveMode === "custom"
-          ? Number(d.keepaliveSecs)
-          : unset,
+    port: isBlank(d.port) ? unset : Number(d.port),
+    keepaliveSecs: isBlank(d.keepaliveSecs) ? unset : Number(d.keepaliveSecs),
     forwardAgent:
       d.forwardAgent === "on" ? true : d.forwardAgent === "off" ? false : unset,
     env: env.length || unset === null ? env : undefined,

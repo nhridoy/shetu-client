@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface InheritedDefaults {
   username?: string;
   usernameFrom?: string;
+  port?: number;
+  portFrom?: string;
   authType?: "password" | "key" | "both" | "none";
   authFrom?: string;
   hasPassword: boolean;

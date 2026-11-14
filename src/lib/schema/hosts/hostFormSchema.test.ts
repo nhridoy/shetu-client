@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  hostFormDefaultValues,
-  hostFormSchema,
-  hostFormSchemaFor,
-} from "./hostFormSchema";
+import { hostFormDefaultValues, hostFormSchema } from "./hostFormSchema";
 
 const base = {
   ...hostFormDefaultValues,
@@ -19,16 +15,25 @@ const issuePaths = (input: object) => {
 };
 
 describe("hostFormSchema connection options", () => {
-  it("rejects custom keepalive outside 5-600", () => {
-    expect(issuePaths({ keepaliveMode: "custom", keepaliveSecs: 3 })).toContain(
-      "keepaliveSecs",
-    );
+  it("keepalive: empty and 0 are valid, 3 and 601 are not, 5 is", () => {
+    expect(issuePaths({ keepaliveSecs: "" })).toEqual([]);
+    expect(issuePaths({ keepaliveSecs: 0 })).toEqual([]);
+    expect(issuePaths({ keepaliveSecs: 3 })).toContain("keepaliveSecs");
+    expect(issuePaths({ keepaliveSecs: 601 })).toContain("keepaliveSecs");
+    expect(issuePaths({ keepaliveSecs: 5 })).toEqual([]);
+  });
+
+  it("only address is required", () => {
     expect(
-      issuePaths({ keepaliveMode: "custom", keepaliveSecs: 601 }),
-    ).toContain("keepaliveSecs");
-    expect(issuePaths({ keepaliveMode: "custom", keepaliveSecs: 5 })).toEqual(
-      [],
-    );
+      issuePaths({ name: "", port: "", username: "", password: "pw" }),
+    ).toEqual([]);
+    expect(issuePaths({ address: "" })).toEqual(["address"]);
+  });
+
+  it("port must be 1-65535 when present", () => {
+    expect(issuePaths({ port: 0 })).toContain("port");
+    expect(issuePaths({ port: 70000 })).toContain("port");
+    expect(issuePaths({ port: "22" })).toEqual([]);
   });
 
   it("rejects invalid env names", () => {
@@ -65,11 +70,8 @@ describe("hostFormSchema group inheritance", () => {
     );
   });
 
-  it("username is required unless the group provides one", () => {
-    expect(issuePaths({ username: " " })).toContain("username");
-    expect(
-      hostFormSchemaFor(true).safeParse({ ...base, username: "" }).success,
-    ).toBe(true);
+  it("username may be empty", () => {
+    expect(issuePaths({ username: " " })).toEqual([]);
   });
 
   it("accepts the tri-state startup and forwarding modes", () => {

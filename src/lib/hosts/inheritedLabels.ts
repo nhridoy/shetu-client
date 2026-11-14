@@ -14,6 +14,16 @@ export function loginLine(i?: InheritedDefaults): string {
   return `${LOGIN_NAMES[i.authType]} · ${i.authFrom}`;
 }
 
+export function portLine(i?: InheritedDefaults): string {
+  if (i?.port == null || !i.portFrom) return "22";
+  return `${i.port} · ${i.portFrom}`;
+}
+
+export function keepalivePlaceholder(i?: InheritedDefaults): string {
+  if (i?.keepaliveSecs == null || !i.keepaliveFrom) return "Default";
+  return `${i.keepaliveSecs > 0 ? i.keepaliveSecs : "Off"} · ${i.keepaliveFrom}`;
+}
+
 export function keepaliveLine(i?: InheritedDefaults): string {
   if (i?.keepaliveSecs == null || !i.keepaliveFrom) return "Default";
   return `${i.keepaliveSecs > 0 ? `${i.keepaliveSecs}s` : "Off"} · ${i.keepaliveFrom}`;

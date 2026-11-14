@@ -186,7 +186,7 @@ describe("hostStore", () => {
     };
     expect(JSON.parse(opts.plaintext)).toMatchObject({
       address: "1.2.3.4",
-      port: 22,
+      port: null,
       username: "root",
     });
     expect(JSON.parse(opts.plaintext)).not.toHaveProperty("authType");
@@ -708,6 +708,12 @@ describe("hostStore", () => {
       .getState()
       .createGroup({ name: "prod", username: "u", password: "p" });
     expect(plainOf()).toEqual({ username: "u", password: "p" });
+    await useHostStore.getState().createGroup({ name: "p2", port: 2222 });
+    expect(
+      JSON.parse(
+        (mockUpsert.mock.calls[1][2] as { plaintext: string }).plaintext,
+      ),
+    ).toEqual({ port: 2222 });
     const cols = mockUpsert.mock.calls[0][1] as Record<string, unknown>;
     expect(cols.username).toBeUndefined();
     expect(cols.password).toBeUndefined();
@@ -726,6 +732,33 @@ describe("hostStore", () => {
     expect(g?.env).toEqual([]);
     expect(g?.startup).toBeNull();
     expect(g?.forwardAgent).toBeNull();
+  });
+
+  it("getDecryptedGroup keeps a valid port and nulls junk", async () => {
+    mockGet.mockResolvedValue(groupRow);
+    mockDecrypt.mockResolvedValue({ port: 2222 });
+    expect((await useHostStore.getState().getDecryptedGroup("g1"))?.port).toBe(
+      2222,
+    );
+    for (const port of [0, 70000, 22.5, "22"]) {
+      mockDecrypt.mockResolvedValue({ port });
+      expect(
+        (await useHostStore.getState().getDecryptedGroup("g1"))?.port,
+      ).toBeNull();
+    }
+  });
+
+  it("host decrypt keeps a missing port null", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "p",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({ address: "a", port: null });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect(host?.port).toBeNull();
   });
 
   it("getDecryptedGroup keeps valid values", async () => {

@@ -280,7 +280,7 @@ export default function QuickConnect({
                     <div className="flex-1 min-w-0">
                       <div className="text-white text-sm">{host.name}</div>
                       <div className="text-dark-400 text-xs">
-                        {host.username}@{host.address}:{host.port}
+                        {host.username}@{host.address}:{host.port ?? 22}
                       </div>
                     </div>
                     {host.tags && host.tags.length > 0 && (

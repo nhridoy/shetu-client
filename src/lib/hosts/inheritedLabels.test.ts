@@ -3,7 +3,9 @@ import type { InheritedDefaults } from "./inherited";
 import {
   forwardLine,
   keepaliveLine,
+  keepalivePlaceholder,
   loginLine,
+  portLine,
   startupLine,
 } from "./inheritedLabels";
 
@@ -56,5 +58,21 @@ describe("inheritedLabels", () => {
     expect(forwardLine({ ...f, forwardAgent: false })).toBe("Off · prod");
     expect(forwardLine(base)).toBe("Off");
     expect(forwardLine()).toBe("Off");
+  });
+
+  it("portLine", () => {
+    expect(portLine({ ...base, port: 2222, portFrom: "prod" })).toBe(
+      "2222 · prod",
+    );
+    expect(portLine(base)).toBe("22");
+    expect(portLine()).toBe("22");
+  });
+
+  it("keepalivePlaceholder", () => {
+    const f = { ...base, keepaliveFrom: "prod" };
+    expect(keepalivePlaceholder({ ...f, keepaliveSecs: 30 })).toBe("30 · prod");
+    expect(keepalivePlaceholder({ ...f, keepaliveSecs: 0 })).toBe("Off · prod");
+    expect(keepalivePlaceholder(base)).toBe("Default");
+    expect(keepalivePlaceholder()).toBe("Default");
   });
 });

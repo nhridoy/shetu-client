@@ -528,20 +528,20 @@ describe("HostForm inherits from its group", () => {
     expect(createHost.mock.calls[0][0]).toMatchObject({ username: "" });
   });
 
-  it("requires a username without a group", async () => {
+  it("saves with only an address: name falls back to it, port null, username empty", async () => {
     const { createHost } = await mount({});
+    changeInput(input("name") as HTMLInputElement, "");
+    changeInput(input("address") as HTMLInputElement, "h.example");
     changeInput(input("password") as HTMLInputElement, "pw");
     await submit();
-    expect(document.body.textContent).toContain("Username is required");
-    expect(createHost).not.toHaveBeenCalled();
-  });
-
-  it("requires a username when the chain has none", async () => {
-    const { createHost } = await mount({ defaultGroupId: "g1" });
-    changeInput(input("password") as HTMLInputElement, "pw");
-    await submit();
-    expect(document.body.textContent).toContain("Username is required");
-    expect(createHost).not.toHaveBeenCalled();
+    expect(createHost).toHaveBeenCalledTimes(1);
+    expect(createHost.mock.calls[0][0]).toMatchObject({
+      name: "h.example",
+      address: "h.example",
+      port: null,
+      username: "",
+      keepaliveSecs: null,
+    });
   });
 
   it("choosing No Group saves groupId null so the row really leaves the group", async () => {
@@ -549,16 +549,6 @@ describe("HostForm inherits from its group", () => {
     pick("groupId", "No Group");
     await submit();
     expect(updateHost.mock.calls[0][1].groupId).toBeNull();
-  });
-
-  it("requires a username while the newly picked group's values are loading", async () => {
-    const { updateHost } = await mount({ host: existing({}), inherited: PROD });
-    changeInput(input("username") as HTMLInputElement, "");
-    fetchInherited.mockReturnValueOnce(new Promise(() => {}));
-    pick("groupId", "dev");
-    await submit();
-    expect(document.body.textContent).toContain("Username is required");
-    expect(updateHost).not.toHaveBeenCalled();
   });
 
   it("offers From group auth only when the host has a group", async () => {
@@ -789,17 +779,12 @@ describe("HostForm inherits from its group", () => {
       }),
       inherited: GROUP_ALL,
     });
+    expect(input("keepaliveSecs")?.placeholder).toBe("30 · prod");
     const text = document.body.textContent ?? "";
-    expect(text).toContain("30s · prod");
     expect(text).toContain("runs a command · prod");
     expect(text).toContain("On · prod");
     expect(summary("Connection")).toBe("from prod");
     expect(summary("On connect")).toBe("from prod");
-  });
-
-  it("labels the host keepalive default From group", async () => {
-    await mount({ host: existing({}), inherited: EMPTY });
-    expect(optionLabels("keepaliveMode")[0]).toBe("From group");
   });
 
   it("shows the default lines when nothing is inherited", async () => {
@@ -810,9 +795,8 @@ describe("HostForm inherits from its group", () => {
         forwardAgent: undefined,
       }),
     });
-    const text = document.body.textContent ?? "";
-    expect(text).toContain("Default");
-    expect(text).toContain("Nothing");
+    expect(input("keepaliveSecs")?.placeholder).toBe("Default");
+    expect(document.body.textContent).toContain("Nothing");
   });
 
   it("shows a group badge on the username and a reset only when both have one", async () => {
