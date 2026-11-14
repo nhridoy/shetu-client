@@ -128,8 +128,8 @@ function SidePanel({
       )}
       <aside
         ref={panelRef}
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal is set only together with role=dialog
         role={overlay ? "dialog" : undefined}
-        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: role is dialog whenever aria-modal is set
         aria-modal={overlay ? true : undefined}
         aria-labelledby={titleId}
         onKeyDown={trapTab}
