@@ -25,7 +25,10 @@ import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
-import ConnectionOptionsFields from "./ConnectionOptionsFields";
+import ConnectionOptionsFields, {
+  EnvAddButton,
+  useEnvArray,
+} from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
 import { useCardSummaries } from "./useCardSummaries";
 
@@ -185,6 +188,7 @@ export default function GroupForm({
     });
   };
 
+  const envArray = useEnvArray(control);
   const formId = useId();
   const summaries = useCardSummaries(control);
   const busy = isPending || load === "loading";
@@ -260,12 +264,14 @@ export default function GroupForm({
           <SidePanel.Card
             icon={<TerminalWindowIcon />}
             title="Environment"
+            action={<EnvAddButton envArray={envArray} />}
             summary={summaries.env}
           >
             <ConnectionOptionsFields
               control={control}
               mode="group"
               part="env"
+              envArray={envArray}
             />
           </SidePanel.Card>
         </div>

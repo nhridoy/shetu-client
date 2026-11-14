@@ -157,11 +157,25 @@ describe("GroupForm", () => {
     ).toBeTruthy();
   });
 
-  it("puts Add variable in the Environment label row", async () => {
+  it("puts Add variable in the Environment card header", async () => {
     await mount();
     const add = byText("button", "Add variable") as HTMLElement;
-    expect(add.parentElement?.textContent).toContain("Variables");
-    expect(card("Environment")?.contains(add)).toBe(true);
+    expect(card("Environment")?.querySelector("header")?.contains(add)).toBe(
+      true,
+    );
+    click(add);
+    expect(document.querySelector('input[placeholder="NAME"]')).toBeTruthy();
+  });
+
+  it("group Port and keepalive read Not set; help names the parent group", async () => {
+    await mount();
+    expect(
+      (document.querySelector('input[name="port"]') as HTMLInputElement)
+        .placeholder,
+    ).toBe("Not set");
+    expect(document.body.textContent).toContain(
+      "Seconds. Empty uses the parent group or default; 0 turns it off.",
+    );
   });
 
   it("maps port and keepalive: set values are sent, clearing sends null", async () => {

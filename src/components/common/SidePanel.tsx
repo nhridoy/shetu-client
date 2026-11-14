@@ -180,11 +180,14 @@ function Card({
   icon,
   title,
   summary,
+  action,
   children,
 }: {
   icon: ReactNode;
   title: string;
   summary?: string;
+  /** Rendered at the right of the header row. */
+  action?: ReactNode;
   children: ReactNode;
 }) {
   const id = useId();
@@ -212,6 +215,7 @@ function Card({
             {summary}
           </span>
         )}
+        {action && <div className="ml-auto shrink-0">{action}</div>}
       </header>
       <div className="space-y-3">{children}</div>
     </section>

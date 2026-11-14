@@ -34,7 +34,10 @@ import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
-import ConnectionOptionsFields from "./ConnectionOptionsFields";
+import ConnectionOptionsFields, {
+  EnvAddButton,
+  useEnvArray,
+} from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
 import { useCardSummaries } from "./useCardSummaries";
 
@@ -315,6 +318,7 @@ export default function HostForm({
     });
   };
 
+  const envArray = useEnvArray(control);
   const formId = useId();
   const summaries = useCardSummaries(control, inherited);
   return (
@@ -514,6 +518,7 @@ export default function HostForm({
           <SidePanel.Card
             icon={<TerminalWindowIcon />}
             title="Environment"
+            action={<EnvAddButton envArray={envArray} />}
             summary={summaries.env}
           >
             <ConnectionOptionsFields
@@ -521,6 +526,7 @@ export default function HostForm({
               mode="host"
               inherited={inherited}
               part="env"
+              envArray={envArray}
             />
           </SidePanel.Card>
         </div>

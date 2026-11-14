@@ -569,6 +569,14 @@ describe("HostForm inherits from its group", () => {
     expect(createHost.mock.calls[0][0].authType).toBe("none");
   });
 
+  it("Add variable sits in the Environment card header", async () => {
+    await mount({});
+    const add = byText("button", "Add variable") as HTMLElement;
+    expect(card("Environment")?.querySelector("header")?.contains(add)).toBe(
+      true,
+    );
+  });
+
   it("keepalive 0 saves 0 and empty saves null", async () => {
     const { updateHost } = await mount({
       host: existing({ keepaliveSecs: 0 }),

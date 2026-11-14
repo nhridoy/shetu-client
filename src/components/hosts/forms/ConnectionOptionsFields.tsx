@@ -4,6 +4,7 @@ import {
   type Control,
   Controller,
   type FieldValues,
+  type UseFieldArrayReturn,
   useFieldArray,
   useWatch,
 } from "react-hook-form";
@@ -23,12 +24,38 @@ import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import { visibleInheritedEnv } from "./useCardSummaries";
 
+export type EnvArray = UseFieldArrayReturn<FieldValues, "env">;
+
+/** Owned by the form so the card header's Add button and the env table share one array. */
+export function useEnvArray<T extends FieldValues>(control: Control<T>) {
+  return useFieldArray({
+    control: control as unknown as Control<FieldValues>,
+    name: "env",
+  });
+}
+
+export function EnvAddButton({ envArray }: { envArray: EnvArray }) {
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="sm"
+      data-env-add
+      onClick={() => envArray.append({ name: "", value: "" })}
+    >
+      <PlusIcon /> Add variable
+    </Button>
+  );
+}
+
 interface Props<T extends FieldValues> {
   control: Control<T>;
   mode: "host" | "group";
   inherited?: InheritedDefaults;
   /** Which card this renders: keepalive + forwarding, startup, or the env table. */
   part: "connection" | "startup" | "env";
+  /** Required for part="env". */
+  envArray?: EnvArray;
 }
 
 /**
@@ -40,6 +67,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
   mode,
   inherited,
   part,
+  envArray,
 }: Props<T>) {
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
@@ -49,7 +77,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     fields: envFields,
     append: appendEnv,
     remove: removeEnv,
-  } = useFieldArray({ control, name: "env" });
+  } = envArray ?? { fields: [], append: () => {}, remove: () => {} };
   const startupMode = useWatch({ control, name: "startupMode" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
@@ -66,7 +94,8 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     (
       root?.querySelector<HTMLElement>(
         `[aria-label="Remove variable ${i + 1}"]`,
-      ) ?? root?.querySelector<HTMLElement>("[data-env-add]")
+      ) ??
+      root?.closest("section")?.querySelector<HTMLElement>("[data-env-add]")
     )?.focus();
   });
 
@@ -79,7 +108,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
             label="Port"
             control={control}
             type="number"
-            placeholder="22"
+            placeholder="Not set"
           />
         )}
         <div>
@@ -93,7 +122,8 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
             }
           />
           <p className="mt-1 text-xs text-dark-500">
-            Seconds. Empty uses the group or default; 0 turns it off.
+            Seconds. Empty uses the {mode === "group" ? "parent " : ""}group or
+            default; 0 turns it off.
           </p>
         </div>
 
@@ -135,20 +165,6 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     return (
       <fieldset ref={envRef} className="space-y-2">
         <legend className="sr-only">Environment variables</legend>
-        <div className="flex items-center justify-between">
-          <span aria-hidden className="text-sm text-dark-300">
-            Variables
-          </span>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            data-env-add
-            onClick={() => appendEnv({ name: "", value: "" })}
-          >
-            <PlusIcon /> Add variable
-          </Button>
-        </div>
         {(envFields.length > 0 || visibleInherited.length > 0) && (
           <div className="grid grid-cols-[1fr_1fr_auto] items-start gap-x-2 gap-y-0">
             <span data-env-header className="pl-[9px] text-xs text-dark-400">

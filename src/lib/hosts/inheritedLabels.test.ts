@@ -23,7 +23,9 @@ describe("inheritedLabels", () => {
     );
     expect(loginLine({ ...g, authType: "key" })).toBe("SSH key · prod");
     expect(loginLine({ ...g, authType: "both" })).toBe("Password + key · prod");
-    expect(loginLine({ ...g, authType: "none" })).toBe("None · prod");
+    expect(loginLine({ ...g, authType: "none" })).toBe(
+      "Ask when connecting · prod",
+    );
     const none = "No group sets a login — uses agent/none";
     expect(loginLine(base)).toBe(none);
     expect(loginLine(undefined)).toBe(none);

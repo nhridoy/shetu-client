@@ -3,7 +3,7 @@ import type { InheritedDefaults } from "./inherited";
 const LOGIN_NAMES = {
   password: "Password",
   both: "Password + key",
-  none: "None",
+  none: "Ask when connecting",
 } as const;
 
 export function loginLine(i?: InheritedDefaults): string {
