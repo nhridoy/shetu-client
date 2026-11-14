@@ -234,6 +234,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn close_reason_lost_only_on_write_failure() {
+        let (tx, mut rx) = oneshot::channel::<bool>();
+        drop(tx);
+        let dropped = rx.try_recv();
+        assert!(close_reason_is_lost::<()>(Ok(true)));
+        assert!(!close_reason_is_lost::<()>(Ok(false)));
+        assert!(dropped.is_err() && !close_reason_is_lost(dropped));
+    }
+
+    #[test]
     fn connection_lost_notice_text() {
         assert_eq!(CONNECTION_LOST_NOTICE, "\r\n[Connection lost]\r\n");
     }
@@ -920,6 +930,12 @@ pub async fn connect_saved(
 }
 
 const STARTUP_MISSING_NOTICE: &str = "\r\n[Startup snippet not found]\r\n";
+/// Writer reports `true` when a write failed (transport lost); a dropped sender
+/// (user disconnect) or `false` (input channel closed) is not a loss.
+fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
+    matches!(reason, Ok(true))
+}
+
 const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
 pub(crate) fn startup_bytes(command: &str) -> Vec<u8> {
@@ -1031,27 +1047,30 @@ async fn run_connect_session(
 
         let (mut read_half, write_half) = channel.split();
         let (tx, rx) = mpsc::channel::<SessionCmd>(32);
-        let (close_tx, close_rx) = oneshot::channel::<()>();
+        let (close_tx, close_rx) = oneshot::channel::<bool>();
         let startup_tx = tx.clone();
         let writer_handle = tokio::spawn(async move {
             let mut close_tx = Some(close_tx);
             let mut rx = rx;
+            let mut write_failed = false;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     SessionCmd::Input(bytes) => {
                         if let Err(_) = write_half.data_bytes(bytes).await {
+                            write_failed = true;
                             break;
                         }
                     }
                     SessionCmd::Resize(cols, rows) => {
                         if let Err(_) = write_half.window_change(cols, rows, 0, 0).await {
+                            write_failed = true;
                             break;
                         }
                     }
                 }
             }
             if let Some(tx) = close_tx.take() {
-                let _ = tx.send(());
+                let _ = tx.send(write_failed);
             }
         });
         {
@@ -1122,7 +1141,7 @@ async fn run_connect_session(
                         _ => {}
                     }
                 }
-                _ = &mut close_rx => break,
+                reason = &mut close_rx => { lost = close_reason_is_lost(reason); break }
             }
         }
         if !pending.is_empty() {
