@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import type { SshTabProps } from "@/types/settings/types";
 
@@ -8,6 +9,8 @@ export default function SshTab({
   onLoadKnownHosts,
   onRemoveKnownHost,
   onClearAllKnownHosts,
+  trustNewHosts,
+  setTrustNewHosts,
 }: SshTabProps) {
   return (
     <div className="space-y-6">
@@ -19,9 +22,26 @@ export default function SshTab({
           <p className="text-sm text-dark-300">
             SSH client options are configured per-host in the host settings.
           </p>
-          <p className="text-xs text-dark-500">
-            Global SSH options will be available in a future update.
-          </p>
+          <label
+            htmlFor="trust-new-hosts"
+            className="flex items-start gap-2 cursor-pointer"
+          >
+            <Checkbox
+              id="trust-new-hosts"
+              checked={trustNewHosts}
+              onCheckedChange={setTrustNewHosts}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-sm text-white">
+                Trust new hosts automatically
+              </span>
+              <span className="block text-xs text-dark-400">
+                Skip the fingerprint check the first time you connect to a
+                server. Changed keys still ask.
+              </span>
+            </span>
+          </label>
         </div>
       </div>
 

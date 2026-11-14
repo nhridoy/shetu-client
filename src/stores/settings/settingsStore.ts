@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 
@@ -13,6 +14,7 @@ export interface AppSettings {
   scrollback: number;
   bellStyle: BellStyle;
   recordTerminalOutput: boolean;
+  trustNewHosts: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -24,9 +26,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   scrollback: 10000,
   bellStyle: "none",
   recordTerminalOutput: false,
+  trustNewHosts: false,
 };
 
 const STORE_KEY = "settings.json";
+
+// Rust starts with this off, so a failed push never trusts more than the user chose.
+function pushTrustNewHosts(enabled: boolean) {
+  void invoke("set_trust_new_hosts", { enabled }).catch(() => {});
+}
 
 function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
   const merged: AppSettings = { ...DEFAULT_SETTINGS };
@@ -51,7 +59,11 @@ function parseValue(
       ? value
       : Number.parseInt(String(value), 10);
   }
-  if (key === "cursorBlink" || key === "recordTerminalOutput") {
+  if (
+    key === "cursorBlink" ||
+    key === "recordTerminalOutput" ||
+    key === "trustNewHosts"
+  ) {
     return typeof value === "boolean" ? value : value === "true";
   }
   return String(value);
@@ -89,17 +101,16 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     } catch {
       saved = null;
     }
-    set({
-      settings: mergeSettings(saved),
-      isLoading: false,
-      isLoaded: true,
-    });
+    const settings = mergeSettings(saved);
+    set({ settings, isLoading: false, isLoaded: true });
+    pushTrustNewHosts(settings.trustNewHosts);
   },
 
   updateSetting: async (key, value) => {
     set((s) => ({
       settings: { ...s.settings, [key]: value },
     }));
+    if (key === "trustNewHosts") pushTrustNewHosts(value as boolean);
     try {
       const store = await load(STORE_KEY, { autoSave: false });
       await store.set(key, value);
