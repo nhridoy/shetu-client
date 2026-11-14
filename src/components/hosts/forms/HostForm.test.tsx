@@ -92,6 +92,12 @@ const optionLabels = (id: string) => {
     (e) => e.textContent,
   );
 };
+const card = (title: string) =>
+  [...document.querySelectorAll("aside section")].find(
+    (c) => c.querySelector("h3")?.textContent === title,
+  );
+const summary = (title: string) =>
+  card(title)?.querySelector("[data-card-summary]")?.textContent ?? undefined;
 const input = (name: string) =>
   document.querySelector(`input[name="${name}"]`) as HTMLInputElement | null;
 const changeInput = (el: HTMLInputElement, value: string) =>
@@ -139,12 +145,21 @@ const submit = async () => {
 };
 
 describe("HostForm panel", () => {
-  it("shows GENERAL, CREDENTIALS and CONNECTION without toggles", async () => {
+  it("shows cards in order", async () => {
     await mountAndFill();
     expect(document.querySelector("aside h2")?.textContent).toBe("New host");
     expect(
-      [...document.querySelectorAll("aside h3")].map((h) => h.textContent),
-    ).toEqual(["GENERAL", "CREDENTIALS", "CONNECTION"]);
+      [...document.querySelectorAll("aside section h3")].map(
+        (h) => h.textContent,
+      ),
+    ).toEqual([
+      "Address",
+      "General",
+      "Credentials",
+      "Connection",
+      "On connect",
+      "Environment",
+    ]);
     expect(byText("button", "Advanced")).toBeUndefined();
     expect(document.body.textContent).toContain("On connect");
     expect(byText("button", "Save")).toBeTruthy();
@@ -446,6 +461,44 @@ describe("HostForm inherits from its group", () => {
     ...extra,
   });
 
+  it("puts the jump host in the Connection card", async () => {
+    await mount({});
+    expect(card("Connection")?.querySelector("#jumpHostId")).toBeTruthy();
+  });
+
+  it("summaries appear only when inherited", async () => {
+    await mount({
+      host: existing({ authType: "inherit" }),
+      inherited: PROD,
+    });
+    expect(summary("Credentials")).toBe("from prod");
+    expect(summary("Connection")).toBeUndefined();
+  });
+
+  it("no Credentials summary with its own password, none without a group", async () => {
+    await mount({ host: existing({}), inherited: PROD });
+    expect(summary("Credentials")).toBeUndefined();
+    document.body.innerHTML = "";
+    await mount({
+      host: existing({ authType: "inherit", groupId: undefined }),
+    });
+    for (const t of ["Credentials", "Connection", "On connect", "Environment"])
+      expect(summary(t)).toBeUndefined();
+  });
+
+  it("counts env vars across host and inherited rows", async () => {
+    await mount({ host: existing({}), inherited: PROD });
+    expect(summary("Environment")).toBe("1 vars");
+    click(byText("button", "Add variable"));
+    changeInput(input("env.0.name") as HTMLInputElement, "X");
+    expect(summary("Environment")).toBe("2 vars");
+    changeInput(input("env.0.name") as HTMLInputElement, "LANG");
+    expect(summary("Environment")).toBe("1 vars");
+    document.body.innerHTML = "";
+    await mount({ host: existing({}), inherited: EMPTY });
+    expect(summary("Environment")).toBeUndefined();
+  });
+
   it("shows the group's username as placeholder and allows it empty", async () => {
     const { createHost } = await mount({
       defaultGroupId: "g1",
@@ -726,7 +779,7 @@ describe("HostForm inherits from its group", () => {
   });
 
   it("labels the host keepalive default From group", async () => {
-    await mount({ host: existing({}) });
+    await mount({ host: existing({}), inherited: EMPTY });
     expect(optionLabels("keepaliveMode")[0]).toBe("From group");
   });
 
@@ -759,7 +812,7 @@ describe("HostForm inherits from its group", () => {
   });
 
   it("hides the reset when the group has no username", async () => {
-    await mount({ host: existing({}) });
+    await mount({ host: existing({}), inherited: EMPTY });
     expect(
       document.querySelector('button[aria-label="Use group value"]'),
     ).toBeNull();

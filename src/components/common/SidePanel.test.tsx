@@ -51,7 +51,7 @@ function Harness({
         onClose={onClose}
         footer={<button type="button">Save</button>}
       >
-        <SidePanel.Section title="GENERAL">
+        <SidePanel.Card icon={<span />} title="General">
           <input aria-label="Name" />
           <Select
             value={v}
@@ -61,7 +61,7 @@ function Harness({
               { value: "b", label: "B" },
             ]}
           />
-        </SidePanel.Section>
+        </SidePanel.Card>
       </SidePanel>
       <UnsavedChangesDialog />
     </div>
@@ -96,7 +96,7 @@ describe("SidePanel", () => {
   it("renders title, sections and footer", () => {
     mount(<Harness onClose={() => {}} />);
     expect(q("h2")?.textContent).toBe("Edit host · web");
-    expect(q("h3")?.textContent).toBe("GENERAL");
+    expect(q("h3")?.textContent).toBe("General");
     expect(byText("Save")).toBeTruthy();
     expect(q('[aria-label="Close panel"]')).toBeTruthy();
   });
@@ -224,5 +224,19 @@ describe("SidePanel", () => {
   it("marks the store dirty only while dirty", () => {
     mount(<Harness dirty onClose={() => {}} />);
     expect(useUnsavedChanges.getState().dirty).toBe(true);
+  });
+
+  it("Card renders a labelled region with summary", () => {
+    mount(
+      <SidePanel title="t" open dirty={false} onClose={() => {}} footer={null}>
+        <SidePanel.Card icon={<span />} title="Credentials" summary="from prod">
+          <input aria-label="x" />
+        </SidePanel.Card>
+      </SidePanel>,
+    );
+    const region = document.querySelector("section[aria-labelledby]");
+    const id = region?.getAttribute("aria-labelledby") ?? "";
+    expect(document.getElementById(id)?.textContent).toBe("Credentials");
+    expect(region?.textContent).toContain("from prod");
   });
 });

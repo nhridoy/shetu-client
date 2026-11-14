@@ -1,5 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
+import {
+  ArrowCounterClockwiseIcon,
+  ArrowsLeftRightIcon,
+  GlobeIcon,
+  KeyIcon,
+  PlayIcon,
+  SlidersHorizontalIcon,
+  TerminalWindowIcon,
+} from "@phosphor-icons/react";
 import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -26,6 +34,7 @@ import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import ConnectionOptionsFields from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
+import { useCardSummaries } from "./useCardSummaries";
 
 export interface HostData {
   id: string;
@@ -328,6 +337,7 @@ export default function HostForm({
   };
 
   const formId = useId();
+  const summaries = useCardSummaries(control as never, inherited);
   return (
     <SidePanel
       title={host ? `Edit host · ${host.name}` : "New host"}
@@ -354,155 +364,189 @@ export default function HostForm({
       }
     >
       <form id={formId} onSubmit={handleSubmit(onSubmit)}>
-        <SidePanel.Section title="GENERAL">
-          <FormInput
-            name="name"
-            label="Name"
-            control={control}
-            placeholder="My Server"
-            required
-          />
+        <div className="space-y-3 p-4">
+          <SidePanel.Card icon={<GlobeIcon />} title="Address">
+            <FormInput
+              name="name"
+              label="Name"
+              control={control}
+              placeholder="My Server"
+              required
+            />
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2">
-              <FormInput
-                name="address"
-                label="Address"
-                control={control}
-                placeholder="192.168.1.100 or hostname"
-                required
-              />
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <FormInput
+                  name="address"
+                  label="Address"
+                  control={control}
+                  placeholder="192.168.1.100 or hostname"
+                  required
+                />
+              </div>
+              <div>
+                <FormInput
+                  name="port"
+                  label="Port"
+                  control={control}
+                  type="number"
+                  required
+                />
+              </div>
             </div>
+          </SidePanel.Card>
+          <SidePanel.Card icon={<SlidersHorizontalIcon />} title="General">
+            {!defaultGroupId && (
+              <FormSelect
+                name="groupId"
+                label="Group"
+                control={control}
+                options={[
+                  { value: "", label: "No Group" },
+                  ...groups.map((g) => ({ value: g.id, label: g.name })),
+                ]}
+              />
+            )}
+
+            <fieldset>
+              <legend className="mb-2 block text-sm font-medium leading-none text-dark-300">
+                Color
+              </legend>
+              <Controller
+                name="color"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex gap-2">
+                    {colors.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => field.onChange(c)}
+                        className={`cursor-pointer w-8 h-8 rounded-full ${
+                          field.value === c
+                            ? "ring-2 ring-white ring-offset-2 ring-offset-dark-800"
+                            : ""
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                )}
+              />
+            </fieldset>
+
+            <FormInput
+              name="tags"
+              label="Tags"
+              control={control}
+              placeholder="production, web (comma-separated)"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<KeyIcon />}
+            title="Credentials"
+            summary={summaries.credentials}
+          >
             <div>
               <FormInput
-                name="port"
-                label="Port"
+                name="username"
+                label="Username"
                 control={control}
-                type="number"
-                required
+                placeholder={inherited?.username ?? "root"}
+                required={!inherited?.username}
               />
-            </div>
-          </div>
-
-          {!defaultGroupId && (
-            <FormSelect
-              name="groupId"
-              label="Group"
-              control={control}
-              options={[
-                { value: "", label: "No Group" },
-                ...groups.map((g) => ({ value: g.id, label: g.name })),
-              ]}
-            />
-          )}
-
-          <div>
-            <FormSelect
-              name="jumpHostId"
-              label="Connect through"
-              control={control}
-              options={[
-                { value: "", label: "Direct connection" },
-                ...bastions.map((candidate) => ({
-                  value: candidate.id,
-                  label: candidate.name,
-                })),
-              ]}
-            />
-            <p className="mt-1 text-xs text-dark-500">
-              The bastion uses its own SSH credentials and host-key check before
-              connecting to this host.
-            </p>
-            {(missingBastion || routeError) && (
-              <p role="alert" className="mt-1 text-xs text-red-400">
-                {routeError ??
-                  "Selected bastion is unavailable. Choose another route before saving."}
-              </p>
-            )}
-          </div>
-
-          <fieldset>
-            <legend className="mb-2 block text-sm font-medium leading-none text-dark-300">
-              Color
-            </legend>
-            <Controller
-              name="color"
-              control={control}
-              render={({ field }) => (
-                <div className="flex gap-2">
-                  {colors.map((c) => (
-                    <button
-                      key={c}
+              {inherited?.username && (
+                <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
+                  <span>{watch("username") ? "Overrides" : "From group"}</span>
+                  <Badge className="max-w-32">
+                    <span className="truncate">{inherited.usernameFrom}</span>
+                  </Badge>
+                  {watch("username") && (
+                    <Button
                       type="button"
-                      onClick={() => field.onChange(c)}
-                      className={`cursor-pointer w-8 h-8 rounded-full ${
-                        field.value === c
-                          ? "ring-2 ring-white ring-offset-2 ring-offset-dark-900"
-                          : ""
-                      }`}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Use group value"
+                      onClick={() => {
+                        setValue("username", "", { shouldDirty: true });
+                        // The button hides once the field is empty; keep focus in the panel.
+                        setFocus("username");
+                      }}
+                    >
+                      <ArrowCounterClockwiseIcon />
+                    </Button>
+                  )}
                 </div>
               )}
-            />
-          </fieldset>
-
-          <FormInput
-            name="tags"
-            label="Tags"
-            control={control}
-            placeholder="production, web (comma-separated)"
-          />
-        </SidePanel.Section>
-
-        <SidePanel.Section title="CREDENTIALS">
-          <div>
-            <FormInput
-              name="username"
-              label="Username"
+            </div>
+            <CredentialsFields
               control={control}
-              placeholder={inherited?.username ?? "root"}
-              required={!inherited?.username}
+              mode="host"
+              inherited={inherited}
             />
-            {inherited?.username && (
-              <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
-                <span>{watch("username") ? "Overrides" : "From group"}</span>
-                <Badge className="max-w-32">
-                  <span className="truncate">{inherited.usernameFrom}</span>
-                </Badge>
-                {watch("username") && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label="Use group value"
-                    onClick={() => {
-                      setValue("username", "", { shouldDirty: true });
-                      // The button hides once the field is empty; keep focus in the panel.
-                      setFocus("username");
-                    }}
-                  >
-                    <ArrowCounterClockwiseIcon />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-          <CredentialsFields
-            control={control}
-            mode="host"
-            inherited={inherited}
-          />
-        </SidePanel.Section>
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<ArrowsLeftRightIcon />}
+            title="Connection"
+            summary={summaries.connection}
+          >
+            <div>
+              <FormSelect
+                name="jumpHostId"
+                label="Connect through"
+                control={control}
+                options={[
+                  { value: "", label: "Direct connection" },
+                  ...bastions.map((candidate) => ({
+                    value: candidate.id,
+                    label: candidate.name,
+                  })),
+                ]}
+              />
+              <p className="mt-1 text-xs text-dark-500">
+                The bastion uses its own SSH credentials and host-key check
+                before connecting to this host.
+              </p>
+              {(missingBastion || routeError) && (
+                <p role="alert" className="mt-1 text-xs text-red-400">
+                  {routeError ??
+                    "Selected bastion is unavailable. Choose another route before saving."}
+                </p>
+              )}
+            </div>
 
-        <SidePanel.Section title="CONNECTION">
-          <ConnectionOptionsFields
-            control={control}
-            mode="host"
-            inherited={inherited}
-          />
-        </SidePanel.Section>
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="connection"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<PlayIcon />}
+            title="On connect"
+            summary={summaries.startup}
+          >
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="startup"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<TerminalWindowIcon />}
+            title="Environment"
+            summary={summaries.env}
+          >
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="env"
+            />
+          </SidePanel.Card>
+        </div>
       </form>
     </SidePanel>
   );

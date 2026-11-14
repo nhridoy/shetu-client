@@ -26,16 +26,19 @@ interface Props<T extends FieldValues> {
   control: Control<T>;
   mode: "host" | "group";
   inherited?: InheritedDefaults;
+  /** Which card this renders: keepalive + forwarding, startup, or the env table. */
+  part: "connection" | "startup" | "env";
 }
 
 /**
- * Keepalive, forwarding, env rows and startup. Group mode: "Not set" keepalive/forwarding.
+ * Keepalive + forwarding, startup, or env rows, per `part`. Group mode: "Not set" keepalive/forwarding.
  * Host mode: "From group" choices, and the group's env vars shown read-only.
  */
 export default function ConnectionOptionsFields<T extends FieldValues>({
   control: typedControl,
   mode,
   inherited,
+  part,
 }: Props<T>) {
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
@@ -68,73 +71,76 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     )?.focus();
   });
 
-  return (
-    <div className="space-y-3">
-      <div>
-        <FormSelect
-          name="keepaliveMode"
-          label="Keepalive"
-          control={control}
-          options={[
-            {
-              value: "default",
-              label: mode === "group" ? "Not set" : "From group",
-            },
-            { value: "off", label: "Off" },
-            { value: "custom", label: "Custom" },
-          ]}
-        />
-        {mode === "host" && keepaliveMode === "default" && (
-          <p className="mt-1 text-xs text-dark-300">
-            {keepaliveLine(inherited)}
-          </p>
-        )}
-      </div>
-      {keepaliveMode === "custom" && (
-        <FormInput
-          name="keepaliveSecs"
-          label="Keepalive interval (seconds, 5-600)"
-          control={control}
-          type="number"
-        />
-      )}
-
-      {mode === "group" ? (
-        <FormSelect
-          name="forwardAgent"
-          label="Forward SSH agent"
-          control={control}
-          options={[
-            { value: "unset", label: "Not set" },
-            { value: "on", label: "On" },
-            { value: "off", label: "Off" },
-          ]}
-        />
-      ) : (
+  if (part === "connection")
+    return (
+      <div className="space-y-3">
         <div>
           <FormSelect
-            name="forwardAgentMode"
+            name="keepaliveMode"
+            label="Keepalive"
+            control={control}
+            options={[
+              {
+                value: "default",
+                label: mode === "group" ? "Not set" : "From group",
+              },
+              { value: "off", label: "Off" },
+              { value: "custom", label: "Custom" },
+            ]}
+          />
+          {mode === "host" && keepaliveMode === "default" && (
+            <p className="mt-1 text-xs text-dark-300">
+              {keepaliveLine(inherited)}
+            </p>
+          )}
+        </div>
+        {keepaliveMode === "custom" && (
+          <FormInput
+            name="keepaliveSecs"
+            label="Keepalive interval (seconds, 5-600)"
+            control={control}
+            type="number"
+          />
+        )}
+
+        {mode === "group" ? (
+          <FormSelect
+            name="forwardAgent"
             label="Forward SSH agent"
             control={control}
             options={[
-              { value: "inherit", label: "From group" },
+              { value: "unset", label: "Not set" },
               { value: "on", label: "On" },
               { value: "off", label: "Off" },
             ]}
           />
-          {forwardMode === "inherit" && (
-            <p className="mt-1 text-xs text-dark-300">
-              {forwardLine(inherited)}
-            </p>
-          )}
-          <p className="mt-1 text-xs text-dark-500">{AGENT_FORWARD_HELP}</p>
-        </div>
-      )}
+        ) : (
+          <div>
+            <FormSelect
+              name="forwardAgentMode"
+              label="Forward SSH agent"
+              control={control}
+              options={[
+                { value: "inherit", label: "From group" },
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+              ]}
+            />
+            {forwardMode === "inherit" && (
+              <p className="mt-1 text-xs text-dark-300">
+                {forwardLine(inherited)}
+              </p>
+            )}
+            <p className="mt-1 text-xs text-dark-500">{AGENT_FORWARD_HELP}</p>
+          </div>
+        )}
+      </div>
+    );
 
+  if (part === "env")
+    return (
       <fieldset ref={envRef} className="space-y-2">
-        <legend className="mb-2 block text-sm font-medium leading-none text-dark-300">
-          Environment variables
-        </legend>
+        <legend className="sr-only">Environment variables</legend>
         {(envFields.length > 0 || visibleInherited.length > 0) && (
           <div className="grid grid-cols-[1fr_1fr_auto] items-start gap-x-2 gap-y-0">
             <span data-env-header className="pl-[9px] text-xs text-dark-400">
@@ -234,7 +240,10 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
           sshd_config); most allow only LANG and LC_*.
         </p>
       </fieldset>
+    );
 
+  return (
+    <div className="space-y-3">
       <div>
         <FormSelect
           name="startupMode"

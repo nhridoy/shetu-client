@@ -1,4 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import {
+  ArrowsLeftRightIcon,
+  KeyIcon,
+  PlayIcon,
+  SlidersHorizontalIcon,
+  TerminalWindowIcon,
+} from "@phosphor-icons/react";
 import { useEffect, useId, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import SidePanel from "@/components/common/SidePanel";
@@ -19,6 +26,7 @@ import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import ConnectionOptionsFields from "./ConnectionOptionsFields";
 import CredentialsFields from "./CredentialsFields";
+import { useCardSummaries } from "./useCardSummaries";
 
 interface Group {
   id: string;
@@ -186,6 +194,7 @@ export default function GroupForm({
   };
 
   const formId = useId();
+  const summaries = useCardSummaries(control as never);
   const busy = isPending || load === "loading";
   return (
     <SidePanel
@@ -214,36 +223,58 @@ export default function GroupForm({
       }
     >
       <form id={formId} onSubmit={handleSubmit(onSubmit)}>
-        <SidePanel.Section title="GENERAL">
-          <FormInput
-            name="name"
-            label="Group Name"
-            control={control}
-            placeholder="Group name"
-            required
-          />
+        <div className="space-y-3 p-4">
+          <SidePanel.Card icon={<SlidersHorizontalIcon />} title="General">
+            <FormInput
+              name="name"
+              label="Group Name"
+              control={control}
+              placeholder="Group name"
+              required
+            />
 
-          {load === "failed" && (
-            <p role="alert" className="text-xs text-red-400">
-              Couldn't load this group's saved credentials and options. You can
-              still rename it; they will be left unchanged.
-            </p>
-          )}
-        </SidePanel.Section>
-
-        <SidePanel.Section title="CREDENTIALS">
-          <FormInput
-            name="username"
-            label="Username"
-            control={control}
-            placeholder="root"
-          />
-          <CredentialsFields control={control} mode="group" />
-        </SidePanel.Section>
-
-        <SidePanel.Section title="CONNECTION">
-          <ConnectionOptionsFields control={control} mode="group" />
-        </SidePanel.Section>
+            {load === "failed" && (
+              <p role="alert" className="text-xs text-red-400">
+                Couldn't load this group's saved credentials and options. You
+                can still rename it; they will be left unchanged.
+              </p>
+            )}
+          </SidePanel.Card>
+          <SidePanel.Card icon={<KeyIcon />} title="Credentials">
+            <FormInput
+              name="username"
+              label="Username"
+              control={control}
+              placeholder="root"
+            />
+            <CredentialsFields control={control} mode="group" />
+          </SidePanel.Card>
+          <SidePanel.Card icon={<ArrowsLeftRightIcon />} title="Connection">
+            <ConnectionOptionsFields
+              control={control}
+              mode="group"
+              part="connection"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card icon={<PlayIcon />} title="On connect">
+            <ConnectionOptionsFields
+              control={control}
+              mode="group"
+              part="startup"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<TerminalWindowIcon />}
+            title="Environment"
+            summary={summaries.env}
+          >
+            <ConnectionOptionsFields
+              control={control}
+              mode="group"
+              part="env"
+            />
+          </SidePanel.Card>
+        </div>
       </form>
     </SidePanel>
   );

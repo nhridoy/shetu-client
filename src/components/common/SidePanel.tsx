@@ -164,7 +164,7 @@ function SidePanel({
             <XIcon className="h-3.5 w-3.5" />
           </Button>
         </header>
-        <div ref={bodyRef} className="flex-1 scroll-pt-10 overflow-y-auto">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto">
           {intro && <p className="px-4 pt-3 text-sm text-dark-400">{intro}</p>}
           {children}
         </div>
@@ -176,16 +176,45 @@ function SidePanel({
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Card({
+  icon,
+  title,
+  summary,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  summary?: string;
+  children: ReactNode;
+}) {
+  const id = useId();
   return (
-    <section>
-      <h3 className="sticky top-0 z-10 border-b border-dark-800 bg-dark-900 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-dark-400">
-        {title}
-      </h3>
-      <div className="space-y-3 px-4 py-3">{children}</div>
+    <section
+      aria-labelledby={id}
+      className="rounded-lg border border-dark-700/60 bg-dark-800 p-3"
+    >
+      <header className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-white">
+          <span
+            aria-hidden
+            className="shrink-0 text-dark-300 [&>svg]:h-4 [&>svg]:w-4"
+          >
+            {icon}
+          </span>
+          <h3 id={id} className="truncate">
+            {title}
+          </h3>
+        </div>
+        {summary && (
+          <span data-card-summary className="truncate text-xs text-dark-400">
+            {summary}
+          </span>
+        )}
+      </header>
+      <div className="space-y-3">{children}</div>
     </section>
   );
 }
 
-SidePanel.Section = Section;
+SidePanel.Card = Card;
 export default SidePanel;

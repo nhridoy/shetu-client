@@ -109,15 +109,23 @@ const fillName = (v: string) =>
   changeInput(document.querySelector('input[id$="name"]'), v);
 
 describe("GroupForm", () => {
-  it("shows GENERAL, CREDENTIALS and CONNECTION without toggles", async () => {
+  it("shows cards in order without toggles", async () => {
     await mount();
     expect(document.querySelector("aside h2")?.textContent).toBe("New group");
     expect(document.body.textContent).toContain(
       "Hosts in this group use these unless they set their own.",
     );
     expect(
-      [...document.querySelectorAll("aside h3")].map((h) => h.textContent),
-    ).toEqual(["GENERAL", "CREDENTIALS", "CONNECTION"]);
+      [...document.querySelectorAll("aside section h3")].map(
+        (h) => h.textContent,
+      ),
+    ).toEqual([
+      "General",
+      "Credentials",
+      "Connection",
+      "On connect",
+      "Environment",
+    ]);
     expect(byText("button", "Credentials")).toBeUndefined();
     expect(byText("button", "Advanced")).toBeUndefined();
     expect(document.body.textContent).toContain("Authentication");
