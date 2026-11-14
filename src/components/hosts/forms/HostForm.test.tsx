@@ -1,9 +1,16 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: async () => ({
+    entries: async () => [],
+    set: async () => {},
+    save: async () => {},
+  }),
+}));
 vi.mock("@/lib/db/db");
 vi.mock("@/lib/crypto/crypto");
 vi.mock("@/stores/auth/authStore", () => ({
@@ -19,6 +26,8 @@ import HostForm from "./HostForm";
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeAll(() => useSettingsStore.getState().initSettings());
 
 const roots: Root[] = [];
 afterEach(() => {

@@ -23,7 +23,11 @@ export function answerAgentForwarding(allowed: boolean) {
 }
 
 /** Records (or with `null`, forgets) this device's agent-forwarding answer for a host. */
-export function recordAgentForwarding(hostId: string, allowed: boolean | null) {
+export async function recordAgentForwarding(
+  hostId: string,
+  allowed: boolean | null,
+) {
+  await useSettingsStore.getState().whenLoaded();
   const { settings, updateSetting } = useSettingsStore.getState();
   const { [hostId]: _old, ...rest } = settings.agentForwardingDecisions;
   return updateSetting(
@@ -49,6 +53,7 @@ async function askAndRecord(hostId: string): Promise<boolean> {
 
 /** The synced host flag alone never forwards the agent: this device must have said yes. */
 async function agentForwardingAllowed(hostId: string): Promise<boolean> {
+  await useSettingsStore.getState().whenLoaded();
   const recorded =
     useSettingsStore.getState().settings.agentForwardingDecisions[hostId];
   if (typeof recorded === "boolean") return recorded;

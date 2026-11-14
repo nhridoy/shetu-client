@@ -113,11 +113,19 @@ function parseValue(key: string, value: unknown): unknown {
   return String(value);
 }
 
+// initSettings is started without awaiting, so readers of saved values wait on this.
+let markLoaded = () => {};
+const loaded = new Promise<void>((resolve) => {
+  markLoaded = resolve;
+});
+
 interface SettingsState {
   settings: AppSettings;
   isLoading: boolean;
   isLoaded: boolean;
   initSettings: () => Promise<void>;
+  /** Resolves once saved settings have loaded the first time. */
+  whenLoaded: () => Promise<void>;
   updateSetting: <K extends keyof AppSettings>(
     key: K,
     value: AppSettings[K],
@@ -128,6 +136,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isLoading: false,
   isLoaded: false,
+  whenLoaded: () => loaded,
 
   initSettings: async () => {
     set({ isLoading: true });
@@ -147,6 +156,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     const settings = mergeSettings(saved);
     set({ settings, isLoading: false, isLoaded: true });
+    markLoaded();
     pushTrustNewHosts(settings.trustNewHosts);
     pushSshDefaults(settings);
   },
