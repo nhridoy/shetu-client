@@ -1745,6 +1745,7 @@ pub fn run() {
             ssh::send_input,
             ssh::resize,
             ssh::accept_host_key,
+            ssh::answer_auth_prompt,
             ssh::set_trust_new_hosts,
             ssh_options::set_ssh_defaults,
             ssh::ping_host_saved,

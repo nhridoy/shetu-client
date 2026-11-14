@@ -434,6 +434,46 @@ mod tests {
         assert_eq!(other.err(), Some("authentication rejected".to_string()));
     }
 
+    #[tokio::test]
+    async fn prompter_round_trip() {
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let answerer = Arc::clone(&pending);
+        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| {
+            assert_eq!(answerer.lock().unwrap().len(), 1);
+            settle_prompt(&answerer, id, Some(vec!["x".into()]));
+        }, AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, Some(vec!["x".to_string()]));
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_answer_after_timeout_is_ignored() {
+        tokio::time::pause();
+        let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let seen = Arc::new(Mutex::new(String::new()));
+        let seen_in = Arc::clone(&seen);
+        let answer = await_prompt_answer(&pending, "h:22".into(), move |id| *seen_in.lock().unwrap() = id.to_string(), AUTH_PROMPT_TIMEOUT).await;
+        assert_eq!(answer, None);
+        assert!(pending.lock().unwrap().is_empty());
+        settle_prompt(&pending, &seen.lock().unwrap(), Some(vec!["late".into()]));
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prompt_watch_waits_while_a_prompt_for_its_host_is_pending() {
+        let keys: PendingKeys = Arc::new(Mutex::new(HashMap::new()));
+        let prompts: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
+        let mut watch = HostKeyPromptWatch::new(keys, "target.internal", 22);
+        watch.prompts = Some(Arc::clone(&prompts));
+        assert!(!watch.is_waiting());
+        let (tx, _rx) = oneshot::channel();
+        prompts.lock().unwrap().insert("p".into(), ("other:22".into(), tx));
+        assert!(!watch.is_waiting());
+        let (tx, _rx) = oneshot::channel();
+        prompts.lock().unwrap().insert("q".into(), ("target.internal:22".into(), tx));
+        assert!(watch.is_waiting());
+    }
+
     #[test]
     fn host_key_prompt_watch_pauses_network_timeout_only_while_prompt_is_pending() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
@@ -490,6 +530,64 @@ pub struct SessionSlot {
 /// Waiting host-key prompts per host:port; each waiter keeps the fingerprint it got.
 pub type PendingKeys = Arc<Mutex<HashMap<String, Vec<(String, oneshot::Sender<bool>)>>>>;
 
+/// Waiting login prompts by id; each remembers its host:port so the connect timeout can pause for it.
+pub type PendingPrompts = Arc<Mutex<HashMap<String, (String, oneshot::Sender<Option<Vec<String>>>)>>>;
+
+const AUTH_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Registers a prompt, lets `emit` announce its id, then waits; every exit removes the entry.
+async fn await_prompt_answer(
+    pending: &PendingPrompts,
+    host_port: String,
+    emit: impl FnOnce(&str),
+    timeout: std::time::Duration,
+) -> Option<Vec<String>> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    pending.lock().ok()?.insert(id.clone(), (host_port, tx));
+    emit(&id);
+    let answer = tokio::time::timeout(timeout, rx).await;
+    if let Ok(mut map) = pending.lock() {
+        map.remove(&id);
+    }
+    answer.ok()?.ok()?
+}
+
+/// Delivers a dialog answer; an unknown or expired id is ignored.
+fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<String>>) {
+    let entry = pending.lock().ok().and_then(|mut map| map.remove(id));
+    if let Some((_, tx)) = entry {
+        let _ = tx.send(responses);
+    }
+}
+
+pub(crate) fn make_prompter(
+    app: tauri::AppHandle,
+    pending: PendingPrompts,
+    host: String,
+    port: u16,
+    username: String,
+) -> crate::ssh_auth::Prompter {
+    Arc::new(move |request: crate::ssh_auth::AuthPromptRequest| {
+        let (app, pending, host, username) = (app.clone(), Arc::clone(&pending), host.clone(), username.clone());
+        Box::pin(async move {
+            let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
+            await_prompt_answer(&pending, format!("{host}:{port}"), |id| {
+                let _ = app.emit("ssh-auth-prompt", serde_json::json!({
+                    "id": id, "host": host, "port": port, "username": username,
+                    "name": request.name, "instructions": request.instructions, "prompts": prompts,
+                }));
+            }, AUTH_PROMPT_TIMEOUT).await
+        })
+    })
+}
+
+#[tauri::command]
+pub fn answer_auth_prompt(id: String, responses: Option<Vec<String>>, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
+    settle_prompt(&state.pending_prompts, &id, responses);
+    Ok(())
+}
+
 /// A waiter is approved only for the fingerprint the user was shown.
 fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str, accepted: bool) {
     for (fingerprint, tx) in waiters {
@@ -524,6 +622,7 @@ pub struct SshSessions {
     pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
     pub inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     pub pending_keys: PendingKeys,
+    pub pending_prompts: PendingPrompts,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
 }
 
@@ -533,6 +632,7 @@ impl SshSessions {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             inflight: Arc::new(Mutex::new(HashMap::new())),
             pending_keys: Arc::new(Mutex::new(HashMap::new())),
+            pending_prompts: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(KnownHosts::load(&data_dir.join(KNOWN_HOSTS_FILE)))),
         }
     }
@@ -545,6 +645,8 @@ pub struct SshHandler {
     app: tauri::AppHandle,
     known_hosts: Arc<Mutex<KnownHosts>>,
     pending_keys: PendingKeys,
+    /// Set only where a user is present to answer login prompts.
+    pending_prompts: Option<PendingPrompts>,
     auto_accept: bool,
     forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
     forward_bind: Option<(String, u32)>,
@@ -553,6 +655,7 @@ pub struct SshHandler {
 
 pub(crate) struct HostKeyPromptWatch {
     pending: PendingKeys,
+    prompts: Option<PendingPrompts>,
     key: String,
 }
 
@@ -562,11 +665,14 @@ impl HostKeyPromptWatch {
         host: &str,
         port: u16,
     ) -> Self {
-        Self { pending, key: format!("{host}:{port}") }
+        Self { pending, prompts: None, key: format!("{host}:{port}") }
     }
 
     pub(crate) fn is_waiting(&self) -> bool {
         self.pending.lock().map(|pending| pending.contains_key(&self.key)).unwrap_or(false)
+            || self.prompts.as_ref().is_some_and(|prompts| {
+                prompts.lock().map(|map| map.values().any(|(host_port, _)| *host_port == self.key)).unwrap_or(false)
+            })
     }
 }
 
@@ -578,12 +684,26 @@ pub(crate) fn emit_progress(app: &tauri::AppHandle, session_id: &str, step: &str
 }
 
 impl SshHandler {
+    /// The prompt map and app, only for interactive handlers (the host-key rule).
+    fn interactive_prompts(&self) -> Option<(tauri::AppHandle, PendingPrompts)> {
+        let pending = self.pending_prompts.clone()?;
+        (!self.auto_accept && !self.require_known_host).then(|| (self.app.clone(), pending))
+    }
+
     pub(crate) fn auto_accept(&self) -> bool {
         self.auto_accept
     }
 
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
-        HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port)
+        let mut watch = HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
+        watch.prompts = self.pending_prompts.clone();
+        watch
+    }
+
+    /// Lets this connection ask the user for login prompts.
+    pub(crate) fn with_prompts(mut self, prompts: &PendingPrompts) -> Self {
+        self.pending_prompts = Some(Arc::clone(prompts));
+        self
     }
 
     pub fn new(
@@ -597,7 +717,7 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, auto_accept, forwarded: None, forward_bind: None, require_known_host: false }
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -754,6 +874,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ));
     // Background checks (ping, OS probe) never touch the agent.
     let use_agent = uses_agent(handler.auto_accept());
+    let prompter = handler.interactive_prompts();
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
         .map_err(|e| format!("ssh handshake {}:{}: {e}", config.host, config.port))?;
@@ -766,8 +887,8 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     } else {
         None
     };
-    // Task 3 wires the prompter.
-    let ctx = crate::ssh_auth::LoginContext { agent: agent.as_mut(), prompter: None };
+    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
+    let ctx = crate::ssh_auth::LoginContext { agent: agent.as_mut(), prompter };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
 }
@@ -933,6 +1054,7 @@ async fn run_connect_session(
 ) {
     let known_hosts = Arc::clone(&state.known_hosts);
     let pending_keys = Arc::clone(&state.pending_keys);
+    let pending_prompts = Arc::clone(&state.pending_prompts);
     let sessions = Arc::clone(&state.sessions);
     let inflight_for_spawn = Arc::clone(&state.inflight);
     let inflight_for_insert = Arc::clone(&state.inflight);
@@ -972,11 +1094,11 @@ async fn run_connect_session(
             Arc::clone(&known_hosts),
             Arc::clone(&pending_keys),
             false,
-        );
+        ).with_prompts(&pending_prompts);
 
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
-            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false);
+            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false).with_prompts(&pending_prompts);
             crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await.map_err(String::from)
         } else {
             connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await

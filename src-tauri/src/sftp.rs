@@ -138,7 +138,7 @@ pub async fn sftp_connect(
         Arc::clone(&ssh_sessions.known_hosts),
         Arc::clone(&ssh_sessions.pending_keys),
         false,
-    );
+    ).with_prompts(&ssh_sessions.pending_prompts);
     let defaults = crate::ssh_options::defaults();
     let client_config = Arc::new(crate::ssh_options::client_config(&defaults, config.keepalive_secs));
     crate::ssh::emit_progress(&app_handle, &session_id, "connecting");
@@ -265,12 +265,12 @@ pub async fn sftp_connect_saved(
         Arc::clone(&ssh_sessions.known_hosts),
         Arc::clone(&ssh_sessions.pending_keys),
         false,
-    );
+    ).with_prompts(&ssh_sessions.pending_prompts);
     let bastion_config = route.bastion.as_ref().unwrap_or(config);
     let bastion_handler = crate::ssh::SshHandler::new(
         bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(),
         Arc::clone(&ssh_sessions.known_hosts), Arc::clone(&ssh_sessions.pending_keys), false,
-    );
+    ).with_prompts(&ssh_sessions.pending_prompts);
     let connection = crate::ssh_route::connect_saved_route(&route, handler, bastion_handler, Some((&app_handle, &session_id))).await?;
 
     crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
