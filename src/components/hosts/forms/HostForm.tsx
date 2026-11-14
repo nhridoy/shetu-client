@@ -20,10 +20,11 @@ import {
   fetchInheritedDefaults,
   type InheritedDefaults,
 } from "@/lib/hosts/inherited";
+import { portLine } from "@/lib/hosts/inheritedLabels";
 import {
   type HostFormValues,
   hostFormDefaultValues,
-  hostFormSchemaFor,
+  hostFormSchema,
   isBlank,
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
@@ -130,8 +131,6 @@ export default function HostForm({
   }, [hosts, currentVaultId, host?.id]);
 
   const [inherited, setInherited] = useState<InheritedDefaults>();
-  // Read by the resolver at validation time; a username from the group makes the field optional.
-  const usernameInherited = useRef(false);
   const initialGroupId = host?.groupId || defaultGroupId || "";
   const isNew = !host;
   const {
@@ -142,15 +141,9 @@ export default function HostForm({
     resetField,
     setValue,
     setFocus,
-    trigger,
-    formState: { isSubmitted, isDirty },
+    formState: { isDirty },
   } = useForm<HostFormValues>({
-    resolver: (values, context, options) =>
-      zodResolver(hostFormSchemaFor(usernameInherited.current))(
-        values,
-        context,
-        options,
-      ),
+    resolver: zodResolver(hostFormSchema),
     defaultValues: {
       name: host?.name || hostFormDefaultValues.name,
       address: host?.address || hostFormDefaultValues.address,
@@ -209,13 +202,12 @@ export default function HostForm({
     let stale = false;
     // Drop the previous group's values until the new ones arrive.
     setInherited(undefined);
-    usernameInherited.current = false;
     const apply = (d: InheritedDefaults | undefined) => {
       if (stale) return;
       setInherited(d);
       if (!isNew) return;
       const defaults = {
-        authType: d?.authType ? "inherit" : "password",
+        authType: d?.authType ? "inherit" : "none",
         startupMode: groupId ? "inherit" : "none",
         forwardAgentMode: groupId ? "inherit" : "off",
       } as const;
@@ -233,11 +225,6 @@ export default function HostForm({
       stale = true;
     };
   }, [groupId, currentVaultId, isNew, resetField]);
-
-  useEffect(() => {
-    usernameInherited.current = !!inherited?.username;
-    if (isSubmitted) void trigger("username");
-  }, [inherited, isSubmitted, trigger]);
 
   const missingBastion =
     !!selectedJumpHostId &&
@@ -363,7 +350,6 @@ export default function HostForm({
               label="Name"
               control={control}
               placeholder="My Server"
-              required
             />
 
             <div className="grid grid-cols-3 gap-3">
@@ -382,6 +368,7 @@ export default function HostForm({
                   label="Port"
                   control={control}
                   type="number"
+                  placeholder={portLine(inherited)}
                 />
               </div>
             </div>
@@ -444,7 +431,6 @@ export default function HostForm({
                 label="Username"
                 control={control}
                 placeholder={inherited?.username ?? "root"}
-                required={!inherited?.username}
               />
               {inherited?.username && (
                 <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">

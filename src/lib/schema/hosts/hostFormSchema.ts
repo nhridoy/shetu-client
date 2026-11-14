@@ -28,72 +28,66 @@ export const keepaliveOk = (v: unknown) =>
   (Number.isInteger(Number(v)) && Number(v) >= 5 && Number(v) <= 600);
 export const KEEPALIVE_ERROR = "Keepalive must be 0 (off) or 5-600 seconds";
 
-/** Only the address is required; the flag is kept for callers (username is always optional now). */
-export const hostFormSchemaFor = (_usernameInherited: boolean) =>
-  z
-    .object({
-      name: z
-        .string()
-        .trim()
-        .max(255, { error: "Host name must be at most 255 characters" }),
-      address: z
-        .string()
-        .trim()
-        .min(1, { error: "Address is required" })
-        .max(255, { error: "Address must be at most 255 characters" }),
-      port: numberField.refine(portOk, { error: PORT_ERROR }),
-      username: z
-        .string()
-        .trim()
-        .max(255, { error: "Username must be at most 255 characters" }),
-      authType: z.enum(["inherit", "password", "key", "both", "none"]),
-      password: z.string().max(4096).optional(),
-      keyId: z.string().optional(),
-      jumpHostId: z.string().nullable().optional(),
-      color: z.string().optional(),
-      groupId: z.string().optional(),
-      tags: z.string().optional(),
-      keepaliveSecs: numberField.refine(keepaliveOk, {
-        error: KEEPALIVE_ERROR,
-      }),
-      forwardAgentMode: z.enum(["inherit", "on", "off"]),
-      env: envRowsSchema,
-      startupMode: z.enum(["inherit", "none", "snippet", "command"]),
-      startupSnippetId: z.string().optional(),
-      startupCommand: z.string().optional(),
-    })
-    .refine((d) => d.authType !== "inherit" || !!d.groupId, {
-      error: "Pick credentials or a group",
-      path: ["authType"],
-    })
-    .refine(
-      (data) => {
-        if (
-          (data.authType === "password" || data.authType === "both") &&
-          !data.password
-        )
-          return false;
-        return true;
-      },
-      { error: "Password is required", path: ["password"] },
-    )
-    .refine(
-      (data) => {
-        if (
-          (data.authType === "key" || data.authType === "both") &&
-          !data.keyId
-        )
-          return false;
-        return true;
-      },
-      { error: "Please select an SSH key", path: ["keyId"] },
-    )
-    .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
-      error: "Select a snippet",
-      path: ["startupSnippetId"],
-    });
-
-export const hostFormSchema = hostFormSchemaFor(false);
+/** Only the address is required. */
+export const hostFormSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .max(255, { error: "Host name must be at most 255 characters" }),
+    address: z
+      .string()
+      .trim()
+      .min(1, { error: "Address is required" })
+      .max(255, { error: "Address must be at most 255 characters" }),
+    port: numberField.refine(portOk, { error: PORT_ERROR }),
+    username: z
+      .string()
+      .trim()
+      .max(255, { error: "Username must be at most 255 characters" }),
+    authType: z.enum(["inherit", "password", "key", "both", "none"]),
+    password: z.string().max(4096).optional(),
+    keyId: z.string().optional(),
+    jumpHostId: z.string().nullable().optional(),
+    color: z.string().optional(),
+    groupId: z.string().optional(),
+    tags: z.string().optional(),
+    keepaliveSecs: numberField.refine(keepaliveOk, {
+      error: KEEPALIVE_ERROR,
+    }),
+    forwardAgentMode: z.enum(["inherit", "on", "off"]),
+    env: envRowsSchema,
+    startupMode: z.enum(["inherit", "none", "snippet", "command"]),
+    startupSnippetId: z.string().optional(),
+    startupCommand: z.string().optional(),
+  })
+  .refine((d) => d.authType !== "inherit" || !!d.groupId, {
+    error: "Pick credentials or a group",
+    path: ["authType"],
+  })
+  .refine(
+    (data) => {
+      if (
+        (data.authType === "password" || data.authType === "both") &&
+        !data.password
+      )
+        return false;
+      return true;
+    },
+    { error: "Password is required", path: ["password"] },
+  )
+  .refine(
+    (data) => {
+      if ((data.authType === "key" || data.authType === "both") && !data.keyId)
+        return false;
+      return true;
+    },
+    { error: "Please select an SSH key", path: ["keyId"] },
+  )
+  .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
+    error: "Select a snippet",
+    path: ["startupSnippetId"],
+  });
 
 export type HostFormSchema = z.infer<typeof hostFormSchema>;
 export type HostFormValues = z.input<typeof hostFormSchema>;
@@ -103,7 +97,7 @@ export const hostFormDefaultValues: HostFormSchema = {
   address: "",
   port: "",
   username: "",
-  authType: "password",
+  authType: "none",
   password: "",
   keyId: "",
   jumpHostId: null,

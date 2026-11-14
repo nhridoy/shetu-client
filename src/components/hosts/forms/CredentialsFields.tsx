@@ -1,6 +1,8 @@
 import { type Control, type FieldValues, useWatch } from "react-hook-form";
+import { FormBase } from "@/components/ui/forms/FormBase";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
+import Select from "@/components/ui/Select";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { loginLine } from "@/lib/hosts/inheritedLabels";
 import { useKeyStore } from "@/stores/keys/keyStore";
@@ -18,6 +20,8 @@ const LABELS = {
   both: "Password + key",
   none: "None",
 } as const;
+
+const HOST_NONE = "Ask when connecting";
 
 /**
  * Auth method, password and key picker. Group mode adds "Not set" (empty value);
@@ -39,20 +43,42 @@ export default function CredentialsFields<T extends FieldValues>({
     ...(mode === "group" ? [["", "Not set"] as const] : []),
     ...(offerInherit ? [["inherit", LABELS.inherit] as const] : []),
     ...(["password", "key", "both", "none"] as const).map(
-      (t) => [t, LABELS[t]] as const,
+      (t) =>
+        [t, t === "none" && mode === "host" ? HOST_NONE : LABELS[t]] as const,
     ),
   ];
+
+  const options = choices.map(([value, label]) => ({ value, label }));
 
   return (
     <>
       <div>
-        <FormSelect
-          name="authType"
-          label="Authentication"
-          required={mode === "host"}
-          control={control}
-          options={choices.map(([value, label]) => ({ value, label }))}
-        />
+        {mode === "group" ? (
+          <FormBase
+            name="authType"
+            label="Authentication"
+            control={control}
+            horizontal
+          >
+            {({ onChange, value, placeholder: _p, ...field }) => (
+              <div className="ml-auto w-40 shrink-0">
+                <Select
+                  {...field}
+                  value={value}
+                  onValueChange={onChange}
+                  options={options}
+                />
+              </div>
+            )}
+          </FormBase>
+        ) : (
+          <FormSelect
+            name="authType"
+            label="Authentication"
+            control={control}
+            options={options}
+          />
+        )}
         {authType === "inherit" && (
           <p className="mt-1 text-xs text-dark-300">{loginLine(inherited)}</p>
         )}

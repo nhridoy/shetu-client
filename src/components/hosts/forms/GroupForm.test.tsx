@@ -136,6 +136,53 @@ describe("GroupForm", () => {
     expect(document.body.textContent).toContain("On connect");
   });
 
+  it("puts the Authentication select in the label row, to the right", () => {
+    return mount().then(() => {
+      const label = byText("label", "Authentication") as HTMLElement;
+      const select = document.getElementById("authType") as HTMLElement;
+      const row = label.closest("[data-slot=field]") as HTMLElement;
+      expect(row.contains(select)).toBe(true);
+      expect(row.className).toContain("flex-row");
+      expect(
+        label.compareDocumentPosition(select) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+  });
+
+  it("has a Port field in Connection", async () => {
+    await mount();
+    expect(
+      card("Connection")?.querySelector('input[name="port"]'),
+    ).toBeTruthy();
+  });
+
+  it("puts Add variable in the Environment label row", async () => {
+    await mount();
+    const add = byText("button", "Add variable") as HTMLElement;
+    expect(add.parentElement?.textContent).toContain("Variables");
+    expect(card("Environment")?.contains(add)).toBe(true);
+  });
+
+  it("maps port and keepalive: set values are sent, clearing sends null", async () => {
+    const { updateGroup } = await mount(
+      { id: "g1", name: "Prod" },
+      { port: 2222, keepaliveSecs: 30 },
+    );
+    await submit();
+    expect(updateGroup.mock.calls[0][1]).toMatchObject({
+      port: 2222,
+      keepaliveSecs: 30,
+    });
+    changeInput(document.querySelector('input[name="port"]'), "");
+    changeInput(document.querySelector('input[name="keepaliveSecs"]'), "");
+    await submit();
+    expect(updateGroup.mock.calls[1][1]).toMatchObject({
+      port: null,
+      keepaliveSecs: null,
+    });
+  });
+
   it("loaded values are the baseline, so only typing makes it dirty", async () => {
     await mount({ id: "g1", name: "prod" }, { username: "deploy" });
     expect(useUnsavedChanges.getState().dirty).toBe(false);
@@ -218,7 +265,7 @@ describe("GroupForm", () => {
     await mount();
     fillName("Prod");
     click(byText("button", "Add variable"));
-    changeInput(document.querySelector('input[placeholder="LANG"]'), "1X");
+    changeInput(document.querySelector('input[placeholder="NAME"]'), "1X");
     await submit();
     expect(document.body.textContent).toContain("no leading digit");
   });

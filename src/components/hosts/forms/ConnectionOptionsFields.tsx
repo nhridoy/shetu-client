@@ -73,15 +73,29 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
   if (part === "connection")
     return (
       <div className="space-y-3">
-        <FormInput
-          name="keepaliveSecs"
-          label="Keepalive (seconds, 0 = off)"
-          control={control}
-          type="number"
-          placeholder={
-            mode === "host" ? keepalivePlaceholder(inherited) : "Not set"
-          }
-        />
+        {mode === "group" && (
+          <FormInput
+            name="port"
+            label="Port"
+            control={control}
+            type="number"
+            placeholder="22"
+          />
+        )}
+        <div>
+          <FormInput
+            name="keepaliveSecs"
+            label="Keepalive"
+            control={control}
+            type="number"
+            placeholder={
+              mode === "host" ? keepalivePlaceholder(inherited) : "Not set"
+            }
+          />
+          <p className="mt-1 text-xs text-dark-500">
+            Seconds. Empty uses the group or default; 0 turns it off.
+          </p>
+        </div>
 
         {mode === "group" ? (
           <FormSelect
@@ -121,6 +135,20 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     return (
       <fieldset ref={envRef} className="space-y-2">
         <legend className="sr-only">Environment variables</legend>
+        <div className="flex items-center justify-between">
+          <span aria-hidden className="text-sm text-dark-300">
+            Variables
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            data-env-add
+            onClick={() => appendEnv({ name: "", value: "" })}
+          >
+            <PlusIcon /> Add variable
+          </Button>
+        </div>
         {(envFields.length > 0 || visibleInherited.length > 0) && (
           <div className="grid grid-cols-[1fr_1fr_auto] items-start gap-x-2 gap-y-0">
             <span data-env-header className="pl-[9px] text-xs text-dark-400">
@@ -175,7 +203,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
                       name={`env.${i}.name`}
                       label={<span className="sr-only">{`Name ${i + 1}`}</span>}
                       control={control}
-                      placeholder="LANG"
+                      placeholder="NAME"
                     />
                     {from && (
                       <span className="mt-1 block text-xs text-dark-400">
@@ -187,6 +215,7 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
                     name={`env.${i}.value`}
                     label={<span className="sr-only">{`Value ${i + 1}`}</span>}
                     control={control}
+                    placeholder="value"
                   />
                   <Button
                     type="button"
@@ -206,15 +235,6 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
             })}
           </div>
         )}
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          data-env-add
-          onClick={() => appendEnv({ name: "", value: "" })}
-        >
-          <PlusIcon /> Add variable
-        </Button>
         <p className="text-xs text-dark-500">
           Servers ignore variables they don't allow (<code>AcceptEnv</code> in
           sshd_config); most allow only LANG and LC_*.

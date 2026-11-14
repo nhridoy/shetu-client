@@ -41,6 +41,13 @@ const EMPTY: InheritedDefaults = {
   startupKind: null,
   env: [],
 };
+const PORTED: InheritedDefaults = {
+  ...EMPTY,
+  port: 2222,
+  portFrom: "prod",
+  keepaliveSecs: 30,
+  keepaliveFrom: "prod",
+};
 const PROD: InheritedDefaults = {
   ...EMPTY,
   username: "deploy",
@@ -123,6 +130,7 @@ async function mountAndFill(groups: { id: string; name: string }[] = []) {
   await act(async () => {
     root.render(<HostForm onClose={() => {}} />);
   });
+  pick("authType", "Password");
   for (const [id, v] of [
     ["name", "n"],
     ["address", "a"],
@@ -201,7 +209,7 @@ describe("HostForm advanced validation", () => {
     await mountAndFill();
     click(byText("button", "Add variable"));
     const nameInput = document.querySelector(
-      'input[placeholder="LANG"]',
+      'input[placeholder="NAME"]',
     ) as HTMLInputElement;
     changeInput(nameInput, "1X");
     await submit();
@@ -528,11 +536,55 @@ describe("HostForm inherits from its group", () => {
     expect(createHost.mock.calls[0][0]).toMatchObject({ username: "" });
   });
 
+  it("marks only Address as required", async () => {
+    await mount({});
+    const stars = [...document.querySelectorAll("aside label")]
+      .filter((l) => l.textContent?.includes("*"))
+      .map((l) => l.textContent);
+    expect(stars).toEqual(["Address*"]);
+  });
+
+  it("port and keepalive start empty with the resolved placeholders", async () => {
+    await mount({ defaultGroupId: "g1", inherited: PORTED });
+    expect(input("port")?.value).toBe("");
+    expect(input("port")?.placeholder).toBe("2222 · prod");
+    expect(input("keepaliveSecs")?.value).toBe("");
+    expect(input("keepaliveSecs")?.placeholder).toBe("30 · prod");
+    expect(document.body.textContent).toContain(
+      "Seconds. Empty uses the group or default; 0 turns it off.",
+    );
+  });
+
+  it("port placeholder is 22 without a group", async () => {
+    await mount({});
+    expect(input("port")?.placeholder).toBe("22");
+  });
+
+  it("a new host without a group defaults to Ask when connecting", async () => {
+    const { createHost } = await mount({});
+    expect(document.getElementById("authType")?.textContent).toBe(
+      "Ask when connecting",
+    );
+    await submit();
+    expect(createHost.mock.calls[0][0].authType).toBe("none");
+  });
+
+  it("keepalive 0 saves 0 and empty saves null", async () => {
+    const { updateHost } = await mount({
+      host: existing({ keepaliveSecs: 0 }),
+    });
+    expect(input("keepaliveSecs")?.value).toBe("0");
+    await submit();
+    expect(updateHost.mock.calls[0][1].keepaliveSecs).toBe(0);
+    changeInput(input("keepaliveSecs") as HTMLInputElement, "");
+    await submit();
+    expect(updateHost.mock.calls[1][1].keepaliveSecs).toBeNull();
+  });
+
   it("saves with only an address: name falls back to it, port null, username empty", async () => {
     const { createHost } = await mount({});
     changeInput(input("name") as HTMLInputElement, "");
     changeInput(input("address") as HTMLInputElement, "h.example");
-    changeInput(input("password") as HTMLInputElement, "pw");
     await submit();
     expect(createHost).toHaveBeenCalledTimes(1);
     expect(createHost.mock.calls[0][0]).toMatchObject({
@@ -558,7 +610,7 @@ describe("HostForm inherits from its group", () => {
       "Password",
       "SSH key",
       "Password + key",
-      "None",
+      "Ask when connecting",
     ]);
   });
 
@@ -765,7 +817,7 @@ describe("HostForm inherits from its group", () => {
     pick("authType", "Password + key");
     expect(input("password")).not.toBeNull();
     expect(document.getElementById("keyId")).not.toBeNull();
-    pick("authType", "None");
+    pick("authType", "Ask when connecting");
     expect(input("password")).toBeNull();
     expect(document.getElementById("keyId")).toBeNull();
   });

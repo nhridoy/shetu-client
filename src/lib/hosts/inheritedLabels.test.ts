@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { InheritedDefaults } from "./inherited";
 import {
   forwardLine,
-  keepaliveLine,
   keepalivePlaceholder,
   loginLine,
   portLine,
@@ -29,14 +28,6 @@ describe("inheritedLabels", () => {
     expect(loginLine(base)).toBe(none);
     expect(loginLine(undefined)).toBe(none);
     expect(loginLine({ ...base, authType: "key" })).toBe(none);
-  });
-
-  it("keepaliveLine", () => {
-    const f = { ...base, keepaliveFrom: "prod" };
-    expect(keepaliveLine({ ...f, keepaliveSecs: 30 })).toBe("30s · prod");
-    expect(keepaliveLine({ ...f, keepaliveSecs: 0 })).toBe("Off · prod");
-    expect(keepaliveLine(base)).toBe("Default");
-    expect(keepaliveLine()).toBe("Default");
   });
 
   it("startupLine", () => {

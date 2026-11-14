@@ -24,11 +24,6 @@ export function keepalivePlaceholder(i?: InheritedDefaults): string {
   return `${i.keepaliveSecs > 0 ? i.keepaliveSecs : "Off"} · ${i.keepaliveFrom}`;
 }
 
-export function keepaliveLine(i?: InheritedDefaults): string {
-  if (i?.keepaliveSecs == null || !i.keepaliveFrom) return "Default";
-  return `${i.keepaliveSecs > 0 ? `${i.keepaliveSecs}s` : "Off"} · ${i.keepaliveFrom}`;
-}
-
 export function startupLine(i?: InheritedDefaults): string {
   if (!i?.startupFrom) return "Nothing";
   if (i.startupKind === "command") return `runs a command · ${i.startupFrom}`;
