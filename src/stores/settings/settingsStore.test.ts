@@ -49,3 +49,23 @@ describe("trust new hosts setting", () => {
     });
   });
 });
+
+describe("ssh defaults", () => {
+  it("initSettings pushes SSH defaults", async () => {
+    await useSettingsStore.getState().initSettings();
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 30,
+      connectTimeoutSecs: 10,
+      term: "xterm-256color",
+    });
+  });
+
+  it("updateSetting sshKeepaliveSecs pushes the new value", async () => {
+    await useSettingsStore.getState().updateSetting("sshKeepaliveSecs", 60);
+    expect(mocks.invoke).toHaveBeenCalledWith("set_ssh_defaults", {
+      keepaliveSecs: 60,
+      connectTimeoutSecs: 10,
+      term: "xterm-256color",
+    });
+  });
+});

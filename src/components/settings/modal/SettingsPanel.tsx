@@ -183,6 +183,10 @@ export default function SettingsPanel() {
             setTrustNewHosts={(enabled) =>
               updateSetting("trustNewHosts", enabled)
             }
+            sshKeepaliveSecs={settings.sshKeepaliveSecs}
+            sshConnectTimeoutSecs={settings.sshConnectTimeoutSecs}
+            sshTerminalType={settings.sshTerminalType}
+            onSshSettingChange={updateSetting}
           />
         )}
         {activeTab === "security" && (

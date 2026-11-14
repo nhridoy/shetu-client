@@ -1,3 +1,7 @@
+import type {
+  AppSettings,
+  SshTerminalType,
+} from "@/stores/settings/settingsStore";
 import type { Theme } from "@/stores/themeStore";
 
 export type { Theme };
@@ -32,6 +36,15 @@ export interface SshTabProps {
   onClearAllKnownHosts: () => void;
   trustNewHosts: boolean;
   setTrustNewHosts: (enabled: boolean) => void;
+  sshKeepaliveSecs: number;
+  sshConnectTimeoutSecs: number;
+  sshTerminalType: SshTerminalType;
+  onSshSettingChange: <
+    K extends "sshKeepaliveSecs" | "sshConnectTimeoutSecs" | "sshTerminalType",
+  >(
+    key: K,
+    value: AppSettings[K],
+  ) => void;
 }
 
 export interface SecurityTabProps {

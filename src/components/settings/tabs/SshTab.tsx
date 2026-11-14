@@ -1,7 +1,64 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
+import Input from "@/components/ui/Input";
 import { SectionHeader } from "@/components/ui/SectionHeader";
+import Select from "@/components/ui/Select";
+import type { SshTerminalType } from "@/stores/settings/settingsStore";
 import type { SshTabProps } from "@/types/settings/types";
+
+const TERM_OPTIONS = ["xterm-256color", "xterm", "vt100"].map((v) => ({
+  value: v,
+  label: v,
+}));
+
+function SecondsField({
+  id,
+  label,
+  help,
+  error,
+  value,
+  valid,
+  onCommit,
+}: {
+  id: string;
+  label: string;
+  help?: string;
+  error: string;
+  value: number;
+  valid: (n: number) => boolean;
+  onCommit: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const n = Number(draft);
+  const invalid = draft.trim() === "" || !Number.isInteger(n) || !valid(n);
+  return (
+    <div>
+      <label htmlFor={id} className="block text-sm text-white mb-1">
+        {label}
+      </label>
+      <Input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        value={draft}
+        aria-invalid={invalid}
+        className="w-28"
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const v = Number(e.target.value);
+          if (e.target.value.trim() !== "" && Number.isInteger(v) && valid(v))
+            onCommit(v);
+        }}
+      />
+      {invalid ? (
+        <span className="block text-xs text-red-400 mt-1">{error}</span>
+      ) : (
+        help && <span className="block text-xs text-dark-400 mt-1">{help}</span>
+      )}
+    </div>
+  );
+}
 
 export default function SshTab({
   knownHosts,
@@ -11,6 +68,10 @@ export default function SshTab({
   onClearAllKnownHosts,
   trustNewHosts,
   setTrustNewHosts,
+  sshKeepaliveSecs,
+  sshConnectTimeoutSecs,
+  sshTerminalType,
+  onSshSettingChange,
 }: SshTabProps) {
   return (
     <div className="space-y-6">
@@ -20,8 +81,39 @@ export default function SshTab({
         </h3>
         <div className="bg-dark-800 rounded-lg p-4 space-y-3">
           <p className="text-sm text-dark-300">
-            SSH client options are configured per-host in the host settings.
+            Applies to every SSH connection on this device. Hosts can override
+            keepalive in their Advanced settings.
           </p>
+          <SecondsField
+            id="ssh-keepalive"
+            label="Keepalive interval (seconds)"
+            help="0 turns keepalive off."
+            error="Use 0 (off) or 5–600 seconds"
+            value={sshKeepaliveSecs}
+            valid={(n) => n === 0 || (n >= 5 && n <= 600)}
+            onCommit={(n) => onSshSettingChange("sshKeepaliveSecs", n)}
+          />
+          <SecondsField
+            id="ssh-connect-timeout"
+            label="Connect timeout (seconds)"
+            error="Use 5–60 seconds"
+            value={sshConnectTimeoutSecs}
+            valid={(n) => n >= 5 && n <= 60}
+            onCommit={(n) => onSshSettingChange("sshConnectTimeoutSecs", n)}
+          />
+          <div>
+            <label htmlFor="ssh-term" className="block text-sm text-white mb-1">
+              Terminal type
+            </label>
+            <Select
+              id="ssh-term"
+              value={sshTerminalType}
+              options={TERM_OPTIONS}
+              onValueChange={(v) =>
+                onSshSettingChange("sshTerminalType", v as SshTerminalType)
+              }
+            />
+          </div>
           <label
             htmlFor="trust-new-hosts"
             className="flex items-start gap-2 cursor-pointer"
