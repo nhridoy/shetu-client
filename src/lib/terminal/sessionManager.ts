@@ -9,7 +9,7 @@ import {
   terminalThemeFor,
   useThemeStore,
 } from "@/stores/themeStore";
-import { connectSavedTerminal } from "./agentForwarding";
+import { ConnectCancelled, connectSavedTerminal } from "./agentForwarding";
 import {
   dropPendingCredentials,
   forgetSession,
@@ -199,9 +199,13 @@ async function connectViaTauri(session: Session) {
 
       try {
         await doConnect();
-      } catch {
+      } catch (error) {
         attempt++;
-        if (attempt > MAX_RECONNECT_ATTEMPTS || destroyed) {
+        if (
+          error instanceof ConnectCancelled ||
+          attempt > MAX_RECONNECT_ATTEMPTS ||
+          destroyed
+        ) {
           update(params.tabId, params.paneId, "failed");
           updateReconnect(params.tabId, params.paneId, null);
           return;

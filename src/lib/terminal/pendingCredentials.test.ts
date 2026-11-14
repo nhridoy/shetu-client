@@ -131,15 +131,27 @@ describe("askUsername", () => {
   beforeEach(() => useUsernameAsks.setState({ queue: [] }));
 
   it("queues the question and resolves with the answer", async () => {
-    const answer = askUsername("prod");
+    const answer = askUsername("s1", "prod");
     expect(useUsernameAsks.getState().queue[0].host).toBe("prod");
     answerUsername({ username: "deploy", save: true });
     await expect(answer).resolves.toEqual({ username: "deploy", save: true });
     expect(useUsernameAsks.getState().queue).toHaveLength(0);
   });
 
+  it("a closed pane's question is answered with null and removed", async () => {
+    const closed = askUsername("s1", "prod");
+    const other = askUsername("s2", "web");
+    forgetSession("s1");
+    await expect(closed).resolves.toBeNull();
+    expect(useUsernameAsks.getState().queue.map((a) => a.host)).toEqual([
+      "web",
+    ]);
+    answerUsername(null);
+    await other;
+  });
+
   it("resolves null on cancel", async () => {
-    const answer = askUsername("prod");
+    const answer = askUsername("s1", "prod");
     answerUsername(null);
     await expect(answer).resolves.toBeNull();
   });

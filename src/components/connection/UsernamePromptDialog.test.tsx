@@ -52,7 +52,7 @@ const type = (el: HTMLInputElement, value: string) =>
 async function ask() {
   let answer!: ReturnType<typeof askUsername>;
   await act(async () => {
-    answer = askUsername("prod");
+    answer = askUsername("s1", "prod");
   });
   return { answer };
 }

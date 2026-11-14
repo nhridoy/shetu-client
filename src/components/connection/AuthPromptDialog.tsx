@@ -26,9 +26,13 @@ export default function AuthPromptDialog() {
   const [queue, setQueue] = useState<AuthPrompt[]>([]);
 
   useEffect(() => {
-    const off = listen<AuthPrompt>("ssh-auth-prompt", (event) =>
-      setQueue((q) => [...q, event.payload]),
-    );
+    const off = listen<AuthPrompt>("ssh-auth-prompt", (event) => {
+      const { kind, hop, sessionId } = event.payload;
+      // Any other target prompt means the password asked earlier was rejected: never save it.
+      if (sessionId && hop === "target" && kind !== "password")
+        rememberCredentials(sessionId, { password: undefined });
+      setQueue((q) => [...q, event.payload]);
+    });
     const closed = listen<{ id: string }>("ssh-auth-prompt-closed", (event) => {
       setQueue((q) => q.filter((p) => p.id !== event.payload.id));
     });

@@ -8,15 +8,23 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   handlers: [] as ((event: { payload: unknown }) => void)[],
   names: [] as string[],
-  remember: vi.fn(),
-}));
-vi.mock("@/lib/terminal/pendingCredentials", () => ({
-  isSavedHostSession: (id: string) => id === "term-1",
-  rememberCredentials: mocks.remember,
+  updateHost: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
+vi.mock("@/lib/db/db");
+vi.mock("@/lib/crypto/crypto");
+vi.mock("@/stores/auth/authStore", () => ({
+  useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
+}));
 
+import {
+  forgetSession,
+  registerSavedHostSession,
+  rememberCredentials,
+  savePendingCredentials,
+} from "@/lib/terminal/pendingCredentials";
+import { useHostStore } from "@/stores/hosts/hostStore";
 import AuthPromptDialog from "./AuthPromptDialog";
 
 (
@@ -28,7 +36,13 @@ beforeEach(() => {
   mocks.handlers.length = 0;
   mocks.names.length = 0;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
-  mocks.remember.mockReset();
+  mocks.updateHost.mockReset().mockResolvedValue(true);
+  useHostStore.setState({
+    hosts: [{ id: "h1", authType: "none" }],
+    updateHost: mocks.updateHost,
+  } as never);
+  forgetSession("term-1");
+  registerSavedHostSession("term-1", "h1");
   mocks.listen.mockReset().mockImplementation(async (name, handler) => {
     mocks.names.push(name);
     mocks.handlers.push(handler);
@@ -246,10 +260,52 @@ describe("AuthPromptDialog", () => {
       await type(inputs()[0], "pw");
       await act(async () => saveBox()?.click());
       await click("Continue");
-      expect(mocks.remember).toHaveBeenCalledWith("term-1", { password: "pw" });
       expect(mocks.invoke).toHaveBeenCalledWith("answer_auth_prompt", {
         id: "p1",
         responses: ["pw"],
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
+        password: "pw",
+        authType: "password",
+      });
+    });
+
+    it("a rejected password is not saved when the server moves on to keyboard-interactive", async () => {
+      rememberCredentials("term-1", { username: "deploy" });
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "wrong");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      await prompt({
+        ...password,
+        id: "p2",
+        kind: "keyboard-interactive",
+        prompts: [{ text: "Password: ", echo: false }],
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
+        username: "deploy",
+      });
+    });
+
+    it("a bastion keyboard-interactive prompt leaves the target's password", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      await prompt({
+        ...password,
+        id: "p2",
+        kind: "keyboard-interactive",
+        hop: "bastion",
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
+        password: "pw",
+        authType: "password",
       });
     });
 
@@ -262,9 +318,8 @@ describe("AuthPromptDialog", () => {
       await type(inputs()[0], "pw");
       await act(async () => saveBox()?.click());
       await click("Cancel");
-      expect(mocks.remember).not.toHaveBeenCalledWith("term-1", {
-        password: "pw",
-      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).not.toHaveBeenCalled();
     });
   });
 });

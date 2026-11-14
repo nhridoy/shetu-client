@@ -87,6 +87,9 @@ async function agentForwardingAllowed(hostId: string): Promise<boolean> {
   return pending;
 }
 
+/** The user cancelled a question the connect needed; retrying would only ask again. */
+export class ConnectCancelled extends Error {}
+
 /** Opens a terminal to a saved host; every terminal connect and reconnect goes through here.
  * `isCancelled` is checked after the consent question, so a closed pane opens no session. */
 export async function connectSavedTerminal(
@@ -101,8 +104,9 @@ export async function connectSavedTerminal(
 ) {
   registerSavedHostSession(args.sessionId, args.hostId);
   const username = await missingUsername(args.sessionId, args.hostId);
-  if (username === null) throw new Error("Connection cancelled: no username.");
   if (isCancelled()) return;
+  if (username === null)
+    throw new ConnectCancelled("Connection cancelled: no username.");
   const allowAgentForwarding = await agentForwardingAllowed(args.hostId);
   if (isCancelled()) return;
   await invoke("connect_saved", { ...args, username, allowAgentForwarding });
@@ -113,6 +117,7 @@ export async function connectSavedTerminal(
 async function missingUsername(sessionId: string, hostId: string) {
   const host = await useHostStore.getState().getDecryptedHost(hostId);
   if (!host || host.username?.trim()) return undefined;
+  // Without a vaultId, or when the group lookup fails, we ask even if a group sets one.
   if (host.groupId && host.vaultId) {
     const inherited = await fetchInheritedDefaults(
       host.groupId,
@@ -120,7 +125,7 @@ async function missingUsername(sessionId: string, hostId: string) {
     ).catch(() => null);
     if (inherited?.username) return undefined;
   }
-  const answer = await askUsername(host.name || host.address);
+  const answer = await askUsername(sessionId, host.name || host.address);
   if (!answer) return null;
   if (answer.save)
     rememberCredentials(sessionId, { username: answer.username });

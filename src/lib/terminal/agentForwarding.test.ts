@@ -22,12 +22,14 @@ import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import {
   answerAgentForwarding,
+  ConnectCancelled,
   connectSavedTerminal,
   recordAgentForwarding,
   useAgentForwardAsks,
 } from "./agentForwarding";
 import {
   answerUsername,
+  forgetSession,
   savePendingCredentials,
   useUsernameAsks,
 } from "./pendingCredentials";
@@ -255,7 +257,22 @@ describe("missing username", () => {
     const pending = connectSavedTerminal(args);
     await nextUsernameAsk();
     answerUsername(null);
-    await expect(pending).rejects.toThrow("Connection cancelled");
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "connect_saved",
+      expect.anything(),
+    );
+  });
+
+  it("a pane closed during the question opens nothing and does not throw", async () => {
+    hostWithout("g1");
+    let closed = false;
+    const pending = connectSavedTerminal(args, () => closed);
+    await nextUsernameAsk();
+    closed = true;
+    forgetSession(args.sessionId);
+    await pending;
+    expect(usernameAsks()).toHaveLength(0);
     expect(mocks.invoke).not.toHaveBeenCalledWith(
       "connect_saved",
       expect.anything(),

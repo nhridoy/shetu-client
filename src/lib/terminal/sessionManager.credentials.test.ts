@@ -6,6 +6,9 @@ const m = vi.hoisted(() => ({
   save: vi.fn(),
   drop: vi.fn(),
   forget: vi.fn(),
+  connectSaved: vi.fn(async () => {}),
+  status: vi.fn(),
+  Cancelled: class ConnectCancelled extends Error {},
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -38,7 +41,8 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("./agentForwarding", () => ({
-  connectSavedTerminal: vi.fn(async () => {}),
+  connectSavedTerminal: m.connectSaved,
+  ConnectCancelled: m.Cancelled,
 }));
 vi.mock("./sessionHistory", () => ({
   beginHistoryAttempt: vi.fn(async () => "a1"),
@@ -53,6 +57,7 @@ vi.mock("./pendingCredentials", () => ({
 }));
 
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import {
   attachSession,
   destroySession,
@@ -77,6 +82,12 @@ beforeEach(() => {
   m.save.mockReset();
   m.drop.mockReset();
   m.forget.mockReset();
+  m.connectSaved.mockReset().mockResolvedValue(undefined);
+  m.status.mockReset();
+  useTerminalStore.setState({
+    updatePaneConnectionStatus: m.status,
+    updatePaneReconnectState: vi.fn(),
+  } as never);
 });
 
 describe("credentials typed while connecting", () => {
@@ -108,5 +119,25 @@ describe("credentials typed while connecting", () => {
     await destroySession("c4");
     expect(m.forget).toHaveBeenCalledWith("c4");
     expect(m.save).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelling the username question during auto-reconnect", () => {
+  it("fails at once instead of asking again", async () => {
+    const emit = await open("r1");
+    await vi.waitFor(() => expect(m.connectSaved).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    try {
+      m.connectSaved.mockRejectedValue(new m.Cancelled("cancelled"));
+      emit("disconnected");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(m.connectSaved).toHaveBeenCalledTimes(2);
+      expect(m.status).toHaveBeenLastCalledWith("t1", "r1", "failed");
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(m.connectSaved).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      await destroySession("r1");
+    }
   });
 });
