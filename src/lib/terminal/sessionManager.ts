@@ -49,6 +49,8 @@ export interface Session {
   searchAddon: SearchAddon;
   /** Writes input to this pane's shell; a no-op until it connects. */
   send: (data: string) => void;
+  /** False during a background insert: it must not broadcast to other panes. */
+  fanOut: boolean;
   container: HTMLDivElement;
   opened: boolean;
   resizeObserver: ResizeObserver | null;
@@ -95,6 +97,7 @@ function createSession(params: SessionParams): Session {
     fitAddon,
     searchAddon,
     send: () => {},
+    fanOut: true,
     container,
     opened: false,
     resizeObserver: null,
@@ -480,7 +483,7 @@ const BRACKETED_PASTE = "\x1b[200~";
 /** Input typed in a pane: to its own shell, and to the tab's other panes while it broadcasts. */
 export function sendInput(session: Session, data: string): void {
   session.send(data);
-  if (TERMINAL_REPLY.test(data)) return;
+  if (!session.fanOut || TERMINAL_REPLY.test(data)) return;
   const tab = useTerminalStore
     .getState()
     .tabs.find((t) => t.id === session.params.tabId);
@@ -522,6 +525,8 @@ export function insertIntoTerminal(
   },
   text: string,
   run: boolean,
+  /** focus: false for background runs, so typing elsewhere keeps its focus. */
+  { focus = true }: { focus?: boolean } = {},
 ): "ok" | "unsafe-multiline" | "empty" {
   // Control characters (incl. ESC, so no fake bracketed-paste end) never reach the shell;
   // trailing newlines would run the command even when the user only inserts.
@@ -537,7 +542,7 @@ export function insertIntoTerminal(
   }
   term.paste(clean);
   if (run) term.input("\r");
-  term.focus();
+  if (focus) term.focus();
   return "ok";
 }
 
@@ -548,10 +553,17 @@ export function insertIntoPane(
   paneId: string,
   text: string,
   run: boolean,
+  options?: { focus?: boolean; fanOut?: boolean },
 ): InsertResult {
   const session = sessions.get(paneId);
   if (!session) return "no-pane";
-  return insertIntoTerminal(session.xterm, text, run);
+  // xterm fires onData synchronously from paste/input, so the flag covers exactly this insert.
+  session.fanOut = options?.fanOut ?? true;
+  try {
+    return insertIntoTerminal(session.xterm, text, run, options);
+  } finally {
+    session.fanOut = true;
+  }
 }
 
 export function getOrCreateSession(params: SessionParams): Session {

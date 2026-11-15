@@ -9,7 +9,8 @@ interface CommandAutocompleteProps {
   isVisible: boolean;
   /** `run` is true for Ctrl+Enter (Cmd+Enter on macOS); Enter and click insert. */
   /** May return a promise; picks are ignored until it settles. */
-  onSelect: (item: PaletteItem, run: boolean) => unknown;
+  /** `all` (Shift + the run key) runs it in every connected terminal. */
+  onSelect: (item: PaletteItem, run: boolean, all?: boolean) => unknown;
   onClose: () => void;
 }
 
@@ -129,9 +130,9 @@ export default function CommandAutocomplete({
   // Only these rows are rendered, so keyboard selection stays within them.
   const visible = allCommands.slice(0, 10);
 
-  const pick = (item: PaletteItem, run: boolean) => {
+  const pick = (item: PaletteItem, run: boolean, all = false) => {
     if (picking.current) return;
-    const result = onSelect(item, run);
+    const result = all ? onSelect(item, true, true) : onSelect(item, run);
     if (result instanceof Promise) {
       picking.current = true;
       void result.finally(() => {
@@ -166,7 +167,7 @@ export default function CommandAutocomplete({
       e.preventDefault();
       const run = isMac() ? e.metaKey : e.ctrlKey;
       // The caller closes the palette on success; it stays open on failure.
-      pick(visible[selectedIndex].item, run);
+      pick(visible[selectedIndex].item, run, run && e.shiftKey);
     } else if (e.key === "Escape") {
       onClose();
     }
@@ -250,7 +251,8 @@ export default function CommandAutocomplete({
             )}
           </div>
           <div className="px-4 py-2 border-t border-dark-700 text-xs text-dark-400">
-            Enter to insert · {isMac() ? "Cmd" : "Ctrl"}+Enter to run
+            Enter to insert · {isMac() ? "Cmd" : "Ctrl"}+Enter to run ·{" "}
+            {isMac() ? "Cmd" : "Ctrl"}+Shift+Enter to run in all tabs
           </div>
         </div>
       </div>

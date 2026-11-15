@@ -11,6 +11,7 @@ import HostKeyDialog from "@/components/connection/HostKeyDialog";
 import UsernamePromptDialog from "@/components/connection/UsernamePromptDialog";
 import Layout from "@/components/layout/shell/Layout";
 import TitleBar from "@/components/layout/shell/TitleBar";
+import SnippetVariablesDialog from "@/components/snippets/SnippetVariablesDialog";
 import TeamManager from "@/components/teams/managers/TeamManager";
 import UpdateNotification from "@/components/update/UpdateNotification";
 import { notifyIfPreviousCrash } from "@/lib/logging/logging";
@@ -116,6 +117,7 @@ function App() {
       <AuthPromptDialog />
       <AgentForwardDialog />
       <UsernamePromptDialog />
+      <SnippetVariablesDialog />
       <UpdateNotification />
       <Toaster
         richColors

@@ -2,11 +2,13 @@ import {
   CopyIcon,
   FileTextIcon,
   PencilSimpleIcon,
+  PlayIcon,
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import RunOnHostsDialog from "@/components/snippets/RunOnHostsDialog";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
@@ -42,6 +44,7 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const deleteDialog = useModal();
   const [deleteTarget, setDeleteTarget] = useState<Snippet | null>(null);
+  const [runTarget, setRunTarget] = useState<Snippet | null>(null);
 
   const loadSnippets = useCallback(() => {
     fetchSnippets(currentVaultId ?? undefined);
@@ -135,7 +138,11 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                 role="button"
                 tabIndex={0}
                 onClick={() => handleEdit(snippet)}
-                onKeyDown={accessibleClickHandler(() => handleEdit(snippet))}
+                // Keys on the card's own buttons belong to those buttons, not to Edit.
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget)
+                    accessibleClickHandler(() => handleEdit(snippet))(e);
+                }}
                 className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group"
               >
                 <div className="flex items-center gap-2">
@@ -154,7 +161,20 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                     ))}
                   </div>
                 )}
-                <div className="absolute flex items-center gap-1 transition-opacity opacity-0 top-2 right-2 group-hover:opacity-100">
+                <div className="absolute flex items-center gap-1 transition-opacity opacity-0 top-2 right-2 group-hover:opacity-100 focus-within:opacity-100">
+                  <Button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRunTarget(snippet);
+                    }}
+                    variant="ghost"
+                    size="icon-sm"
+                    title="Run on hosts"
+                    aria-label={`Run ${snippet.name} on hosts`}
+                  >
+                    <PlayIcon className="w-3 h-3" />
+                  </Button>
                   <Button
                     type="button"
                     onClick={(e) => {
@@ -208,6 +228,12 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
           setDeleteTarget(null);
         }}
       />
+      {runTarget && (
+        <RunOnHostsDialog
+          snippet={runTarget}
+          onClose={() => setRunTarget(null)}
+        />
+      )}
     </div>
   );
 }

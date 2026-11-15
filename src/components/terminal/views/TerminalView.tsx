@@ -10,10 +10,13 @@ import {
   onOpenCommandPalette,
   type PaletteItem,
   pickPaletteItem,
+  resolvePaletteCommand,
+  runInAllTabs,
 } from "@/lib/terminal/paletteCommand";
 import { insertIntoPane } from "@/lib/terminal/sessionManager";
 import { dispatchAppAction } from "@/lib/window/menuActions";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { askSnippetVariables } from "@/stores/snippets/snippetVariablesStore";
 import {
   type LeafNode,
   type PaneNode,
@@ -69,7 +72,31 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   useShortcutContext("terminal");
 
   const handleCommandSelect = useCallback(
-    async (item: PaletteItem, run: boolean) => {
+    async (item: PaletteItem, run: boolean, all?: boolean) => {
+      if (all) {
+        const resolved = await resolvePaletteCommand(item, {
+          decryptSnippet: (id) =>
+            useSnippetStore.getState().getDecryptedSnippet(id),
+          askVariables: askSnippetVariables,
+        });
+        if (resolved.status !== "ok") {
+          if (resolved.status === "decrypt-failed")
+            toast.error("Couldn't load this snippet");
+          return;
+        }
+        const { ran, local } = runInAllTabs(resolved.command, {
+          tabs: useTerminalStore.getState().tabs,
+          insert: insertIntoPane,
+        });
+        if (ran === 0) toast.error("No connected terminals");
+        else {
+          toast.success(
+            `Ran in ${ran} terminal${ran === 1 ? "" : "s"}${local ? ` (${local} local)` : ""}`,
+          );
+          setShowCommandPalette(false);
+        }
+        return;
+      }
       const activeTab = () => {
         const { tabs: currentTabs, activeTabId: atId } =
           useTerminalStore.getState();
@@ -88,9 +115,11 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
         decryptSnippet: (id) =>
           useSnippetStore.getState().getDecryptedSnippet(id),
         insert: insertIntoPane,
+        askVariables: askSnippetVariables,
       });
       const runKey = navigator.platform.includes("Mac") ? "Cmd" : "Ctrl";
       if (result === "ok") setShowCommandPalette(false);
+      else if (result === "cancelled") return;
       else if (result === "no-pane") toast.error("Open a terminal first");
       else if (result === "not-connected")
         toast.error("This terminal isn't connected");
