@@ -16,6 +16,12 @@ export function registerSavedHostSession(sessionId: string, hostId: string) {
   pending.delete(sessionId);
 }
 
+/** Identity hosts never save typed credentials: they would be ignored or replace the identity. */
+export function stopSavingCredentials(sessionId: string) {
+  savedHostSessions.delete(sessionId);
+  pending.delete(sessionId);
+}
+
 export function isSavedHostSession(sessionId: string) {
   return savedHostSessions.has(sessionId);
 }

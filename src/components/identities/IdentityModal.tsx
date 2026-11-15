@@ -1,6 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useForm, useWatch } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -155,14 +156,21 @@ export default function IdentityModal({
       </Button>
     );
 
-  return (
+  return createPortal(
     <Modal
       onClose={onClose}
       title={identity ? "Edit identity" : "New identity"}
       maxWidth="max-w-md"
       zClass="z-[60]"
     >
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      <form
+        onSubmit={(e) => {
+          // Opened from the host/group form: React submit events bubble through portals.
+          e.stopPropagation();
+          void handleSubmit(onSubmit)(e);
+        }}
+        className="space-y-4"
+      >
         <FormInput
           name="name"
           label="Label"
@@ -234,6 +242,7 @@ export default function IdentityModal({
           </Button>
         </div>
       </form>
-    </Modal>
+    </Modal>,
+    document.body,
   );
 }

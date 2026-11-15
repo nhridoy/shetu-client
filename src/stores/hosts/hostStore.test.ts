@@ -790,6 +790,32 @@ describe("hostStore", () => {
     expect(g?.forwardAgent).toBeNull();
   });
 
+  it("keeps identityId as a string, else null", async () => {
+    mockGet.mockResolvedValue(groupRow);
+    mockDecrypt.mockResolvedValue({ authType: "identity", identityId: "i1" });
+    const g = await useHostStore.getState().getDecryptedGroup("g1");
+    expect([g?.authType, g?.identityId]).toEqual(["identity", "i1"]);
+    mockDecrypt.mockResolvedValue({ authType: "identity", identityId: 5 });
+    expect(
+      (await useHostStore.getState().getDecryptedGroup("g1"))?.identityId,
+    ).toBeNull();
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      auth_type: "identity",
+      data: "enc",
+    } as never);
+    mockDecrypt.mockResolvedValue({ address: "a", identityId: "i1" });
+    const host = await useHostStore.getState().getDecryptedHost("h1");
+    expect([host?.authType, host?.identityId]).toEqual(["identity", "i1"]);
+    mockDecrypt.mockResolvedValue({ address: "a", identityId: ["x"] });
+    expect(
+      (await useHostStore.getState().getDecryptedHost("h1"))?.identityId,
+    ).toBeNull();
+  });
+
   it("getDecryptedGroup keeps a valid port and nulls junk", async () => {
     mockGet.mockResolvedValue(groupRow);
     mockDecrypt.mockResolvedValue({ port: 2222 });

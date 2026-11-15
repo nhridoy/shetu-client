@@ -31,6 +31,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useIdentityStore } from "@/stores/identities/identityStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -57,8 +58,20 @@ const PROD: InheritedDefaults = {
   keyName: "deploy-key",
   env: [{ name: "LANG", value: "C.UTF-8", from: "prod" }],
 };
+const IDENTITY = {
+  id: "i1",
+  name: "deploy@prod",
+  vaultId: "v1",
+  sortOrder: 0,
+  createdAt: "1",
+};
 beforeEach(() => {
   fetchInherited.mockResolvedValue(EMPTY);
+  useIdentityStore.setState({
+    identities: [IDENTITY],
+    error: null,
+    fetchIdentities: vi.fn(async () => {}),
+  });
 });
 
 (
@@ -499,6 +512,96 @@ describe("HostForm inherits from its group", () => {
     ...extra,
   });
 
+  it("Identity hides the username and offers a picker with New identity", async () => {
+    await mount({ host: existing({}) });
+    pick("authType", "Identity");
+    expect(input("username")).toBeNull();
+    expect(input("password")).toBeNull();
+    expect(optionLabels("identityId")).toEqual([
+      "Select an identity",
+      "deploy@prod",
+      "+ New identity",
+    ]);
+  });
+
+  it("saves identity login and keeps the stored username", async () => {
+    const { updateHost } = await mount({ host: existing({}) });
+    pick("authType", "Identity");
+    pick("identityId", "deploy@prod");
+    await submit();
+    const patch = updateHost.mock.calls[0][1];
+    expect(patch).toMatchObject({
+      authType: "identity",
+      identityId: "i1",
+      username: "u",
+    });
+    expect(patch.password).toBeUndefined();
+    expect(patch.keyId).toBeUndefined();
+  });
+
+  it("Identity without a pick asks for one", async () => {
+    const { updateHost } = await mount({ host: existing({}) });
+    pick("authType", "Identity");
+    await submit();
+    expect(updateHost).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Pick an identity");
+  });
+
+  it("+ New identity opens the identity form and selects the saved one", async () => {
+    const createIdentity = vi.fn(async () => {
+      useIdentityStore.setState((s) => ({
+        identities: [...s.identities, { ...IDENTITY, id: "i2", name: "ops" }],
+      }));
+      return "i2";
+    });
+    useIdentityStore.setState({ createIdentity });
+    await mount({ host: existing({}) });
+    pick("authType", "Identity");
+    pick("identityId", "+ New identity");
+    const dialog = [...document.querySelectorAll('[role="dialog"]')].at(-1);
+    expect(dialog?.textContent).toContain("New identity");
+    const field = (name: string) =>
+      dialog?.querySelector(`input[name="${name}"]`) as HTMLInputElement;
+    changeInput(field("name"), "ops");
+    changeInput(field("username"), "ops");
+    await act(async () => {
+      [...(dialog?.querySelectorAll("button") ?? [])]
+        .find((b) => b.textContent === "Save")
+        ?.click();
+    });
+    expect(createIdentity).toHaveBeenCalled();
+    expect(document.getElementById("identityId")?.textContent).toBe("ops");
+  });
+
+  it("shows the inherited identity and hides the username", async () => {
+    await mount({
+      host: existing({ authType: "inherit" }),
+      inherited: {
+        ...EMPTY,
+        username: "deploy",
+        usernameFrom: "prod",
+        authType: "identity",
+        authFrom: "prod",
+        identityName: "deploy@prod",
+        identityFrom: "prod",
+        identityUsername: "deploy",
+      },
+    });
+    expect(document.body.textContent).toContain(
+      "Identity 'deploy@prod' · prod",
+    );
+    expect(input("username")).toBeNull();
+  });
+
+  it("host form with a deleted identity shows Ask when connecting", async () => {
+    await mount({
+      host: existing({ authType: "identity", identityId: "gone" }),
+    });
+    expect(document.getElementById("authType")?.textContent).toBe(
+      "Ask when connecting",
+    );
+  });
+
   it("puts the jump host in the Connection card", async () => {
     await mount({});
     expect(card("Connection")?.querySelector("#jumpHostId")).toBeTruthy();
@@ -638,6 +741,7 @@ describe("HostForm inherits from its group", () => {
       "Password",
       "SSH key",
       "Password + key",
+      "Identity",
       "Ask when connecting",
     ]);
   });

@@ -18,6 +18,7 @@ vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
 }));
 
+import { getRow } from "@/lib/db/db";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import {
@@ -31,6 +32,7 @@ import {
 import {
   answerUsername,
   forgetSession,
+  isSavedHostSession,
   savePendingCredentials,
   useUsernameAsks,
 } from "./pendingCredentials";
@@ -449,5 +451,67 @@ describe("before saved settings have loaded", () => {
     await store.init;
     await recording;
     expect(store.decisions()).toEqual({ h2: false, h1: true });
+  });
+});
+
+describe("identity hosts", () => {
+  const usernameAsks = () => useUsernameAsks.getState().queue;
+
+  function identityHost(extra: Record<string, unknown>, inherited = {}) {
+    useUsernameAsks.setState({ queue: [] });
+    useHostStore.setState({
+      getDecryptedHost: vi.fn(async () => ({
+        id: "h1",
+        name: "prod",
+        address: "10.0.0.1",
+        username: "",
+        groupId: null,
+        vaultId: "v1",
+        forwardAgent: false,
+        authType: "identity",
+        identityId: "i1",
+        ...extra,
+      })),
+    } as never);
+    mocks.invoke.mockImplementation((async (cmd: string) =>
+      cmd === "inherited_host_defaults"
+        ? { hasPassword: false, startupKind: null, env: [], ...inherited }
+        : undefined) as never);
+  }
+
+  it("an identity host is never asked for a username and offers no Save", async () => {
+    identityHost({});
+    vi.mocked(getRow).mockResolvedValue({
+      id: "i1",
+      vault_id: "v1",
+      deleted_at: null,
+    } as never);
+    await connectSavedTerminal(args);
+    expect(usernameAsks()).toHaveLength(0);
+    expect(isSavedHostSession(args.sessionId)).toBe(false);
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("a host inheriting an identity offers no Save", async () => {
+    identityHost(
+      { authType: "inherit", username: "root", groupId: "g1" },
+      { authType: "identity", authFrom: "prod", username: "deploy" },
+    );
+    await connectSavedTerminal(args);
+    expect(usernameAsks()).toHaveLength(0);
+    expect(isSavedHostSession(args.sessionId)).toBe(false);
+  });
+
+  it("a deleted identity asks for the username without Save", async () => {
+    identityHost({});
+    vi.mocked(getRow).mockResolvedValue(null);
+    const pending = connectSavedTerminal(args);
+    await vi.waitFor(() => expect(usernameAsks()).toHaveLength(1));
+    expect(usernameAsks()[0].canSave).toBe(false);
+    answerUsername({ username: "deploy", save: false });
+    await pending;
   });
 });

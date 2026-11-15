@@ -80,3 +80,12 @@ describe("hostFormSchema group inheritance", () => {
     ).toEqual([]);
   });
 });
+
+describe("hostFormSchema identity", () => {
+  it("Identity needs an identity picked", () => {
+    expect(issuePaths({ authType: "identity", identityId: "" })).toContain(
+      "identityId",
+    );
+    expect(issuePaths({ authType: "identity", identityId: "i1" })).toEqual([]);
+  });
+});

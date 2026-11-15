@@ -18,6 +18,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 }));
 
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useIdentityStore } from "@/stores/identities/identityStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -247,8 +248,34 @@ describe("GroupForm", () => {
       "Password",
       "SSH key",
       "Password + key",
+      "Identity",
       "None",
     ]);
+  });
+
+  it("creates a group that logs in with an identity", async () => {
+    useIdentityStore.setState({
+      identities: [
+        {
+          id: "i1",
+          name: "deploy@prod",
+          vaultId: "v1",
+          sortOrder: 0,
+          createdAt: "1",
+        },
+      ],
+      error: null,
+      fetchIdentities: vi.fn(async () => {}),
+    });
+    const { createGroup } = await mount();
+    fillName("Prod");
+    pick("authType", "Identity");
+    pick("identityId", "deploy@prod");
+    await submit();
+    expect(createGroup).toHaveBeenCalledWith(
+      expect.objectContaining({ authType: "identity", identityId: "i1" }),
+    );
+    expect(createGroup.mock.calls[0][0].password).toBeUndefined();
   });
 
   it("labels the null startup choice Not set", async () => {

@@ -36,7 +36,7 @@ export interface LeafNode {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "inherit" | "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none" | "identity";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;
@@ -191,7 +191,7 @@ interface ConnectOptions {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "inherit" | "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none" | "identity";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;

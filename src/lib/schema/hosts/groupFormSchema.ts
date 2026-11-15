@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   envRowsSchema,
+  IDENTITY_ERROR,
   KEEPALIVE_ERROR,
   keepaliveOk,
   PORT_ERROR,
@@ -20,7 +21,8 @@ export const groupFormSchema = z
       .trim()
       .max(255, { error: "Username must be at most 255 characters" })
       .optional(),
-    authType: z.enum(["", "password", "key", "both", "none"]),
+    authType: z.enum(["", "password", "key", "both", "none", "identity"]),
+    identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
     port: z
@@ -49,6 +51,10 @@ export const groupFormSchema = z
       path: ["keyId"],
     },
   )
+  .refine((d) => d.authType !== "identity" || !!d.identityId, {
+    error: IDENTITY_ERROR,
+    path: ["identityId"],
+  })
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -61,6 +67,7 @@ export const groupFormDefaultValues: GroupFormValues = {
   name: "",
   username: "",
   authType: "",
+  identityId: "",
   password: "",
   keyId: "",
   port: "",

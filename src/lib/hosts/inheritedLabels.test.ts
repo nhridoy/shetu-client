@@ -18,6 +18,9 @@ describe("inheritedLabels", () => {
   it("loginLine", () => {
     const g = { ...base, authFrom: "prod" };
     expect(loginLine({ ...g, authType: "password" })).toBe("Password · prod");
+    expect(
+      loginLine({ ...g, authType: "identity", identityName: "deploy" }),
+    ).toBe("Identity 'deploy' · prod");
     expect(loginLine({ ...g, authType: "key", keyName: "k1" })).toBe(
       "SSH key 'k1' · prod",
     );

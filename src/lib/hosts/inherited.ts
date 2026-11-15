@@ -5,8 +5,11 @@ export interface InheritedDefaults {
   usernameFrom?: string;
   port?: number;
   portFrom?: string;
-  authType?: "password" | "key" | "both" | "none";
+  authType?: "password" | "key" | "both" | "none" | "identity";
   authFrom?: string;
+  identityName?: string;
+  identityFrom?: string;
+  identityUsername?: string;
   hasPassword: boolean;
   keyName?: string;
   keepaliveSecs?: number;

@@ -27,6 +27,7 @@ export const keepaliveOk = (v: unknown) =>
   Number(v) === 0 ||
   (Number.isInteger(Number(v)) && Number(v) >= 5 && Number(v) <= 600);
 export const KEEPALIVE_ERROR = "Keepalive must be 0 (off) or 5-600 seconds";
+export const IDENTITY_ERROR = "Pick an identity";
 
 /** Only the address is required. */
 export const hostFormSchema = z
@@ -45,7 +46,15 @@ export const hostFormSchema = z
       .string()
       .trim()
       .max(255, { error: "Username must be at most 255 characters" }),
-    authType: z.enum(["inherit", "password", "key", "both", "none"]),
+    authType: z.enum([
+      "inherit",
+      "password",
+      "key",
+      "both",
+      "none",
+      "identity",
+    ]),
+    identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
     jumpHostId: z.string().nullable().optional(),
@@ -84,6 +93,10 @@ export const hostFormSchema = z
     },
     { error: "Please select an SSH key", path: ["keyId"] },
   )
+  .refine((d) => d.authType !== "identity" || !!d.identityId, {
+    error: IDENTITY_ERROR,
+    path: ["identityId"],
+  })
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -98,6 +111,7 @@ export const hostFormDefaultValues: HostFormSchema = {
   port: "",
   username: "",
   authType: "none",
+  identityId: "",
   password: "",
   keyId: "",
   jumpHostId: null,

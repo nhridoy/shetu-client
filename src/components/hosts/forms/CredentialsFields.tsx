@@ -1,16 +1,28 @@
-import { type Control, type FieldValues, useWatch } from "react-hook-form";
+import { useEffect, useState } from "react";
+import {
+  type Control,
+  type FieldValues,
+  type UseFormResetField,
+  useController,
+  useWatch,
+} from "react-hook-form";
+import IdentityModal from "@/components/identities/IdentityModal";
 import { FormBase } from "@/components/ui/forms/FormBase";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
 import Select from "@/components/ui/Select";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { loginLine } from "@/lib/hosts/inheritedLabels";
+import { useIdentityStore } from "@/stores/identities/identityStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
+import { useVaultStore } from "@/stores/vault/vaultStore";
 
 interface Props<T extends FieldValues> {
   control: Control<T>;
   mode: "host" | "group";
   inherited?: InheritedDefaults;
+  /** Drops a stored identity that no longer exists, without marking the form dirty. */
+  resetField?: UseFormResetField<T>;
 }
 
 const LABELS = {
@@ -18,8 +30,11 @@ const LABELS = {
   password: "Password",
   key: "SSH key",
   both: "Password + key",
+  identity: "Identity",
   none: "None",
 } as const;
+
+const NEW_IDENTITY = "__new__";
 
 const HOST_NONE = "Ask when connecting";
 
@@ -31,18 +46,51 @@ export default function CredentialsFields<T extends FieldValues>({
   control: typedControl,
   mode,
   inherited,
+  resetField: typedResetField,
 }: Props<T>) {
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
   const keys = useKeyStore((s) => s.keys);
   const authType = useWatch({ control, name: "authType" });
   const groupId = useWatch({ control, name: "groupId" });
+  const resetField = typedResetField as unknown as
+    | UseFormResetField<FieldValues>
+    | undefined;
+  const currentVaultId = useVaultStore((s) => s.currentVaultId);
+  const identities = useIdentityStore((s) => s.identities);
+  const identityField = useController({ control, name: "identityId" }).field;
+  const [identitiesLoaded, setIdentitiesLoaded] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    setIdentitiesLoaded(false);
+    void useIdentityStore
+      .getState()
+      .fetchIdentities(currentVaultId ?? undefined)
+      .then(() => setIdentitiesLoaded(!useIdentityStore.getState().error));
+  }, [currentVaultId]);
+
+  // A deleted identity resolves as unset when connecting; show that instead of a dead pick.
+  useEffect(() => {
+    if (!identitiesLoaded || authType !== "identity" || !identityField.value)
+      return;
+    if (identities.some((i) => i.id === identityField.value)) return;
+    resetField?.("authType", { defaultValue: mode === "host" ? "none" : "" });
+    resetField?.("identityId", { defaultValue: "" });
+  }, [
+    identitiesLoaded,
+    identities,
+    authType,
+    identityField.value,
+    resetField,
+    mode,
+  ]);
   // A stored "inherit" stays visible without a group so the validation error can explain it.
   const offerInherit = mode === "host" && (!!groupId || authType === "inherit");
   const choices = [
     ...(mode === "group" ? [["", "Not set"] as const] : []),
     ...(offerInherit ? [["inherit", LABELS.inherit] as const] : []),
-    ...(["password", "key", "both", "none"] as const).map(
+    ...(["password", "key", "both", "identity", "none"] as const).map(
       (t) =>
         [t, t === "none" && mode === "host" ? HOST_NONE : LABELS[t]] as const,
     ),
@@ -83,6 +131,32 @@ export default function CredentialsFields<T extends FieldValues>({
           <p className="mt-1 text-xs text-dark-300">{loginLine(inherited)}</p>
         )}
       </div>
+
+      {authType === "identity" && (
+        <FormBase name="identityId" label="Identity" control={control} required>
+          {({ onChange, value, placeholder: _p, ...field }) => (
+            <Select
+              {...field}
+              value={value}
+              onValueChange={(v) =>
+                v === NEW_IDENTITY ? setCreating(true) : onChange(v)
+              }
+              options={[
+                { value: "", label: "Select an identity" },
+                ...identities.map((i) => ({ value: i.id, label: i.name })),
+                { value: NEW_IDENTITY, label: "+ New identity" },
+              ]}
+            />
+          )}
+        </FormBase>
+      )}
+
+      {creating && (
+        <IdentityModal
+          onClose={() => setCreating(false)}
+          onSaved={(id) => identityField.onChange(id)}
+        />
+      )}
 
       {(authType === "password" || authType === "both") && (
         <FormInput

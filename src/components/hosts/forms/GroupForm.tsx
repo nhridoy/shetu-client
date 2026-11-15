@@ -53,6 +53,7 @@ function valuesFromGroup(g: StoredGroup): GroupFormValues {
     name: g.name,
     username: g.username ?? "",
     authType: g.authType ?? "",
+    identityId: g.identityId ?? "",
     password: g.password ?? "",
     keyId: g.keyId ?? "",
     port: g.port ?? "",
@@ -85,6 +86,7 @@ function payloadFromForm(
   return {
     username: d.username?.trim() || unset,
     authType: auth ?? unset,
+    identityId: (auth === "identity" && d.identityId) || unset,
     password: (usesPassword && d.password) || unset,
     keyId: (usesKey && d.keyId) || unset,
     port: isBlank(d.port) ? unset : Number(d.port),
@@ -118,6 +120,7 @@ export default function GroupForm({
     control,
     handleSubmit,
     reset,
+    resetField,
     formState: { isDirty },
   } = useForm<GroupFormValues>({
     resolver: zodResolver(groupFormSchema),
@@ -247,7 +250,11 @@ export default function GroupForm({
                 control={control}
                 placeholder="Not set"
               />
-              <CredentialsFields control={control} mode="group" />
+              <CredentialsFields
+                control={control}
+                mode="group"
+                resetField={resetField}
+              />
             </SidePanel.Card>
             <SidePanel.Card icon={<ArrowsLeftRightIcon />} title="Connection">
               <ConnectionOptionsFields
