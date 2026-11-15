@@ -7,6 +7,7 @@ import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useModal } from "@/hooks/useModal";
+import { useNewParam } from "@/hooks/useNewParam";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -21,6 +22,7 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
   const deleteDialog = useModal();
   const importModal = useModal();
   const generateModal = useModal();
+  useNewParam({ key: generateModal.show });
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   const loadKeys = useCallback(() => {

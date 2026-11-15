@@ -225,3 +225,20 @@ export const BUILTIN_COMMANDS: {
   },
   { name: "journalctl", command: "journalctl -u ", description: "View logs" },
 ];
+
+const OPEN_PORT_FORWARDING_EVENT = "shetu:open-port-forwarding";
+
+/** Opens the port-forwarding panel of terminal pane `paneId`. */
+export function openPortForwarding(paneId: string): void {
+  window.dispatchEvent(
+    new CustomEvent(OPEN_PORT_FORWARDING_EVENT, { detail: paneId }),
+  );
+}
+
+export function onOpenPortForwarding(
+  handler: (paneId: string) => void,
+): () => void {
+  const listener = (e: Event) => handler((e as CustomEvent<string>).detail);
+  window.addEventListener(OPEN_PORT_FORWARDING_EVENT, listener);
+  return () => window.removeEventListener(OPEN_PORT_FORWARDING_EVENT, listener);
+}

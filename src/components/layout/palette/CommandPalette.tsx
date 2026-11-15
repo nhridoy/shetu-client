@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { useShortcut } from "@/hooks/useShortcut";
+import { findAllLeaves } from "@/lib/common/treeUtils";
 import {
   buildPaletteSections,
   type CreateTarget,
@@ -23,6 +24,7 @@ import type { ShortcutContext, ShortcutId } from "@/lib/shortcuts/registry";
 import {
   BUILTIN_COMMANDS,
   onOpenCommandPalette,
+  openPortForwarding,
   type PaletteMode,
   type SnippetPicker,
   terminalSnippetPicker,
@@ -35,6 +37,7 @@ import {
 } from "@/stores/shortcuts/shortcutStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
+import { useTerminalStore } from "@/stores/terminal/terminalStore";
 
 interface CommandPaletteProps {
   onConnect: (host: Host) => void;
@@ -57,6 +60,22 @@ interface OpenState {
   activeContext: ShortcutContext | null;
   /** Set while the terminal view is open: snippet picks go into its active pane. */
   picker: SnippetPicker | null;
+  /** The active pane, when it is a connected SSH host (it has port forwarding). */
+  portForwardingPaneId: string | null;
+}
+
+function sshPaneId(): string | null {
+  const { tabs, activeTabId } = useTerminalStore.getState();
+  const tab = tabs.find((t) => t.id === activeTabId);
+  const pane = tab?.activePaneId
+    ? findAllLeaves(tab.root).find((l) => l.id === tab.activePaneId)
+    : undefined;
+  return pane &&
+    pane.connectionType !== "local" &&
+    pane.hostId &&
+    pane.connectionStatus === "connected"
+    ? pane.id
+    : null;
 }
 
 const isMac = () => navigator.platform.includes("Mac");
@@ -126,6 +145,7 @@ export default function CommandPalette({
       live: liveShortcutIds(),
       activeContext,
       picker: activeContext === "terminal" ? terminalSnippetPicker() : null,
+      portForwardingPaneId: activeContext === "terminal" ? sshPaneId() : null,
     });
     setQuery("");
     setSelectedIndex(0);
@@ -159,7 +179,7 @@ export default function CommandPalette({
         builtins: state.picker ? BUILTIN_COMMANDS : null,
         live: state.live,
         activeContext: state.activeContext,
-        portForwardingPaneId: null,
+        portForwardingPaneId: state.portForwardingPaneId,
       })
     : [];
   const rows = sections.flatMap((s) => s.rows);
@@ -193,7 +213,8 @@ export default function CommandPalette({
         close();
         return onNavigate(CREATE_PATHS[row.target]);
       case "portForwarding":
-        return close();
+        close();
+        return openPortForwarding(row.paneId);
       case "snippet": {
         if (!state.picker) {
           if (row.item.snippetId)

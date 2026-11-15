@@ -14,6 +14,7 @@ import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import PaneHeader from "@/components/ui/PaneHeader";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { previewStyle } from "@/lib/common/paneLayout";
+import { onOpenPortForwarding } from "@/lib/terminal/paletteCommand";
 import { isPaneRecording } from "@/lib/terminal/sessionHistory";
 import { type DropSide, useDragStore } from "@/stores/dragStore";
 import type { Host } from "@/stores/hosts/hostStore";
@@ -69,6 +70,14 @@ export default function Pane({
       ? dropPane.side
       : null;
   const [showPortForwarding, setShowPortForwarding] = useState(false);
+  // The command palette's "Port forwarding" for this pane.
+  useEffect(
+    () =>
+      onOpenPortForwarding((id) => {
+        if (id === pane.id) setShowPortForwarding(true);
+      }),
+    [pane.id],
+  );
   const [recording, setRecording] = useState(() => isPaneRecording(pane.id));
   useEffect(() => {
     const refresh = () => setRecording(isPaneRecording(pane.id));

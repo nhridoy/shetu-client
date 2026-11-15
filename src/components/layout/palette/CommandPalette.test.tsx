@@ -10,7 +10,9 @@ const m = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock("@/stores/hosts/hostStore", () => ({
   useHostStore: () => ({ hosts: m.hosts }),
 }));
@@ -30,10 +32,12 @@ vi.mock("@/components/snippets/RunOnHostsDialog", () => ({
 
 import { registerShortcutHandler } from "@/lib/shortcuts/actions";
 import {
+  onOpenPortForwarding,
   openCommandPalette,
   setTerminalSnippetPicker,
 } from "@/lib/terminal/paletteCommand";
 import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
+import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import CommandPalette from "./CommandPalette";
 
 (
@@ -258,5 +262,46 @@ describe("CommandPalette picks", () => {
     expect(p.text()).not.toContain("Find in terminal");
     act(() => openCommandPalette());
     expect(p.text()).toContain("Find in terminal");
+  });
+
+  it("port forwarding opens the active connected SSH pane's panel", async () => {
+    useShortcutStore.setState({ activeContext: "terminal" });
+    const leaf = (over: object) => ({
+      type: "leaf" as const,
+      id: "p1",
+      hostId: "h1",
+      hostName: "web-1",
+      connectionType: "ssh" as const,
+      connectionStatus: "connected" as const,
+      reconnect: null,
+      size: 100,
+      ...over,
+    });
+    const setPane = (over: object) =>
+      useTerminalStore.setState({
+        tabs: [
+          { id: "t1", title: "web", root: leaf(over), activePaneId: "p1" },
+        ] as never,
+        activeTabId: "t1",
+      });
+    const opened = vi.fn();
+    cleanups.push(onOpenPortForwarding(opened));
+    setPane({});
+    const p = setup();
+    p.open();
+    p.type("port");
+    expect(p.text()).toContain("Port forwarding");
+    await p.key("Enter");
+    expect(opened).toHaveBeenCalledWith("p1");
+    for (const over of [
+      { connectionType: "local" },
+      { connectionStatus: "disconnected" },
+    ]) {
+      setPane(over);
+      p.open();
+      p.type("port");
+      expect(p.text()).not.toContain("Port forwarding");
+      act(() => p.press({ key: "Escape" }));
+    }
   });
 });
