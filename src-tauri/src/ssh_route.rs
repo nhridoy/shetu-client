@@ -355,6 +355,7 @@ mod tests {
         snippet(&db, &crypto, "s1", &vault, "htop", false);
         snippet(&db, &crypto, "s2", "other-vault", "top", false);
         snippet(&db, &crypto, "s3", &vault, "gone", true);
+        snippet(&db, &crypto, "s4", &vault, "tail -n {{ lines }} app.log", false);
         host_with(&db, &crypto, "h", &vault, serde_json::json!({"address": "a", "startup": startup}));
         crate::ssh::load_host_config(&db, &crypto, "h").unwrap().startup
     }
@@ -379,6 +380,12 @@ mod tests {
     #[test]
     fn startup_snippet_in_other_vault_is_missing() {
         assert_eq!(startup_of(serde_json::json!({"snippetId": "s2"})), Some(StartupAction::MissingSnippet));
+    }
+
+    #[test]
+    fn startup_snippet_with_variables_is_not_sent() {
+        // Nothing can fill {{lines}} at connect time; typing the braces would run junk.
+        assert_eq!(startup_of(serde_json::json!({"snippetId": "s4"})), Some(StartupAction::SnippetHasVariables));
     }
 
     #[test]

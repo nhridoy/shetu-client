@@ -171,6 +171,11 @@ describe("broadcast fan-out", () => {
     expect(sb.send).toHaveBeenCalledWith(
       "\x1b[200~echo first\recho second\x1b[201~",
     );
+    // A paste that starts with ESC is still a multi-line paste.
+    sendInput(sa, "\x1b[A\recho second");
+    expect(sb.send).toHaveBeenLastCalledWith(
+      "\x1b[200~\x1b[A\recho second\x1b[201~",
+    );
     // Alt+Enter is a key, not a paste.
     sendInput(sa, "\x1b\r");
     expect(sb.send).toHaveBeenLastCalledWith("\x1b\r");

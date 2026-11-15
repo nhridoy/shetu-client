@@ -489,10 +489,9 @@ export function sendInput(session: Session, data: string): void {
     .tabs.find((t) => t.id === session.params.tabId);
   if (!tab) return;
   const bracketed = data.startsWith(BRACKETED_PASTE);
-  // Typing sends one key per event; a line break with more text after it (and no ESC in
-  // front, unlike Alt+Enter) is a multi-line paste, raw when the source lacks bracketed paste.
-  const rawPaste =
-    !bracketed && !data.startsWith("\x1b") && /[\r\n](?!$)/.test(data);
+  // Typing sends one key per event (Alt+Enter is ESC CR, its break at the end); a line
+  // break with more text after it is a multi-line paste, raw when the source lacks bracketed paste.
+  const rawPaste = !bracketed && /[\r\n](?!$)/.test(data);
   // A multi-line paste reaches a target only as a bracketed paste, or its lines would run.
   const multiLinePaste = rawPaste || (bracketed && /[\r\n]/.test(data));
   const safePaste = rawPaste ? `${BRACKETED_PASTE}${data}\x1b[201~` : data;
