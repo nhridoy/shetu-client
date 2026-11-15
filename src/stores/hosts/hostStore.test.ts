@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/db/db");
 vi.mock("../../lib/crypto/crypto");
+vi.mock("../../lib/common/device", () => ({ getDeviceId: async () => "d1" }));
 vi.mock("../auth/authStore", () => ({
   useAuthStore: {
     getState: () => ({ user: { id: "u1", email: "a@b.c" } }),
@@ -16,6 +17,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import { decryptRowData } from "../../lib/crypto/crypto";
 import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
 import { useVaultStore } from "../vault/vaultStore";
@@ -298,6 +300,33 @@ describe("hostStore", () => {
     );
     expect(plain.env).toEqual([{ name: "LANG", value: "C" }]);
     expect(plain.startup).toEqual({ command: "ls" });
+  });
+
+  it("updateHostGroup waits for a save already running on the same host", async () => {
+    mockGet.mockResolvedValue({
+      id: "h1",
+      vault_id: "v1",
+      name: "prod",
+      sort_order: 0,
+      data: "enc",
+    } as never);
+    let release: (v: Record<string, unknown>) => void = () => {};
+    mockDecrypt.mockReturnValue(new Promise((r) => (release = r)));
+    mockUpsert.mockResolvedValue({ data: "enc2" } as never);
+    const order: string[] = [];
+    mockUpsert.mockImplementation((async () => {
+      order.push("save");
+      return { data: "enc2" };
+    }) as never);
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "db_update_host_group") order.push("move");
+    }) as never);
+    const save = useHostStore.getState().updateHost("h1", { name: "p2" });
+    const move = useHostStore.getState().updateHostGroup("h1", "g2");
+    await Promise.resolve();
+    release({ address: "a" });
+    await Promise.all([save, move]);
+    expect(order).toEqual(["save", "move"]);
   });
 
   it("getDecryptedHost returns connection options", async () => {

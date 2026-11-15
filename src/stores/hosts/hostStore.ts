@@ -583,28 +583,29 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
   },
 
-  updateHostGroup: async (hostId, groupId) => {
-    try {
-      await invoke("db_update_host_group", {
-        hostId,
-        groupId,
-        deviceId: await getDeviceId(),
-      });
-      const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
-      if (vaultId && typeof window !== "undefined") {
-        window.dispatchEvent(
-          new CustomEvent("shetu:local-mutation", {
-            detail: { table: "hosts", vaultId },
-          }),
-        );
+  updateHostGroup: (hostId, groupId) =>
+    runSerial(`hosts:${hostId}`, async () => {
+      try {
+        await invoke("db_update_host_group", {
+          hostId,
+          groupId,
+          deviceId: await getDeviceId(),
+        });
+        const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
+        if (vaultId && typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("shetu:local-mutation", {
+              detail: { table: "hosts", vaultId },
+            }),
+          );
+        }
+      } catch (err) {
+        console.error("[updateHostGroup] IPC failed:", err);
       }
-    } catch (err) {
-      console.error("[updateHostGroup] IPC failed:", err);
-    }
-    set((s) => ({
-      hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, groupId } : h)),
-    }));
-  },
+      set((s) => ({
+        hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, groupId } : h)),
+      }));
+    }),
 
   getCredentialsForHost: async (hostId) => {
     const cached = get().hosts.find((h) => h.id === hostId);
