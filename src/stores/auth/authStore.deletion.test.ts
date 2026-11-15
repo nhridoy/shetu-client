@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../lib/terminal/sessionRestore", () => ({
+  clearSavedSessions: vi.fn(async () => {}),
+}));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(() => ({
     get: vi.fn(async () => null),
