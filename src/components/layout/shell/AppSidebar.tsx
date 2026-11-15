@@ -1,27 +1,10 @@
-import {
-  ClockCounterClockwiseIcon,
-  DesktopTowerIcon,
-  FileTextIcon,
-  FolderOpenIcon,
-  GearSixIcon,
-  KeyIcon,
-  SignOutIcon,
-  UsersIcon,
-} from "@phosphor-icons/react";
+import { GearSixIcon, SignOutIcon } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router";
 import { Avatar } from "@/components/common/Avatar";
+import { SIDEBAR_ITEMS } from "@/components/layout/shell/sidebarItems";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
-
-const sidebarItems = [
-  { path: "/hosts", label: "Hosts", icon: DesktopTowerIcon },
-  { path: "/workspaces", label: "Workspaces", icon: FolderOpenIcon },
-  { path: "/snippets", label: "Snippets", icon: FileTextIcon },
-  { path: "/keys", label: "Keychain", icon: KeyIcon },
-  { path: "/history", label: "History", icon: ClockCounterClockwiseIcon },
-  { path: "/teams", label: "Teams", icon: UsersIcon },
-] as const;
 
 interface AppSidebarProps {
   isOpen: boolean;
@@ -60,7 +43,7 @@ export default function AppSidebar({
           Vault
         </p>
         <div className="space-y-px">
-          {sidebarItems.map((item) => {
+          {SIDEBAR_ITEMS.map((item) => {
             const active = isActive(item.path);
             return (
               <Button

@@ -6,6 +6,7 @@ import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
 import SshConfigImportModal from "@/components/hosts/modals/SshConfigImportModal";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
+import { useNewParam } from "@/hooks/useNewParam";
 import { openGroupId } from "@/lib/hosts/helpers";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
@@ -42,6 +43,10 @@ export default function HostsPage() {
     setPanel(resolved);
     setPanelKey((k) => k + 1);
   };
+  useNewParam({
+    host: () => openPanel({ kind: "host" }),
+    group: () => openPanel({ kind: "group", parentId: null }),
+  });
   const closePanel = () => {
     openSeq.current++; // drop an edit-host open still loading
     setPanel(null);

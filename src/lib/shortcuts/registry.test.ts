@@ -37,6 +37,30 @@ describe("shortcut registry", () => {
     });
   });
 
+  it("palette leaves out selection and palette shortcuts", () => {
+    expect(
+      SHORTCUTS.filter((d) => d.palette === false).map((d) => d.id),
+    ).toEqual([
+      "app.quickConnect",
+      "terminal.palette",
+      "terminal.copy",
+      "terminal.paste",
+      "files.copy",
+      "files.cut",
+      "files.paste",
+      "files.selectAll",
+      "files.rename",
+      "files.delete",
+      "files.up",
+      "editor.copyPath",
+      "editor.rename",
+      "editor.delete",
+    ]);
+    expect(SHORTCUTS.find((d) => d.id === "app.quickConnect")?.label).toBe(
+      "Command palette",
+    );
+  });
+
   it("defaults_have_no_conflicts_within_a_context", () => {
     for (const mac of [false, true]) {
       const seen = new Map<string, string>();

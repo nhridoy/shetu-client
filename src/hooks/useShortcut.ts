@@ -1,4 +1,6 @@
+import { useEffect, useRef } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { registerShortcutHandler } from "@/lib/shortcuts/actions";
 import { SHORTCUTS, type ShortcutId } from "@/lib/shortcuts/registry";
 import { hasMacMenu } from "@/lib/window/menuActions";
 import {
@@ -43,6 +45,17 @@ export function useShortcut(
     options.enabled !== false &&
     // The macOS menu bar fires these itself.
     !(def.menuItem && hasMacMenu());
+
+  // The command palette runs the same handler, whatever key (if any) is bound.
+  const latest = useRef(callback);
+  latest.current = callback;
+  const runnable = !recording && options.enabled !== false;
+  useEffect(() => {
+    if (!runnable) return;
+    return registerShortcutHandler(id, () =>
+      latest.current(new KeyboardEvent("keydown")),
+    );
+  }, [id, runnable]);
 
   useHotkeys(
     binding,

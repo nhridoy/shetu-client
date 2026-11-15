@@ -21,7 +21,7 @@ pub fn install(app: &App) -> tauri::Result<()> {
     // Kept so the frontend can move their accelerators (menu_accelerators.rs).
     let settings = item("settings", "Settings…", "Cmd+,")?;
     let new_tab = item("new-tab", "New Tab", "Cmd+T")?;
-    let quick_connect = item("quick-connect", "Quick Connect…", "Cmd+K")?;
+    let quick_connect = item("quick-connect", "Command Palette…", "Cmd+K")?;
     let close_tab = item("close-tab", "Close Tab", "Cmd+W")?;
 
     let shetu = SubmenuBuilder::new(app, "Shetu")
