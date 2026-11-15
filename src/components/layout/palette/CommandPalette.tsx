@@ -7,7 +7,7 @@ import {
   PlusIcon,
   TerminalIcon,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import RunOnHostsDialog from "@/components/snippets/RunOnHostsDialog";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -138,15 +138,18 @@ export default function CommandPalette({
   // Ignore further picks while one is still running (e.g. a double Ctrl+Enter).
   const picking = useRef(false);
 
+  const listId = useId();
+  /** Opens in `mode`; the same shortcut again (same mode) closes it. */
   const open = useCallback((mode: PaletteMode) => {
     const { activeContext } = useShortcutStore.getState();
-    setState({
+    const next: OpenState = {
       mode,
       live: liveShortcutIds(),
       activeContext,
       picker: activeContext === "terminal" ? terminalSnippetPicker() : null,
       portForwardingPaneId: activeContext === "terminal" ? sshPaneId() : null,
-    });
+    };
+    setState((prev) => (prev?.mode === mode ? null : next));
     setQuery("");
     setSelectedIndex(0);
     setTimeout(() => inputRef.current?.focus(), 0);
@@ -183,6 +186,8 @@ export default function CommandPalette({
       })
     : [];
   const rows = sections.flatMap((s) => s.rows);
+  // Hosts or snippets can sync away while the palette is open.
+  const selected = Math.max(0, Math.min(selectedIndex, rows.length - 1));
 
   const pick = async (row: PaletteRow, run = false, all = false) => {
     if (picking.current || !state) return;
@@ -238,14 +243,14 @@ export default function CommandPalette({
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.min(i + 1, rows.length - 1));
+      setSelectedIndex(Math.min(selected + 1, rows.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter" && rows[selectedIndex]) {
+      setSelectedIndex(Math.max(selected - 1, 0));
+    } else if (e.key === "Enter" && rows[selected]) {
       e.preventDefault();
       const run = isMac() ? e.metaKey : e.ctrlKey;
-      void pick(rows[selectedIndex], run, run && e.shiftKey);
+      void pick(rows[selected], run, run && e.shiftKey);
     }
   };
 
@@ -268,6 +273,17 @@ export default function CommandPalette({
               <input
                 ref={inputRef}
                 type="text"
+                role="combobox"
+                aria-label={
+                  state.mode === "snippets"
+                    ? "Search snippets"
+                    : "Search hosts, actions and snippets"
+                }
+                aria-expanded="true"
+                aria-controls={listId}
+                aria-activedescendant={
+                  rows[selected] ? `${listId}-${selected}` : undefined
+                }
                 placeholder={
                   state.mode === "snippets"
                     ? "Search snippets"
@@ -284,10 +300,23 @@ export default function CommandPalette({
               <Badge>Esc</Badge>
             </div>
 
-            <div className="max-h-80 overflow-y-auto">
+            <div
+              id={listId}
+              role="listbox"
+              aria-label="Results"
+              className="max-h-80 overflow-y-auto"
+            >
               {sections.map((section) => (
-                <div key={section.title}>
-                  <div className="px-4 pt-3 pb-1 text-xs font-semibold tracking-wider uppercase text-dark-500">
+                // biome-ignore lint/a11y/useSemanticElements: a listbox groups options with role="group"; a fieldset is for form controls
+                <div
+                  key={section.title}
+                  role="group"
+                  aria-label={section.title}
+                >
+                  <div
+                    aria-hidden="true"
+                    className="px-4 pt-3 pb-1 text-xs font-semibold tracking-wider uppercase text-dark-500"
+                  >
                     {section.title}
                   </div>
                   {section.rows.map((row) => {
@@ -295,8 +324,9 @@ export default function CommandPalette({
                     return (
                       <PaletteRowButton
                         key={rowKey(row)}
+                        id={`${listId}-${index}`}
                         row={row}
-                        selected={index === selectedIndex}
+                        selected={index === selected}
                         onPick={() => void pick(row)}
                       />
                     );
@@ -309,7 +339,7 @@ export default function CommandPalette({
             </div>
 
             <div className="p-3 border-t border-dark-700 text-dark-500 text-xs">
-              {hint(rows[selectedIndex], !!state.picker)}
+              {hint(rows[selected], !!state.picker)}
             </div>
           </div>
         </Modal>
@@ -346,10 +376,12 @@ function rowKey(row: PaletteRow): string {
 }
 
 function PaletteRowButton({
+  id,
   row,
   selected,
   onPick,
 }: {
+  id: string;
   row: PaletteRow;
   selected: boolean;
   onPick: () => void;
@@ -386,6 +418,11 @@ function PaletteRowButton({
   })();
   return (
     <Button
+      id={id}
+      role="option"
+      aria-selected={selected}
+      // Focus stays in the search box; arrows move the selection.
+      tabIndex={-1}
       variant="ghost"
       onClick={onPick}
       className={`w-full h-auto px-3 py-2 justify-start ${selected ? "bg-dark-800" : ""}`}

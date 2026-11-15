@@ -70,11 +70,13 @@ function setup() {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  act(() =>
-    root.render(
-      <CommandPalette onConnect={onConnect} onNavigate={onNavigate} />,
-    ),
-  );
+  const rerender = () =>
+    act(() =>
+      root.render(
+        <CommandPalette onConnect={onConnect} onNavigate={onNavigate} />,
+      ),
+    );
+  rerender();
   cleanups.push(() => act(() => root.unmount()));
   const press = (init: KeyboardEventInit) =>
     act(() => {
@@ -110,7 +112,18 @@ function setup() {
       await new Promise((r) => setTimeout(r, 0));
     });
   const text = () => document.body.textContent ?? "";
-  return { press, isOpen, open, type, key, text, input, onConnect, onNavigate };
+  return {
+    press,
+    isOpen,
+    open,
+    type,
+    key,
+    text,
+    input,
+    rerender,
+    onConnect,
+    onNavigate,
+  };
 }
 
 describe("CommandPalette shortcut", () => {
@@ -330,5 +343,76 @@ describe("CommandPalette picks", () => {
     p.type("go to");
     await p.key("ArrowDown");
     expect(scrolled.at(-1)).toContain("Go to Workspaces");
+  });
+
+  it("is a labelled combobox whose selected option screen readers can follow", async () => {
+    const p = setup();
+    p.open();
+    p.type("go to");
+    const input = p.input();
+    expect(input.getAttribute("aria-label")).toBe(
+      "Search hosts, actions and snippets",
+    );
+    expect(input.getAttribute("role")).toBe("combobox");
+    const list = document.getElementById(
+      input.getAttribute("aria-controls") ?? "",
+    );
+    expect(list?.getAttribute("role")).toBe("listbox");
+    const options = [...document.querySelectorAll('[role="option"]')];
+    expect(options[0].getAttribute("aria-selected")).toBe("true");
+    await p.key("ArrowDown");
+    const active = document.getElementById(
+      input.getAttribute("aria-activedescendant") ?? "",
+    );
+    expect(active?.textContent).toContain("Go to Workspaces");
+    expect(active?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("the selection stays on a row when the list gets shorter", async () => {
+    const host = (i: number) => ({
+      id: `h${i}`,
+      name: `web-${i}`,
+      address: `10.0.0.${i}`,
+      port: 22,
+      tags: [],
+      sortOrder: i,
+      createdAt: "",
+      updatedAt: "",
+    });
+    m.hosts = [host(1), host(2), host(3)];
+    useShortcutStore.setState({ activeContext: null });
+    const p = setup();
+    p.open();
+    p.type("web");
+    await p.key("ArrowDown");
+    await p.key("ArrowDown");
+    // A sync removes hosts while the palette is open.
+    m.hosts = [host(1)];
+    p.rerender();
+    const selected = document.querySelectorAll(
+      '[role="option"][aria-selected="true"]',
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0].textContent).toContain("web-1");
+    expect(p.text()).toContain("Enter to connect");
+  });
+
+  it("the open shortcut closes it again", () => {
+    const p = setup();
+    p.open();
+    expect(p.isOpen()).toBe(true);
+    p.open();
+    expect(p.isOpen()).toBe(false);
+  });
+
+  it("Ctrl+Shift+P toggles the snippets view, and switches to it from the full palette", () => {
+    const p = setup();
+    act(() => openCommandPalette("snippets"));
+    expect(p.isOpen()).toBe(true);
+    act(() => openCommandPalette("snippets"));
+    expect(p.isOpen()).toBe(false);
+    p.open();
+    act(() => openCommandPalette("snippets"));
+    expect(p.input().placeholder).toBe("Search snippets");
   });
 });
