@@ -917,6 +917,32 @@ describe("HostForm inherits from its group", () => {
     expect(updateHost.mock.calls[0][1].authType).toBe("none");
   });
 
+  it("warns that a startup snippet with {{variables}} won't run on connect", async () => {
+    useSnippetStore.setState({
+      snippets: [
+        {
+          id: "s1",
+          name: "Tail",
+          command: "",
+          tags: [],
+          vaultId: "v1",
+          createdAt: "1",
+        },
+      ],
+      fetchSnippets: vi.fn(async () => {}),
+      getDecryptedSnippet: vi.fn(async () => ({
+        command: "tail -n {{lines}} log",
+      })),
+    } as never);
+    await mount({ host: existing({}) });
+    pick("startupMode", "Snippet");
+    pick("startupSnippetId", "Tail");
+    await act(async () => {});
+    expect(document.body.textContent).toContain(
+      "This snippet has {{variables}}, so it won't run on connect.",
+    );
+  });
+
   it("startup: new host in a group defaults to From group, None saves the marker", async () => {
     const first = await mount({ defaultGroupId: "g1", inherited: PROD });
     await submit();

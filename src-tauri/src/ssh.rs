@@ -532,6 +532,8 @@ pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
 pub enum StartupAction {
     Command(String),
     MissingSnippet,
+    /// A `{{name}}` snippet: nothing can fill it at connect time, so it isn't sent.
+    SnippetHasVariables,
 }
 
 #[derive(Default, Clone, Deserialize)]
@@ -1139,6 +1141,8 @@ pub async fn connect_saved(
 }
 
 const STARTUP_MISSING_NOTICE: &str = "\r\n[Startup snippet not found]\r\n";
+const STARTUP_VARIABLES_NOTICE: &str =
+    "\r\n[Startup snippet has {{variables}} and was not run; run it from the snippet palette]\r\n";
 /// Writer reports `true` when a write failed (transport lost); a dropped sender
 /// (user disconnect) or `false` (input channel closed) is not a loss.
 fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
@@ -1345,6 +1349,7 @@ async fn run_connect_session(
                 let _ = startup_tx.send(SessionCmd::Input(startup_bytes(c))).await;
             }
             Some(StartupAction::MissingSnippet) => emit(&app_handle, "output", STARTUP_MISSING_NOTICE),
+            Some(StartupAction::SnippetHasVariables) => emit(&app_handle, "output", STARTUP_VARIABLES_NOTICE),
             None => {}
         }
         drop(startup_tx);
@@ -1575,7 +1580,18 @@ fn load_startup(
         let v: serde_json::Value = serde_json::from_str(&plain).ok()?;
         v["command"].as_str().filter(|c| !c.trim().is_empty()).map(String::from)
     })();
-    Some(command.map_or(StartupAction::MissingSnippet, StartupAction::Command))
+    Some(match command {
+        None => StartupAction::MissingSnippet,
+        Some(c) if has_snippet_variables(&c) => StartupAction::SnippetHasVariables,
+        Some(c) => StartupAction::Command(c),
+    })
+}
+
+/// Same `{{name}}` rule as the frontend's snippet variables.
+fn has_snippet_variables(command: &str) -> bool {
+    static VARIABLE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\{\{\s*[A-Za-z_][\w-]*\s*\}\}").unwrap());
+    VARIABLE.is_match(command)
 }
 
 /// Build the SSH config entirely in Rust from the saved (encrypted) host +

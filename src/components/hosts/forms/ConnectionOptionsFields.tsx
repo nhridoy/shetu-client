@@ -1,5 +1,5 @@
 import { PlusIcon, TrashIcon } from "@phosphor-icons/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type Control,
   Controller,
@@ -19,6 +19,7 @@ import {
   keepalivePlaceholder,
   startupLine,
 } from "@/lib/hosts/inheritedLabels";
+import { snippetVariables } from "@/lib/snippets/variables";
 import { AGENT_FORWARD_HELP } from "@/lib/terminal/agentForwarding";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -79,6 +80,26 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
     remove: removeEnv,
   } = envArray ?? { fields: [], append: () => {}, remove: () => {} };
   const startupMode = useWatch({ control, name: "startupMode" });
+  const startupSnippetId = useWatch({ control, name: "startupSnippetId" });
+  // A {{variables}} snippet can't be filled at connect time, so it won't run there.
+  const [startupHasVariables, setStartupHasVariables] = useState(false);
+  useEffect(() => {
+    setStartupHasVariables(false);
+    if (startupMode !== "snippet" || !startupSnippetId) return;
+    let live = true;
+    void useSnippetStore
+      .getState()
+      .getDecryptedSnippet(startupSnippetId)
+      .then(
+        (s) =>
+          live &&
+          setStartupHasVariables(snippetVariables(s?.command ?? "").length > 0),
+      )
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [startupMode, startupSnippetId]);
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const env: { name: string }[] = useWatch({ control, name: "env" }) ?? [];
   const visibleInherited = visibleInheritedEnv(inherited, env);
@@ -290,6 +311,11 @@ export default function ConnectionOptionsFields<T extends FieldValues>({
               .map((sn) => ({ value: sn.id, label: sn.name })),
           ]}
         />
+      )}
+      {startupMode === "snippet" && startupHasVariables && (
+        <p role="alert" className="mt-1 text-xs text-amber-400">
+          This snippet has {"{{variables}}"}, so it won't run on connect.
+        </p>
       )}
       {startupMode === "command" && (
         <Controller
