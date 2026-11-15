@@ -33,6 +33,8 @@ export interface LeafNode {
   type: "leaf";
   id: string;
   hostId?: string;
+  /** The saved host a "Missing host" pane stands for, so saving keeps it for later. */
+  missingHost?: { id: string; name: string; title: string };
   hostName: string;
   hostAddress?: string;
   hostPort?: number;
@@ -118,11 +120,11 @@ export function serializePresetRoot(node: PaneNode): PaneNode {
   return {
     type: "leaf",
     id: node.id,
-    hostId: node.hostId,
-    hostName: node.hostName,
+    hostId: node.hostId ?? node.missingHost?.id,
+    hostName: node.missingHost?.name ?? node.hostName,
     connectionType: node.connectionType,
     shell: node.connectionType === "local" ? node.shell : undefined,
-    title: node.title,
+    title: node.missingHost?.title ?? node.title,
     connectionStatus: "disconnected",
     reconnect: null,
     size: node.size,
@@ -152,6 +154,11 @@ function restoreSavedPane(
         ...saved,
         id: nextPaneId(),
         hostId: undefined,
+        missingHost: {
+          id: saved.hostId as string,
+          name: saved.hostName,
+          title: saved.title,
+        },
         hostName: `Missing host: ${saved.hostName || saved.hostId}`,
         title: `Missing host: ${saved.hostName || saved.hostId}`,
       }

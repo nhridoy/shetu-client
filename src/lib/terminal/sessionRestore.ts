@@ -1,4 +1,5 @@
 import { load } from "@tauri-apps/plugin-store";
+import { findAllLeaves } from "@/lib/common/treeUtils";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
   type PaneNode,
@@ -6,6 +7,7 @@ import {
   type TerminalTab,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
+import { destroySession } from "./sessionManager";
 
 /** Last open layout per account, local to this device. Host ids and names only, no secrets. */
 const STORE_FILE = "session.json";
@@ -36,14 +38,24 @@ export function snapshotSession(state: {
   };
 }
 
-/** A pane tree as saved: leaves and splits, nothing else. */
+const optionalString = (v: unknown) => v === undefined || typeof v === "string";
+
+/** A pane tree as saved: well-formed leaves and splits only, so junk never reaches the UI. */
 function isPaneNode(value: unknown): value is PaneNode {
-  const node = value as { type?: unknown; children?: unknown } | null;
+  const node = value as Record<string, unknown> | null;
   if (!node || typeof node !== "object") return false;
-  if (node.type === "leaf") return true;
+  if (node.type === "leaf")
+    return (
+      typeof node.hostName === "string" &&
+      optionalString(node.hostId) &&
+      optionalString(node.title) &&
+      optionalString(node.shell) &&
+      (node.size === undefined || typeof node.size === "number")
+    );
   return (
     node.type === "split" &&
     Array.isArray(node.children) &&
+    node.children.length >= 2 &&
     node.children.every(isPaneNode)
   );
 }
@@ -77,7 +89,8 @@ export function startSessionPersistence(accountId: string): () => void {
     if (
       state.tabs === prev.tabs &&
       state.activeTabId === prev.activeTabId &&
-      state.activeWorkspaceId === prev.activeWorkspaceId
+      state.activeWorkspaceId === prev.activeWorkspaceId &&
+      state.activeWorkspaceName === prev.activeWorkspaceName
     )
       return;
     clearTimeout(timer);
@@ -132,4 +145,17 @@ export async function clearSavedSessions(): Promise<void> {
   const store = await openStore();
   await store.clear();
   await store.save();
+}
+
+/**
+ * Logout: close every tab, end its terminal session (nothing keeps running unseen for
+ * the next account), and forget the saved layout.
+ */
+export async function endAllSessions(): Promise<void> {
+  const panes = useTerminalStore
+    .getState()
+    .tabs.flatMap((t) => findAllLeaves(t.root).map((l) => l.id));
+  useTerminalStore.getState().closeAllTabs();
+  await Promise.allSettled(panes.map((id) => destroySession(id)));
+  await clearSavedSessions();
 }

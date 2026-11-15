@@ -337,7 +337,7 @@ async function runTeardown(): Promise<string[]> {
   await attempt("local data", wipeLocalData);
   // Imported lazily: the terminal store it uses depends on this store.
   await attempt("last session", async () =>
-    (await import("../../lib/terminal/sessionRestore")).clearSavedSessions(),
+    (await import("../../lib/terminal/sessionRestore")).endAllSessions(),
   );
   return failures;
 }

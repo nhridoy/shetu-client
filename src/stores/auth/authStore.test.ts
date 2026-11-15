@@ -86,7 +86,7 @@ vi.mock("../../lib/crypto/offlineIdentity", () => ({
 }));
 
 vi.mock("../../lib/terminal/sessionRestore", () => ({
-  clearSavedSessions: vi.fn(async () => {}),
+  endAllSessions: vi.fn(async () => {}),
 }));
 vi.mock("../../lib/db/db", () => ({
   wipeLocalData: vi.fn(async () => {}),
@@ -123,7 +123,7 @@ import {
   loadPassword,
   savePassword,
 } from "../../lib/keychain/keychain";
-import { clearSavedSessions } from "../../lib/terminal/sessionRestore";
+import { endAllSessions } from "../../lib/terminal/sessionRestore";
 import { useAuthStore } from "./authStore";
 
 // The store registers its session-revoked hook once at import time; capture
@@ -585,8 +585,8 @@ describe("authStore email verification", () => {
     expect(setRefreshToken).toHaveBeenCalledWith(null);
     expect(clearKeychain).toHaveBeenCalled();
     expect(wipeLocalData).toHaveBeenCalled();
-    // The last open tabs belong to the account that signed out.
-    expect(clearSavedSessions).toHaveBeenCalled();
+    // The open tabs and their saved copy belong to the account that signed out.
+    expect(endAllSessions).toHaveBeenCalled();
     const s = useAuthStore.getState();
     expect(s.user).toBeNull();
     expect(s.tokens).toBeNull();
