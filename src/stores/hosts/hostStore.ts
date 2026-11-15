@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { getDeviceId } from "@/lib/common/device";
+import { runSerial } from "@/lib/common/runSerial";
 import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
@@ -28,11 +29,12 @@ export interface Host {
   createdAt: string;
   updatedAt: string;
   vaultId?: string;
-  authType?: "inherit" | "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none" | "identity";
+  identityId?: string | null;
   password?: string;
   privateKey?: string;
   passphrase?: string;
-  keyId?: string;
+  keyId?: string | null;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
   forwardAgent?: boolean | null;
@@ -52,7 +54,8 @@ export interface Group {
   // Encrypted fields: only populated by getDecryptedGroup.
   username?: string | null;
   port?: number | null;
-  authType?: "password" | "key" | "both" | "none" | null;
+  authType?: "password" | "key" | "both" | "none" | "identity" | null;
+  identityId?: string | null;
   password?: string | null;
   keyId?: string | null;
   keepaliveSecs?: number | null;
@@ -101,6 +104,7 @@ interface HostPayload {
   port: number | null;
   username: string;
   password?: string;
+  identityId?: string | null;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
   forwardAgent?: boolean | null;
@@ -113,6 +117,7 @@ type GroupFields = Pick<
   | "username"
   | "port"
   | "authType"
+  | "identityId"
   | "password"
   | "keyId"
   | "keepaliveSecs"
@@ -124,6 +129,7 @@ const GROUP_KEYS: (keyof GroupFields)[] = [
   "username",
   "port",
   "authType",
+  "identityId",
   "password",
   "keyId",
   "keepaliveSecs",
@@ -203,6 +209,7 @@ function hostFieldsFromPayload(
   | "port"
   | "username"
   | "password"
+  | "identityId"
   | "jumpHostId"
   | "keepaliveSecs"
   | "forwardAgent"
@@ -215,6 +222,7 @@ function hostFieldsFromPayload(
     port: cleanPort(payload.port),
     username: payload.username ?? "root",
     password: payload.password,
+    identityId: typeof p.identityId === "string" ? p.identityId : null,
     jumpHostId: payload.jumpHostId ?? null,
     keepaliveSecs: cleanKeepalive(p.keepaliveSecs),
     forwardAgent: cleanForward(p.forwardAgent),
@@ -235,9 +243,11 @@ function groupFieldsFromPayload(p: Record<string, unknown>): GroupFields {
       auth === "password" ||
       auth === "key" ||
       auth === "both" ||
-      auth === "none"
+      auth === "none" ||
+      auth === "identity"
         ? auth
         : null,
+    identityId: str(p.identityId),
     password: str(p.password),
     keyId: str(p.keyId),
     keepaliveSecs: cleanKeepalive(p.keepaliveSecs),
@@ -259,20 +269,6 @@ function definedFields(g: Partial<Group>): Partial<GroupFields> {
   return Object.fromEntries(
     GROUP_KEYS.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]),
   );
-}
-
-const queues = new Map<string, Promise<unknown>>();
-
-/** Run fn after earlier work on the same key settles, so read-merge-write
- *  updates of one encrypted row never interleave. */
-function runSerial<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const run = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
-  const tail = run.catch(() => {});
-  queues.set(key, tail);
-  void tail.then(() => {
-    if (queues.get(key) === tail) queues.delete(key);
-  });
-  return run;
 }
 
 function newId(): string {
@@ -396,6 +392,7 @@ export const useHostStore = create<HostState>((set, get) => ({
             port: host.port ?? null,
             username: host.username ?? "root",
             password: host.password,
+            identityId: host.identityId ?? null,
             jumpHostId: host.jumpHostId ?? null,
             keepaliveSecs: host.keepaliveSecs ?? null,
             forwardAgent: host.forwardAgent ?? null,
@@ -452,6 +449,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         if (patch.port !== undefined) sensitive.port = patch.port;
         if (patch.username !== undefined) sensitive.username = patch.username;
         if (patch.password !== undefined) sensitive.password = patch.password;
+        if (patch.identityId !== undefined)
+          sensitive.identityId = patch.identityId;
         if (patch.jumpHostId !== undefined)
           sensitive.jumpHostId = patch.jumpHostId;
         if (patch.keepaliveSecs !== undefined)

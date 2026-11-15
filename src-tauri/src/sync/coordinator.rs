@@ -1,7 +1,7 @@
 use crate::db::sync_db::{
     ack_push_results, adopt_pending_device, apply_pull_page_with_rotation, is_cancelled_vault,
     last_sync_at, mark_sync_complete, pending_batch, pending_count, pull_cursor,
-    validate_pull_payloads, PullChange, PushResult,
+    validate_pull_payloads, PendingOperation, PullChange, PushResult,
 };
 use crate::db::LocalDb;
 use crate::http::{HttpClient, HttpErrorKind};
@@ -191,22 +191,46 @@ pub async fn run_sync_cycle(
     }
     let pending = pending_batch(db, vault_id, PAGE_SIZE).map_err(local_error)?;
     if !pending.is_empty() {
-        let response = http
-            .request(
+        let push = |operations: &[PendingOperation]| {
+            http.request(
                 "POST",
                 "/api/v1/sync/push",
                 Some(json!({
                     "vault_id": vault_id,
                     "device_id": device_id,
-                    "operations": pending,
+                    "operations": operations,
                 })),
                 true,
             )
-            .await?;
+        };
+        let response = match push(&pending).await {
+            Err(err) => match without_tables_old_servers_reject(&err, &pending) {
+                // Identities stay queued, out of the batch and the pending count, until a restart retries them.
+                Some(kept) if !kept.is_empty() => {
+                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
+                    push(&kept).await?
+                }
+                Some(_) => {
+                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return finish_cycle(vault_id, db, crypto, http).await;
+                }
+                None => return Err(err),
+            },
+            ok => ok?,
+        };
         let reply: PushReply = serde_json::from_str(&response.body)
             .map_err(|_| local_error("invalid sync push response".into()))?;
         ack_push_results(db, vault_id, &reply.results).map_err(local_error)?;
     }
+    finish_cycle(vault_id, db, crypto, http).await
+}
+
+async fn finish_cycle(
+    vault_id: &str,
+    db: &LocalDb,
+    crypto: &CryptoState,
+    http: &HttpClient,
+) -> Result<SyncReport, HttpErrorKind> {
     pull_until_caught_up(vault_id, db, crypto, http).await?;
     mark_sync_complete(db, vault_id).map_err(local_error)?;
     Ok(SyncReport {
@@ -216,9 +240,51 @@ pub async fn run_sync_cycle(
     })
 }
 
+/// Tables newer than some self-hosted servers; those reject the whole push batch.
+const TABLES_OLD_SERVERS_REJECT: &[&str] = &["identities"];
+
+/// When an older server rejected the batch for an unknown table, the batch without those tables.
+fn without_tables_old_servers_reject(
+    err: &HttpErrorKind,
+    ops: &[PendingOperation],
+) -> Option<Vec<PendingOperation>> {
+    let HttpErrorKind::Http(400, body) = err else {
+        return None;
+    };
+    if crate::http::server_reason(body).as_deref() != Some("unknown sync table") {
+        return None;
+    }
+    let kept: Vec<_> = ops
+        .iter()
+        .filter(|op| !TABLES_OLD_SERVERS_REJECT.contains(&op.table.as_str()))
+        .cloned()
+        .collect();
+    (kept.len() < ops.len()).then_some(kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_server_unknown_table_drops_identities_only() {
+        let op = |table: &str| crate::db::sync_db::PendingOperation {
+            operation_id: "o".into(),
+            table: table.into(),
+            record: json!({}),
+        };
+        let ops = vec![op("hosts"), op("identities")];
+        let unknown = HttpErrorKind::Http(400, r#"{"error":"unknown sync table"}"#.into());
+        let kept = without_tables_old_servers_reject(&unknown, &ops).unwrap();
+        assert_eq!(
+            kept.iter().map(|o| o.table.as_str()).collect::<Vec<_>>(),
+            ["hosts"]
+        );
+        let other = HttpErrorKind::Http(400, r#"{"error":"bad record"}"#.into());
+        assert!(without_tables_old_servers_reject(&other, &ops).is_none());
+        let only_hosts = vec![op("hosts")];
+        assert!(without_tables_old_servers_reject(&unknown, &only_hosts).is_none());
+    }
     use std::time::Duration;
 
     #[tokio::test]

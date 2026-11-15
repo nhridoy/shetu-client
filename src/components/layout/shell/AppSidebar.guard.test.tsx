@@ -63,17 +63,17 @@ function setup(dirty: boolean) {
 describe("sidebar navigation guard", () => {
   it("navigates straight away when clean", async () => {
     setup(false);
-    await click(byText("Keys"));
+    await click(byText("Keychain"));
     expect(navigate).toHaveBeenCalledWith("/keys");
   });
 
   it("sidebar navigation asks when dirty", async () => {
     setup(true);
-    await click(byText("Keys"));
+    await click(byText("Keychain"));
     expect(document.body.textContent).toContain("Discard changes?");
     await click(byText("Keep editing"));
     expect(navigate).not.toHaveBeenCalled();
-    await click(byText("Keys"));
+    await click(byText("Keychain"));
     await click(byText("Discard"));
     expect(navigate).toHaveBeenCalledWith("/keys");
   });

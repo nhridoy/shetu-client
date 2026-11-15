@@ -29,8 +29,11 @@ vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
 }));
 
+import { getRow } from "@/lib/db/db";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useIdentityStore } from "@/stores/identities/identityStore";
+import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -57,9 +60,64 @@ const PROD: InheritedDefaults = {
   keyName: "deploy-key",
   env: [{ name: "LANG", value: "C.UTF-8", from: "prod" }],
 };
+const IDENTITY = {
+  id: "i1",
+  name: "deploy@prod",
+  vaultId: "v1",
+  sortOrder: 0,
+  createdAt: "1",
+};
 beforeEach(() => {
   fetchInherited.mockResolvedValue(EMPTY);
+  useIdentityStore.setState({
+    identities: [IDENTITY],
+    error: null,
+    fetchIdentities: vi.fn(async () => {}),
+    getDecryptedIdentity: vi.fn(async () => ({
+      username: "deploy",
+      hasPassword: false,
+      hasTotp: false,
+    })),
+  });
+  useKeyStore.setState({
+    keys: [
+      {
+        id: "k1",
+        name: "deploy-key",
+        keyType: "ed25519",
+        publicKey: "",
+        encryptedPrivateKey: "",
+        createdAt: "1",
+      },
+    ],
+    fetchKeys: vi.fn(async () => true),
+  });
 });
+
+const focusIn = (el: Element | null) =>
+  act(() => {
+    if (!el) throw new Error("no element to focus");
+    (el as HTMLElement).focus();
+    el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  });
+const options = () =>
+  [...document.querySelectorAll("[role=option]")].map((e) => e.textContent);
+const choose = (label: string) =>
+  act(() => {
+    const option = [...document.querySelectorAll("[role=option]")].find(
+      (e) => e.textContent === label,
+    );
+    if (!option) throw new Error(`option "${label}" not found`);
+    option.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+  });
+const buttonLabelled = (label: string) =>
+  document.querySelector(`button[aria-label="${label}"]`) ?? undefined;
+const keyButton = () =>
+  [...document.querySelectorAll("button")].find(
+    (b) => b.textContent?.trim() === "Key",
+  );
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -95,12 +153,6 @@ const pick = (id: string, label: string) => {
     );
   });
 };
-const optionLabels = (id: string) => {
-  click(document.getElementById(id) ?? undefined);
-  return [...document.querySelectorAll("[role=option]")].map(
-    (e) => e.textContent,
-  );
-};
 const card = (title: string) =>
   [...document.querySelectorAll("aside section")].find(
     (c) => c.querySelector("h3")?.textContent === title,
@@ -133,7 +185,6 @@ async function mountAndFill(
   await act(async () => {
     root.render(<HostForm onClose={onClose} />);
   });
-  pick("authType", "Password");
   for (const [id, v] of [
     ["name", "n"],
     ["address", "a"],
@@ -499,6 +550,200 @@ describe("HostForm inherits from its group", () => {
     ...extra,
   });
 
+  it("focusing Username lists identities and New identity; picking one shows a chip", async () => {
+    await mount({ host: existing({}) });
+    focusIn(input("username"));
+    expect(options()).toEqual(["deploy@prod", "+ New identity"]);
+    choose("deploy@prod");
+    await act(async () => {});
+    expect(document.body.textContent).toContain("deploy@prod (deploy)");
+    expect(input("username")).toBeNull();
+    expect(input("password")).toBeNull();
+    expect(keyButton()).toBeUndefined();
+  });
+
+  it("typing in Username narrows the identity list", async () => {
+    await mount({ host: existing({}) });
+    focusIn(input("username"));
+    changeInput(input("username") as HTMLInputElement, "zzz");
+    expect(options()).toEqual(["+ New identity"]);
+    changeInput(input("username") as HTMLInputElement, "PROD");
+    expect(options()).toEqual(["deploy@prod", "+ New identity"]);
+  });
+
+  it("saves identity login and keeps the stored username", async () => {
+    const { updateHost } = await mount({ host: existing({}) });
+    focusIn(input("username"));
+    choose("deploy@prod");
+    await submit();
+    const patch = updateHost.mock.calls[0][1];
+    expect(patch).toMatchObject({
+      authType: "identity",
+      identityId: "i1",
+      username: "u",
+      password: "",
+      keyId: null,
+    });
+  });
+
+  it("removing the identity chip falls back to the fields", async () => {
+    const { updateHost } = await mount({
+      host: existing({ authType: "identity", identityId: "i1" }),
+    });
+    click(buttonLabelled("Remove identity"));
+    expect(input("password")?.value).toBe("");
+    changeInput(input("password") as HTMLInputElement, "new");
+    await submit();
+    expect(updateHost.mock.calls[0][1]).toMatchObject({
+      authType: "password",
+      identityId: null,
+      password: "new",
+    });
+  });
+
+  it("+ New identity opens the identity form and selects the saved one", async () => {
+    const createIdentity = vi.fn(async () => {
+      useIdentityStore.setState((s) => ({
+        identities: [...s.identities, { ...IDENTITY, id: "i2", name: "ops" }],
+      }));
+      return "i2";
+    });
+    useIdentityStore.setState({ createIdentity });
+    await mount({ host: existing({}) });
+    focusIn(input("username"));
+    choose("+ New identity");
+    const dialog = [...document.querySelectorAll('[role="dialog"]')].at(-1);
+    expect(dialog?.textContent).toContain("New identity");
+    const field = (name: string) =>
+      dialog?.querySelector(`input[name="${name}"]`) as HTMLInputElement;
+    changeInput(field("name"), "ops");
+    changeInput(field("username"), "ops");
+    await act(async () => {
+      [...(dialog?.querySelectorAll("button") ?? [])]
+        .find((b) => b.textContent === "Save")
+        ?.click();
+    });
+    expect(createIdentity).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("ops (deploy)");
+  });
+
+  it("shows the inherited identity and still offers the identity picker", async () => {
+    await mount({
+      host: existing({ authType: "inherit" }),
+      inherited: {
+        ...EMPTY,
+        username: "deploy",
+        usernameFrom: "prod",
+        authType: "identity",
+        authFrom: "prod",
+        identityName: "deploy@prod",
+        identityFrom: "prod",
+        identityUsername: "deploy",
+      },
+    });
+    expect(document.body.textContent).toContain(
+      "Identity 'deploy@prod' · prod",
+    );
+    expect(input("username")).not.toBeNull();
+    focusIn(input("username"));
+    expect(options()).toContain("deploy@prod");
+  });
+
+  it("keeps a live identity that a stale list is missing", async () => {
+    vi.mocked(getRow).mockResolvedValueOnce({
+      id: "i9",
+      vault_id: "v1",
+      deleted_at: null,
+    } as never);
+    await mount({
+      host: existing({ authType: "identity", identityId: "i9" }),
+    });
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeDefined();
+  });
+
+  it("a failed identity lookup keeps the pick", async () => {
+    vi.mocked(getRow).mockRejectedValue(new Error("db locked"));
+    await mount({
+      host: existing({ authType: "identity", identityId: "i9" }),
+    });
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeDefined();
+  });
+
+  it("host form with a deleted identity drops the pick and keeps asking", async () => {
+    vi.mocked(getRow).mockResolvedValue(null);
+    const { updateHost } = await mount({
+      host: existing({ authType: "identity", identityId: "gone" }),
+    });
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeUndefined();
+    expect(input("password")).not.toBeNull();
+    await submit();
+    expect(updateHost.mock.calls[0][1].authType).toBe("none");
+  });
+
+  const keyDown = (el: Element | null | undefined, key: string) =>
+    act(() => {
+      el?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+
+  it("keyboard: arrows and Enter pick an identity, Escape closes", async () => {
+    await mount({ host: existing({}) });
+    const user = input("username");
+    focusIn(user);
+    expect(user?.getAttribute("role")).toBe("combobox");
+    expect(user?.getAttribute("aria-expanded")).toBe("true");
+    keyDown(user, "Escape");
+    expect(options()).toEqual([]);
+    keyDown(user, "ArrowDown");
+    expect(
+      document.querySelector('[role=option][aria-selected="true"]')
+        ?.textContent,
+    ).toBe("deploy@prod");
+    keyDown(user, "Enter");
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeDefined();
+  });
+
+  it("keyboard: the key picker opens with ArrowDown and picks with Enter", async () => {
+    await mount({ host: existing({}) });
+    keyDown(keyButton(), "ArrowDown");
+    expect(options()).toEqual(["deploy-key"]);
+    keyDown(keyButton(), "Enter");
+    expect(buttonLabelled("Remove key")).toBeDefined();
+    click(buttonLabelled("Remove key"));
+    expect(document.activeElement).toBe(keyButton());
+  });
+
+  it("an ask host in a group says so and can switch to the group login", async () => {
+    const { updateHost } = await mount({
+      host: existing({ authType: "none" }),
+      inherited: PROD,
+    });
+    expect(document.body.textContent).toContain("Asks when connecting");
+    expect(document.body.textContent).not.toContain("deploy-key · prod");
+    click(byText("button", "Use group login"));
+    expect(document.body.textContent).toContain("deploy-key · prod");
+    await submit();
+    expect(updateHost.mock.calls[0][1].authType).toBe("inherit");
+  });
+
+  it("clearing a host's password deletes it", async () => {
+    const { updateHost } = await mount({
+      host: existing({ keyId: "k1", authType: "both" }),
+      inherited: PROD,
+    });
+    changeInput(input("password") as HTMLInputElement, "");
+    click(buttonLabelled("Remove key"));
+    await submit();
+    expect(updateHost.mock.calls[0][1]).toMatchObject({
+      authType: "inherit",
+      password: "",
+      keyId: null,
+    });
+  });
+
   it("puts the jump host in the Connection card", async () => {
     await mount({});
     expect(card("Connection")?.querySelector("#jumpHostId")).toBeTruthy();
@@ -580,11 +825,8 @@ describe("HostForm inherits from its group", () => {
     expect(input("username")?.placeholder).toBe("Ask when connecting");
   });
 
-  it("a new host without a group defaults to Ask when connecting", async () => {
+  it("a new host without a group with nothing filled saves none", async () => {
     const { createHost } = await mount({});
-    expect(document.getElementById("authType")?.textContent).toBe(
-      "Ask when connecting",
-    );
     await submit();
     expect(createHost.mock.calls[0][0].authType).toBe("none");
   });
@@ -631,57 +873,48 @@ describe("HostForm inherits from its group", () => {
     expect(updateHost.mock.calls[0][1].groupId).toBeNull();
   });
 
-  it("offers From group auth only when the host has a group", async () => {
-    await mount({});
-    // Connection options have their own From group choices; check the login choices only.
-    expect(optionLabels("authType")).toEqual([
-      "Password",
-      "SSH key",
-      "Password + key",
-      "Ask when connecting",
-    ]);
+  it("no Authentication dropdown", async () => {
+    await mount({ defaultGroupId: "g1" });
+    expect(document.getElementById("authType")).toBeNull();
   });
 
-  it("choosing From group hides secrets and saves inherit", async () => {
+  it("clearing the password in a group saves inherit and shows the group key", async () => {
     const { updateHost } = await mount({
       host: existing({}),
       inherited: PROD,
     });
-    // An existing password host keeps Password.
-    expect(input("password")).not.toBeNull();
-    pick("authType", "From group");
-    expect(input("password")).toBeNull();
-    expect(document.body.textContent).toContain("SSH key 'deploy-key' · prod");
-    expect(document.body.textContent).not.toContain("pw");
+    expect(input("password")?.value).toBe("pw");
+    changeInput(input("password") as HTMLInputElement, "");
+    expect(document.body.textContent).toContain("deploy-key · prod");
     await submit();
     expect(updateHost.mock.calls[0][1].authType).toBe("inherit");
   });
 
-  it("a new host in a group whose chain sets auth defaults to From group", async () => {
+  it("a new host in a group with nothing filled saves inherit", async () => {
     const { createHost } = await mount({
       defaultGroupId: "g1",
       inherited: PROD,
     });
-    expect(input("password")).toBeNull();
     await submit();
     expect(createHost.mock.calls[0][0].authType).toBe("inherit");
   });
 
-  it("a new host in a group whose chain sets no auth still defaults to From group", async () => {
-    const { createHost } = await mount({ defaultGroupId: "g1" });
-    expect(document.getElementById("authType")?.textContent).toBe("From group");
-    await submit();
-    expect(createHost.mock.calls[0][0].authType).toBe("inherit");
-  });
-
-  it("an inherit host without a group asks for credentials or a group", async () => {
+  it("an inherit host without a group saves none", async () => {
     const { updateHost } = await mount({
       host: existing({ authType: "inherit", groupId: undefined }),
     });
-    expect(document.getElementById("authType")?.textContent).toBe("From group");
     await submit();
-    expect(updateHost).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Pick credentials or a group");
+    expect(updateHost.mock.calls[0][1].authType).toBe("none");
+  });
+
+  it("an untouched ask host in a group keeps asking", async () => {
+    const { updateHost } = await mount({
+      host: existing({ authType: "none" }),
+      inherited: PROD,
+    });
+    expect(summary("Credentials")).toBeUndefined();
+    await submit();
+    expect(updateHost.mock.calls[0][1].authType).toBe("none");
   });
 
   it("startup: new host in a group defaults to From group, None saves the marker", async () => {
@@ -837,14 +1070,13 @@ describe("HostForm inherits from its group", () => {
     forwardAgentFrom: "prod",
   };
 
-  it("shows the resolved login line under From group and never a password", async () => {
+  it("shows the group's key greyed and never the host's stale password", async () => {
     await mount({
       host: existing({ authType: "inherit" }),
       inherited: GROUP_ALL,
     });
-    expect(document.body.textContent).toContain("SSH key 'deploy-key' · prod");
-    expect(document.body.textContent).not.toContain("pw");
-    expect(input("password")).toBeNull();
+    expect(document.body.textContent).toContain("deploy-key · prod");
+    expect(input("password")?.value).toBe("");
   });
 
   it("explains an unset group login", async () => {
@@ -854,18 +1086,39 @@ describe("HostForm inherits from its group", () => {
     );
   });
 
-  it("shows password and key fields only for their methods", async () => {
-    await mount({ host: existing({}), inherited: GROUP_ALL });
-    expect(input("password")).not.toBeNull();
-    pick("authType", "SSH key");
-    expect(input("password")).toBeNull();
-    expect(document.getElementById("keyId")).not.toBeNull();
-    pick("authType", "Password + key");
-    expect(input("password")).not.toBeNull();
-    expect(document.getElementById("keyId")).not.toBeNull();
-    pick("authType", "Ask when connecting");
-    expect(input("password")).toBeNull();
-    expect(document.getElementById("keyId")).toBeNull();
+  it("password and key save both; the key chip can be removed", async () => {
+    const { updateHost } = await mount({ host: existing({}) });
+    click(keyButton());
+    choose("deploy-key");
+    click(buttonLabelled("Remove key"));
+    expect(keyButton()).toBeDefined();
+    click(keyButton());
+    choose("deploy-key");
+    expect(document.body.textContent).toContain("deploy-key");
+    await submit();
+    expect(updateHost.mock.calls[0][1]).toMatchObject({
+      authType: "both",
+      keyId: "k1",
+      password: "pw",
+    });
+  });
+
+  it("a key host with a leftover password saves key", async () => {
+    const { updateHost } = await mount({
+      host: existing({ authType: "key", keyId: "k1", password: "old" }),
+    });
+    expect(input("password")?.value).toBe("");
+    await submit();
+    const patch = updateHost.mock.calls[0][1];
+    expect(patch.authType).toBe("key");
+    expect(patch.password).toBe("");
+  });
+
+  it("the password can be shown", async () => {
+    await mount({ host: existing({}) });
+    expect(input("password")?.type).toBe("password");
+    click(buttonLabelled("Show password"));
+    expect(input("password")?.type).toBe("text");
   });
 
   it("shows resolved lines under the connection From group choices", async () => {

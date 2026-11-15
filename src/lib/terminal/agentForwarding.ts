@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { getRow } from "@/lib/db/db";
 import { fetchInheritedDefaults } from "@/lib/hosts/inherited";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
@@ -7,6 +8,7 @@ import {
   askUsername,
   registerSavedHostSession,
   rememberCredentials,
+  stopSavingCredentials,
 } from "./pendingCredentials";
 
 export const AGENT_FORWARD_HELP =
@@ -135,27 +137,47 @@ async function missingUsername(
   isCancelled: () => boolean = () => false,
 ) {
   const host = await useHostStore.getState().getDecryptedHost(hostId);
-  if (!host || host.username?.trim()) return undefined;
+  if (!host) return undefined;
+  const ownName = !!host.username?.trim();
   // Without a vaultId, or when the group lookup fails, we ask even if a group sets one,
   // but never offer Save: a saved name would override the group's.
-  let groupKnown = !host.groupId;
-  if (host.groupId && host.vaultId) {
-    const inherited = await fetchInheritedDefaults(
-      host.groupId,
-      host.vaultId,
-    ).catch(() => null);
-    if (inherited?.username) return undefined;
-    groupKnown = inherited !== null;
-  }
+  const inherited =
+    host.groupId && host.vaultId && (!ownName || host.authType === "inherit")
+      ? await fetchInheritedDefaults(host.groupId, host.vaultId).catch(
+          () => null,
+        )
+      : undefined;
+  const ownIdentity = host.authType === "identity";
+  if (
+    ownIdentity ||
+    (host.authType === "inherit" && inherited?.authType === "identity")
+  )
+    stopSavingCredentials(sessionId);
+  // A usable identity supplies the username; a deleted one leaves the host on its own.
+  if (ownIdentity && (await identityUsable(host.identityId, host.vaultId)))
+    return undefined;
+  // A group identity's username only applies to hosts that inherit the login.
+  const groupName =
+    host.authType === "inherit" || inherited?.authType !== "identity"
+      ? inherited?.username
+      : inherited?.groupUsername;
+  if (ownName || groupName) return undefined;
+  const groupKnown = !host.groupId || !!inherited;
   // A closed pane gets no question; its caller checks isCancelled and stops.
   if (isCancelled()) return undefined;
   const answer = await askUsername(
     sessionId,
     host.name || host.address,
-    canSave && groupKnown,
+    canSave && groupKnown && !ownIdentity,
   );
   if (!answer) return null;
   if (answer.save)
     rememberCredentials(sessionId, { username: answer.username });
   return answer.username;
+}
+
+async function identityUsable(id?: string | null, vaultId?: string) {
+  if (!id) return false;
+  const row = await getRow("identities", id).catch(() => null);
+  return !!row && !row.deleted_at && row.vault_id === vaultId;
 }

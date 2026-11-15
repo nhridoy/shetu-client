@@ -7,6 +7,7 @@ export type TableName =
   | "hosts"
   | "keys"
   | "snippets"
+  | "identities"
   | "workspaces"
   | "presets"
   | "port_forwards";
@@ -84,7 +85,7 @@ export async function upsertRow(
   return saved;
 }
 
-function notifyLocalMutation(table: TableName, vaultId: string): void {
+export function notifyLocalMutation(table: TableName, vaultId: string): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(
       new CustomEvent("shetu:local-mutation", {

@@ -62,7 +62,7 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
   return (
     <div className="flex-1 p-4 overflow-y-auto">
       <SectionHeader
-        title="Keychain"
+        title="SSH Keys"
         level="h3"
         className="text-sm tracking-wider uppercase text-dark-400 mb-3"
       >

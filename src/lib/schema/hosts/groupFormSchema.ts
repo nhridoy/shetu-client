@@ -20,7 +20,9 @@ export const groupFormSchema = z
       .trim()
       .max(255, { error: "Username must be at most 255 characters" })
       .optional(),
-    authType: z.enum(["", "password", "key", "both", "none"]),
+    /** The stored method; the credential fields decide the saved one. */
+    authType: z.string().nullish(),
+    identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
     port: z
@@ -37,18 +39,6 @@ export const groupFormSchema = z
     startupSnippetId: z.string().optional(),
     startupCommand: z.string().optional(),
   })
-  .refine(
-    (d) =>
-      !(d.authType === "password" || d.authType === "both") || !!d.password,
-    { error: "Password is required", path: ["password"] },
-  )
-  .refine(
-    (d) => !(d.authType === "key" || d.authType === "both") || !!d.keyId,
-    {
-      error: "Please select an SSH key",
-      path: ["keyId"],
-    },
-  )
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -61,6 +51,7 @@ export const groupFormDefaultValues: GroupFormValues = {
   name: "",
   username: "",
   authType: "",
+  identityId: "",
   password: "",
   keyId: "",
   port: "",

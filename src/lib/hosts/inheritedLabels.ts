@@ -9,6 +9,8 @@ const LOGIN_NAMES = {
 export function loginLine(i?: InheritedDefaults): string {
   if (!i?.authType || !i.authFrom)
     return "No group sets a login — uses agent/none";
+  if (i.authType === "identity")
+    return `Identity '${i.identityName ?? ""}' · ${i.authFrom}`;
   if (i.authType === "key")
     return `${i.keyName ? `SSH key '${i.keyName}'` : "SSH key"} · ${i.authFrom}`;
   return `${LOGIN_NAMES[i.authType]} · ${i.authFrom}`;

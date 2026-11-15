@@ -47,7 +47,7 @@ interface TerminalProps {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "inherit" | "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none" | "identity";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;

@@ -11,6 +11,7 @@ import { useForm } from "react-hook-form";
 import SidePanel from "@/components/common/SidePanel";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
+import { deriveAuthType, loadedCredentials } from "@/lib/hosts/credentials";
 import {
   type GroupFormValues,
   groupFormDefaultValues,
@@ -53,8 +54,7 @@ function valuesFromGroup(g: StoredGroup): GroupFormValues {
     name: g.name,
     username: g.username ?? "",
     authType: g.authType ?? "",
-    password: g.password ?? "",
-    keyId: g.keyId ?? "",
+    ...loadedCredentials(g.authType, g),
     port: g.port ?? "",
     keepaliveSecs: g.keepaliveSecs ?? "",
     forwardAgent:
@@ -76,8 +76,14 @@ function valuesFromGroup(g: StoredGroup): GroupFormValues {
 function payloadFromForm(
   d: GroupFormValues,
   unset: null | undefined,
+  touched: boolean,
 ): Partial<StoredGroup> {
-  const auth = d.authType || null;
+  // d.authType holds the stored method; the fields decide the new one.
+  const auth = (deriveAuthType(d, {
+    mode: "group",
+    stored: d.authType,
+    touched,
+  }) || null) as StoredGroup["authType"];
   const usesPassword = auth === "password" || auth === "both";
   const usesKey = auth === "key" || auth === "both";
   const env = d.env.filter((row) => row.name !== "");
@@ -85,6 +91,7 @@ function payloadFromForm(
   return {
     username: d.username?.trim() || unset,
     authType: auth ?? unset,
+    identityId: (auth === "identity" && d.identityId) || unset,
     password: (usesPassword && d.password) || unset,
     keyId: (usesKey && d.keyId) || unset,
     port: isBlank(d.port) ? unset : Number(d.port),
@@ -100,6 +107,8 @@ function payloadFromForm(
           : unset,
   };
 }
+
+const CREDENTIAL_FIELDS = ["password", "keyId", "identityId"] as const;
 
 export default function GroupForm({
   group,
@@ -118,7 +127,8 @@ export default function GroupForm({
     control,
     handleSubmit,
     reset,
-    formState: { isDirty },
+    resetField,
+    formState: { isDirty, dirtyFields },
   } = useForm<GroupFormValues>({
     resolver: zodResolver(groupFormSchema),
     defaultValues: {
@@ -161,18 +171,19 @@ export default function GroupForm({
   }, [groupId, reset]);
 
   const handleGroupSubmit = async (data: GroupFormValues) => {
+    const touched = CREDENTIAL_FIELDS.some((f) => dirtyFields[f]);
     const parentId = group?.parentId || defaultParentId || undefined;
     if (group) {
       if (load === "loading") return;
       await updateGroup(group.id, {
         // Unreadable stored values: send no credential/option keys so they're kept.
-        ...(load === "ready" && payloadFromForm(data, null)),
+        ...(load === "ready" && payloadFromForm(data, null, touched)),
         name: data.name,
         parentId,
       });
     } else {
       await createGroup({
-        ...payloadFromForm(data, undefined),
+        ...payloadFromForm(data, undefined, touched),
         name: data.name,
         parentId,
         vaultId: currentVaultId || undefined,
@@ -241,13 +252,11 @@ export default function GroupForm({
           {/* Unread values are never saved, so they must not look editable. */}
           <fieldset disabled={load === "failed"} className="min-w-0 space-y-3">
             <SidePanel.Card icon={<KeyIcon />} title="Credentials">
-              <FormInput
-                name="username"
-                label="Username"
+              <CredentialsFields
                 control={control}
-                placeholder="Not set"
+                mode="group"
+                resetField={resetField}
               />
-              <CredentialsFields control={control} mode="group" />
             </SidePanel.Card>
             <SidePanel.Card icon={<ArrowsLeftRightIcon />} title="Connection">
               <ConnectionOptionsFields

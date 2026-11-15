@@ -5,8 +5,13 @@ export interface InheritedDefaults {
   usernameFrom?: string;
   port?: number;
   portFrom?: string;
-  authType?: "password" | "key" | "both" | "none";
+  authType?: "password" | "key" | "both" | "none" | "identity";
   authFrom?: string;
+  identityName?: string;
+  identityFrom?: string;
+  identityUsername?: string;
+  /** The nearest group username, for hosts with their own login under an identity group. */
+  groupUsername?: string;
   hasPassword: boolean;
   keyName?: string;
   keepaliveSecs?: number;

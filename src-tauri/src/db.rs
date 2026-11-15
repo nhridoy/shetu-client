@@ -29,6 +29,7 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "hosts",
         "keys",
         "snippets",
+        "identities",
         "workspaces",
         "presets",
         "session_history",
@@ -48,6 +49,8 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
 
 pub struct LocalDb {
     pub conn: Mutex<Connection>,
+    /// The sync server rejected the identities table (older self-hosted server).
+    pub server_lacks_identities: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1524,6 +1527,22 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_snippets_vault ON snippets(vault_id, sort_order);
 
+        CREATE TABLE IF NOT EXISTS identities (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1,
+            vault_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_identities_vault ON identities(vault_id, sort_order);
+
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
@@ -1626,6 +1645,7 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
     migrate_port_forward_fk(&conn)?;
     Ok(LocalDb {
         conn: Mutex::new(conn),
+        server_lacks_identities: Default::default(),
     })
 }
 
@@ -1729,6 +1749,7 @@ fn migrate_sync_schema(conn: &Connection) -> Result<(), String> {
         "hosts",
         "keys",
         "snippets",
+        "identities",
         "workspaces",
         "presets",
         "session_history",
@@ -1891,6 +1912,7 @@ fn table_cols(table: Table) -> &'static str {
         Table::Hosts      => "name, os, auth_type, tags, color, group_id, key_id, sort_order, data",
         Table::Keys       => "name, description, key_type, fingerprint, public_key, sort_order, data",
         Table::Snippets   => "name, description, tags, sort_order, data",
+        Table::Identities => "name, sort_order, data",
         Table::Workspaces => "name, sort_order, data",
         Table::Presets    => "name, sort_order, data",
         Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => "name, sort_order, data",
@@ -1937,6 +1959,7 @@ fn migrate_timestamps(conn: &Connection) -> Result<(), String> {
         ("hosts", &["created_at", "updated_at", "deleted_at"]),
         ("keys", &["created_at", "updated_at", "deleted_at"]),
         ("snippets", &["created_at", "updated_at", "deleted_at"]),
+        ("identities", &["created_at", "updated_at", "deleted_at"]),
         ("workspaces", &["created_at", "updated_at", "deleted_at"]),
         ("presets", &["created_at", "updated_at", "deleted_at"]),
         (
@@ -2115,6 +2138,7 @@ impl Table {
             "hosts" => Ok(Table::Hosts),
             "keys" => Ok(Table::Keys),
             "snippets" => Ok(Table::Snippets),
+            "identities" => Ok(Table::Identities),
             "workspaces" => Ok(Table::Workspaces),
             "presets" => Ok(Table::Presets),
             "session_history" => Ok(Table::SessionHistory),
@@ -2131,6 +2155,7 @@ impl Table {
             Table::Hosts => "hosts",
             Table::Keys => "keys",
             Table::Snippets => "snippets",
+            Table::Identities => "identities",
             Table::Workspaces => "workspaces",
             Table::Presets => "presets",
             Table::SessionHistory => "session_history",
@@ -2226,6 +2251,24 @@ pub fn local_mutate(
 ) -> Result<SyncRow, String> {
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    local_mutate_locked(&mut conn, table, row, device_id)
+}
+
+/// Like [`local_mutate`], but only if the row is still live and unchanged since it was read
+/// (`expected_operation_id`); checked under the same lock as the write.
+pub fn local_mutate_if(
+    db: &LocalDb,
+    table: Table,
+    row: &SyncRow,
+    device_id: &str,
+    expected_operation_id: &str,
+) -> Result<SyncRow, String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let current = get_sync_row_unlocked(&conn, table, &row.id)?;
+    if !current.is_some_and(|c| c.deleted_at.is_none() && c.operation_id == expected_operation_id) {
+        return Err("This item changed elsewhere; reopen it and try again".into());
+    }
     local_mutate_locked(&mut conn, table, row, device_id)
 }
 
@@ -2392,6 +2435,7 @@ pub fn tombstone_vault_with_descendants(
         Table::Groups,
         Table::Keys,
         Table::Snippets,
+        Table::Identities,
         Table::Workspaces,
         Table::Presets,
         Table::SessionHistory,
@@ -2580,6 +2624,7 @@ pub enum Table {
     Hosts,
     Keys,
     Snippets,
+    Identities,
     Workspaces,
     Presets,
     SessionHistory,
@@ -3043,6 +3088,7 @@ mod tests {
             "hosts",
             "keys",
             "snippets",
+            "identities",
             "workspaces",
             "presets",
             "session_history",
@@ -3132,9 +3178,17 @@ mod tests {
         conn.execute(
             "INSERT INTO port_forwards (id, host_id, mode, name, local_port) VALUES ('f1', 'h1', 'dynamic', 'socks', 1080)", [],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO identities (id, vault_id, created_at, updated_at, name) VALUES ('i1', 'v1', 1, 1, 'deploy')", [],
+        ).unwrap();
         drop(conn);
         wipe_all(&db).unwrap();
         let conn = db.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
@@ -3413,6 +3467,7 @@ mod tests {
         let db = test_db();
         for (table, id) in [
             (Table::Snippets, "s1"),
+            (Table::Identities, "i1"),
             (Table::Workspaces, "w1"),
             (Table::Presets, "p1"),
         ] {
@@ -3468,12 +3523,20 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(outbox_pending(&db).unwrap().len(), 3);
+        assert_eq!(
+            list_sync_rows(&db, Table::Identities, "v1", false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(Table::parse("identities").unwrap(), Table::Identities);
+        assert_eq!(Table::Identities.as_str(), "identities");
+        assert_eq!(outbox_pending(&db).unwrap().len(), 4);
 
         outbox_remove(&db, Table::Snippets, "s1").unwrap();
         let pending = outbox_pending(&db).unwrap();
         assert!(!pending.iter().any(|o| o.record_id == "s1"));
-        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.len(), 3);
     }
 
     #[test]
@@ -3620,6 +3683,7 @@ mod tests {
         migrate_sync_schema(&conn).unwrap();
         let db = LocalDb {
             conn: Mutex::new(conn),
+            server_lacks_identities: Default::default(),
         };
 
         let vault = SyncRow {
