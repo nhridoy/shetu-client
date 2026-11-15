@@ -40,8 +40,12 @@ vi.mock("@/components/hosts/panels/HostsPanel", () => ({
     onNewHost: (g?: string) => void;
     onNewGroup: (p?: string) => void;
     onConnect: (h: unknown) => void;
+    onEditGroup: (g: unknown) => void;
   }) => (
     <div data-testid="host-list">
+      <button type="button" onClick={() => p.onEditGroup({ id: "g1" })}>
+        Edit prod
+      </button>
       <button type="button" onClick={() => p.onEditHost(HOSTS[0])}>
         Edit web
       </button>
@@ -123,6 +127,7 @@ beforeEach(() => {
     getDecryptedHost: vi.fn(async (id: string) =>
       HOSTS.find((h) => h.id === id),
     ),
+    getDecryptedGroup: vi.fn(async () => ({ id: "g1", name: "prod" })),
     createHost: vi.fn(),
     updateHost: vi.fn(async () => true),
     deleteHost: vi.fn(),
@@ -251,6 +256,35 @@ describe("HostsPage side panel", () => {
     type("name", "web2");
     await act(async () => useVaultStore.setState({ currentVaultId: "v2" }));
     expect(document.querySelector("aside")).toBeNull();
+  });
+
+  it("a superseded group save never closes the panel that replaced it", async () => {
+    let finishSave = () => {};
+    useHostStore.setState({
+      updateGroup: vi.fn(
+        () => new Promise<void>((r) => (finishSave = () => r())),
+      ),
+    } as never);
+    await mount();
+    await click(button("Edit prod"));
+    expect(title()).toBe("Edit group · prod");
+    type("name", "prod2");
+    await act(async () => {
+      document
+        .querySelector("aside form")
+        ?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    });
+    await click(button("Edit web"));
+    await click(button("Discard"));
+    expect(title()).toBe("Edit host · web");
+    type("name", "typed");
+    await act(async () => finishSave());
+    expect(title()).toBe("Edit host · web");
+    expect(
+      (document.querySelector('input[name="name"]') as HTMLInputElement).value,
+    ).toBe("typed");
   });
 
   it("card click connects when no panel is open", async () => {

@@ -46,6 +46,12 @@ export default function HostsPage() {
     openSeq.current++; // drop an edit-host open still loading
     setPanel(null);
   };
+  // A save that finishes after its panel was replaced must not close the new one.
+  const shownPanel = useRef(panel);
+  shownPanel.current = panel;
+  const closeOwn = (own: Panel) => () => {
+    if (shownPanel.current === own) closePanel();
+  };
   // A draft from another vault would save its credentials into this one.
   const vaultId = useVaultStore((s) => s.currentVaultId);
   const panelVaultId = useRef(vaultId);
@@ -140,7 +146,7 @@ export default function HostsPage() {
               : undefined
           }
           defaultGroupId={panel.defaultGroupId}
-          onClose={closePanel}
+          onClose={closeOwn(panel)}
         />
       )}
 
@@ -163,7 +169,7 @@ export default function HostsPage() {
           defaultParentId={
             openGroupId(groups, panel.parentId ?? null) ?? undefined
           }
-          onClose={closePanel}
+          onClose={closeOwn(panel)}
         />
       )}
     </div>
