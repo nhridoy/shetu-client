@@ -1665,6 +1665,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             menu_accelerators::set_menu_accelerators,
             totp::totp_preview,
+            host_inherit::identity_usage,
             update::update_installation_kind,
             get_device_id,
             host_inherit::inherited_host_defaults,

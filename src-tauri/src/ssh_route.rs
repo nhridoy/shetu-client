@@ -589,4 +589,125 @@ mod tests {
         assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "own", Some("typed")).unwrap().username, "me");
         assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "inh", Some("typed")).unwrap().username, "grp");
     }
+
+    fn identity_with(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, payload: serde_json::Value, deleted: bool) {
+        let data = crypto::encrypt_secret(&payload.to_string(), "identities", &crypto.session.lock().unwrap()).unwrap();
+        db.conn.lock().unwrap().execute(
+            "INSERT INTO identities (id, vault_id, name, data, created_at, updated_at, deleted_at) VALUES (?1, ?2, ?1, ?3, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z', ?4)",
+            rusqlite::params![id, vault, data, deleted.then_some("2026-10-03T00:00:00Z")],
+        ).unwrap();
+    }
+
+    fn deploy() -> serde_json::Value {
+        serde_json::json!({"username": "deploy", "password": "pw", "keyId": "k1", "totpSecret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"})
+    }
+
+    #[test]
+    fn host_on_identity_uses_its_login() {
+        let (db, crypto, vault) = fixture();
+        key_row(&db, &crypto, "k1", &vault);
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        host_in(&db, &crypto, "h", &vault, "identity", None, None, serde_json::json!({"address": "a", "username": "own", "password": "own", "identityId": "i1"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.private_key.as_deref()), ("deploy", Some("pw"), Some(PEM)));
+        assert_eq!(c.totp.map(|t| crate::totp::code(&t, 59)).as_deref(), Some("287082"));
+    }
+
+    #[test]
+    fn identity_username_wins_over_host_and_group() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        group_with(&db, &crypto, "g", &vault, None, serde_json::json!({"username": "grp", "authType": "identity", "identityId": "i1"}), false);
+        host_in(&db, &crypto, "h", &vault, "inherit", None, Some("g"), serde_json::json!({"address": "a", "username": "own"}));
+        assert_eq!(crate::ssh::load_host_config_as(&db, &crypto, "h", Some("typed")).unwrap().username, "deploy");
+    }
+
+    #[test]
+    fn group_identity_inherited_as_unit() {
+        let (db, crypto, vault) = fixture();
+        key_row(&db, &crypto, "k1", &vault);
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        group_with(&db, &crypto, "child", &vault, Some("parent"), serde_json::json!({"authType": "identity", "identityId": "i1"}), false);
+        group_with(&db, &crypto, "parent", &vault, None, serde_json::json!({"authType": "password", "password": "parent-pw"}), false);
+        host_in(&db, &crypto, "h", &vault, "inherit", None, Some("child"), serde_json::json!({"address": "a", "password": "own"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.private_key.as_deref()), ("deploy", Some("pw"), Some(PEM)));
+        assert!(c.totp.is_some());
+    }
+
+    #[test]
+    fn identity_from_other_vault_is_ignored() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "foreign", "other-vault", deploy(), false);
+        host_in(&db, &crypto, "h", &vault, "identity", None, None, serde_json::json!({"address": "a", "username": "own", "identityId": "foreign"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.totp.is_some()), ("own", None, false));
+        group_with(&db, &crypto, "child", &vault, Some("parent"), serde_json::json!({"authType": "identity", "identityId": "foreign"}), false);
+        group_with(&db, &crypto, "parent", &vault, None, serde_json::json!({"authType": "password", "password": "parent-pw"}), false);
+        host_in(&db, &crypto, "h2", &vault, "inherit", None, Some("child"), serde_json::json!({"address": "a", "username": "own"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h2").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.totp.is_some()), ("own", Some("parent-pw"), false));
+    }
+
+    #[test]
+    fn deleted_identity_falls_back() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "gone", &vault, deploy(), true);
+        host_in(&db, &crypto, "h", &vault, "identity", None, None, serde_json::json!({"address": "a", "username": "own", "password": "own", "identityId": "gone"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.private_key, c.totp.is_some()), ("own", None, None, false));
+        group_with(&db, &crypto, "child", &vault, Some("parent"), serde_json::json!({"authType": "identity", "identityId": "gone"}), false);
+        group_with(&db, &crypto, "parent", &vault, None, serde_json::json!({"authType": "password", "password": "parent-pw"}), false);
+        host_in(&db, &crypto, "h2", &vault, "inherit", None, Some("child"), serde_json::json!({"address": "a", "username": "own"}));
+        assert_eq!(crate::ssh::load_host_config(&db, &crypto, "h2").unwrap().password.as_deref(), Some("parent-pw"));
+    }
+
+    #[test]
+    fn identity_key_unusable_drops_key_only() {
+        let (db, crypto, vault) = fixture();
+        key_row(&db, &crypto, "k-other", "other-vault");
+        identity_with(&db, &crypto, "i1", &vault, serde_json::json!({"username": "deploy", "password": "pw", "keyId": "k-other", "totpSecret": "not base32!"}), false);
+        host_in(&db, &crypto, "h", &vault, "identity", None, None, serde_json::json!({"address": "a", "identityId": "i1"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.private_key, c.totp.is_some()), ("deploy", Some("pw"), None, false));
+    }
+
+    #[test]
+    fn non_identity_hosts_unchanged() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        host_in(&db, &crypto, "h", &vault, "password", None, None, serde_json::json!({"address": "a", "username": "own", "password": "own", "identityId": "i1"}));
+        let c = crate::ssh::load_host_config(&db, &crypto, "h").unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_deref(), c.totp.is_some()), ("own", Some("own"), false));
+    }
+
+    #[test]
+    fn identity_usage_counts_hosts_and_groups() {
+        let (db, crypto, vault) = fixture();
+        let on = |id: &str| serde_json::json!({"address": "a", "identityId": id});
+        host_in(&db, &crypto, "h1", &vault, "identity", None, None, on("i1"));
+        host_in(&db, &crypto, "h2", &vault, "identity", None, None, on("i2"));
+        host_in(&db, &crypto, "h3", &vault, "inherit", None, None, on("i1"));
+        host_in(&db, &crypto, "h4", &vault, "identity", None, None, on("i1"));
+        host_in(&db, &crypto, "h5", "other-vault", "identity", None, None, on("i1"));
+        db.conn.lock().unwrap().execute("UPDATE hosts SET deleted_at = '2026-10-03T00:00:00Z' WHERE id = 'h4'", []).unwrap();
+        group_with(&db, &crypto, "g1", &vault, None, serde_json::json!({"authType": "identity", "identityId": "i1"}), false);
+        group_with(&db, &crypto, "g2", &vault, None, serde_json::json!({"authType": "password", "identityId": "i1"}), false);
+        group_with(&db, &crypto, "g3", &vault, None, serde_json::json!({"authType": "identity", "identityId": "i1"}), true);
+        assert_eq!(crate::host_inherit::usage(&db, &crypto, "i1", &vault), (1, 1));
+    }
+
+    #[test]
+    fn defaults_include_identity_name_not_secrets() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        group_with(&db, &crypto, "g", &vault, None, serde_json::json!({"authType": "identity", "identityId": "i1"}), false);
+        let out = crate::host_inherit::defaults(&db, &crypto, Some("g"), &vault);
+        assert_eq!(out["identityName"], "i1");
+        assert_eq!(out["identityFrom"], "g");
+        assert_eq!(out["identityUsername"], "deploy");
+        assert_eq!((out["authType"].as_str(), out["authFrom"].as_str()), (Some("identity"), Some("g")));
+        let text = out.to_string();
+        assert!(!text.contains("\"pw\"") && !text.contains("GEZDGNBV"), "{text}");
+    }
 }

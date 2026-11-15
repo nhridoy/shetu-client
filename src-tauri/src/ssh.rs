@@ -1603,11 +1603,12 @@ pub fn load_host_config_as(
     let payload: serde_json::Value =
         serde_json::from_str(&plaintext).map_err(|e| format!("bad host payload: {e}"))?;
     let chain = crate::host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
-    let effective = crate::host_inherit::resolve(
+    let effective = crate::host_inherit::resolve_with(
         &payload,
         row.auth_type.as_deref().unwrap_or("password"),
         row.key_id.as_deref(),
         &chain,
+        &|id| crate::host_inherit::usable_identity(db, crypto, id, &row.vault_id),
     );
     let username = match effective
         .username
@@ -1632,7 +1633,11 @@ pub fn load_host_config_as(
         env: effective.env.into_iter().map(|(name, value, _)| (name, value)).collect(),
         // `{none: true}` has neither command nor snippetId, so load_startup gives None.
         startup: load_startup(db, crypto, &row.vault_id, &effective.startup.0),
-        totp: None,
+        totp: effective
+            .identity
+            .as_ref()
+            .and_then(|login| login.totp_secret.as_deref())
+            .and_then(|secret| crate::totp::parse(secret).ok()),
     };
     if let Some(key_id) = effective.key_id.as_deref() {
         let decrypt = |key_row: &crate::db::SyncRow| -> Result<serde_json::Value, String> {
@@ -1640,8 +1645,8 @@ pub fn load_host_config_as(
             let key_plain = crate::team_keys::decrypt_row_secret(db, &session, &key_row.data, "keys", &key_row.vault_id)?;
             serde_json::from_str(&key_plain).map_err(|e| format!("bad key payload: {e}"))
         };
-        let key_payload = if effective.auth_from.is_some() {
-            // An unusable inherited key means "no key": the connect never fails because of the chain.
+        let key_payload = if effective.auth_from.is_some() || effective.identity.is_some() {
+            // An unusable inherited or identity key means "no key": the connect never fails because of it.
             crate::host_inherit::usable_key(db, key_id, &row.vault_id).and_then(|k| decrypt(&k).ok())
         } else {
             let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
