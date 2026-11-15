@@ -103,7 +103,12 @@ export async function connectSavedTerminal(
   isCancelled: () => boolean = () => false,
 ) {
   registerSavedHostSession(args.sessionId, args.hostId);
-  const username = await missingUsername(args.sessionId, args.hostId);
+  const username = await missingUsername(
+    args.sessionId,
+    args.hostId,
+    true,
+    isCancelled,
+  );
   if (isCancelled()) return;
   if (username === null)
     throw new ConnectCancelled("Connection cancelled: no username.");
@@ -127,6 +132,7 @@ async function missingUsername(
   sessionId: string,
   hostId: string,
   canSave = true,
+  isCancelled: () => boolean = () => false,
 ) {
   const host = await useHostStore.getState().getDecryptedHost(hostId);
   if (!host || host.username?.trim()) return undefined;
@@ -141,6 +147,8 @@ async function missingUsername(
     if (inherited?.username) return undefined;
     groupKnown = inherited !== null;
   }
+  // A closed pane gets no question; its caller checks isCancelled and stops.
+  if (isCancelled()) return undefined;
   const answer = await askUsername(
     sessionId,
     host.name || host.address,

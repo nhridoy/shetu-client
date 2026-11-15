@@ -320,6 +320,21 @@ describe("missing username", () => {
     });
   });
 
+  it("a pane closed during the lookups queues no username question", async () => {
+    hostWithout("g1");
+    let closed = false;
+    const decrypted = useHostStore.getState().getDecryptedHost;
+    useHostStore.setState({
+      getDecryptedHost: vi.fn(async (id: string) => {
+        const host = await decrypted(id);
+        closed = true;
+        return host;
+      }),
+    } as never);
+    await connectSavedTerminal(args, () => closed);
+    expect(usernameAsks()).toHaveLength(0);
+  });
+
   it("offers Save when the group sets no username", async () => {
     hostWithout("g1");
     const pending = connectSavedTerminal(args);
