@@ -371,6 +371,28 @@ describe("GroupForm", () => {
       nameOnly(updateGroup);
     });
 
+    it("locks the credential and option fields when the group can't be read", async () => {
+      await mount(group, {}, async () => null);
+      expect(
+        (document.querySelector('input[id$="name"]') as HTMLInputElement)
+          .disabled,
+      ).toBe(false);
+      for (const title of [
+        "Credentials",
+        "Connection",
+        "On connect",
+        "Environment",
+      ]) {
+        const controls = card(title)?.querySelectorAll("input, button") ?? [];
+        expect(controls.length).toBeGreaterThan(0);
+        // happy-dom's :disabled ignores a disabled fieldset ancestor.
+        for (const el of controls)
+          expect(
+            el.matches(":disabled") || !!el.closest("fieldset[disabled]"),
+          ).toBe(true);
+      }
+    });
+
     it("shows an error and saves only the name when loading fails", async () => {
       const { updateGroup } = await mount(group, {}, async () => {
         throw new Error("boom");

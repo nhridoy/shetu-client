@@ -238,42 +238,45 @@ export default function GroupForm({
               required
             />
           </SidePanel.Card>
-          <SidePanel.Card icon={<KeyIcon />} title="Credentials">
-            <FormInput
-              name="username"
-              label="Username"
-              control={control}
-              placeholder="Not set"
-            />
-            <CredentialsFields control={control} mode="group" />
-          </SidePanel.Card>
-          <SidePanel.Card icon={<ArrowsLeftRightIcon />} title="Connection">
-            <ConnectionOptionsFields
-              control={control}
-              mode="group"
-              part="connection"
-            />
-          </SidePanel.Card>
-          <SidePanel.Card icon={<PlayIcon />} title="On connect">
-            <ConnectionOptionsFields
-              control={control}
-              mode="group"
-              part="startup"
-            />
-          </SidePanel.Card>
-          <SidePanel.Card
-            icon={<TerminalWindowIcon />}
-            title="Environment"
-            action={<EnvAddButton envArray={envArray} />}
-            summary={summaries.env}
-          >
-            <ConnectionOptionsFields
-              control={control}
-              mode="group"
-              part="env"
-              envArray={envArray}
-            />
-          </SidePanel.Card>
+          {/* Unread values are never saved, so they must not look editable. */}
+          <fieldset disabled={load === "failed"} className="min-w-0 space-y-3">
+            <SidePanel.Card icon={<KeyIcon />} title="Credentials">
+              <FormInput
+                name="username"
+                label="Username"
+                control={control}
+                placeholder="Not set"
+              />
+              <CredentialsFields control={control} mode="group" />
+            </SidePanel.Card>
+            <SidePanel.Card icon={<ArrowsLeftRightIcon />} title="Connection">
+              <ConnectionOptionsFields
+                control={control}
+                mode="group"
+                part="connection"
+              />
+            </SidePanel.Card>
+            <SidePanel.Card icon={<PlayIcon />} title="On connect">
+              <ConnectionOptionsFields
+                control={control}
+                mode="group"
+                part="startup"
+              />
+            </SidePanel.Card>
+            <SidePanel.Card
+              icon={<TerminalWindowIcon />}
+              title="Environment"
+              action={<EnvAddButton envArray={envArray} />}
+              summary={summaries.env}
+            >
+              <ConnectionOptionsFields
+                control={control}
+                mode="group"
+                part="env"
+                envArray={envArray}
+              />
+            </SidePanel.Card>
+          </fieldset>
         </div>
       </form>
     </SidePanel>
