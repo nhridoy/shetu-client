@@ -7,6 +7,7 @@ export type TableName =
   | "hosts"
   | "keys"
   | "snippets"
+  | "identities"
   | "workspaces"
   | "presets"
   | "port_forwards";

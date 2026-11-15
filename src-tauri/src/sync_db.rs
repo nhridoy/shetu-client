@@ -50,7 +50,7 @@ fn expected_fields(table: Table) -> &'static [&'static str] {
         Table::Hosts => &["os", "auth_type", "tags", "color", "group_id", "key_id"],
         Table::Keys => &["description", "key_type", "fingerprint", "public_key"],
         Table::Snippets => &["description", "tags"],
-        Table::Workspaces | Table::Presets | Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => &[],
+        Table::Identities | Table::Workspaces | Table::Presets | Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => &[],
         Table::PortForwards => &["host_id", "mode"],
     }
 }
@@ -663,6 +663,7 @@ pub fn apply_pull_page_with_rotation(
             Table::Hosts,
             Table::Keys,
             Table::Snippets,
+            Table::Identities,
             Table::Workspaces,
             Table::Presets,
             Table::SessionHistory,
