@@ -25,7 +25,7 @@ describe("AppSidebar (mac source list)", () => {
       />,
     );
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
-    expect(html).toMatch(/aria-current="page"[^>]*>[\s\S]*?Keys/);
+    expect(html).toMatch(/aria-current="page"[^>]*>[\s\S]*?Keychain/);
     expect(html).toContain('aria-label="Log Out"');
     expect(html).toContain("w-56");
   });
