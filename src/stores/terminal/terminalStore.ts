@@ -580,6 +580,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
             ...leaf,
             connectionStatus: status,
           }),
+          // A dropped connection missed input; it rejoins broadcast at the next line end.
+          broadcastReady:
+            status === "connected"
+              ? tab.broadcastReady
+              : tab.broadcastReady?.filter((id) => id !== paneId),
         };
       }),
     }));

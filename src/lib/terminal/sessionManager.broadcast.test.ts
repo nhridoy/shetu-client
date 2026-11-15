@@ -154,6 +154,53 @@ describe("broadcast fan-out", () => {
     await done();
   });
 
+  it("an unbracketed multi-line paste is wrapped for safe panes and skipped elsewhere", async () => {
+    const { sa, sb, done } = await broadcastingPair();
+    m.warning.mockClear();
+    // Source without bracketed paste: xterm sends the lines raw, joined by \r.
+    sendInput(sa, "echo first\recho second");
+    expect(sa.send).toHaveBeenCalledWith("echo first\recho second");
+    expect(sb.send).not.toHaveBeenCalled();
+    expect(m.warning).toHaveBeenCalledWith(
+      "Paste not sent to 1 pane without bracketed paste",
+    );
+    (sb.xterm.modes as { bracketedPasteMode: boolean }).bracketedPasteMode =
+      true;
+    sendInput(sa, "echo first\recho second");
+    expect(sb.send).toHaveBeenCalledWith(
+      "\x1b[200~echo first\recho second\x1b[201~",
+    );
+    // Alt+Enter is a key, not a paste.
+    sendInput(sa, "\x1b\r");
+    expect(sb.send).toHaveBeenLastCalledWith("\x1b\r");
+    await done();
+  });
+
+  it("a waiting pane joins only when a typed chunk ends the line", async () => {
+    const { sa, done } = await broadcastingPair();
+    const tabId = sa.params.tabId as string;
+    const first = useTerminalStore.getState().tabs[0].activePaneId as string;
+    useTerminalStore.getState().splitPane(tabId, first, "vertical");
+    const c = useTerminalStore.getState().tabs[0].activePaneId as string;
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, c, "connected");
+    const sc = getOrCreateSession({
+      paneId: c,
+      tabId,
+      hostId: "h",
+      hostName: "z",
+    });
+    sc.send = vi.fn();
+    sendInput(sa, "echo first\recho sec");
+    sendInput(sa, "ond\r");
+    expect(sc.send).not.toHaveBeenCalled();
+    sendInput(sa, "date\r");
+    expect(sc.send).toHaveBeenCalledWith("date\r");
+    await destroySession(c);
+    await done();
+  });
+
   it("terminal replies stay in their own pane", async () => {
     const { sa, sb, done } = await broadcastingPair();
     for (const reply of [

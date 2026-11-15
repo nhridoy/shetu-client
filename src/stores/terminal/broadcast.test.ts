@@ -87,6 +87,22 @@ describe("broadcast", () => {
     );
   });
 
+  it("a pane that drops loses its place until it rejoins at a line end", () => {
+    const { tabId, tab, ids } = threePaneTab();
+    useTerminalStore.getState().toggleBroadcast(tabId);
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, ids[1], "reconnecting");
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, ids[1], "connected");
+    expect(broadcastTargets(tab(), ids[0])).toEqual([ids[2]]);
+    useTerminalStore.getState().syncBroadcastPanes(tabId);
+    expect(broadcastTargets(tab(), ids[0]).sort()).toEqual(
+      [ids[1], ids[2]].sort(),
+    );
+  });
+
   it("targets follow the tree", () => {
     const { tabId, tab, ids } = threePaneTab();
     useTerminalStore.getState().toggleBroadcast(tabId);

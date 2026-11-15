@@ -485,9 +485,14 @@ export function sendInput(session: Session, data: string): void {
     .getState()
     .tabs.find((t) => t.id === session.params.tabId);
   if (!tab) return;
-  // A target without bracketed paste would run every pasted line as it arrives.
-  const multiLinePaste =
-    data.startsWith(BRACKETED_PASTE) && /[\r\n]/.test(data);
+  const bracketed = data.startsWith(BRACKETED_PASTE);
+  // Typing sends one key per event; a line break with more text after it (and no ESC in
+  // front, unlike Alt+Enter) is a multi-line paste, raw when the source lacks bracketed paste.
+  const rawPaste =
+    !bracketed && !data.startsWith("\x1b") && /[\r\n](?!$)/.test(data);
+  // A multi-line paste reaches a target only as a bracketed paste, or its lines would run.
+  const multiLinePaste = rawPaste || (bracketed && /[\r\n]/.test(data));
+  const safePaste = rawPaste ? `${BRACKETED_PASTE}${data}\x1b[201~` : data;
   let skipped = 0;
   for (const id of broadcastTargets(tab, session.params.paneId)) {
     const target = sessions.get(id);
@@ -496,10 +501,10 @@ export function sendInput(session: Session, data: string): void {
       skipped++;
       continue;
     }
-    target.send(data);
+    target.send(multiLinePaste ? safePaste : data);
   }
-  // A finished line is a safe point for panes that connected meanwhile to join.
-  if (/[\r\n]/.test(data) && !data.startsWith(BRACKETED_PASTE))
+  // A typed key that ends the line is the safe point for waiting panes to join.
+  if (!bracketed && !rawPaste && /[\r\n]$/.test(data))
     useTerminalStore.getState().syncBroadcastPanes(tab.id);
   if (skipped)
     toast.warning(
