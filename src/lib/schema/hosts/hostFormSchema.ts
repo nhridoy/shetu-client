@@ -27,7 +27,6 @@ export const keepaliveOk = (v: unknown) =>
   Number(v) === 0 ||
   (Number.isInteger(Number(v)) && Number(v) >= 5 && Number(v) <= 600);
 export const KEEPALIVE_ERROR = "Keepalive must be 0 (off) or 5-600 seconds";
-export const IDENTITY_ERROR = "Pick an identity";
 
 /** Only the address is required. */
 export const hostFormSchema = z

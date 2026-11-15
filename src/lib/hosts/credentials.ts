@@ -29,9 +29,10 @@ export function deriveAuthType(
   if (f.password && f.keyId) return "both";
   if (f.password) return "password";
   if (f.keyId) return "key";
+  // An untouched explicit "none" (host: ask when connecting) keeps its meaning.
+  if (ctx.stored === "none" && !ctx.touched) return "none";
   if (ctx.mode === "group") return "";
-  // An untouched "Ask when connecting" host keeps asking even inside a group.
-  if (!ctx.groupId || (ctx.stored === "none" && !ctx.touched)) return "none";
+  if (!ctx.groupId) return "none";
   return "inherit";
 }
 

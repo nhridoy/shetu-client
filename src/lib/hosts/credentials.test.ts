@@ -26,6 +26,13 @@ describe("deriveAuthType", () => {
     ).toBe("");
   });
 
+  it("an untouched None group stays none", () => {
+    const group = (touched: boolean) =>
+      ({ mode: "group", stored: "none", touched }) as const;
+    expect(deriveAuthType({}, group(false))).toBe("none");
+    expect(deriveAuthType({}, group(true))).toBe("");
+  });
+
   it("untouched none stays none", () => {
     expect(deriveAuthType({}, host("g1", "none", false))).toBe("none");
     expect(deriveAuthType({}, host("g1", "none", true))).toBe("inherit");

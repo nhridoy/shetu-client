@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   envRowsSchema,
-  IDENTITY_ERROR,
   KEEPALIVE_ERROR,
   keepaliveOk,
   PORT_ERROR,
@@ -21,7 +20,8 @@ export const groupFormSchema = z
       .trim()
       .max(255, { error: "Username must be at most 255 characters" })
       .optional(),
-    authType: z.enum(["", "password", "key", "both", "none", "identity"]),
+    /** The stored method; the credential fields decide the saved one. */
+    authType: z.string().nullish(),
     identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
@@ -38,22 +38,6 @@ export const groupFormSchema = z
     startupMode: z.enum(["none", "snippet", "command"]),
     startupSnippetId: z.string().optional(),
     startupCommand: z.string().optional(),
-  })
-  .refine(
-    (d) =>
-      !(d.authType === "password" || d.authType === "both") || !!d.password,
-    { error: "Password is required", path: ["password"] },
-  )
-  .refine(
-    (d) => !(d.authType === "key" || d.authType === "both") || !!d.keyId,
-    {
-      error: "Please select an SSH key",
-      path: ["keyId"],
-    },
-  )
-  .refine((d) => d.authType !== "identity" || !!d.identityId, {
-    error: IDENTITY_ERROR,
-    path: ["identityId"],
   })
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",

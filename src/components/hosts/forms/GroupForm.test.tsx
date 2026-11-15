@@ -1,7 +1,15 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -19,6 +27,7 @@ vi.mock("@/stores/auth/authStore", () => ({
 
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useIdentityStore } from "@/stores/identities/identityStore";
+import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
@@ -46,16 +55,6 @@ const byText = (sel: string, text: string) =>
   [...document.querySelectorAll(sel)].find((e) =>
     e.textContent?.includes(text),
   );
-const pick = (id: string, label: string) => {
-  click(document.getElementById(id) ?? undefined);
-  act(() => {
-    [...document.querySelectorAll("[role=option]")]
-      .find((e) => e.textContent === label)
-      ?.dispatchEvent(
-        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
-      );
-  });
-};
 const changeInput = (el: Element | null, value: string) =>
   act(() => {
     const set = Object.getOwnPropertyDescriptor(
@@ -112,6 +111,41 @@ const card = (title: string) =>
   );
 const fillName = (v: string) =>
   changeInput(document.querySelector('input[id$="name"]'), v);
+const focusIn = (el: Element | null) =>
+  act(() => {
+    if (!el) throw new Error("no element to focus");
+    (el as HTMLElement).focus();
+    el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  });
+const choose = (label: string) =>
+  act(() => {
+    const option = [...document.querySelectorAll("[role=option]")].find(
+      (e) => e.textContent === label,
+    );
+    if (!option) throw new Error(`option "${label}" not found`);
+    option.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+  });
+const keyButton = () =>
+  [...document.querySelectorAll("button")].find(
+    (b) => b.textContent?.trim() === "Key",
+  );
+beforeEach(() => {
+  useKeyStore.setState({
+    keys: [
+      {
+        id: "k1",
+        name: "deploy-key",
+        keyType: "ed25519",
+        publicKey: "",
+        encryptedPrivateKey: "",
+        createdAt: "1",
+      },
+    ],
+    fetchKeys: vi.fn(async () => true),
+  });
+});
 
 describe("GroupForm", () => {
   it("shows cards in order without toggles", async () => {
@@ -133,22 +167,15 @@ describe("GroupForm", () => {
     ]);
     expect(byText("button", "Credentials")).toBeUndefined();
     expect(byText("button", "Advanced")).toBeUndefined();
-    expect(document.body.textContent).toContain("Authentication");
     expect(document.body.textContent).toContain("On connect");
   });
 
-  it("puts the Authentication select in the label row, to the right", () => {
-    return mount().then(() => {
-      const label = byText("label", "Authentication") as HTMLElement;
-      const select = document.getElementById("authType") as HTMLElement;
-      const row = label.closest("[data-slot=field]") as HTMLElement;
-      expect(row.contains(select)).toBe(true);
-      expect(row.className).toContain("flex-row");
-      expect(
-        label.compareDocumentPosition(select) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-    });
+  it("group credentials are plain fields", async () => {
+    await mount();
+    expect(document.getElementById("authType")).toBeNull();
+    expect(document.querySelector('input[name="username"]')).toBeTruthy();
+    expect(document.querySelector('input[name="password"]')).toBeTruthy();
+    expect(keyButton()).toBeDefined();
   });
 
   it("has a Port field in Connection", async () => {
@@ -221,7 +248,6 @@ describe("GroupForm", () => {
     const { createGroup } = await mount();
     fillName("Prod");
     changeInput(document.querySelector('input[id$="username"]'), "deploy");
-    pick("authType", "Password");
     changeInput(document.querySelector('input[type="password"]'), "pw");
     await submit();
     expect(createGroup).toHaveBeenCalledWith(
@@ -237,22 +263,6 @@ describe("GroupForm", () => {
     expect(arg.startup).toBeUndefined();
   });
 
-  it("offers Not set but never From group as an auth method", async () => {
-    await mount();
-    click(document.getElementById("authType") ?? undefined);
-    const labels = [...document.querySelectorAll("[role=option]")].map(
-      (e) => e.textContent,
-    );
-    expect(labels).toEqual([
-      "Not set",
-      "Password",
-      "SSH key",
-      "Password + key",
-      "Identity",
-      "None",
-    ]);
-  });
-
   it("creates a group that logs in with an identity", async () => {
     useIdentityStore.setState({
       identities: [
@@ -266,11 +276,12 @@ describe("GroupForm", () => {
       ],
       error: null,
       fetchIdentities: vi.fn(async () => {}),
+      getDecryptedIdentity: vi.fn(async () => null),
     });
     const { createGroup } = await mount();
     fillName("Prod");
-    pick("authType", "Identity");
-    pick("identityId", "deploy@prod");
+    focusIn(document.querySelector('input[name="username"]'));
+    choose("deploy@prod");
     await submit();
     expect(createGroup).toHaveBeenCalledWith(
       expect.objectContaining({ authType: "identity", identityId: "i1" }),
@@ -288,22 +299,15 @@ describe("GroupForm", () => {
     expect(labels).not.toContain("None");
   });
 
-  it("requires a password for password auth", async () => {
+  it("a key alone saves key", async () => {
     const { createGroup } = await mount();
     fillName("Prod");
-    pick("authType", "Password");
+    click(keyButton());
+    choose("deploy-key");
     await submit();
-    expect(document.body.textContent).toContain("Password is required");
-    expect(createGroup).not.toHaveBeenCalled();
-  });
-
-  it("requires a key for key auth", async () => {
-    const { createGroup } = await mount();
-    fillName("Prod");
-    pick("authType", "SSH key");
-    await submit();
-    expect(document.body.textContent).toContain("Please select an SSH key");
-    expect(createGroup).not.toHaveBeenCalled();
+    expect(createGroup).toHaveBeenCalledWith(
+      expect.objectContaining({ authType: "key", keyId: "k1" }),
+    );
   });
 
   it("shows the same env name error as hosts", async () => {
@@ -345,17 +349,26 @@ describe("GroupForm", () => {
     );
   });
 
-  it("clears credentials with null when set back to Not set", async () => {
+  it("clearing a group's login sends null authType", async () => {
     const { updateGroup } = await mount(
       { id: "g1", name: "Prod" },
       { username: "deploy", authType: "password", password: "pw" },
     );
-    pick("authType", "Not set");
+    changeInput(document.querySelector('input[name="password"]'), "");
     await submit();
     expect(updateGroup).toHaveBeenCalledWith(
       "g1",
       expect.objectContaining({ authType: null, password: null, keyId: null }),
     );
+  });
+
+  it("an untouched None group keeps none", async () => {
+    const { updateGroup } = await mount(
+      { id: "g1", name: "Prod" },
+      { authType: "none" },
+    );
+    await submit();
+    expect(updateGroup.mock.calls[0][1].authType).toBe("none");
   });
 
   describe("while the stored values are unavailable", () => {
