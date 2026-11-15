@@ -10,16 +10,22 @@ use super::{relay, socks};
 use crate::ssh::{SshHandler, SshSessions};
 
 struct Running {
+    /// Which start this entry belongs to; late writes from an older run are ignored.
+    run: u64,
     host_id: String,
     owner_pane_id: String,
     status: ForwardStatus,
     cancel: CancellationToken,
-    app: tauri::AppHandle,
+    /// None only in unit tests.
+    app: Option<tauri::AppHandle>,
 }
 
 #[derive(Default)]
 pub struct ForwardingState {
     entries: Arc<Mutex<HashMap<String, Running>>>,
+    /// Panes that closed: nothing may start owned by them afterwards (pane ids aren't reused).
+    closed_owners: Mutex<std::collections::HashSet<String>>,
+    next_run: std::sync::atomic::AtomicU64,
 }
 
 impl ForwardingState {
@@ -35,23 +41,69 @@ impl ForwardingState {
             .unwrap_or(ForwardStatus::Stopped)
     }
 
-    fn set_status(&self, id: &str, status: ForwardStatus) {
-        update_status(&self.entries, id, status);
+    /// Registers a new run of `definition` (refused while one is up, or for a closed pane).
+    pub(crate) fn claim(
+        &self,
+        definition: &ForwardDefinition,
+        owner_pane_id: String,
+        app: Option<tauri::AppHandle>,
+    ) -> Result<(u64, CancellationToken), String> {
+        // Checked under the entries lock, so a pane closing mid-batch can't race a start.
+        let mut entries = self.entries.lock().map_err(|e| e.to_string())?;
+        if self.closed_owners.lock().map_err(|e| e.to_string())?.contains(&owner_pane_id) {
+            return Err("Its terminal was closed".into());
+        }
+        if let Some(entry) = entries.get(&definition.id) {
+            if !should_auto_start(&entry.status) {
+                return Err("Forward is already running".into());
+            }
+        }
+        let run = self.next_run.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let cancel = CancellationToken::new();
+        entries.insert(
+            definition.id.clone(),
+            Running {
+                run,
+                host_id: definition.host_id.clone(),
+                owner_pane_id,
+                status: ForwardStatus::Starting,
+                cancel: cancel.clone(),
+                app,
+            },
+        );
+        Ok((run, cancel))
+    }
+
+    /// Stops `id` only if `run` is still the current one (a retry finding its forward deleted).
+    pub(crate) fn stop_run(&self, id: &str, run: u64) {
+        let current = self
+            .entries
+            .lock()
+            .map(|e| e.get(id).is_some_and(|entry| entry.run == run))
+            .unwrap_or(false);
+        if current {
+            self.stop(id);
+        }
     }
 
     pub fn stop(&self, id: &str) {
         if let Ok(mut entries) = self.entries.lock() {
             if let Some(entry) = entries.remove(id) {
                 entry.cancel.cancel();
-                let _ = entry.app.emit(
-                    "forward-status",
-                    serde_json::json!({ "id": id, "status": ForwardStatus::Stopped }),
-                );
+                if let Some(app) = &entry.app {
+                    let _ = app.emit(
+                        "forward-status",
+                        serde_json::json!({ "id": id, "status": ForwardStatus::Stopped }),
+                    );
+                }
             }
         }
     }
 
     pub fn stop_owner(&self, pane: &str) {
+        if let Ok(mut closed) = self.closed_owners.lock() {
+            closed.insert(pane.to_string());
+        }
         let ids = self.matching_ids(|entry| entry.owner_pane_id == pane);
         for id in ids {
             self.stop(&id);
@@ -95,26 +147,8 @@ impl ForwardingState {
         ssh: &SshSessions,
     ) -> Result<ForwardStatus, String> {
         let id = definition.id.clone();
-        let cancel = CancellationToken::new();
-        {
-            let mut entries = self.entries.lock().map_err(|e| e.to_string())?;
-            if let Some(entry) = entries.get(&id) {
-                if !should_auto_start(&entry.status) {
-                    return Err("Forward is already running".into());
-                }
-            }
-            entries.insert(
-                id.clone(),
-                Running {
-                    host_id: definition.host_id.clone(),
-                    owner_pane_id,
-                    status: ForwardStatus::Starting,
-                    cancel: cancel.clone(),
-                    app: app.clone(),
-                },
-            );
-        }
-        self.set_status(&id, ForwardStatus::Starting);
+        let (run, cancel) = self.claim(&definition, owner_pane_id, Some(app.clone()))?;
+        update_status(&self.entries, &id, run, ForwardStatus::Starting);
         let result = self
             .prepare(&definition, db, crypto, app, ssh, cancel.clone())
             .await;
@@ -123,7 +157,7 @@ impl ForwardingState {
                 if cancel.is_cancelled() {
                     return Err("Forward was stopped while starting".into());
                 }
-                self.set_status(&id, ForwardStatus::Active);
+                update_status(&self.entries, &id, run, ForwardStatus::Active);
                 let entries = Arc::clone(&self.entries);
                 let app = app.clone();
                 let stop = cancel.clone();
@@ -143,7 +177,7 @@ impl ForwardingState {
                             super::storage::get_live(&db, &session, &id)?
                         };
                         let Some(definition) = current else {
-                            state.stop(&id);
+                            state.stop_run(&id, run);
                             return Err("Forward was deleted".to_string());
                         };
                         state
@@ -152,22 +186,17 @@ impl ForwardingState {
                             .map(|run| Box::pin(run) as RunFuture)
                     }
                 };
-                let own_run = cancel.clone();
                 tokio::spawn(supervise(
                     cancel,
                     Box::pin(task) as RunFuture,
                     attempt,
-                    // A stopped run must not write over a newer run of the same forward.
-                    move |status| {
-                        if !own_run.is_cancelled() {
-                            update_status(&entries, &id, status)
-                        }
-                    },
+                    // Matched by run, under the lock: an old run never writes over a newer one.
+                    move |status| update_status(&entries, &id, run, status),
                 ));
                 Ok(ForwardStatus::Active)
             }
             Err(error) => {
-                self.set_status(&id, ForwardStatus::Failed(error.clone()));
+                update_status(&self.entries, &id, run, ForwardStatus::Failed(error.clone()));
                 Err(error)
             }
         }
@@ -356,15 +385,19 @@ impl ForwardingState {
 
 type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
-fn update_status(entries: &Mutex<HashMap<String, Running>>, id: &str, status: ForwardStatus) {
+fn update_status(
+    entries: &Mutex<HashMap<String, Running>>,
+    id: &str,
+    run: u64,
+    status: ForwardStatus,
+) {
     if let Ok(mut entries) = entries.lock() {
-        // A stopped forward has no entry: late status from its task is dropped.
-        if let Some(entry) = entries.get_mut(id) {
+        // Stopped forwards have no entry, and a newer run has another id: late writes drop.
+        if let Some(entry) = entries.get_mut(id).filter(|entry| entry.run == run) {
             entry.status = status.clone();
-            let _ = entry.app.emit(
-                "forward-status",
-                serde_json::json!({ "id": id, "status": status }),
-            );
+            if let Some(app) = &entry.app {
+                let _ = app.emit("forward-status", serde_json::json!({ "id": id, "status": status }));
+            }
         }
     }
 }
@@ -456,6 +489,46 @@ mod tests {
     }
     fn forever() -> Run {
         Box::pin(std::future::pending())
+    }
+
+    fn def(id: &str) -> ForwardDefinition {
+        ForwardDefinition {
+            id: id.into(),
+            host_id: "h1".into(),
+            mode: ForwardMode::Dynamic,
+            name: id.into(),
+            local_port: Some(1080),
+            remote_bind_address: None,
+            remote_port: None,
+            destination_host: None,
+            destination_port: None,
+            auto_start: super::super::model::AutoStart::Off,
+        }
+    }
+
+    #[test]
+    fn a_closed_pane_can_not_own_a_new_forward() {
+        let state = ForwardingState::new();
+        state.stop_owner("pane-1");
+        assert!(state.claim(&def("b"), "pane-1".into(), None).is_err());
+        assert!(state.claim(&def("b"), "pane-2".into(), None).is_ok());
+    }
+
+    #[test]
+    fn status_writes_and_stops_only_touch_their_own_run() {
+        let state = ForwardingState::new();
+        let (old_run, _) = state.claim(&def("f"), "pane-1".into(), None).unwrap();
+        state.stop("f");
+        let (new_run, _) = state.claim(&def("f"), "pane-1".into(), None).unwrap();
+        assert_ne!(old_run, new_run);
+        // The old run's late writes and self-stop leave the new run alone.
+        update_status(&state.entries, "f", old_run, ForwardStatus::Failed("stale".into()));
+        state.stop_run("f", old_run);
+        assert_eq!(state.status("f"), ForwardStatus::Starting);
+        update_status(&state.entries, "f", new_run, ForwardStatus::Active);
+        assert_eq!(state.status("f"), ForwardStatus::Active);
+        state.stop_run("f", new_run);
+        assert_eq!(state.status("f"), ForwardStatus::Stopped);
     }
 
     #[test]

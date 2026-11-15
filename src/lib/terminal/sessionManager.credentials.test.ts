@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
   forget: vi.fn(),
   connectSaved: vi.fn(async () => {}),
   status: vi.fn(),
+  autoStart: vi.fn(async () => {}),
   Cancelled: class ConnectCancelled extends Error {},
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
@@ -50,6 +51,9 @@ vi.mock("./sessionHistory", () => ({
   captureHistoryOutput: vi.fn(),
   finishHistoryAttempt: vi.fn(async () => {}),
   markHistoryConnected: vi.fn(),
+}));
+vi.mock("@/lib/forwarding/autoStart", () => ({
+  autoStartWithTerminal: m.autoStart,
 }));
 vi.mock("./pendingCredentials", () => ({
   savePendingCredentials: m.save,
@@ -97,6 +101,22 @@ describe("credentials typed while connecting", () => {
     emit("connected");
     expect(m.save).toHaveBeenCalledWith("c1");
     await destroySession("c1");
+  });
+
+  it("terminal auto-start waits until typed credentials are saved", async () => {
+    let saved: () => void = () => {};
+    m.save.mockReturnValueOnce(new Promise<void>((r) => (saved = r)));
+    m.autoStart.mockClear();
+    const emit = await open("c9");
+    emit("connected");
+    await Promise.resolve();
+    // The tunnel would log in with the old password if it started now.
+    expect(m.autoStart).not.toHaveBeenCalled();
+    saved();
+    await vi.waitFor(() =>
+      expect(m.autoStart).toHaveBeenCalledWith("h1", "c9"),
+    );
+    await destroySession("c9");
   });
 
   it("are dropped, not saved, on error", async () => {

@@ -275,21 +275,27 @@ async function connectViaTauri(session: Session) {
       if (sessionId !== params.paneId) return;
 
       switch (type) {
-        case "connected":
+        case "connected": {
           void markHistoryConnected(session.historyAttemptId);
           clearReconnect();
           updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
-          void savePendingCredentials(params.paneId);
-          // This host's "With a terminal" tunnels come up with it (and again after a reconnect).
-          if (params.hostId)
-            void autoStartWithTerminal(params.hostId, params.paneId);
+          const saving = savePendingCredentials(params.paneId);
+          // This host's "With a terminal" tunnels come up with it (and again after a
+          // reconnect), once a password typed just now is saved for them to log in with.
+          if (params.hostId) {
+            const hostId = params.hostId;
+            void Promise.resolve(saving)
+              .catch(() => {})
+              .then(() => autoStartWithTerminal(hostId, params.paneId));
+          }
           if (event.payload.os && params.hostId) {
             void useHostStore
               .getState()
               .updateHostOs(params.hostId, event.payload.os);
           }
           break;
+        }
         case "output":
           xterm.write(data);
           void captureHistoryOutput(session.historyAttemptId, data);

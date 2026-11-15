@@ -214,6 +214,14 @@ pub enum Trigger {
     Terminal(String),
 }
 
+/// Whether `definition` (as saved now) should start for `trigger`.
+pub fn still_wanted(definition: &ForwardDefinition, trigger: &Trigger) -> bool {
+    match trigger {
+        Trigger::Unlock => definition.auto_start == AutoStart::Unlock,
+        Trigger::Terminal(host) => definition.auto_start == AutoStart::Terminal && &definition.host_id == host,
+    }
+}
+
 /// Forwards to start for `trigger` (whether they are already running is the caller's check).
 pub fn auto_start_candidates(
     db: &LocalDb,
@@ -570,6 +578,29 @@ mod tests {
         let session = session();
         let saved = create(&db, &session, DEVICE, ForwardInput::dynamic("h1", "socks", 1080)).unwrap();
         assert_eq!(saved.auto_start, AutoStart::Off);
+    }
+
+    #[test]
+    fn a_candidate_is_rechecked_against_its_trigger() {
+        let mut d = ForwardInput::local("h1", "db", 5432, "localhost", 5432);
+        d.auto_start = AutoStart::Terminal;
+        let def = ForwardDefinition {
+            id: "f".into(),
+            host_id: d.host_id.clone(),
+            mode: d.mode,
+            name: d.name.clone(),
+            local_port: d.local_port,
+            remote_bind_address: None,
+            remote_port: None,
+            destination_host: d.destination_host.clone(),
+            destination_port: d.destination_port,
+            auto_start: AutoStart::Terminal,
+        };
+        assert!(still_wanted(&def, &Trigger::Terminal("h1".into())));
+        assert!(!still_wanted(&def, &Trigger::Terminal("h2".into())));
+        assert!(!still_wanted(&def, &Trigger::Unlock));
+        let off = ForwardDefinition { auto_start: AutoStart::Off, ..def };
+        assert!(!still_wanted(&off, &Trigger::Terminal("h1".into())));
     }
 
     #[test]

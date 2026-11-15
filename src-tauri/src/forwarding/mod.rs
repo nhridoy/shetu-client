@@ -131,7 +131,15 @@ pub async fn auto_start_forwards(
         storage::auto_start_candidates(&db, &session, &trigger)?
     };
     let mut started = 0;
-    for definition in candidates {
+    for candidate in candidates {
+        // Starts happen one by one: re-read each so one deleted or changed meanwhile is skipped.
+        let current = {
+            let session = crypto.session.lock().map_err(|e| e.to_string())?;
+            storage::get_live(&db, &session, &candidate.id)?
+        };
+        let Some(definition) = current.filter(|d| storage::still_wanted(d, &trigger)) else {
+            continue;
+        };
         if !runtime::should_auto_start(&state.status(&definition.id)) {
             continue;
         }
