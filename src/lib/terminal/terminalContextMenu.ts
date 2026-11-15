@@ -42,6 +42,7 @@ export function terminalContextMenuItems(
   term: TerminalMenuTarget,
   split: (direction: "horizontal" | "vertical") => void,
   openSnippets: () => void,
+  openFind?: () => void,
 ): ContextMenuItem[] {
   const then = (action: () => void) => () => {
     action();
@@ -61,6 +62,15 @@ export function terminalContextMenuItems(
       onClick: () => pasteClipboard(term),
     },
     { label: "Select All", onClick: then(() => term.selectAll()) },
+    ...(openFind
+      ? [
+          {
+            label: "Find…",
+            shortcut: shortcutLabel("terminal.find"),
+            onClick: openFind,
+          },
+        ]
+      : []),
     { type: "separator" },
     {
       label: "Snippets…",

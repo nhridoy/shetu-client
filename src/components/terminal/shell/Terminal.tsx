@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
 import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
+import { onOpenFind } from "@/lib/terminal/findCommand";
 import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
   attachSession,
@@ -20,6 +21,7 @@ import {
   type ReconnectState,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
+import TerminalFindBar from "./TerminalFindBar";
 
 const SSH_PROGRESS_STEP: Record<string, number> = {
   resolving: 0,
@@ -70,6 +72,10 @@ export default function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [finding, setFinding] = useState(false);
+
+  // The find shortcut opens the bar in the focused pane only.
+  useEffect(() => onOpenFind(() => isActive && setFinding(true)), [isActive]);
 
   // Right-click opens the terminal menu instead of the webview's.
   useEffect(() => {
@@ -245,12 +251,22 @@ export default function Terminal({
                         .splitPane(tabId, paneId, direction),
                     // Right-click already made this the active pane, so the pick lands here.
                     openCommandPalette,
+                    () => setFinding(true),
                   )
                 : [];
             })()}
           />,
           document.body,
         )}
+      {finding && getSession(paneId) && (
+        <TerminalFindBar
+          search={getSession(paneId)?.searchAddon as never}
+          onClose={() => {
+            setFinding(false);
+            getSession(paneId)?.xterm.focus();
+          }}
+        />
+      )}
       {connStep !== null && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/90 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">

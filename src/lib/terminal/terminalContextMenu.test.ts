@@ -82,6 +82,25 @@ describe("terminalContextMenuItems", () => {
     expect(split).toHaveBeenNthCalledWith(2, "vertical");
   });
 
+  it("Find… opens the find bar, right after Select All", () => {
+    const openFind = vi.fn();
+    const items = terminalContextMenuItems(
+      terminal(),
+      vi.fn(),
+      vi.fn(),
+      openFind,
+    );
+    const labels = items.map((i) => ("label" in i ? i.label : "—"));
+    expect(labels.indexOf("Find…")).toBe(labels.indexOf("Select All") + 1);
+    expect(
+      terminalContextMenuItems(terminal(), vi.fn(), vi.fn()).some(
+        (i) => "label" in i && i.label === "Find…",
+      ),
+    ).toBe(false);
+    item(items, "Find…").onClick();
+    expect(openFind).toHaveBeenCalled();
+  });
+
   it("snippets_opens_the_palette in its own group before Clear", () => {
     const openSnippets = vi.fn();
     const items = terminalContextMenuItems(terminal(), vi.fn(), openSnippets);
