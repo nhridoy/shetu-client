@@ -7,11 +7,17 @@ import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
+export type Startup =
+  | { snippetId: string }
+  | { command: string }
+  | { none: true }
+  | null;
+
 export interface Host {
   id: string;
   name: string;
   address: string;
-  port: number;
+  port: number | null;
   username?: string;
   groupId?: string | null;
   tags: string[];
@@ -22,16 +28,16 @@ export interface Host {
   createdAt: string;
   updatedAt: string;
   vaultId?: string;
-  authType?: "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none";
   password?: string;
   privateKey?: string;
   passphrase?: string;
   keyId?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
-  forwardAgent?: boolean;
+  forwardAgent?: boolean | null;
   env?: { name: string; value: string }[];
-  startup?: { snippetId: string } | { command: string } | null;
+  startup?: Startup;
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
   data?: string;
 }
@@ -43,6 +49,16 @@ export interface Group {
   vaultId?: string;
   sortOrder: number;
   createdAt: string;
+  // Encrypted fields: only populated by getDecryptedGroup.
+  username?: string | null;
+  port?: number | null;
+  authType?: "password" | "key" | "both" | "none" | null;
+  password?: string | null;
+  keyId?: string | null;
+  keepaliveSecs?: number | null;
+  env?: { name: string; value: string }[];
+  startup?: Startup;
+  forwardAgent?: boolean | null;
 }
 
 interface HostState {
@@ -59,7 +75,11 @@ interface HostState {
     opts?: { probeOs?: boolean },
   ) => Promise<Host | null>;
   /** False when the save failed (the reason is in `error`). */
-  updateHost: (id: string, host: Partial<Host>) => Promise<boolean>;
+  updateHost: (
+    id: string,
+    host: Partial<Host>,
+    opts?: { passwordAuth?: boolean },
+  ) => Promise<boolean>;
   deleteHost: (id: string) => Promise<void>;
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
@@ -69,6 +89,7 @@ interface HostState {
   getCredentialsForHost: (
     hostId: string,
   ) => Promise<{ password: string; privateKey: string; passphrase: string }>;
+  getDecryptedGroup: (id: string) => Promise<Group | null>;
   createGroup: (group: Partial<Group>) => Promise<void>;
   updateGroup: (id: string, group: Partial<Group>) => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
@@ -77,15 +98,39 @@ interface HostState {
 
 interface HostPayload {
   address: string;
-  port: number;
+  port: number | null;
   username: string;
   password?: string;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
-  forwardAgent?: boolean;
+  forwardAgent?: boolean | null;
   env?: { name: string; value: string }[];
-  startup?: { snippetId: string } | { command: string } | null;
+  startup?: Startup;
 }
+
+type GroupFields = Pick<
+  Group,
+  | "username"
+  | "port"
+  | "authType"
+  | "password"
+  | "keyId"
+  | "keepaliveSecs"
+  | "env"
+  | "startup"
+  | "forwardAgent"
+>;
+const GROUP_KEYS: (keyof GroupFields)[] = [
+  "username",
+  "port",
+  "authType",
+  "password",
+  "keyId",
+  "keepaliveSecs",
+  "env",
+  "startup",
+  "forwardAgent",
+];
 
 function parseTags(tags: string | null | undefined): string[] {
   if (!tags) return [];
@@ -114,13 +159,40 @@ function hostFromRow(row: SyncRow): Host {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     vaultId: row.vault_id,
-    authType:
-      (row.auth_type as "password" | "key" | "both" | "none") ?? "password",
+    authType: (row.auth_type as Host["authType"]) ?? "password",
     password: undefined,
     keyId: row.key_id ?? undefined,
     data: row.data ?? "",
   };
 }
+
+function cleanStartup(v: unknown): Startup {
+  const s = v as Record<string, unknown> | null | undefined;
+  if (!s || typeof s !== "object") return null;
+  if (typeof s.snippetId === "string" && s.snippetId)
+    return { snippetId: s.snippetId };
+  if (typeof s.command === "string") return { command: s.command };
+  return s.none === true ? { none: true } : null;
+}
+
+const cleanKeepalive = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+const cleanPort = (v: unknown): number | null =>
+  typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 65535
+    ? v
+    : null;
+
+const cleanForward = (v: unknown): boolean | null =>
+  typeof v === "boolean" ? v : null;
+
+const cleanEnv = (v: unknown): { name: string; value: string }[] =>
+  Array.isArray(v)
+    ? v.filter(
+        (e): e is { name: string; value: string } =>
+          typeof e?.name === "string" && typeof e?.value === "string",
+      )
+    : [];
 
 /** Map a decrypted payload onto Host fields, tolerating junk stored values. */
 function hostFieldsFromPayload(
@@ -138,32 +210,40 @@ function hostFieldsFromPayload(
   | "startup"
 > {
   const p = payload as Record<string, unknown>;
-  const startup = p.startup as Record<string, unknown> | null | undefined;
   return {
     address: payload.address ?? "",
-    port: payload.port ?? 22,
+    port: cleanPort(payload.port),
     username: payload.username ?? "root",
     password: payload.password,
     jumpHostId: payload.jumpHostId ?? null,
-    keepaliveSecs:
-      typeof p.keepaliveSecs === "number" && Number.isFinite(p.keepaliveSecs)
-        ? p.keepaliveSecs
+    keepaliveSecs: cleanKeepalive(p.keepaliveSecs),
+    forwardAgent: cleanForward(p.forwardAgent),
+    env: cleanEnv(p.env),
+    startup: cleanStartup(p.startup),
+  };
+}
+
+const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+/** Map a decrypted group payload onto Group fields, tolerating junk. */
+function groupFieldsFromPayload(p: Record<string, unknown>): GroupFields {
+  const auth = p.authType;
+  return {
+    username: str(p.username),
+    port: cleanPort(p.port),
+    authType:
+      auth === "password" ||
+      auth === "key" ||
+      auth === "both" ||
+      auth === "none"
+        ? auth
         : null,
-    forwardAgent: p.forwardAgent === true,
-    env: Array.isArray(p.env)
-      ? p.env.filter(
-          (e): e is { name: string; value: string } =>
-            typeof e?.name === "string" && typeof e?.value === "string",
-        )
-      : [],
-    startup:
-      startup && typeof startup === "object"
-        ? typeof startup.snippetId === "string" && startup.snippetId
-          ? { snippetId: startup.snippetId }
-          : typeof startup.command === "string"
-            ? { command: startup.command }
-            : null
-        : null,
+    password: str(p.password),
+    keyId: str(p.keyId),
+    keepaliveSecs: cleanKeepalive(p.keepaliveSecs),
+    env: cleanEnv(p.env),
+    startup: cleanStartup(p.startup),
+    forwardAgent: cleanForward(p.forwardAgent),
   };
 }
 
@@ -172,6 +252,27 @@ async function decryptHostRow(row: SyncRow): Promise<Host> {
   const payload = ((await decryptRowData(row.data)) ??
     {}) as Partial<HostPayload>;
   return { ...hostFromRow(row), ...hostFieldsFromPayload(payload) };
+}
+
+/** Encrypted group fields present in a patch (undefined = leave alone). */
+function definedFields(g: Partial<Group>): Partial<GroupFields> {
+  return Object.fromEntries(
+    GROUP_KEYS.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]),
+  );
+}
+
+const queues = new Map<string, Promise<unknown>>();
+
+/** Run fn after earlier work on the same key settles, so read-merge-write
+ *  updates of one encrypted row never interleave. */
+function runSerial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const run = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  queues.set(key, tail);
+  void tail.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  return run;
 }
 
 function newId(): string {
@@ -292,12 +393,12 @@ export const useHostStore = create<HostState>((set, get) => ({
         {
           plaintext: JSON.stringify({
             address: host.address,
-            port: host.port ?? 22,
+            port: host.port ?? null,
             username: host.username ?? "root",
             password: host.password,
             jumpHostId: host.jumpHostId ?? null,
             keepaliveSecs: host.keepaliveSecs ?? null,
-            forwardAgent: host.forwardAgent ?? false,
+            forwardAgent: host.forwardAgent ?? null,
             env: host.env ?? [],
             startup: host.startup ?? null,
           }),
@@ -308,7 +409,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         id: row.id,
         name: row.name ?? "",
         address: "",
-        port: 22,
+        port: null,
         username: undefined,
         groupId: host.groupId ?? null,
         tags: host.tags ?? [],
@@ -333,73 +434,87 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  updateHost: async (id, patch) => {
-    set({ isLoading: true, error: null });
-    try {
-      const row = await getRow("hosts", id);
-      if (!row) {
-        set({ isLoading: false, error: "Host not found" });
+  updateHost: (id, patch, opts) =>
+    runSerial(`hosts:${id}`, async () => {
+      set({ isLoading: true, error: null });
+      try {
+        const row = await getRow("hosts", id);
+        if (!row) {
+          set({ isLoading: false, error: "Host not found" });
+          return false;
+        }
+        const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const sensitive: Record<string, unknown> = {};
+        if (patch.address !== undefined) sensitive.address = patch.address;
+        if (patch.port !== undefined) sensitive.port = patch.port;
+        if (patch.username !== undefined) sensitive.username = patch.username;
+        if (patch.password !== undefined) sensitive.password = patch.password;
+        if (patch.jumpHostId !== undefined)
+          sensitive.jumpHostId = patch.jumpHostId;
+        if (patch.keepaliveSecs !== undefined)
+          sensitive.keepaliveSecs = patch.keepaliveSecs;
+        if (patch.forwardAgent !== undefined)
+          sensitive.forwardAgent = patch.forwardAgent;
+        if (patch.env !== undefined) sensitive.env = patch.env;
+        if (patch.startup !== undefined) sensitive.startup = patch.startup;
+        const saved = await upsertRow(
+          "hosts",
+          {
+            id: row.id,
+            vault_id: row.vault_id,
+            name: patch.name ?? row.name,
+            os: patch.os !== undefined ? patch.os : (row.os ?? null),
+            // passwordAuth: derived from the row read inside this queued save, so a
+            // concurrent auth change can't be overwritten; a key in use stays in play.
+            auth_type: opts?.passwordAuth
+              ? row.auth_type === "key" || row.auth_type === "both"
+                ? "both"
+                : "password"
+              : patch.authType !== undefined
+                ? patch.authType
+                : (row.auth_type ?? "password"),
+            tags:
+              patch.tags !== undefined
+                ? JSON.stringify(patch.tags)
+                : (row.tags ?? "[]"),
+            color:
+              patch.color !== undefined ? patch.color : (row.color ?? null),
+            group_id:
+              patch.groupId !== undefined
+                ? patch.groupId
+                : (row.group_id ?? null),
+            key_id:
+              patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
+            sort_order: patch.sortOrder ?? row.sort_order,
+          },
+          {
+            plaintext: JSON.stringify({ ...existing, ...sensitive }),
+            recordType: "hosts",
+          },
+        );
+        set({
+          hosts: get().hosts.map((h) =>
+            h.id === id
+              ? {
+                  ...h,
+                  ...patch,
+                  authType: (saved.auth_type ?? h.authType) as Host["authType"],
+                  data: saved.data,
+                }
+              : h,
+          ),
+          isLoading: false,
+        });
+        void probeHostOs(id);
+        return true;
+      } catch (err) {
+        set({ isLoading: false, error: errorMessage(err) });
         return false;
       }
-      const existing = ((await decryptRowData(row.data)) ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const sensitive: Record<string, unknown> = {};
-      if (patch.address !== undefined) sensitive.address = patch.address;
-      if (patch.port !== undefined) sensitive.port = patch.port;
-      if (patch.username !== undefined) sensitive.username = patch.username;
-      if (patch.password !== undefined) sensitive.password = patch.password;
-      if (patch.jumpHostId !== undefined)
-        sensitive.jumpHostId = patch.jumpHostId;
-      if (patch.keepaliveSecs !== undefined)
-        sensitive.keepaliveSecs = patch.keepaliveSecs;
-      if (patch.forwardAgent !== undefined)
-        sensitive.forwardAgent = patch.forwardAgent;
-      if (patch.env !== undefined) sensitive.env = patch.env;
-      if (patch.startup !== undefined) sensitive.startup = patch.startup;
-      const saved = await upsertRow(
-        "hosts",
-        {
-          id: row.id,
-          vault_id: row.vault_id,
-          name: patch.name ?? row.name,
-          os: patch.os !== undefined ? patch.os : (row.os ?? null),
-          auth_type:
-            patch.authType !== undefined
-              ? patch.authType
-              : (row.auth_type ?? "password"),
-          tags:
-            patch.tags !== undefined
-              ? JSON.stringify(patch.tags)
-              : (row.tags ?? "[]"),
-          color: patch.color !== undefined ? patch.color : (row.color ?? null),
-          group_id:
-            patch.groupId !== undefined
-              ? patch.groupId
-              : (row.group_id ?? null),
-          key_id:
-            patch.keyId !== undefined ? patch.keyId : (row.key_id ?? null),
-          sort_order: patch.sortOrder ?? row.sort_order,
-        },
-        {
-          plaintext: JSON.stringify({ ...existing, ...sensitive }),
-          recordType: "hosts",
-        },
-      );
-      set({
-        hosts: get().hosts.map((h) =>
-          h.id === id ? { ...h, ...patch, data: saved.data } : h,
-        ),
-        isLoading: false,
-      });
-      void probeHostOs(id);
-      return true;
-    } catch (err) {
-      set({ isLoading: false, error: errorMessage(err) });
-      return false;
-    }
-  },
+    }),
 
   deleteHost: async (id) => {
     set({ isLoading: true, error: null });
@@ -446,6 +561,24 @@ export const useHostStore = create<HostState>((set, get) => ({
 
   selectHost: (host) => set({ selectedHost: host }),
 
+  getDecryptedGroup: async (id) => {
+    const row = await getRow("groups", id);
+    if (!row) return null;
+    const payload = ((await decryptRowData(row.data)) ?? {}) as Record<
+      string,
+      unknown
+    >;
+    return {
+      id: row.id,
+      name: row.name ?? "",
+      parentId: row.parent_id ?? null,
+      vaultId: row.vault_id,
+      sortOrder: row.sort_order,
+      createdAt: String(row.created_at),
+      ...groupFieldsFromPayload(payload),
+    };
+  },
+
   getDecryptedHost: async (hostId) => {
     const cached = get().hosts.find((h) => h.id === hostId);
     if (cached?.data) {
@@ -466,28 +599,29 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
   },
 
-  updateHostGroup: async (hostId, groupId) => {
-    try {
-      await invoke("db_update_host_group", {
-        hostId,
-        groupId,
-        deviceId: await getDeviceId(),
-      });
-      const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
-      if (vaultId && typeof window !== "undefined") {
-        window.dispatchEvent(
-          new CustomEvent("shetu:local-mutation", {
-            detail: { table: "hosts", vaultId },
-          }),
-        );
+  updateHostGroup: (hostId, groupId) =>
+    runSerial(`hosts:${hostId}`, async () => {
+      try {
+        await invoke("db_update_host_group", {
+          hostId,
+          groupId,
+          deviceId: await getDeviceId(),
+        });
+        const vaultId = get().hosts.find((host) => host.id === hostId)?.vaultId;
+        if (vaultId && typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("shetu:local-mutation", {
+              detail: { table: "hosts", vaultId },
+            }),
+          );
+        }
+      } catch (err) {
+        console.error("[updateHostGroup] IPC failed:", err);
       }
-    } catch (err) {
-      console.error("[updateHostGroup] IPC failed:", err);
-    }
-    set((s) => ({
-      hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, groupId } : h)),
-    }));
-  },
+      set((s) => ({
+        hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, groupId } : h)),
+      }));
+    }),
 
   getCredentialsForHost: async (hostId) => {
     const cached = get().hosts.find((h) => h.id === hostId);
@@ -500,8 +634,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         return { password: "", privateKey: "", passphrase: "" };
       }
       data = row.data;
-      authType =
-        (row.auth_type as "password" | "key" | "both" | "none") ?? "password";
+      authType = (row.auth_type as Host["authType"]) ?? "password";
       keyId = row.key_id ?? undefined;
     }
     const payload = ((await decryptRowData(data)) ??
@@ -538,7 +671,10 @@ export const useHostStore = create<HostState>((set, get) => ({
           parent_id: group.parentId ?? null,
           sort_order: group.sortOrder ?? 0,
         },
-        { plaintext: "{}", recordType: "groups" },
+        {
+          plaintext: JSON.stringify(definedFields(group)),
+          recordType: "groups",
+        },
       );
       const created: Group = {
         id: row.id,
@@ -554,37 +690,63 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  updateGroup: async (id, patch) => {
-    set({ isLoading: true, error: null });
-    try {
-      const row = await getRow("groups", id);
-      if (!row) {
-        set({ isLoading: false, error: "Group not found" });
-        return;
+  updateGroup: (id, patch) =>
+    runSerial(`groups:${id}`, async () => {
+      set({ isLoading: true, error: null });
+      try {
+        const row = await getRow("groups", id);
+        if (!row) {
+          set({ isLoading: false, error: "Group not found" });
+          return;
+        }
+        const fields = definedFields(patch);
+        // Plain-column edits keep the stored ciphertext as is (no decrypt needed).
+        const credentialsPatched = Object.keys(fields).length > 0;
+        const existing = credentialsPatched
+          ? (((await decryptRowData(row.data)) ?? {}) as Record<
+              string,
+              unknown
+            >)
+          : {};
+        await upsertRow(
+          "groups",
+          {
+            id: row.id,
+            vault_id: row.vault_id,
+            name: patch.name ?? row.name,
+            parent_id:
+              patch.parentId !== undefined
+                ? patch.parentId
+                : (row.parent_id ?? null),
+            sort_order: patch.sortOrder ?? row.sort_order,
+            ...(!credentialsPatched && { data: row.data }),
+          },
+          credentialsPatched
+            ? {
+                plaintext: JSON.stringify({ ...existing, ...fields }),
+                recordType: "groups",
+              }
+            : undefined,
+        );
+        // Keep secrets out of the list state; they live only in the encrypted row.
+        const { name, parentId, sortOrder } = patch;
+        set({
+          groups: get().groups.map((g) =>
+            g.id === id
+              ? {
+                  ...g,
+                  ...(name !== undefined && { name }),
+                  ...(parentId !== undefined && { parentId }),
+                  ...(sortOrder !== undefined && { sortOrder }),
+                }
+              : g,
+          ),
+          isLoading: false,
+        });
+      } catch (err) {
+        set({ isLoading: false, error: errorMessage(err) });
       }
-      await decryptRowData(row.data);
-      await upsertRow(
-        "groups",
-        {
-          id: row.id,
-          vault_id: row.vault_id,
-          name: patch.name ?? row.name,
-          parent_id:
-            patch.parentId !== undefined
-              ? patch.parentId
-              : (row.parent_id ?? null),
-          sort_order: patch.sortOrder ?? row.sort_order,
-        },
-        { plaintext: "{}", recordType: "groups" },
-      );
-      set({
-        groups: get().groups.map((g) => (g.id === id ? { ...g, ...patch } : g)),
-        isLoading: false,
-      });
-    } catch (err) {
-      set({ isLoading: false, error: errorMessage(err) });
-    }
-  },
+    }),
 
   deleteGroup: async (id) => {
     set({ isLoading: true, error: null });

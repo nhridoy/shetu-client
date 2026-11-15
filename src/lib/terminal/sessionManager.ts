@@ -9,7 +9,12 @@ import {
   terminalThemeFor,
   useThemeStore,
 } from "@/stores/themeStore";
-import { connectSavedTerminal } from "./agentForwarding";
+import { ConnectCancelled, connectSavedTerminal } from "./agentForwarding";
+import {
+  dropPendingCredentials,
+  forgetSession,
+  savePendingCredentials,
+} from "./pendingCredentials";
 import {
   beginHistoryAttempt,
   captureHistoryOutput,
@@ -26,7 +31,7 @@ export interface SessionParams {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;
@@ -194,9 +199,13 @@ async function connectViaTauri(session: Session) {
 
       try {
         await doConnect();
-      } catch {
+      } catch (error) {
         attempt++;
-        if (attempt > MAX_RECONNECT_ATTEMPTS || destroyed) {
+        if (
+          error instanceof ConnectCancelled ||
+          attempt > MAX_RECONNECT_ATTEMPTS ||
+          destroyed
+        ) {
           update(params.tabId, params.paneId, "failed");
           updateReconnect(params.tabId, params.paneId, null);
           return;
@@ -253,6 +262,7 @@ async function connectViaTauri(session: Session) {
           clearReconnect();
           updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
+          void savePendingCredentials(params.paneId);
           if (event.payload.os && params.hostId) {
             void useHostStore
               .getState()
@@ -264,6 +274,7 @@ async function connectViaTauri(session: Session) {
           void captureHistoryOutput(session.historyAttemptId, data);
           break;
         case "disconnected":
+          dropPendingCredentials(params.paneId);
           void finishHistoryAttempt(
             session.historyAttemptId,
             "ended",
@@ -273,6 +284,7 @@ async function connectViaTauri(session: Session) {
           startReconnect();
           break;
         case "error":
+          dropPendingCredentials(params.paneId);
           void finishHistoryAttempt(session.historyAttemptId, "failed", data);
           session.historyAttemptId = null;
           xterm.writeln(`\r\n\x1b[31mError: ${data}\x1b[0m`);
@@ -536,6 +548,7 @@ useThemeStore.subscribe((state, prev) => {
 export async function destroySession(paneId: string) {
   const closing = sessions.get(paneId);
   if (closing) closing.closed = true;
+  forgetSession(paneId);
   // Forward definitions remain saved, but their listeners belong to this pane.
   try {
     const { invoke } = await import("@tauri-apps/api/core");

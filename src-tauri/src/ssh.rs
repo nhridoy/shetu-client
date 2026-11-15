@@ -621,22 +621,38 @@ fn settle_prompt(pending: &PendingPrompts, id: &str, responses: Option<Vec<Strin
     }
 }
 
+/// The `ssh-auth-prompt` event body. `hop` tells a jump-host prompt from the destination's.
+fn auth_prompt_payload(
+    id: &str,
+    session_id: &str,
+    hop: crate::ssh_route::RouteHop,
+    host: &str,
+    port: u16,
+    username: &str,
+    request: &crate::ssh_auth::AuthPromptRequest,
+) -> serde_json::Value {
+    let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
+    serde_json::json!({
+        "id": id, "sessionId": session_id, "hop": hop, "kind": request.kind, "host": host, "port": port, "username": username,
+        "name": request.name, "instructions": request.instructions, "prompts": prompts,
+    })
+}
+
 pub(crate) fn make_prompter(
     app: tauri::AppHandle,
     pending: PendingPrompts,
+    session_id: String,
+    hop: crate::ssh_route::RouteHop,
     host: String,
     port: u16,
     username: String,
 ) -> crate::ssh_auth::Prompter {
     Arc::new(move |request: crate::ssh_auth::AuthPromptRequest| {
-        let (app, pending, host, username) = (app.clone(), Arc::clone(&pending), host.clone(), username.clone());
+        let (app, pending, session_id, host, username) =
+            (app.clone(), Arc::clone(&pending), session_id.clone(), host.clone(), username.clone());
         Box::pin(async move {
-            let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
             await_prompt_answer(&pending, |id| {
-                let _ = app.emit("ssh-auth-prompt", serde_json::json!({
-                    "id": id, "host": host, "port": port, "username": username,
-                    "name": request.name, "instructions": request.instructions, "prompts": prompts,
-                }));
+                let _ = app.emit("ssh-auth-prompt", auth_prompt_payload(id, &session_id, hop, &host, port, &username, &request));
             }, |id| {
                 let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
             }, AUTH_PROMPT_TIMEOUT).await
@@ -717,6 +733,8 @@ pub struct SshHandler {
     require_known_host: bool,
     /// Set only on the target's interactive terminal handler.
     forward_agent: bool,
+    /// Which hop of a route this connection is; named in login prompts.
+    hop: crate::ssh_route::RouteHop,
 }
 
 pub(crate) struct HostKeyPromptWatch {
@@ -777,7 +795,12 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false }
+        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false, hop: crate::ssh_route::RouteHop::Target }
+    }
+
+    pub(crate) fn at_hop(mut self, hop: crate::ssh_route::RouteHop) -> Self {
+        self.hop = hop;
+        self
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
@@ -959,6 +982,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     ));
     let use_agent = uses_agent(handler.auto_accept, handler.require_known_host);
     let prompter = handler.interactive_prompts();
+    let (session_id, hop) = (handler.session_id.clone(), handler.hop);
     let waits = Arc::clone(&handler.user_waits);
     let mut session = russh::client::connect_stream(client_config, stream, handler)
         .await
@@ -969,7 +993,7 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 
     let agent_path = crate::ssh_options::defaults().agent_path;
     let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
-    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, config.host.clone(), config.port, config.username.clone()));
+    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, session_id, hop, config.host.clone(), config.port, config.username.clone()));
     let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
@@ -1074,11 +1098,12 @@ pub async fn connect_saved(
     cols: u32,
     rows: u32,
     allow_agent_forwarding: Option<bool>,
+    username: Option<String>,
     db: tauri::State<'_, crate::db::LocalDb>,
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let mut route = crate::ssh_route::resolve_saved_route(&db, &crypto, &host_id)?;
+    let mut route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let mut config = route.target.clone();
     // Gates both the handler flag and the agent_forward request in run_connect_session.
     config.forward_agent = agent_forwarding_on(config.forward_agent, allow_agent_forwarding);
@@ -1557,6 +1582,16 @@ pub fn load_host_config(
     crypto: &crate::CryptoState,
     host_id: &str,
 ) -> Result<SshConfig, String> {
+    load_host_config_as(db, crypto, host_id, None)
+}
+
+/// `username` (typed at connect) is used only when neither the host nor its groups give one.
+pub fn load_host_config_as(
+    db: &crate::db::LocalDb,
+    crypto: &crate::CryptoState,
+    host_id: &str,
+    username: Option<&str>,
+) -> Result<SshConfig, String> {
     let row = crate::db::get_sync_row(db, crate::db::Table::Hosts, host_id)?
         .ok_or_else(|| "host not found".to_string())?;
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
@@ -1564,55 +1599,76 @@ pub fn load_host_config(
     drop(session);
     let payload: serde_json::Value =
         serde_json::from_str(&plaintext).map_err(|e| format!("bad host payload: {e}"))?;
+    let chain = crate::host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
+    let effective = crate::host_inherit::resolve(
+        &payload,
+        row.auth_type.as_deref().unwrap_or("password"),
+        row.key_id.as_deref(),
+        &chain,
+    );
+    let username = match effective
+        .username
+        .map(|(name, _)| name)
+        .or_else(|| username.filter(|u| !u.trim().is_empty()).map(String::from))
+    {
+        Some(name) => name,
+        // Hosts saved before usernames became optional have no key and keep the old default.
+        None if payload.get("username").is_none() => "root".to_string(),
+        None => return Err("No username set for this host".into()),
+    };
     let mut config = SshConfig {
         host: payload["address"].as_str().unwrap_or_default().to_string(),
-        port: payload["port"].as_u64().unwrap_or(22) as u16,
-        username: payload["username"].as_str().unwrap_or("root").to_string(),
-        password: None,
+        port: effective.port.0,
+        username,
+        password: effective.password,
         private_key: None,
         passphrase: None,
         detect_os: false,
-        keepalive_secs: payload["keepaliveSecs"]
-            .as_f64()
-            .map(|n| crate::ssh_options::clamp_keepalive(n as i64)),
-        forward_agent: payload["forwardAgent"].as_bool() == Some(true),
-        env: payload["env"]
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|r| {
-                        let name = r["name"].as_str()?;
-                        let mut ch = name.chars();
-                        let ok = ch.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                            && ch.all(|c| c.is_ascii_alphanumeric() || c == '_');
-                        ok.then(|| Some((name.to_string(), r["value"].as_str()?.to_string())))
-                            .flatten()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        startup: load_startup(db, crypto, &row.vault_id, &payload["startup"]),
+        keepalive_secs: effective.keepalive_secs.map(|(secs, _)| secs),
+        forward_agent: effective.forward_agent.0,
+        env: effective.env.into_iter().map(|(name, value, _)| (name, value)).collect(),
+        // `{none: true}` has neither command nor snippetId, so load_startup gives None.
+        startup: load_startup(db, crypto, &row.vault_id, &effective.startup.0),
     };
-    let auth_type = row.auth_type.as_deref().unwrap_or("password");
-    // Load password when auth_type is "password" or "both"
-    if auth_type == "password" || auth_type == "both" {
-        config.password = payload["password"].as_str().map(String::from);
-    }
-    // Load key when auth_type is "key" or "both"
-    if auth_type == "key" || auth_type == "both" {
-        if let Some(key_id) = row.key_id.as_deref() {
-            let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
-                .ok_or_else(|| "key not found".to_string())?;
+    if let Some(key_id) = effective.key_id.as_deref() {
+        let decrypt = |key_row: &crate::db::SyncRow| -> Result<serde_json::Value, String> {
             let session = crypto.session.lock().map_err(|e| e.to_string())?;
             let key_plain = crate::team_keys::decrypt_row_secret(db, &session, &key_row.data, "keys", &key_row.vault_id)?;
-            drop(session);
-            let key_payload: serde_json::Value = serde_json::from_str(&key_plain)
-                .map_err(|e| format!("bad key payload: {e}"))?;
+            serde_json::from_str(&key_plain).map_err(|e| format!("bad key payload: {e}"))
+        };
+        let key_payload = if effective.auth_from.is_some() {
+            // An unusable inherited key means "no key": the connect never fails because of the chain.
+            crate::host_inherit::usable_key(db, key_id, &row.vault_id).and_then(|k| decrypt(&k).ok())
+        } else {
+            let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
+                .ok_or_else(|| "key not found".to_string())?;
+            Some(decrypt(&key_row)?)
+        };
+        if let Some(key_payload) = key_payload {
             config.private_key = key_payload["privateKey"].as_str().map(String::from);
             config.passphrase = key_payload["passphrase"].as_str().map(String::from);
         }
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod auth_prompt_payload_tests {
+    use super::auth_prompt_payload;
+    use crate::ssh_auth::{AuthPromptRequest, PromptKind};
+    use crate::ssh_route::RouteHop;
+
+    #[test]
+    fn payload_names_the_hop_session_and_kind() {
+        let request = AuthPromptRequest { kind: PromptKind::Password, name: String::new(), instructions: String::new(), prompts: vec![("Password".into(), false)] };
+        let target = auth_prompt_payload("p1", "s1", RouteHop::Target, "h", 22, "u", &request);
+        assert_eq!(target, serde_json::json!({
+            "id": "p1", "sessionId": "s1", "hop": "target", "kind": "password", "host": "h", "port": 22, "username": "u",
+            "name": "", "instructions": "", "prompts": [{"text": "Password", "echo": false}],
+        }));
+        let bastion = auth_prompt_payload("p2", "s1", RouteHop::Bastion, "jump", 2222, "j", &request);
+        assert_eq!((bastion["hop"].as_str(), bastion["sessionId"].as_str()), (Some("bastion"), Some("s1")));
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ mod crypto;
 mod db;
 mod forwarding;
 mod git;
+mod host_inherit;
 mod http;
 mod keys;
 mod logging;
@@ -1664,6 +1665,7 @@ pub fn run() {
             menu_accelerators::set_menu_accelerators,
             update::update_installation_kind,
             get_device_id,
+            host_inherit::inherited_host_defaults,
             history_start_attempt,
             history_mark_connected,
             history_append_output,

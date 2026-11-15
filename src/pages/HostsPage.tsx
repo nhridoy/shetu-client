@@ -1,13 +1,24 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
 import SshConfigImportModal from "@/components/hosts/modals/SshConfigImportModal";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
 import { openGroupId } from "@/lib/hosts/helpers";
-import { type Group, type Host, useHostStore } from "@/stores/hosts/hostStore";
+import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
+import { useVaultStore } from "@/stores/vault/vaultStore";
+
+type Panel =
+  | { kind: "host"; id?: string; defaultGroupId?: string; host?: Host }
+  | { kind: "group"; id?: string; parentId?: string | null };
+
+/** Resolves false when the user keeps editing the open panel. */
+const confirmLeave = () => useUnsavedChanges.getState().confirmLeave();
+
 export default function HostsPage() {
   const { groups, deleteHost, deleteGroup } = useHostStore();
   const { addTab } = useTerminalStore();
@@ -15,19 +26,62 @@ export default function HostsPage() {
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const openGroup = openGroupId(groups, selectedGroupId);
-  const [editingHost, setEditingHost] = useState<Host | null>(null);
-  const [defaultGroupId, setDefaultGroupId] = useState<string | undefined>();
-  const [editingGroup, setEditingGroup] = useState<Group | null>(null);
-  const [newGroupParentId, setNewGroupParentId] = useState<string | null>(null);
-
-  const hostModal = useModal();
-  const groupModal = useModal();
+  const [panel, setPanel] = useState<Panel | null>(null);
+  // Bumped on every open so the form remounts with a fresh baseline.
+  const [panelKey, setPanelKey] = useState(0);
   const importModal = useModal();
 
-  const handleConnect = (host: Host) => {
+  const openSeq = useRef(0);
+  const openPanel = async (next: Panel | (() => Promise<Panel | null>)) => {
+    const seq = ++openSeq.current;
+    const resolved = typeof next === "function" ? await next() : next;
+    if (!resolved) return;
+    // Ask after loading so edits typed meanwhile are covered; drop superseded opens.
+    if (seq !== openSeq.current || !(await confirmLeave())) return;
+    if (seq !== openSeq.current) return;
+    setPanel(resolved);
+    setPanelKey((k) => k + 1);
+  };
+  const closePanel = () => {
+    openSeq.current++; // drop an edit-host open still loading
+    setPanel(null);
+  };
+  // A save that finishes after its panel was replaced must not close the new one.
+  const shownPanel = useRef(panel);
+  shownPanel.current = panel;
+  const closeOwn = (own: Panel) => () => {
+    if (shownPanel.current === own) closePanel();
+  };
+  // A draft from another vault would save its credentials into this one.
+  const vaultId = useVaultStore((s) => s.currentVaultId);
+  const panelVaultId = useRef(vaultId);
+  useEffect(() => {
+    if (vaultId === panelVaultId.current) return;
+    panelVaultId.current = vaultId;
+    openSeq.current++;
+    setPanel(null);
+  }, [vaultId]);
+  const editHost = (host: Host) =>
+    openPanel(async () => {
+      const full = await useHostStore
+        .getState()
+        .getDecryptedHost(host.id)
+        .catch(() => null);
+      // The list row lacks address/credentials; editing it would save blanks.
+      if (!full) toast.error("Couldn't read this host");
+      return full && { kind: "host", id: host.id, host: full };
+    });
+  const editingGroup =
+    panel?.kind === "group" && panel.id
+      ? groups.find((g) => g.id === panel.id)
+      : undefined;
+
+  const handleConnect = async (host: Host) => {
+    if (!(await confirmLeave())) return;
+    openSeq.current++;
     addTab(host.id, host.name, {
       hostAddress: host.address,
-      hostPort: host.port,
+      hostPort: host.port ?? undefined,
       hostUsername: host.username,
       authType: host.authType,
       keyId: host.keyId,
@@ -36,72 +90,63 @@ export default function HostsPage() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <HostsPanel
-        // Remount per group so search and tag filters reset.
-        key={openGroup ?? "all"}
-        selectedGroupId={openGroup}
-        onSelectGroup={setSelectedGroupId}
-        onNewGroup={(parentId) => {
-          setEditingGroup(null);
-          setNewGroupParentId(parentId ?? null);
-          groupModal.show();
-        }}
-        onNewHost={(groupId) => {
-          setEditingHost(null);
-          setDefaultGroupId(groupId);
-          hostModal.show();
-        }}
-        onImport={importModal.show}
-        onEditGroup={(group) => {
-          setEditingGroup(group);
-          groupModal.show();
-        }}
-        onEditHost={async (host) => {
-          const decrypted = await useHostStore
-            .getState()
-            .getDecryptedHost(host.id);
-          setEditingHost(decrypted ?? host);
-          hostModal.show();
-        }}
-        onConnect={handleConnect}
-        onDeleteGroup={(id) => {
-          deleteGroup(id);
-          if (selectedGroupId === id) setSelectedGroupId(null);
-        }}
-        onDeleteHost={deleteHost}
-      />
+    <div className="relative flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        <HostsPanel
+          // Remount per group so search and tag filters reset.
+          key={openGroup ?? "all"}
+          selectedGroupId={openGroup}
+          onSelectGroup={setSelectedGroupId}
+          onNewGroup={(parentId) =>
+            openPanel({ kind: "group", parentId: parentId ?? null })
+          }
+          onNewHost={(groupId) =>
+            openPanel({ kind: "host", defaultGroupId: groupId })
+          }
+          onImport={importModal.show}
+          onEditGroup={(group) => openPanel({ kind: "group", id: group.id })}
+          onEditHost={editHost}
+          // With a panel open, a card click switches the panel instead of connecting.
+          onConnect={panel ? editHost : handleConnect}
+          onDeleteGroup={(id) => {
+            deleteGroup(id);
+            if (selectedGroupId === id) setSelectedGroupId(null);
+            if (panel?.kind === "group" && panel.id === id) closePanel();
+          }}
+          onDeleteHost={(id) => {
+            deleteHost(id);
+            if (panel?.kind === "host" && panel.id === id) closePanel();
+          }}
+        />
+      </div>
 
-      {hostModal.open && (
+      {panel?.kind === "host" && (
         <HostForm
+          key={panelKey}
           host={
-            editingHost
+            panel.host
               ? ({
-                  id: editingHost.id,
-                  name: editingHost.name,
-                  address: editingHost.address,
-                  port: editingHost.port,
-                  username: editingHost.username || "root",
-                  authType: editingHost.authType || "password",
-                  password: editingHost.password,
-                  keyId: editingHost.keyId || undefined,
-                  jumpHostId: editingHost.jumpHostId ?? null,
-                  keepaliveSecs: editingHost.keepaliveSecs,
-                  forwardAgent: editingHost.forwardAgent,
-                  env: editingHost.env,
-                  startup: editingHost.startup,
-                  color: editingHost.color,
-                  groupId: editingHost.groupId || undefined,
-                  tags: editingHost.tags,
+                  id: panel.host.id,
+                  name: panel.host.name,
+                  address: panel.host.address,
+                  port: panel.host.port,
+                  username: panel.host.username ?? "",
+                  authType: panel.host.authType || "password",
+                  password: panel.host.password,
+                  keyId: panel.host.keyId || undefined,
+                  jumpHostId: panel.host.jumpHostId ?? null,
+                  keepaliveSecs: panel.host.keepaliveSecs,
+                  forwardAgent: panel.host.forwardAgent,
+                  env: panel.host.env,
+                  startup: panel.host.startup,
+                  color: panel.host.color,
+                  groupId: panel.host.groupId || undefined,
+                  tags: panel.host.tags,
                 } satisfies HostData)
               : undefined
           }
-          defaultGroupId={defaultGroupId}
-          onClose={() => {
-            hostModal.hide();
-            setEditingHost(null);
-            setDefaultGroupId(undefined);
-          }}
+          defaultGroupId={panel.defaultGroupId}
+          onClose={closeOwn(panel)}
         />
       )}
 
@@ -109,8 +154,9 @@ export default function HostsPage() {
         <SshConfigImportModal groupId={openGroup} onClose={importModal.hide} />
       )}
 
-      {groupModal.open && (
+      {panel?.kind === "group" && (!panel.id || editingGroup) && (
         <GroupForm
+          key={panelKey}
           group={
             editingGroup
               ? {
@@ -120,12 +166,10 @@ export default function HostsPage() {
               : undefined
           }
           // Re-checked on every render: the parent can be deleted while the form is open.
-          defaultParentId={openGroupId(groups, newGroupParentId) ?? undefined}
-          onClose={() => {
-            groupModal.hide();
-            setEditingGroup(null);
-            setNewGroupParentId(null);
-          }}
+          defaultParentId={
+            openGroupId(groups, panel.parentId ?? null) ?? undefined
+          }
+          onClose={closeOwn(panel)}
         />
       )}
     </div>

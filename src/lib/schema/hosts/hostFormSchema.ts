@@ -2,49 +2,68 @@ import { z } from "zod";
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+export const envRowsSchema = z.array(
+  z.object({
+    name: z.string().refine((n) => n === "" || ENV_NAME.test(n), {
+      error: "Use letters, digits and underscores; no leading digit",
+    }),
+    value: z.string(),
+  }),
+);
+
+export const isBlank = (v: unknown) => v == null || String(v).trim() === "";
+
+/** Number input value: a number, or a string from the field; empty means "not set". */
+const numberField = z.union([z.number(), z.string()]).nullish();
+
+export const portOk = (v: unknown) =>
+  isBlank(v) ||
+  (Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 65535);
+export const PORT_ERROR = "Port must be between 1 and 65535";
+
+/** Empty = inherit/default, 0 = off, otherwise 5-600 seconds. */
+export const keepaliveOk = (v: unknown) =>
+  isBlank(v) ||
+  Number(v) === 0 ||
+  (Number.isInteger(Number(v)) && Number(v) >= 5 && Number(v) <= 600);
+export const KEEPALIVE_ERROR = "Keepalive must be 0 (off) or 5-600 seconds";
+
+/** Only the address is required. */
 export const hostFormSchema = z
   .object({
     name: z
       .string()
       .trim()
-      .min(1, { error: "Host name is required" })
       .max(255, { error: "Host name must be at most 255 characters" }),
     address: z
       .string()
       .trim()
       .min(1, { error: "Address is required" })
       .max(255, { error: "Address must be at most 255 characters" }),
-    port: z.coerce
-      .number()
-      .int({ error: "Port must be an integer" })
-      .min(1, { error: "Port must be at least 1" })
-      .max(65535, { error: "Port must be at most 65535" }),
+    port: numberField.refine(portOk, { error: PORT_ERROR }),
     username: z
       .string()
       .trim()
-      .min(1, { error: "Username is required" })
       .max(255, { error: "Username must be at most 255 characters" }),
-    authType: z.enum(["password", "key", "both", "none"]),
+    authType: z.enum(["inherit", "password", "key", "both", "none"]),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
     jumpHostId: z.string().nullable().optional(),
     color: z.string().optional(),
     groupId: z.string().optional(),
     tags: z.string().optional(),
-    keepaliveMode: z.enum(["default", "off", "custom"]),
-    keepaliveSecs: z.coerce.number().optional(),
-    forwardAgent: z.boolean(),
-    env: z.array(
-      z.object({
-        name: z.string().refine((n) => n === "" || ENV_NAME.test(n), {
-          error: "Use letters, digits and underscores; no leading digit",
-        }),
-        value: z.string(),
-      }),
-    ),
-    startupMode: z.enum(["none", "snippet", "command"]),
+    keepaliveSecs: numberField.refine(keepaliveOk, {
+      error: KEEPALIVE_ERROR,
+    }),
+    forwardAgentMode: z.enum(["inherit", "on", "off"]),
+    env: envRowsSchema,
+    startupMode: z.enum(["inherit", "none", "snippet", "command"]),
     startupSnippetId: z.string().optional(),
     startupCommand: z.string().optional(),
+  })
+  .refine((d) => d.authType !== "inherit" || !!d.groupId, {
+    error: "Pick credentials or a group",
+    path: ["authType"],
   })
   .refine(
     (data) => {
@@ -65,14 +84,6 @@ export const hostFormSchema = z
     },
     { error: "Please select an SSH key", path: ["keyId"] },
   )
-  .refine(
-    (d) =>
-      d.keepaliveMode !== "custom" ||
-      (Number.isInteger(d.keepaliveSecs) &&
-        (d.keepaliveSecs as number) >= 5 &&
-        (d.keepaliveSecs as number) <= 600),
-    { error: "Keepalive must be 5-600 seconds", path: ["keepaliveSecs"] },
-  )
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -84,18 +95,17 @@ export type HostFormValues = z.input<typeof hostFormSchema>;
 export const hostFormDefaultValues: HostFormSchema = {
   name: "",
   address: "",
-  port: 22,
+  port: "",
   username: "",
-  authType: "password",
+  authType: "none",
   password: "",
   keyId: "",
   jumpHostId: null,
   color: "#64748b",
   groupId: "",
   tags: "",
-  keepaliveMode: "default",
-  keepaliveSecs: undefined,
-  forwardAgent: false,
+  keepaliveSecs: "",
+  forwardAgentMode: "off",
   env: [],
   startupMode: "none",
   startupSnippetId: "",

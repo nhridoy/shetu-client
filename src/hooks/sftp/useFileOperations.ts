@@ -12,6 +12,10 @@ import {
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
 import {
+  ConnectCancelled,
+  resolveUsernameOrAsk,
+} from "@/lib/terminal/agentForwarding";
+import {
   fileBrowserActions,
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
@@ -83,6 +87,7 @@ export function useFileOperations({
             await invoke("sftp_connect_saved", {
               sessionId: paneId,
               hostId,
+              username: await resolveUsernameOrAsk(paneId, hostId),
             });
           }
 
@@ -93,6 +98,8 @@ export function useFileOperations({
           clearError();
           return provider;
         } catch (err: unknown) {
+          // The user declined to name a user: stop quietly, callers can still tell.
+          if (err instanceof ConnectCancelled) throw err;
           const message = extractError(err, "Connection failed");
           setConnectionError(message);
           setError(message, "connection");

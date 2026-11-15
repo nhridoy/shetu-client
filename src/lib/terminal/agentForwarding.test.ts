@@ -22,10 +22,18 @@ import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
 import {
   answerAgentForwarding,
+  ConnectCancelled,
   connectSavedTerminal,
   recordAgentForwarding,
+  resolveUsernameOrAsk,
   useAgentForwardAsks,
 } from "./agentForwarding";
+import {
+  answerUsername,
+  forgetSession,
+  savePendingCredentials,
+  useUsernameAsks,
+} from "./pendingCredentials";
 
 const args = {
   sessionId: "p1",
@@ -35,11 +43,14 @@ const args = {
   rows: 24,
 };
 
-function hostWith(forwardAgent: boolean) {
+function hostWith(forwardAgent: boolean | null) {
   const getDecryptedHost = vi.fn(async () => ({
     id: "h1",
     name: "prod",
     address: "10.0.0.1",
+    username: "root",
+    groupId: "g1",
+    vaultId: "v1",
     forwardAgent,
   }));
   useHostStore.setState({ getDecryptedHost } as never);
@@ -139,6 +150,237 @@ describe("connectSavedTerminal", () => {
   });
 });
 
+describe("inherited forwarding", () => {
+  const inheritFrom = (forwardAgent?: boolean) =>
+    mocks.invoke.mockImplementation((async (cmd: string) =>
+      cmd === "inherited_host_defaults"
+        ? { forwardAgent }
+        : undefined) as never);
+
+  it("asks for consent when the group turns forwarding on", async () => {
+    inheritFrom(true);
+    hostWith(null);
+    const pending = connectSavedTerminal(args);
+    await nextAsk();
+    answerAgentForwarding(true);
+    await pending;
+    expect(mocks.invoke).toHaveBeenCalledWith("inherited_host_defaults", {
+      groupId: "g1",
+      vaultId: "v1",
+    });
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      allowAgentForwarding: true,
+    });
+  });
+
+  it("does not ask when the host turns it off under a group that allows it", async () => {
+    inheritFrom(true);
+    hostWith(false);
+    await connectSavedTerminal(args);
+    expect(asked()).toHaveLength(0);
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("does not ask when nothing in the chain turns it on", async () => {
+    inheritFrom(undefined);
+    hostWith(null);
+    await connectSavedTerminal(args);
+    expect(asked()).toHaveLength(0);
+  });
+
+  it("does not ask when the group lookup fails", async () => {
+    mocks.invoke.mockImplementation((async (cmd: string) => {
+      if (cmd === "inherited_host_defaults") throw new Error("boom");
+    }) as never);
+    hostWith(null);
+    await connectSavedTerminal(args);
+    expect(asked()).toHaveLength(0);
+  });
+});
+
+describe("missing username", () => {
+  const usernameAsks = () => useUsernameAsks.getState().queue;
+  const nextUsernameAsk = () =>
+    vi.waitFor(() => expect(usernameAsks()).toHaveLength(1));
+
+  function hostWithout(groupId: string | null, inherited?: string) {
+    useUsernameAsks.setState({ queue: [] });
+    useHostStore.setState({
+      hosts: [{ id: "h1", authType: "key" }],
+      getDecryptedHost: vi.fn(async () => ({
+        id: "h1",
+        name: "",
+        address: "10.0.0.1",
+        username: "  ",
+        groupId,
+        vaultId: "v1",
+        forwardAgent: false,
+      })),
+    } as never);
+    mocks.invoke.mockImplementation((async (cmd: string) =>
+      cmd === "inherited_host_defaults"
+        ? { username: inherited }
+        : undefined) as never);
+  }
+
+  it("asks username when none resolves", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].host).toBe("10.0.0.1");
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      username: "deploy",
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("asks for a host outside any group", async () => {
+    hostWithout(null);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "inherited_host_defaults",
+      expect.anything(),
+    );
+  });
+
+  it("cancel aborts the connect", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername(null);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "connect_saved",
+      expect.anything(),
+    );
+  });
+
+  it("a pane closed during the question opens nothing and does not throw", async () => {
+    hostWithout("g1");
+    let closed = false;
+    const pending = connectSavedTerminal(args, () => closed);
+    await nextUsernameAsk();
+    closed = true;
+    forgetSession(args.sessionId);
+    await pending;
+    expect(usernameAsks()).toHaveLength(0);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "connect_saved",
+      expect.anything(),
+    );
+  });
+
+  it("no username dialog when group provides one", async () => {
+    hostWithout("g1", "ops");
+    await connectSavedTerminal(args);
+    expect(usernameAsks()).toHaveLength(0);
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("username save waits for the session to connect", async () => {
+    hostWithout("g1");
+    const updateHost = vi.fn(async () => true);
+    useHostStore.setState({ updateHost } as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: true });
+    await pending;
+    expect(updateHost).not.toHaveBeenCalled();
+    await savePendingCredentials(args.sessionId);
+    expect(updateHost).toHaveBeenCalledWith(
+      "h1",
+      { username: "deploy" },
+      { passwordAuth: false },
+    );
+  });
+
+  it("asks without Save when the group lookup fails", async () => {
+    hostWithout("g1");
+    mocks.invoke.mockImplementation((async (cmd: string) => {
+      if (cmd === "inherited_host_defaults") throw new Error("offline");
+    }) as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(false);
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    expect(mocks.invoke).toHaveBeenLastCalledWith("connect_saved", {
+      ...args,
+      username: "deploy",
+      allowAgentForwarding: false,
+    });
+  });
+
+  it("a pane closed during the lookups queues no username question", async () => {
+    hostWithout("g1");
+    let closed = false;
+    const decrypted = useHostStore.getState().getDecryptedHost;
+    useHostStore.setState({
+      getDecryptedHost: vi.fn(async (id: string) => {
+        const host = await decrypted(id);
+        closed = true;
+        return host;
+      }),
+    } as never);
+    await connectSavedTerminal(args, () => closed);
+    expect(usernameAsks()).toHaveLength(0);
+  });
+
+  it("offers Save when the group sets no username", async () => {
+    hostWithout("g1");
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(true);
+    answerUsername(null);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+  });
+
+  it("resolveUsernameOrAsk asks without Save for non-terminal connects", async () => {
+    hostWithout(null);
+    const pending = resolveUsernameOrAsk("sftp-1", "h1");
+    await nextUsernameAsk();
+    expect(usernameAsks()[0].canSave).toBe(false);
+    answerUsername({ username: "deploy", save: false });
+    await expect(pending).resolves.toBe("deploy");
+  });
+
+  it("resolveUsernameOrAsk rejects on cancel and skips hosts that have a user", async () => {
+    hostWithout(null);
+    const pending = resolveUsernameOrAsk("sftp-1", "h1");
+    await nextUsernameAsk();
+    answerUsername(null);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelled);
+    hostWithout("g1", "ops");
+    await expect(resolveUsernameOrAsk("sftp-1", "h1")).resolves.toBeUndefined();
+    expect(usernameAsks()).toHaveLength(0);
+  });
+
+  it("an unchecked Save remembers nothing", async () => {
+    hostWithout("g1");
+    const updateHost = vi.fn(async () => true);
+    useHostStore.setState({ updateHost } as never);
+    const pending = connectSavedTerminal(args);
+    await nextUsernameAsk();
+    answerUsername({ username: "deploy", save: false });
+    await pending;
+    await savePendingCredentials(args.sessionId);
+    expect(updateHost).not.toHaveBeenCalled();
+  });
+});
+
 describe("recordAgentForwarding", () => {
   it("records and removes a host's decision", async () => {
     await recordAgentForwarding("h1", true);
@@ -169,6 +411,7 @@ describe("before saved settings have loaded", () => {
       id: "h1",
       name: "prod",
       address: "10.0.0.1",
+      username: "root",
       forwardAgent: true,
     });
     useHostStore.setState({ getDecryptedHost } as never);

@@ -47,7 +47,7 @@ interface TerminalProps {
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
-  authType?: "password" | "key" | "both" | "none";
+  authType?: "inherit" | "password" | "key" | "both" | "none";
   keyId?: string;
   connectionType?: "ssh" | "local";
   shell?: string;
@@ -359,7 +359,10 @@ export default function Terminal({
                       });
                     }
                   } catch {
-                    // Reconnect will be triggered by the disconnected event
+                    // e.g. the username question was cancelled: offer Reconnect again.
+                    useTerminalStore
+                      .getState()
+                      .updatePaneConnectionStatus(tabId, paneId, "failed");
                   }
                 }}
                 className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-500 transition-colors"

@@ -21,6 +21,7 @@ import {
   useTerminalStore,
   workspaceLayoutSnapshot,
 } from "@/stores/terminal/terminalStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 
 const VIEWS = [
   { id: "vault", path: "/hosts", label: "Vaults", Icon: FolderIcon },
@@ -103,7 +104,12 @@ export default function Header({
               aria-pressed={selected}
               variant="ghost"
               size="sm"
-              onClick={() => {
+              onClick={async () => {
+                if (
+                  !selected &&
+                  !(await useUnsavedChanges.getState().confirmLeave())
+                )
+                  return;
                 setActiveView(id);
                 navigate(path);
               }}
@@ -135,15 +141,22 @@ export default function Header({
               tab={tab}
               index={index}
               isActive={activeView === tab.id}
-              onActivate={() => {
+              onActivate={async () => {
+                if (!(await useUnsavedChanges.getState().confirmLeave()))
+                  return;
                 setActiveTab(tab.id);
                 setActiveView(tab.id);
                 navigate("/terminal");
               }}
               onSavePreset={onSavePreset}
               onSavePresetChanges={onSavePresetChanges}
-              onClose={() => {
+              onClose={async () => {
                 const isClosingActive = activeView === tab.id;
+                if (
+                  isClosingActive &&
+                  !(await useUnsavedChanges.getState().confirmLeave())
+                )
+                  return;
                 removeTab(tab.id);
                 if (isClosingActive) {
                   const { tabs: remainingTabs } = useTerminalStore.getState();
@@ -168,7 +181,8 @@ export default function Header({
           type="button"
           variant="ghost"
           size="icon"
-          onClick={() => {
+          onClick={async () => {
+            if (!(await useUnsavedChanges.getState().confirmLeave())) return;
             const newTabId = addEmptyTab();
             setActiveView(newTabId);
             navigate("/terminal");

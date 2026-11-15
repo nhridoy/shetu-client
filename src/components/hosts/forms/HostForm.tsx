@@ -1,39 +1,53 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState, useTransition } from "react";
 import {
-  Controller,
-  type FieldErrors,
-  useFieldArray,
-  useForm,
-} from "react-hook-form";
+  ArrowCounterClockwiseIcon,
+  ArrowsLeftRightIcon,
+  GlobeIcon,
+  KeyIcon,
+  PlayIcon,
+  SlidersHorizontalIcon,
+  TerminalWindowIcon,
+} from "@phosphor-icons/react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import ModalForm from "@/components/common/ModalForm";
+import SidePanel from "@/components/common/SidePanel";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
-import Textarea from "@/components/ui/Textarea";
+import {
+  fetchInheritedDefaults,
+  type InheritedDefaults,
+} from "@/lib/hosts/inherited";
+import { portLine } from "@/lib/hosts/inheritedLabels";
 import {
   type HostFormValues,
   hostFormDefaultValues,
   hostFormSchema,
+  isBlank,
 } from "@/lib/schema/hosts/hostFormSchema";
 import { parseTags } from "@/lib/snippets/parseTags";
-import {
-  AGENT_FORWARD_HELP,
-  recordAgentForwarding,
-} from "@/lib/terminal/agentForwarding";
-import { useHostStore } from "@/stores/hosts/hostStore";
+import { recordAgentForwarding } from "@/lib/terminal/agentForwarding";
+import { type Startup, useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
+import ConnectionOptionsFields, {
+  EnvAddButton,
+  useEnvArray,
+} from "./ConnectionOptionsFields";
+import CredentialsFields from "./CredentialsFields";
+import { useCardSummaries } from "./useCardSummaries";
 
 export interface HostData {
   id: string;
   name: string;
   address: string;
-  port: number;
+  port: number | null;
   username: string;
-  authType: "password" | "key" | "both" | "none";
+  authType: "inherit" | "password" | "key" | "both" | "none";
   password?: string;
   keyId?: string;
   jumpHostId?: string | null;
@@ -41,9 +55,9 @@ export interface HostData {
   groupId?: string;
   tags?: string[];
   keepaliveSecs?: number | null;
-  forwardAgent?: boolean;
+  forwardAgent?: boolean | null;
   env?: { name: string; value: string }[];
-  startup?: { snippetId: string } | { command: string } | null;
+  startup?: Startup;
 }
 
 interface HostFormProps {
@@ -53,12 +67,15 @@ interface HostFormProps {
 }
 
 function startupFromForm(data: HostFormValues): HostData["startup"] {
+  if (data.startupMode === "inherit") return null;
   if (data.startupMode === "snippet" && data.startupSnippetId)
     return { snippetId: data.startupSnippetId };
   const command = data.startupCommand?.trim();
   if (data.startupMode === "command" && command) return { command };
-  return null;
+  return { none: true };
 }
+
+const FORWARD = { inherit: null, on: true, off: false } as const;
 
 export default function HostForm({
   host,
@@ -67,10 +84,7 @@ export default function HostForm({
 }: HostFormProps) {
   const { createHost, updateHost, groups, hosts } = useHostStore();
   const { currentVaultId } = useVaultStore();
-  const keys = useKeyStore((s) => s.keys);
-  const snippets = useSnippetStore((s) => s.snippets);
   const fetchSnippets = useSnippetStore((s) => s.fetchSnippets);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const [isPending, startTransition] = useTransition();
   const [bastions, setBastions] = useState<
@@ -119,56 +133,104 @@ export default function HostForm({
     };
   }, [hosts, currentVaultId, host?.id]);
 
-  const { control, handleSubmit, watch, reset, register } =
-    useForm<HostFormValues>({
-      resolver: zodResolver(hostFormSchema),
-      defaultValues: {
-        name: host?.name || hostFormDefaultValues.name,
-        address: host?.address || hostFormDefaultValues.address,
-        port: host?.port || hostFormDefaultValues.port,
-        username: host?.username || hostFormDefaultValues.username,
-        authType: host?.authType || hostFormDefaultValues.authType,
-        password: host?.password ?? hostFormDefaultValues.password,
-        keyId: host?.keyId || hostFormDefaultValues.keyId,
-        jumpHostId: host?.jumpHostId || "",
-        color: host?.color || hostFormDefaultValues.color,
-        groupId:
-          host?.groupId || defaultGroupId || hostFormDefaultValues.groupId,
-        tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
-        keepaliveMode:
-          host?.keepaliveSecs == null
-            ? "default"
-            : host.keepaliveSecs === 0
-              ? "off"
-              : "custom",
-        keepaliveSecs: host?.keepaliveSecs || undefined,
-        forwardAgent: host?.forwardAgent === true,
-        env: host?.env ?? [],
-        startupMode: !host?.startup
-          ? "none"
-          : "snippetId" in host.startup
-            ? "snippet"
-            : "command",
-        startupSnippetId:
-          host?.startup && "snippetId" in host.startup
-            ? host.startup.snippetId
-            : "",
-        startupCommand:
-          host?.startup && "command" in host.startup
-            ? host.startup.command
-            : "",
-      },
-    });
+  const [inherited, setInherited] = useState<InheritedDefaults>();
+  const initialGroupId = host?.groupId || defaultGroupId || "";
+  const isNew = !host;
   const {
-    fields: envFields,
-    append: appendEnv,
-    remove: removeEnv,
-  } = useFieldArray({ control, name: "env" });
-  const keepaliveMode = watch("keepaliveMode");
-  const startupMode = watch("startupMode");
-
-  const authType = watch("authType");
+    control,
+    handleSubmit,
+    watch,
+    reset,
+    resetField,
+    setValue,
+    setFocus,
+    formState: { isDirty },
+  } = useForm<HostFormValues>({
+    resolver: zodResolver(hostFormSchema),
+    defaultValues: {
+      name: host?.name || hostFormDefaultValues.name,
+      address: host?.address || hostFormDefaultValues.address,
+      port: host?.port ?? hostFormDefaultValues.port,
+      username: host?.username || hostFormDefaultValues.username,
+      authType: host?.authType || hostFormDefaultValues.authType,
+      password: host?.password ?? hostFormDefaultValues.password,
+      keyId: host?.keyId || hostFormDefaultValues.keyId,
+      jumpHostId: host?.jumpHostId || "",
+      color: host?.color || hostFormDefaultValues.color,
+      groupId: initialGroupId,
+      tags: host?.tags ? parseTags(host.tags) : hostFormDefaultValues.tags,
+      keepaliveSecs: host?.keepaliveSecs ?? "",
+      forwardAgentMode: host
+        ? host.forwardAgent == null
+          ? "inherit"
+          : host.forwardAgent
+            ? "on"
+            : "off"
+        : initialGroupId
+          ? "inherit"
+          : "off",
+      env: host?.env ?? [],
+      startupMode: !host
+        ? initialGroupId
+          ? "inherit"
+          : "none"
+        : !host.startup
+          ? "inherit"
+          : "none" in host.startup
+            ? "none"
+            : "snippetId" in host.startup
+              ? "snippet"
+              : "command",
+      startupSnippetId:
+        host?.startup && "snippetId" in host.startup
+          ? host.startup.snippetId
+          : "",
+      startupCommand:
+        host?.startup && "command" in host.startup ? host.startup.command : "",
+    },
+  });
   const selectedJumpHostId = watch("jumpHostId");
+  const groupId = watch("groupId") ?? "";
+
+  // Fields the user picked themselves; group changes never overwrite them.
+  const userSet = useRef(new Set<string>());
+  useEffect(() => {
+    const sub = watch((_, { name, type }) => {
+      if (type === "change" && name) userSet.current.add(name);
+    });
+    return () => sub.unsubscribe();
+  }, [watch]);
+
+  useEffect(() => {
+    let stale = false;
+    // Drop the previous group's values until the new ones arrive.
+    setInherited(undefined);
+    const apply = (d: InheritedDefaults | undefined) => {
+      if (!stale) setInherited(d);
+    };
+    // Untouched mode defaults follow the group right away, not after the lookup,
+    // so a save before it resolves doesn't store explicit none/off.
+    if (isNew) {
+      const defaults = {
+        authType: groupId ? "inherit" : "none",
+        startupMode: groupId ? "inherit" : "none",
+        forwardAgentMode: groupId ? "inherit" : "off",
+      } as const;
+      // resetField moves the baseline too, so these defaults never count as edits.
+      for (const [name, value] of Object.entries(defaults))
+        if (!userSet.current.has(name))
+          resetField(name as keyof typeof defaults, { defaultValue: value });
+    }
+    if (groupId && currentVaultId)
+      fetchInheritedDefaults(groupId, currentVaultId).then(apply, () =>
+        apply(undefined),
+      );
+    else apply(undefined);
+    return () => {
+      stale = true;
+    };
+  }, [groupId, currentVaultId, isNew, resetField]);
+
   const missingBastion =
     !!selectedJumpHostId &&
     !bastions.some((item) => item.id === selectedJumpHostId);
@@ -184,11 +246,6 @@ export default function HostForm({
     "#06b6d4",
   ];
 
-  const getButtonText = () => {
-    if (isPending) return "Saving...";
-    return host ? "Save Changes" : "Add Host";
-  };
-
   const handleHostSubmit = async (data: HostFormValues) => {
     if (
       data.jumpHostId &&
@@ -200,10 +257,11 @@ export default function HostForm({
       return;
     }
     setRouteError(null);
+    const forwardAgent = FORWARD[data.forwardAgentMode];
     const hostData = {
-      name: data.name,
+      name: data.name || data.address,
       address: data.address,
-      port: Number(data.port),
+      port: isBlank(data.port) ? null : Number(data.port),
       username: data.username,
       authType: data.authType,
       keyId:
@@ -216,7 +274,7 @@ export default function HostForm({
           ? data.password
           : undefined,
       color: data.color,
-      groupId: data.groupId || undefined,
+      groupId: data.groupId || null,
       vaultId: currentVaultId || undefined,
       tags: data.tags
         ? data.tags
@@ -224,38 +282,40 @@ export default function HostForm({
             .map((t) => t.trim())
             .filter(Boolean)
         : [],
-      keepaliveSecs:
-        data.keepaliveMode === "off"
-          ? 0
-          : data.keepaliveMode === "custom"
-            ? Number(data.keepaliveSecs)
-            : null,
-      forwardAgent: data.forwardAgent,
+      keepaliveSecs: isBlank(data.keepaliveSecs)
+        ? null
+        : Number(data.keepaliveSecs),
+      forwardAgent,
       env: data.env.filter((row) => row.name !== ""),
       startup: startupFromForm(data),
     };
 
-    // Turning the toggle on here is this device's "Allow"; off forgets it so re-enabling asks again.
-    const turnedOn = data.forwardAgent && !host?.forwardAgent;
+    // Allow is only ever recorded when the user turns "On" here; an inherited value is asked for at connect.
+    const turnedOn = forwardAgent === true && host?.forwardAgent !== true;
+    const inheritedLoaded = !!inherited || !data.groupId;
+    const turnedOff =
+      (forwardAgent === false && host?.forwardAgent !== false) ||
+      (forwardAgent === null &&
+        host?.forwardAgent === true &&
+        inheritedLoaded &&
+        !inherited?.forwardAgent);
     if (host) {
       if (!(await updateHost(host.id, hostData))) {
         toast.error(useHostStore.getState().error ?? "Couldn't save host");
         return;
       }
       if (turnedOn) await recordAgentForwarding(host.id, true);
-      else if (!data.forwardAgent) await recordAgentForwarding(host.id, null);
+      else if (turnedOff) await recordAgentForwarding(host.id, null);
     } else {
       const created = await createHost(hostData);
-      if (created && turnedOn) await recordAgentForwarding(created.id, true);
+      if (!created) {
+        toast.error(useHostStore.getState().error ?? "Couldn't save host");
+        return;
+      }
+      if (turnedOn) await recordAgentForwarding(created.id, true);
     }
     reset();
     onClose();
-  };
-
-  // Advanced fields unmount while collapsed; reveal them so errors are visible.
-  const onInvalid = (errors: FieldErrors<HostFormValues>) => {
-    if (errors.keepaliveSecs || errors.startupSnippetId || errors.env)
-      setShowAdvanced(true);
   };
 
   const onSubmit = async (data: HostFormValues) => {
@@ -264,299 +324,219 @@ export default function HostForm({
     });
   };
 
+  const envArray = useEnvArray(control);
+  const formId = useId();
+  const summaries = useCardSummaries(control, inherited);
   return (
-    <ModalForm
+    <SidePanel
+      title={host ? `Edit host · ${host.name}` : "New host"}
+      open
+      dirty={isDirty}
       onClose={onClose}
-      title={host ? "Edit Host" : "Add Host"}
-      isPending={isPending}
-      onSubmit={handleSubmit(onSubmit, onInvalid)}
-      submitButtonText={getButtonText()}
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isPending}
+            onClick={async () => {
+              if (await useUnsavedChanges.getState().confirmLeave()) onClose();
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} size="sm" disabled={isPending}>
+            {isPending ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
     >
-      <FormInput
-        name="name"
-        label="Name"
-        control={control}
-        placeholder="My Server"
-        required
-      />
-
-      <div className="grid grid-cols-3 gap-3">
-        <div className="col-span-2">
-          <FormInput
-            name="address"
-            label="Address"
-            control={control}
-            placeholder="192.168.1.100 or hostname"
-            required
-          />
-        </div>
-        <div>
-          <FormInput
-            name="port"
-            label="Port"
-            control={control}
-            type="number"
-            required
-          />
-        </div>
-      </div>
-
-      <FormInput
-        name="username"
-        label="Username"
-        control={control}
-        placeholder="root"
-        required
-      />
-
-      <fieldset>
-        <legend className="block text-dark-300 text-sm mb-2">
-          Authentication <span className="text-red-400 ml-0.5">*</span>
-        </legend>
-        <Controller
-          name="authType"
-          control={control}
-          render={({ field }) => (
-            <div className="grid grid-cols-4 gap-2">
-              {(["password", "key", "both", "none"] as const).map((type) => (
-                <Button
-                  key={type}
-                  type="button"
-                  onClick={() => field.onChange(type)}
-                  variant={field.value === type ? "default" : "secondary"}
-                  className="flex-1"
-                >
-                  {type === "password"
-                    ? "Password"
-                    : type === "key"
-                      ? "SSH Key"
-                      : type === "both"
-                        ? "Both"
-                        : "None"}
-                </Button>
-              ))}
-            </div>
-          )}
-        />
-      </fieldset>
-
-      {(authType === "password" || authType === "both") && (
-        <FormInput
-          name="password"
-          label="Password"
-          control={control}
-          type="password"
-          placeholder="Enter password"
-          required
-        />
-      )}
-
-      {(authType === "key" || authType === "both") && (
-        <FormSelect
-          name="keyId"
-          label="SSH Key"
-          control={control}
-          options={[
-            { value: "", label: "Select a key" },
-            ...keys.map((key) => ({ value: key.id, label: key.name })),
-          ]}
-          required
-        />
-      )}
-
-      <FormSelect
-        name="jumpHostId"
-        label="Connect through"
-        control={control}
-        options={[
-          { value: "", label: "Direct connection" },
-          ...bastions.map((candidate) => ({
-            value: candidate.id,
-            label: candidate.name,
-          })),
-        ]}
-      />
-      <p className="text-xs text-dark-400">
-        The bastion uses its own SSH credentials and host-key check before
-        connecting to this host.
-      </p>
-      {(missingBastion || routeError) && (
-        <p role="alert" className="text-xs text-red-400">
-          {routeError ??
-            "Selected bastion is unavailable. Choose another route before saving."}
-        </p>
-      )}
-
-      <fieldset>
-        <legend className="block text-dark-300 text-sm mb-2">Color</legend>
-        <Controller
-          name="color"
-          control={control}
-          render={({ field }) => (
-            <div className="flex gap-2">
-              {colors.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => field.onChange(c)}
-                  className={`cursor-pointer w-8 h-8 rounded-full ${
-                    field.value === c
-                      ? "ring-2 ring-white ring-offset-2 ring-offset-dark-900"
-                      : ""
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-          )}
-        />
-      </fieldset>
-
-      <FormInput
-        name="tags"
-        label="Tags"
-        control={control}
-        placeholder="production, web (comma-separated)"
-      />
-
-      {!defaultGroupId && (
-        <FormSelect
-          name="groupId"
-          label="Group"
-          control={control}
-          options={[
-            { value: "", label: "No Group" },
-            ...groups.map((g) => ({ value: g.id, label: g.name })),
-          ]}
-        />
-      )}
-
-      <Button
-        type="button"
-        variant="secondary"
-        onClick={() => setShowAdvanced((v) => !v)}
-        aria-expanded={showAdvanced}
-      >
-        {showAdvanced ? "Hide advanced" : "Advanced"}
-      </Button>
-      {showAdvanced && (
-        <div className="space-y-3">
-          <FormSelect
-            name="keepaliveMode"
-            label="Keepalive"
-            control={control}
-            options={[
-              { value: "default", label: "Use default" },
-              { value: "off", label: "Off" },
-              { value: "custom", label: "Custom" },
-            ]}
-          />
-          {keepaliveMode === "custom" && (
+      <form id={formId} onSubmit={handleSubmit(onSubmit)}>
+        <div className="space-y-3 p-4">
+          <SidePanel.Card icon={<GlobeIcon />} title="Address">
             <FormInput
-              name="keepaliveSecs"
-              label="Keepalive interval (seconds, 5-600)"
+              name="name"
+              label="Name"
               control={control}
-              type="number"
+              placeholder="My Server"
             />
-          )}
 
-          <div>
-            <label className="flex items-center gap-2 text-sm text-white">
-              <input
-                type="checkbox"
-                aria-label="Forward SSH agent"
-                className="accent-primary-500"
-                {...register("forwardAgent")}
-              />
-              <span>Forward SSH agent</span>
-            </label>
-            <p className="text-xs text-dark-400">{AGENT_FORWARD_HELP}</p>
-          </div>
-
-          <fieldset className="space-y-2">
-            <legend className="block text-dark-300 text-sm mb-2">
-              Environment variables
-            </legend>
-            {envFields.map((field, i) => (
-              <div
-                key={field.id}
-                className="grid grid-cols-[1fr_1fr_auto] gap-2"
-              >
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
                 <FormInput
-                  name={`env.${i}.name`}
-                  label="Name"
+                  name="address"
+                  label="Address"
                   control={control}
-                  placeholder="LANG"
+                  placeholder="192.168.1.100 or hostname"
+                  required
                 />
-                <FormInput
-                  name={`env.${i}.value`}
-                  label="Value"
-                  control={control}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  aria-label={`Remove variable ${i + 1}`}
-                  onClick={() => removeEnv(i)}
-                  className="self-end"
-                >
-                  Remove
-                </Button>
               </div>
-            ))}
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => appendEnv({ name: "", value: "" })}
-            >
-              Add variable
-            </Button>
-            <p className="text-xs text-dark-400">
-              Servers ignore variables they don't allow (`AcceptEnv` in
-              sshd_config); most allow only LANG and LC_*.
-            </p>
-          </fieldset>
-
-          <FormSelect
-            name="startupMode"
-            label="On connect"
-            control={control}
-            options={[
-              { value: "none", label: "None" },
-              { value: "snippet", label: "Snippet" },
-              { value: "command", label: "Command" },
-            ]}
-          />
-          {startupMode === "snippet" && (
-            <FormSelect
-              name="startupSnippetId"
-              label="Snippet"
-              control={control}
-              options={[
-                { value: "", label: "Select a snippet" },
-                ...snippets
-                  .filter((sn) => sn.vaultId === currentVaultId)
-                  .map((sn) => ({ value: sn.id, label: sn.name })),
-              ]}
-            />
-          )}
-          {startupMode === "command" && (
-            <Controller
-              name="startupCommand"
-              control={control}
-              render={({ field }) => (
-                <Textarea
-                  {...field}
-                  value={field.value ?? ""}
-                  aria-label="Startup command"
-                  rows={3}
-                  placeholder="cd /var/www && ls"
+              <div>
+                <FormInput
+                  name="port"
+                  label="Port"
+                  control={control}
+                  type="number"
+                  placeholder={portLine(inherited)}
                 />
-              )}
+              </div>
+            </div>
+          </SidePanel.Card>
+          <SidePanel.Card icon={<SlidersHorizontalIcon />} title="General">
+            {!defaultGroupId && (
+              <FormSelect
+                name="groupId"
+                label="Group"
+                control={control}
+                options={[
+                  { value: "", label: "No Group" },
+                  ...groups.map((g) => ({ value: g.id, label: g.name })),
+                ]}
+              />
+            )}
+
+            <fieldset>
+              <legend className="mb-2 block text-sm font-medium leading-none text-dark-300">
+                Color
+              </legend>
+              <Controller
+                name="color"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex gap-2">
+                    {colors.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => field.onChange(c)}
+                        className={`cursor-pointer w-8 h-8 rounded-full ${
+                          field.value === c
+                            ? "ring-2 ring-white ring-offset-2 ring-offset-dark-800"
+                            : ""
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                )}
+              />
+            </fieldset>
+
+            <FormInput
+              name="tags"
+              label="Tags"
+              control={control}
+              placeholder="production, web (comma-separated)"
             />
-          )}
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<KeyIcon />}
+            title="Credentials"
+            summary={summaries.credentials}
+          >
+            <div>
+              <FormInput
+                name="username"
+                label="Username"
+                control={control}
+                placeholder={inherited?.username ?? "Ask when connecting"}
+              />
+              {inherited?.username && (
+                <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
+                  <span>{watch("username") ? "Overrides" : "From group"}</span>
+                  <Badge className="max-w-32">
+                    <span className="truncate">{inherited.usernameFrom}</span>
+                  </Badge>
+                  {watch("username") && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Use group value"
+                      onClick={() => {
+                        setValue("username", "", { shouldDirty: true });
+                        // The button hides once the field is empty; keep focus in the panel.
+                        setFocus("username");
+                      }}
+                    >
+                      <ArrowCounterClockwiseIcon />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+            <CredentialsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<ArrowsLeftRightIcon />}
+            title="Connection"
+            summary={summaries.connection}
+          >
+            <div>
+              <FormSelect
+                name="jumpHostId"
+                label="Connect through"
+                control={control}
+                options={[
+                  { value: "", label: "Direct connection" },
+                  ...bastions.map((candidate) => ({
+                    value: candidate.id,
+                    label: candidate.name,
+                  })),
+                ]}
+              />
+              <p className="mt-1 text-xs text-dark-500">
+                The bastion uses its own SSH credentials and host-key check
+                before connecting to this host.
+              </p>
+              {(missingBastion || routeError) && (
+                <p role="alert" className="mt-1 text-xs text-red-400">
+                  {routeError ??
+                    "Selected bastion is unavailable. Choose another route before saving."}
+                </p>
+              )}
+            </div>
+
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="connection"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<PlayIcon />}
+            title="On connect"
+            summary={summaries.startup}
+          >
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="startup"
+            />
+          </SidePanel.Card>
+          <SidePanel.Card
+            icon={<TerminalWindowIcon />}
+            title="Environment"
+            action={<EnvAddButton envArray={envArray} />}
+            summary={summaries.env}
+          >
+            <ConnectionOptionsFields
+              control={control}
+              mode="host"
+              inherited={inherited}
+              part="env"
+              envArray={envArray}
+            />
+          </SidePanel.Card>
         </div>
-      )}
-    </ModalForm>
+      </form>
+    </SidePanel>
   );
 }

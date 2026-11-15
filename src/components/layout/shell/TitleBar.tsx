@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { isTauriAvailable } from "@/lib/common/utils";
 import { windowControls } from "@/lib/window/windowControls";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 
 export const isMac =
   typeof navigator !== "undefined" &&
@@ -15,6 +16,18 @@ export const isMac =
 
 const runWindowAction = (action: () => Promise<void>) => {
   void action().catch(() => toast.error("Window action failed. Try again."));
+};
+
+const closeWindow = async () => {
+  const unsaved = useUnsavedChanges.getState();
+  if (!(await unsaved.confirmLeave())) return;
+  const wasDirty = unsaved.dirty;
+  // Already confirmed: keep the close-requested guard from asking again.
+  unsaved.setDirty(false);
+  await windowControls.close().catch((e) => {
+    unsaved.setDirty(wasDirty);
+    throw e;
+  });
 };
 
 /** Subscribes to a boolean window state (maximized, fullscreen, focus). */
@@ -97,7 +110,7 @@ function TrafficLights() {
   const focused = useWindowState(windowControls.watchFocus, true);
   const fullscreen = useWindowState(windowControls.watchFullscreen, false);
   const actions = {
-    close: { label: "Close window", run: windowControls.close },
+    close: { label: "Close window", run: closeWindow },
     minimize: { label: "Minimize window", run: windowControls.minimize },
     zoom: {
       label: fullscreen ? "Exit full screen" : "Enter full screen",
@@ -174,7 +187,7 @@ function StandardWindowControls() {
         type="button"
         aria-label="Close window"
         title="Close"
-        onClick={() => run(windowControls.close)}
+        onClick={() => run(closeWindow)}
         className="flex w-11 items-center justify-center text-dark-400 hover:bg-danger-600 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-primary-400"
       >
         <XIcon size={15} aria-hidden="true" />

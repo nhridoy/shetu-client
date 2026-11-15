@@ -8,10 +8,23 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   handlers: [] as ((event: { payload: unknown }) => void)[],
   names: [] as string[],
+  updateHost: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
+vi.mock("@/lib/db/db");
+vi.mock("@/lib/crypto/crypto");
+vi.mock("@/stores/auth/authStore", () => ({
+  useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
+}));
 
+import {
+  forgetSession,
+  registerSavedHostSession,
+  rememberCredentials,
+  savePendingCredentials,
+} from "@/lib/terminal/pendingCredentials";
+import { useHostStore } from "@/stores/hosts/hostStore";
 import AuthPromptDialog from "./AuthPromptDialog";
 
 (
@@ -23,6 +36,13 @@ beforeEach(() => {
   mocks.handlers.length = 0;
   mocks.names.length = 0;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.updateHost.mockReset().mockResolvedValue(true);
+  useHostStore.setState({
+    hosts: [{ id: "h1", authType: "none" }],
+    updateHost: mocks.updateHost,
+  } as never);
+  forgetSession("term-1");
+  registerSavedHostSession("term-1", "h1");
   mocks.listen.mockReset().mockImplementation(async (name, handler) => {
     mocks.names.push(name);
     mocks.handlers.push(handler);
@@ -196,5 +216,114 @@ describe("AuthPromptDialog", () => {
     await emit("ssh-auth-prompt-closed", { id: "p2" });
     await click("Continue");
     expect(document.body.textContent).not.toContain("Login required");
+  });
+
+  describe("Save to this host", () => {
+    const password = {
+      ...base,
+      name: "",
+      instructions: "",
+      kind: "password",
+      sessionId: "term-1",
+      hop: "target",
+      prompts: [{ text: "Password", echo: false }],
+    };
+    const saveBox = () =>
+      Array.from(document.querySelectorAll("label"))
+        .find((l) => l.textContent?.includes("Save to this host"))
+        ?.querySelector("input") as HTMLInputElement | undefined;
+
+    it("password dialog shows Save for password kind only", async () => {
+      await setup();
+      await prompt(password);
+      expect(saveBox()?.type).toBe("checkbox");
+      await click("Cancel");
+      await prompt({ ...password, id: "p2", kind: "keyboard-interactive" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("is hidden for the bastion hop", async () => {
+      await setup();
+      await prompt({ ...password, hop: "bastion" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("is hidden for sessions that are not saved-host terminals", async () => {
+      await setup();
+      await prompt({ ...password, sessionId: "sftp-1" });
+      expect(saveBox()).toBeUndefined();
+    });
+
+    it("remembers the password for the session when checked", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      expect(mocks.invoke).toHaveBeenCalledWith("answer_auth_prompt", {
+        id: "p1",
+        responses: ["pw"],
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { password: "pw" },
+        { passwordAuth: true },
+      );
+    });
+
+    it("a rejected password is not saved when the server moves on to keyboard-interactive", async () => {
+      rememberCredentials("term-1", { username: "deploy" });
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "wrong");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      await prompt({
+        ...password,
+        id: "p2",
+        kind: "keyboard-interactive",
+        prompts: [{ text: "Password: ", echo: false }],
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { username: "deploy" },
+        { passwordAuth: false },
+      );
+    });
+
+    it("a bastion keyboard-interactive prompt leaves the target's password", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Continue");
+      await prompt({
+        ...password,
+        id: "p2",
+        kind: "keyboard-interactive",
+        hop: "bastion",
+      });
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { password: "pw" },
+        { passwordAuth: true },
+      );
+    });
+
+    it("remembers nothing when unchecked or cancelled", async () => {
+      await setup();
+      await prompt(password);
+      await type(inputs()[0], "pw");
+      await click("Continue");
+      await prompt({ ...password, id: "p2" });
+      await type(inputs()[0], "pw");
+      await act(async () => saveBox()?.click());
+      await click("Cancel");
+      await savePendingCredentials("term-1");
+      expect(mocks.updateHost).not.toHaveBeenCalled();
+    });
   });
 });
