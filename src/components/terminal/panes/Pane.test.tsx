@@ -48,7 +48,15 @@ afterEach(() => {
 
 async function render(broadcast: boolean, pane = leaf, isActive = true) {
   useTerminalStore.setState({
-    tabs: [{ id: "t1", root: pane, activePaneId: "p1", broadcast } as never],
+    tabs: [
+      {
+        id: "t1",
+        root: pane,
+        activePaneId: "p1",
+        broadcast,
+        broadcastReady: [pane.id],
+      } as never,
+    ],
     activeTabId: "t1",
   });
   const root = createRoot(
@@ -83,6 +91,46 @@ describe("Pane broadcast indicator", () => {
     act(() => root.unmount());
     root = await render(true, leaf, false);
     expect(pane()?.className).toContain("ring-amber-500/50");
+    act(() => root.unmount());
+  });
+
+  it("the badge sits in the pane header, not over the output", async () => {
+    const root = await render(true);
+    const header = document.querySelector("[data-pane-id=p1] > div");
+    expect(header?.textContent).toContain("web-1");
+    expect(header?.textContent).toContain("Broadcasting");
+    act(() => root.unmount());
+  });
+
+  it("a pane waiting to join says so", async () => {
+    useTerminalStore.setState({
+      tabs: [
+        {
+          id: "t1",
+          root: leaf,
+          activePaneId: "p1",
+          broadcast: true,
+          broadcastReady: [],
+        } as never,
+      ],
+      activeTabId: "t1",
+    });
+    const root = createRoot(
+      document.body.appendChild(document.createElement("div")),
+    );
+    await act(async () =>
+      root.render(
+        <Pane
+          tabId="t1"
+          pane={leaf}
+          isActive={false}
+          closable={false}
+          isActiveTab
+          onRestorePreset={() => {}}
+        />,
+      ),
+    );
+    expect(document.body.textContent).toContain("Joins at next line");
     act(() => root.unmount());
   });
 

@@ -101,17 +101,19 @@ describe("terminalContextMenuItems", () => {
     expect(openFind).toHaveBeenCalled();
   });
 
-  it("Broadcast Input toggles and shows a check while on", () => {
+  it("Broadcast Input toggles and is checked while on", () => {
     const toggle = vi.fn();
-    const label = (on: boolean) =>
+    const entry = (on: boolean) =>
       terminalContextMenuItems(terminal(), vi.fn(), vi.fn(), vi.fn(), {
         on,
         toggle,
       }).flatMap((i) =>
-        "label" in i && i.label.includes("Broadcast") ? [i.label] : [],
+        "label" in i && i.label.includes("Broadcast")
+          ? [[i.label, i.checked]]
+          : [],
       );
-    expect(label(false)).toEqual(["Broadcast Input"]);
-    expect(label(true)).toEqual(["✓ Broadcast Input"]);
+    expect(entry(false)).toEqual([["Broadcast Input", false]]);
+    expect(entry(true)).toEqual([["Broadcast Input", true]]);
     item(
       terminalContextMenuItems(terminal(), vi.fn(), vi.fn(), vi.fn(), {
         on: false,

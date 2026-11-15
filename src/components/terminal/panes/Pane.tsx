@@ -51,6 +51,15 @@ export default function Pane({
   const broadcasting = useTerminalStore(
     (s) => !!s.tabs.find((t) => t.id === tabId)?.broadcast,
   );
+  // Connected after broadcast started: receives from the next line on.
+  const joining = useTerminalStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return (
+      !!tab?.broadcast &&
+      pane.connectionStatus === "connected" &&
+      !tab.broadcastReady?.includes(pane.id)
+    );
+  });
   const splitPane = useTerminalStore((s) => s.splitPane);
   const removePane = useTerminalStore((s) => s.removePane);
   const connectPane = useTerminalStore((s) => s.connectPane);
@@ -128,6 +137,12 @@ export default function Pane({
         onClose={() => removePane(tabId, pane.id)}
         extra={
           <>
+            {broadcasting && pane.hostId && (
+              <span className="flex shrink-0 items-center gap-1 rounded bg-amber-500/90 px-1.5 text-[11px] font-medium leading-4 text-dark-950">
+                <BroadcastIcon className="size-3" weight="bold" aria-hidden />
+                {joining ? "Joins at next line" : "Broadcasting"}
+              </span>
+            )}
             {recording && (
               <span
                 className="text-xs text-red-300"
@@ -157,12 +172,6 @@ export default function Pane({
 
       {/* Pane body */}
       <div className="flex-1 min-h-0 relative">
-        {broadcasting && pane.hostId && (
-          <span className="pointer-events-none absolute bottom-2 right-3 z-20 flex items-center gap-1 rounded bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-dark-950">
-            <BroadcastIcon className="size-3" weight="bold" />
-            Broadcasting
-          </span>
-        )}
         {pane.hostId ? (
           <ErrorBoundary
             onReset={() => {

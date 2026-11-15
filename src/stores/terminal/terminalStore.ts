@@ -78,6 +78,8 @@ export interface TerminalTab {
   presetDirty: boolean;
   /** Input typed in one pane also goes to the tab's other connected panes. */
   broadcast?: boolean;
+  /** Panes that receive broadcast input; one that connects later joins at the next line. */
+  broadcastReady?: string[];
 }
 
 export const findLeaf = findLeafUtil;
@@ -88,8 +90,14 @@ export function broadcastTargets(
   sourcePaneId: string,
 ): string[] {
   if (!tab.broadcast) return [];
+  return connectedPanes(tab).filter(
+    (id) => id !== sourcePaneId && tab.broadcastReady?.includes(id),
+  );
+}
+
+function connectedPanes(tab: TerminalTab): string[] {
   return findAllLeaves(tab.root)
-    .filter((l) => l.id !== sourcePaneId && l.connectionStatus === "connected")
+    .filter((l) => l.connectionStatus === "connected")
     .map((l) => l.id);
 }
 
@@ -250,6 +258,8 @@ interface TerminalState {
   closeActivePane: () => string | null;
   setActivePane: (tabId: string, paneId: string) => void;
   toggleBroadcast: (tabId: string) => void;
+  /** Lets panes that connected since the last line start receiving broadcast input. */
+  syncBroadcastPanes: (tabId: string) => void;
   setFocusedPane: (tabId: string, paneId: string | null) => void;
   setActiveTab: (id: string) => void;
   updatePaneConnectionStatus: (
@@ -519,7 +529,18 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   toggleBroadcast: (tabId) =>
     set((s) => ({
       tabs: s.tabs.map((t) =>
-        t.id === tabId ? { ...t, broadcast: !t.broadcast } : t,
+        t.id === tabId
+          ? { ...t, broadcast: !t.broadcast, broadcastReady: connectedPanes(t) }
+          : t,
+      ),
+    })),
+
+  syncBroadcastPanes: (tabId) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId && t.broadcast
+          ? { ...t, broadcastReady: connectedPanes(t) }
+          : t,
       ),
     })),
 

@@ -71,6 +71,22 @@ describe("broadcast", () => {
     expect(broadcastTargets(tab(), ids[0])).toEqual([ids[1]]);
   });
 
+  it("a pane that connects mid-broadcast waits until panes are synced", () => {
+    const { tabId, tab, ids } = threePaneTab();
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, ids[2], "connecting");
+    useTerminalStore.getState().toggleBroadcast(tabId);
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, ids[2], "connected");
+    expect(broadcastTargets(tab(), ids[0])).toEqual([ids[1]]);
+    useTerminalStore.getState().syncBroadcastPanes(tabId);
+    expect(broadcastTargets(tab(), ids[0]).sort()).toEqual(
+      [ids[1], ids[2]].sort(),
+    );
+  });
+
   it("targets follow the tree", () => {
     const { tabId, tab, ids } = threePaneTab();
     useTerminalStore.getState().toggleBroadcast(tabId);

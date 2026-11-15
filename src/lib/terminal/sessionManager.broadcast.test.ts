@@ -127,6 +127,33 @@ describe("broadcast fan-out", () => {
     };
   }
 
+  it("a pane that connects mid-line joins at the next line", async () => {
+    const { sa, sb, done } = await broadcastingPair();
+    const tabId = sa.params.tabId as string;
+    const late = useTerminalStore.getState().tabs[0].activePaneId as string;
+    useTerminalStore.getState().splitPane(tabId, late, "vertical");
+    const c = useTerminalStore.getState().tabs[0].activePaneId as string;
+    useTerminalStore
+      .getState()
+      .updatePaneConnectionStatus(tabId, c, "connected");
+    const sc = getOrCreateSession({
+      paneId: c,
+      tabId,
+      hostId: "h",
+      hostName: "z",
+    });
+    sc.send = vi.fn();
+    sendInput(sa, "sudo rebo");
+    expect(sc.send).not.toHaveBeenCalled();
+    sendInput(sa, "ot\r");
+    expect(sc.send).not.toHaveBeenCalled();
+    sendInput(sa, "uptime\r");
+    expect(sc.send).toHaveBeenCalledWith("uptime\r");
+    expect(sb.send).toHaveBeenCalledTimes(3);
+    await destroySession(c);
+    await done();
+  });
+
   it("terminal replies stay in their own pane", async () => {
     const { sa, sb, done } = await broadcastingPair();
     for (const reply of [

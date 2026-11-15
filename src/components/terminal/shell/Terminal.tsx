@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
 import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
+import { toggleTabBroadcast } from "@/lib/terminal/broadcast";
 import { findOpensHere, onOpenFind } from "@/lib/terminal/findCommand";
 import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
@@ -276,8 +277,7 @@ export default function Terminal({
                       on: !!useTerminalStore
                         .getState()
                         .tabs.find((t) => t.id === tabId)?.broadcast,
-                      toggle: () =>
-                        useTerminalStore.getState().toggleBroadcast(tabId),
+                      toggle: () => toggleTabBroadcast(tabId),
                     },
                   )
                 : [];

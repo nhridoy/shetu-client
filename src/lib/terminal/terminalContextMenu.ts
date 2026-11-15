@@ -75,7 +75,8 @@ export function terminalContextMenuItems(
     ...(broadcast
       ? [
           {
-            label: broadcast.on ? "✓ Broadcast Input" : "Broadcast Input",
+            label: "Broadcast Input",
+            checked: broadcast.on,
             shortcut: shortcutLabel("terminal.broadcast"),
             onClick: then(broadcast.toggle),
           },

@@ -498,6 +498,9 @@ export function sendInput(session: Session, data: string): void {
     }
     target.send(data);
   }
+  // A finished line is a safe point for panes that connected meanwhile to join.
+  if (/[\r\n]/.test(data) && !data.startsWith(BRACKETED_PASTE))
+    useTerminalStore.getState().syncBroadcastPanes(tab.id);
   if (skipped)
     toast.warning(
       `Paste not sent to ${skipped} pane${skipped === 1 ? "" : "s"} without bracketed paste`,

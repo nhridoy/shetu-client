@@ -7,6 +7,8 @@ export type ContextMenuItem =
       shortcut?: string;
       danger?: boolean;
       disabled?: boolean;
+      /** Makes the item a checkbox: a check mark, and announced as checked or not. */
+      checked?: boolean;
       onClick: () => void;
     }
   | { type: "separator" };
@@ -108,9 +110,12 @@ export default function ContextMenu({
           );
         }
         return (
+          // biome-ignore lint/a11y/useAriaPropsSupportedByRole: role is menuitemcheckbox whenever aria-checked is set
           <button
             key={item.label}
             type="button"
+            role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+            aria-checked={item.checked}
             onClick={(e) => {
               e.stopPropagation();
               if (!item.disabled) {
@@ -133,6 +138,11 @@ export default function ContextMenu({
           >
             {item.icon && (
               <span className="w-3.5 h-3.5 shrink-0">{item.icon}</span>
+            )}
+            {item.checked !== undefined && (
+              <span aria-hidden className="w-3 shrink-0 text-center">
+                {item.checked ? "✓" : ""}
+              </span>
             )}
             <span className="flex-1">{item.label}</span>
             {item.shortcut && (
