@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 
-const sidebarItems = [
+export const SIDEBAR_ITEMS = [
   { path: "/hosts", label: "Hosts", icon: DesktopTowerIcon },
   { path: "/workspaces", label: "Workspaces", icon: FolderOpenIcon },
   { path: "/snippets", label: "Snippets", icon: FileTextIcon },
@@ -60,7 +60,7 @@ export default function AppSidebar({
           Vault
         </p>
         <div className="space-y-px">
-          {sidebarItems.map((item) => {
+          {SIDEBAR_ITEMS.map((item) => {
             const active = isActive(item.path);
             return (
               <Button
