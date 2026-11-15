@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   countLeaves as countLeavesUtil,
   type DropSide,
+  findAllLeaves,
   findFirstLeafId,
   findLeaf as findLeafUtil,
   recomputeSizes as recomputeSizesUtil,
@@ -75,9 +76,22 @@ export interface TerminalTab {
   activePresetName: string | null;
   savedPresetSnapshot: string;
   presetDirty: boolean;
+  /** Input typed in one pane also goes to the tab's other connected panes. */
+  broadcast?: boolean;
 }
 
 export const findLeaf = findLeafUtil;
+
+/** Panes that also receive input typed in `sourcePaneId` (empty unless the tab broadcasts). */
+export function broadcastTargets(
+  tab: TerminalTab,
+  sourcePaneId: string,
+): string[] {
+  if (!tab.broadcast) return [];
+  return findAllLeaves(tab.root)
+    .filter((l) => l.id !== sourcePaneId && l.connectionStatus === "connected")
+    .map((l) => l.id);
+}
 
 export function computeTabSnapshot(root: PaneNode): string {
   return JSON.stringify(serializePresetRoot(root));
@@ -235,6 +249,7 @@ interface TerminalState {
   /** Closes the active tab's active pane (the tab too, if it was the last pane). Returns the new active tab id. */
   closeActivePane: () => string | null;
   setActivePane: (tabId: string, paneId: string) => void;
+  toggleBroadcast: (tabId: string) => void;
   setFocusedPane: (tabId: string, paneId: string | null) => void;
   setActiveTab: (id: string) => void;
   updatePaneConnectionStatus: (
@@ -500,6 +515,13 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       };
     });
   },
+
+  toggleBroadcast: (tabId) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? { ...t, broadcast: !t.broadcast } : t,
+      ),
+    })),
 
   setActivePane: (tabId, paneId) => {
     set((s) => ({

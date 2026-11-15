@@ -4,7 +4,10 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useHostStore } from "@/stores/hosts/hostStore";
-import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import {
+  broadcastTargets,
+  useTerminalStore,
+} from "@/stores/terminal/terminalStore";
 import {
   type TerminalTheme,
   terminalThemeFor,
@@ -43,6 +46,8 @@ export interface Session {
   xterm: XTerminal;
   fitAddon: FitAddon;
   searchAddon: SearchAddon;
+  /** Writes input to this pane's shell; a no-op until it connects. */
+  send: (data: string) => void;
   container: HTMLDivElement;
   opened: boolean;
   resizeObserver: ResizeObserver | null;
@@ -88,6 +93,7 @@ function createSession(params: SessionParams): Session {
     xterm,
     fitAddon,
     searchAddon,
+    send: () => {},
     container,
     opened: false,
     resizeObserver: null,
@@ -302,13 +308,11 @@ async function connectViaTauri(session: Session) {
 
     session.unlisten = unlisten;
 
-    xterm.onData(async (data) => {
-      try {
-        await invoke("send_input", { sessionId: params.paneId, data });
-      } catch {
-        // Session may have been closed
-      }
-    });
+    session.send = (data) => {
+      // A closed session rejects; nothing to do.
+      invoke("send_input", { sessionId: params.paneId, data }).catch(() => {});
+    };
+    xterm.onData((data) => sendInput(session, data));
 
     let lastResize = { cols, rows };
     xterm.onResize(async ({ cols: newCols, rows: newRows }) => {
@@ -393,13 +397,12 @@ async function connectLocal(session: Session) {
 
     session.unlisten = unlisten;
 
-    xterm.onData(async (data) => {
-      try {
-        await invoke("send_input_local", { sessionId: params.paneId, data });
-      } catch {
-        // Session may have been closed
-      }
-    });
+    session.send = (data) => {
+      invoke("send_input_local", { sessionId: params.paneId, data }).catch(
+        () => {},
+      );
+    };
+    xterm.onData((data) => sendInput(session, data));
 
     let lastResize = { cols, rows };
     xterm.onResize(async ({ cols: newCols, rows: newRows }) => {
@@ -463,6 +466,17 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 }
 
 export const getSession = (paneId: string) => sessions.get(paneId);
+
+/** Input typed in a pane: to its own shell, and to the tab's other panes while it broadcasts. */
+export function sendInput(session: Session, data: string): void {
+  session.send(data);
+  const tab = useTerminalStore
+    .getState()
+    .tabs.find((t) => t.id === session.params.tabId);
+  if (!tab) return;
+  for (const id of broadcastTargets(tab, session.params.paneId))
+    sessions.get(id)?.send(data);
+}
 
 /**
  * Types `text` at the prompt like a paste; `run` also presses Enter. Returns false, without
