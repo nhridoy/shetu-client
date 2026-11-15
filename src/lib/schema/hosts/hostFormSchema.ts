@@ -46,14 +46,6 @@ export const hostFormSchema = z
       .string()
       .trim()
       .max(255, { error: "Username must be at most 255 characters" }),
-    authType: z.enum([
-      "inherit",
-      "password",
-      "key",
-      "both",
-      "none",
-      "identity",
-    ]),
     identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),
@@ -70,33 +62,6 @@ export const hostFormSchema = z
     startupSnippetId: z.string().optional(),
     startupCommand: z.string().optional(),
   })
-  .refine((d) => d.authType !== "inherit" || !!d.groupId, {
-    error: "Pick credentials or a group",
-    path: ["authType"],
-  })
-  .refine(
-    (data) => {
-      if (
-        (data.authType === "password" || data.authType === "both") &&
-        !data.password
-      )
-        return false;
-      return true;
-    },
-    { error: "Password is required", path: ["password"] },
-  )
-  .refine(
-    (data) => {
-      if ((data.authType === "key" || data.authType === "both") && !data.keyId)
-        return false;
-      return true;
-    },
-    { error: "Please select an SSH key", path: ["keyId"] },
-  )
-  .refine((d) => d.authType !== "identity" || !!d.identityId, {
-    error: IDENTITY_ERROR,
-    path: ["identityId"],
-  })
   .refine((d) => d.startupMode !== "snippet" || !!d.startupSnippetId, {
     error: "Select a snippet",
     path: ["startupSnippetId"],
@@ -110,7 +75,6 @@ export const hostFormDefaultValues: HostFormSchema = {
   address: "",
   port: "",
   username: "",
-  authType: "none",
   identityId: "",
   password: "",
   keyId: "",

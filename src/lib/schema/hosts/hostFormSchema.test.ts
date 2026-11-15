@@ -53,21 +53,8 @@ describe("hostFormSchema connection options", () => {
 });
 
 describe("hostFormSchema group inheritance", () => {
-  it("accepts authType inherit with no password or key", () => {
-    expect(
-      issuePaths({
-        authType: "inherit",
-        password: "",
-        keyId: "",
-        groupId: "g1",
-      }),
-    ).toEqual([]);
-  });
-
-  it("inherit needs a group", () => {
-    expect(issuePaths({ authType: "inherit", groupId: "" })).toContain(
-      "authType",
-    );
+  it("credentials are all optional: nothing filled is valid", () => {
+    expect(issuePaths({ password: "", keyId: "", identityId: "" })).toEqual([]);
   });
 
   it("username may be empty", () => {
@@ -78,14 +65,5 @@ describe("hostFormSchema group inheritance", () => {
     expect(
       issuePaths({ startupMode: "inherit", forwardAgentMode: "inherit" }),
     ).toEqual([]);
-  });
-});
-
-describe("hostFormSchema identity", () => {
-  it("Identity needs an identity picked", () => {
-    expect(issuePaths({ authType: "identity", identityId: "" })).toContain(
-      "identityId",
-    );
-    expect(issuePaths({ authType: "identity", identityId: "i1" })).toEqual([]);
   });
 });

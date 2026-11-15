@@ -1,6 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
-  ArrowCounterClockwiseIcon,
   ArrowsLeftRightIcon,
   GlobeIcon,
   KeyIcon,
@@ -12,10 +11,10 @@ import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import SidePanel from "@/components/common/SidePanel";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
+import { deriveAuthType, loadedCredentials } from "@/lib/hosts/credentials";
 import {
   fetchInheritedDefaults,
   type InheritedDefaults,
@@ -77,6 +76,8 @@ function startupFromForm(data: HostFormValues): HostData["startup"] {
 }
 
 const FORWARD = { inherit: null, on: true, off: false } as const;
+
+const CREDENTIAL_FIELDS = ["password", "keyId", "identityId"] as const;
 
 export default function HostForm({
   host,
@@ -143,9 +144,7 @@ export default function HostForm({
     watch,
     reset,
     resetField,
-    setValue,
-    setFocus,
-    formState: { isDirty },
+    formState: { isDirty, dirtyFields },
   } = useForm<HostFormValues>({
     resolver: zodResolver(hostFormSchema),
     defaultValues: {
@@ -153,10 +152,7 @@ export default function HostForm({
       address: host?.address || hostFormDefaultValues.address,
       port: host?.port ?? hostFormDefaultValues.port,
       username: host?.username || hostFormDefaultValues.username,
-      authType: host?.authType || hostFormDefaultValues.authType,
-      identityId: host?.identityId || hostFormDefaultValues.identityId,
-      password: host?.password ?? hostFormDefaultValues.password,
-      keyId: host?.keyId || hostFormDefaultValues.keyId,
+      ...loadedCredentials(host?.authType, host ?? {}),
       jumpHostId: host?.jumpHostId || "",
       color: host?.color || hostFormDefaultValues.color,
       groupId: initialGroupId,
@@ -214,7 +210,6 @@ export default function HostForm({
     // so a save before it resolves doesn't store explicit none/off.
     if (isNew) {
       const defaults = {
-        authType: groupId ? "inherit" : "none",
         startupMode: groupId ? "inherit" : "none",
         forwardAgentMode: groupId ? "inherit" : "off",
       } as const;
@@ -232,12 +227,6 @@ export default function HostForm({
       stale = true;
     };
   }, [groupId, currentVaultId, isNew, resetField]);
-
-  const authType = watch("authType");
-  // The identity supplies the username, so the host's own one would be ignored.
-  const usesIdentity =
-    authType === "identity" ||
-    (authType === "inherit" && inherited?.authType === "identity");
 
   const missingBastion =
     !!selectedJumpHostId &&
@@ -266,20 +255,23 @@ export default function HostForm({
     }
     setRouteError(null);
     const forwardAgent = FORWARD[data.forwardAgentMode];
+    const authType = deriveAuthType(data, {
+      mode: "host",
+      groupId: data.groupId,
+      stored: host?.authType,
+      touched: CREDENTIAL_FIELDS.some((f) => dirtyFields[f]),
+    }) as HostData["authType"];
     const hostData = {
       name: data.name || data.address,
       address: data.address,
       port: isBlank(data.port) ? null : Number(data.port),
       username: data.username,
-      authType: data.authType,
-      identityId: data.authType === "identity" ? data.identityId : null,
-      keyId:
-        data.authType === "key" || data.authType === "both"
-          ? data.keyId
-          : undefined,
+      authType,
+      identityId: authType === "identity" ? data.identityId : null,
+      keyId: authType === "key" || authType === "both" ? data.keyId : undefined,
       jumpHostId: data.jumpHostId || null,
       password:
-        data.authType === "password" || data.authType === "both"
+        authType === "password" || authType === "both"
           ? data.password
           : undefined,
       color: data.color,
@@ -444,41 +436,6 @@ export default function HostForm({
             title="Credentials"
             summary={summaries.credentials}
           >
-            {!usesIdentity && (
-              <div>
-                <FormInput
-                  name="username"
-                  label="Username"
-                  control={control}
-                  placeholder={inherited?.username ?? "Ask when connecting"}
-                />
-                {inherited?.username && (
-                  <div className="mt-1 flex items-center gap-1 text-xs text-dark-400">
-                    <span>
-                      {watch("username") ? "Overrides" : "From group"}
-                    </span>
-                    <Badge className="max-w-32">
-                      <span className="truncate">{inherited.usernameFrom}</span>
-                    </Badge>
-                    {watch("username") && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label="Use group value"
-                        onClick={() => {
-                          setValue("username", "", { shouldDirty: true });
-                          // The button hides once the field is empty; keep focus in the panel.
-                          setFocus("username");
-                        }}
-                      >
-                        <ArrowCounterClockwiseIcon />
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
             <CredentialsFields
               control={control}
               mode="host"

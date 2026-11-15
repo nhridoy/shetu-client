@@ -1,4 +1,5 @@
 import { type Control, type FieldValues, useWatch } from "react-hook-form";
+import { ownCredentials } from "@/lib/hosts/credentials";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 
 /** Inherited env rows not overridden by a host row of the same name. */
@@ -15,7 +16,10 @@ export function useCardSummaries<T extends FieldValues>(
 ) {
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
-  const authType = useWatch({ control, name: "authType" });
+  const [password, keyId, identityId, groupId] = useWatch({
+    control,
+    name: ["password", "keyId", "identityId", "groupId"],
+  });
   const keepalive = useWatch({ control, name: "keepaliveSecs" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
   const startupMode = useWatch({ control, name: "startupMode" });
@@ -26,7 +30,10 @@ export function useCardSummaries<T extends FieldValues>(
     env.filter((r) => r.name?.trim()).length +
     visibleInheritedEnv(inherited, env).length;
   return {
-    credentials: from(authType === "inherit", inherited?.authFrom),
+    credentials: from(
+      !!groupId && !ownCredentials({ password, keyId, identityId }),
+      inherited?.authFrom,
+    ),
     connection:
       from(keepalive == null || keepalive === "", inherited?.keepaliveFrom) ??
       from(forwardMode === "inherit", inherited?.forwardAgentFrom),
