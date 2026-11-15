@@ -301,6 +301,8 @@ where
     }
     let kbd_err = |e: russh::Error| format!("keyboard-interactive auth: {e}");
     let mut auto_answer = auto_answer_password(config, password_ran, partial_seen);
+    // Once per login call: a rejected code sends later code prompts to the dialog.
+    let mut totp = config.totp.clone();
     // A second attempt happens only after a wrong auto-answer, with auto-answer gone.
     'attempt: loop {
         let mut auto_answered = false;
@@ -326,7 +328,14 @@ where
             };
             let answers = if prompts.is_empty() {
                 Vec::new()
-            } else if let (1, false, Some(_)) = (prompts.len(), prompts[0].echo, &auto_answer) {
+            } else if let (1, true, Some(params)) = (prompts.len(), crate::totp::is_code_prompt(&prompts[0].prompt), &totp) {
+                auto_answered = true;
+                let code = crate::totp::code(params, crate::totp::unix_now());
+                totp = None;
+                vec![code]
+            } else if let (1, false, false, Some(_)) =
+                (prompts.len(), prompts[0].echo, crate::totp::is_code_prompt(&prompts[0].prompt), &auto_answer)
+            {
                 auto_answered = true;
                 vec![auto_answer.take().unwrap_or_default()]
             } else if let Some(prompter) = &ctx.prompter {
@@ -379,7 +388,16 @@ mod tests {
         /// With `kbd_endless`: accept once this many responses arrived.
         kbd_accept_after: Option<usize>,
         kbd_responses: usize,
+        /// A second keyboard-interactive round, sent after `kbd` was answered correctly.
+        kbd_then: Vec<(&'static str, &'static str)>,
+        kbd_then_sent: bool,
+        /// Expected answer `"<totp>"` accepts this TOTP's current or previous code.
+        totp: Option<crate::totp::TotpParams>,
         log: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
     }
 
     impl russh::server::Handler for Srv {
@@ -448,9 +466,23 @@ mod tests {
                     prompts: prompts.into(),
                 });
             };
-            let answers: Vec<Vec<u8>> = response.map(|b| b.to_vec()).collect();
-            let expected: Vec<Vec<u8>> = self.kbd.iter().map(|(_, a)| a.as_bytes().to_vec()).collect();
-            Ok(if answers == expected { russh::server::Auth::Accept } else { russh::server::Auth::reject() })
+            let answers: Vec<String> = response.map(|b| String::from_utf8_lossy(&b).into_owned()).collect();
+            for answer in &answers {
+                self.log.lock().unwrap().push(format!("kbd-answer:{answer}"));
+            }
+            let round = if self.kbd_then_sent { &self.kbd_then } else { &self.kbd };
+            let now = now_secs();
+            let matches = |expected: &str, answer: &str| match (expected, &self.totp) {
+                ("<totp>", Some(p)) => [now, now - p.period].iter().any(|t| crate::totp::code(p, *t) == answer),
+                _ => expected == answer,
+            };
+            let ok = answers.len() == round.len() && round.iter().zip(&answers).all(|((_, e), a)| matches(e, a));
+            if ok && !self.kbd_then_sent && !self.kbd_then.is_empty() {
+                self.kbd_then_sent = true;
+                let prompts: Vec<_> = self.kbd_then.iter().map(|(p, _)| ((*p).into(), false)).collect();
+                return Ok(russh::server::Auth::Partial { name: "".into(), instructions: "".into(), prompts: prompts.into() });
+            }
+            Ok(if ok { russh::server::Auth::Accept } else { russh::server::Auth::reject() })
         }
     }
 
@@ -705,6 +737,89 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert_eq!(log.last(), Some(&fp(&fourth)));
+    }
+
+    fn totp_params(secret: &[u8]) -> crate::totp::TotpParams {
+        crate::totp::TotpParams { secret: secret.to_vec(), algorithm: crate::totp::Algorithm::Sha1, digits: 6, period: 30 }
+    }
+
+    fn counting_prompter(answer: impl Fn() -> String + Send + Sync + 'static) -> (Prompter, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let answer = Arc::new(answer);
+        let prompter: Prompter = Arc::new(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let answer = answer.clone();
+            Box::pin(async move { Some(vec![answer()]) })
+        });
+        (prompter, calls)
+    }
+
+    #[tokio::test]
+    async fn totp_auto_fills_code_prompt() {
+        let srv = Srv {
+            kbd: vec![("Verification code: ", "<totp>")],
+            totp: Some(totp_params(b"identity-secret")),
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
+        let log = srv.log.clone();
+        let mut config = config(None, None);
+        config.totp = Some(totp_params(b"identity-secret"));
+        within(run(srv, config, None, None)).await.unwrap();
+        assert_eq!(count(&log, "kbdint"), 1);
+    }
+
+    #[tokio::test]
+    async fn totp_only_for_code_prompts() {
+        let srv = Srv { kbd: vec![("Password: ", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let log = srv.log.clone();
+        let mut config = config(None, None);
+        config.totp = Some(totp_params(b"identity-secret"));
+        let (prompter, calls) = counting_prompter(|| "pw".into());
+        within(run(srv, config, None, Some(prompter))).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(log.lock().unwrap().iter().filter(|e| e.starts_with("kbd-answer:")).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn password_not_sent_to_code_prompt() {
+        let srv = Srv { kbd: vec![("Verification code: ", "123456")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let log = srv.log.clone();
+        let (prompter, calls) = counting_prompter(|| "123456".into());
+        within(run(srv, config(None, Some("pw")), None, Some(prompter))).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(count(&log, "kbd-answer:pw"), 0);
+    }
+
+    #[tokio::test]
+    async fn rejected_code_goes_to_dialog() {
+        let server_totp = totp_params(b"the-real-secret");
+        let srv = Srv {
+            kbd: vec![("Verification code: ", "<totp>")],
+            totp: Some(server_totp.clone()),
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
+        let mut config = config(None, None);
+        config.totp = Some(totp_params(b"a-stale-secret"));
+        let (prompter, calls) = counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
+        within(run(srv, config, None, Some(prompter))).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn password_then_code_chain() {
+        let srv = Srv {
+            kbd: vec![("Password: ", "pw")],
+            kbd_then: vec![("Verification code: ", "<totp>")],
+            totp: Some(totp_params(b"identity-secret")),
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
+        let mut config = config(None, Some("pw"));
+        config.totp = Some(totp_params(b"identity-secret"));
+        within(run(srv, config, None, None)).await.unwrap();
     }
 
     #[tokio::test]

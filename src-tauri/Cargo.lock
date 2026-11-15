@@ -5331,6 +5331,7 @@ dependencies = [
  "chacha20poly1305 0.9.1",
  "chrono",
  "cipher 0.4.4",
+ "data-encoding",
  "dirs 6.0.0",
  "futures",
  "glob",

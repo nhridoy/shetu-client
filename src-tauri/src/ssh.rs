@@ -548,6 +548,9 @@ pub struct SshConfig {
     pub env: Vec<(String, String)>,
     pub startup: Option<StartupAction>,
     pub forward_agent: bool,
+    /// From an identity; answers one code prompt per login. Never deserialized from the frontend.
+    #[serde(skip)]
+    pub totp: Option<crate::totp::TotpParams>,
 }
 
 #[derive(serde::Serialize)]
@@ -1629,6 +1632,7 @@ pub fn load_host_config_as(
         env: effective.env.into_iter().map(|(name, value, _)| (name, value)).collect(),
         // `{none: true}` has neither command nor snippetId, so load_startup gives None.
         startup: load_startup(db, crypto, &row.vault_id, &effective.startup.0),
+        totp: None,
     };
     if let Some(key_id) = effective.key_id.as_deref() {
         let decrypt = |key_row: &crate::db::SyncRow| -> Result<serde_json::Value, String> {

@@ -24,6 +24,7 @@ mod ssh_route;
 mod sync;
 mod team_keys;
 mod team_sync;
+mod totp;
 mod update;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
@@ -1663,6 +1664,7 @@ pub fn run() {
         .manage(oauth::OAuthListener::default())
         .invoke_handler(tauri::generate_handler![
             menu_accelerators::set_menu_accelerators,
+            totp::totp_preview,
             update::update_installation_kind,
             get_device_id,
             host_inherit::inherited_host_defaults,
