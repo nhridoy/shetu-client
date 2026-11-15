@@ -1,4 +1,4 @@
-import { SIDEBAR_ITEMS } from "@/components/layout/shell/AppSidebar";
+import { SIDEBAR_ITEMS } from "@/components/layout/shell/sidebarItems";
 import {
   SHORTCUTS,
   type ShortcutContext,

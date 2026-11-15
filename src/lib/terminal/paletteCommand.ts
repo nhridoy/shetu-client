@@ -111,14 +111,117 @@ export function runInAllTabs(
   return { ran, local };
 }
 
+export type PaletteMode = "all" | "snippets";
+
 const OPEN_PALETTE_EVENT = "shetu:open-command-palette";
 
-/** Asks the terminal view to open the command palette, e.g. from a pane's context menu. */
-export function openCommandPalette(): void {
-  window.dispatchEvent(new Event(OPEN_PALETTE_EVENT));
+/** Opens the command palette, e.g. from a pane's context menu ("snippets" filters to them). */
+export function openCommandPalette(mode: PaletteMode = "all"): void {
+  window.dispatchEvent(new CustomEvent(OPEN_PALETTE_EVENT, { detail: mode }));
 }
 
-export function onOpenCommandPalette(handler: () => void): () => void {
-  window.addEventListener(OPEN_PALETTE_EVENT, handler);
-  return () => window.removeEventListener(OPEN_PALETTE_EVENT, handler);
+export function onOpenCommandPalette(
+  handler: (mode: PaletteMode) => void,
+): () => void {
+  const listener = (e: Event) =>
+    handler(
+      (e as CustomEvent<PaletteMode>).detail === "snippets"
+        ? "snippets"
+        : "all",
+    );
+  window.addEventListener(OPEN_PALETTE_EVENT, listener);
+  return () => window.removeEventListener(OPEN_PALETTE_EVENT, listener);
 }
+
+/** Puts a palette pick into the terminal; resolves true when done (the palette closes). */
+export type SnippetPicker = (
+  item: PaletteItem,
+  run: boolean,
+  all: boolean,
+) => Promise<boolean>;
+
+let picker: SnippetPicker | null = null;
+
+/** The terminal view registers its picker while mounted; returns the unregister. */
+export function setTerminalSnippetPicker(p: SnippetPicker): () => void {
+  picker = p;
+  return () => {
+    if (picker === p) picker = null;
+  };
+}
+
+export function terminalSnippetPicker(): SnippetPicker | null {
+  return picker;
+}
+
+/** Common commands listed under snippets in the terminal. */
+export const BUILTIN_COMMANDS: {
+  name: string;
+  command: string;
+  description: string;
+}[] = [
+  {
+    name: "ls -la",
+    command: "ls -la",
+    description: "List files with details",
+  },
+  { name: "cd", command: "cd ", description: "Change directory" },
+  { name: "pwd", command: "pwd", description: "Print working directory" },
+  { name: "mkdir", command: "mkdir ", description: "Create directory" },
+  {
+    name: "rm -rf",
+    command: "rm -rf ",
+    description: "Remove files (careful!)",
+  },
+  { name: "cp -r", command: "cp -r ", description: "Copy recursively" },
+  { name: "mv", command: "mv ", description: "Move/rename" },
+  { name: "chmod", command: "chmod ", description: "Change permissions" },
+  { name: "chown", command: "chown ", description: "Change ownership" },
+  { name: "cat", command: "cat ", description: "View file contents" },
+  {
+    name: "tail -f",
+    command: "tail -f ",
+    description: "Follow file changes",
+  },
+  { name: "grep", command: "grep ", description: "Search text" },
+  { name: "find", command: "find ", description: "Find files" },
+  { name: "ps aux", command: "ps aux", description: "List processes" },
+  { name: "top", command: "top", description: "Process monitor" },
+  { name: "htop", command: "htop", description: "Better process monitor" },
+  { name: "df -h", command: "df -h", description: "Disk usage" },
+  { name: "du -sh", command: "du -sh ", description: "Directory size" },
+  { name: "free -m", command: "free -m", description: "Memory usage" },
+  { name: "uptime", command: "uptime", description: "System uptime" },
+  { name: "whoami", command: "whoami", description: "Current user" },
+  { name: "hostname", command: "hostname", description: "System hostname" },
+  { name: "uname -a", command: "uname -a", description: "System info" },
+  { name: "curl", command: "curl ", description: "HTTP requests" },
+  { name: "wget", command: "wget ", description: "Download files" },
+  { name: "ssh", command: "ssh ", description: "SSH connect" },
+  { name: "scp", command: "scp ", description: "Secure copy" },
+  { name: "rsync", command: "rsync ", description: "Sync files" },
+  { name: "git status", command: "git status", description: "Git status" },
+  { name: "git pull", command: "git pull", description: "Git pull" },
+  { name: "git push", command: "git push", description: "Git push" },
+  {
+    name: "docker ps",
+    command: "docker ps",
+    description: "Docker containers",
+  },
+  {
+    name: "docker compose",
+    command: "docker compose ",
+    description: "Docker Compose",
+  },
+  {
+    name: "systemctl status",
+    command: "systemctl status ",
+    description: "Service status",
+  },
+  {
+    name: "systemctl restart",
+    command: "systemctl restart ",
+    description: "Restart service",
+  },
+  { name: "journalctl", command: "journalctl -u ", description: "View logs" },
+];

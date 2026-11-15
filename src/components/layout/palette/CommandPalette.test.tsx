@@ -1,0 +1,262 @@
+// @vitest-environment happy-dom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const m = vi.hoisted(() => ({
+  hosts: [] as unknown[],
+  snippets: [] as unknown[],
+}));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock("@/stores/hosts/hostStore", () => ({
+  useHostStore: () => ({ hosts: m.hosts }),
+}));
+vi.mock("@/stores/terminal/shellStore", () => ({
+  useShellStore: (pick: (s: { shells: unknown[] }) => unknown) =>
+    pick({ shells: [] }),
+}));
+vi.mock("@/stores/snippets/snippetStore", () => ({
+  useSnippetStore: (pick: (s: { snippets: unknown[] }) => unknown) =>
+    pick({ snippets: m.snippets }),
+}));
+vi.mock("@/components/snippets/RunOnHostsDialog", () => ({
+  default: ({ snippet }: { snippet: { name: string } }) => (
+    <div data-testid="run-on-hosts">{snippet.name}</div>
+  ),
+}));
+
+import { registerShortcutHandler } from "@/lib/shortcuts/actions";
+import {
+  openCommandPalette,
+  setTerminalSnippetPicker,
+} from "@/lib/terminal/paletteCommand";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
+import CommandPalette from "./CommandPalette";
+
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+const realPlatform = navigator.platform;
+const cleanups: (() => void)[] = [];
+beforeEach(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "Linux x86_64",
+    configurable: true,
+  });
+  useShortcutStore.setState({ overrides: {}, activeContext: null });
+  m.hosts = [];
+  m.snippets = [];
+});
+afterEach(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: realPlatform,
+    configurable: true,
+  });
+  for (const c of cleanups.splice(0)) c();
+  document.body.innerHTML = "";
+});
+
+function setup() {
+  const onConnect = vi.fn();
+  const onNavigate = vi.fn();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <CommandPalette onConnect={onConnect} onNavigate={onNavigate} />,
+    ),
+  );
+  cleanups.push(() => act(() => root.unmount()));
+  const press = (init: KeyboardEventInit) =>
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, ...init }),
+      );
+      document.body.dispatchEvent(
+        new KeyboardEvent("keyup", { bubbles: true, ...init }),
+      );
+    });
+  const input = () => document.querySelector("input") as HTMLInputElement;
+  const isOpen = () => input() !== null;
+  const open = () =>
+    press({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true });
+  const type = (value: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set?.call(input(), value);
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  const key = async (k: string, init: KeyboardEventInit = {}) =>
+    act(async () => {
+      input().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: k,
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  const text = () => document.body.textContent ?? "";
+  return { press, isOpen, open, type, key, text, input, onConnect, onNavigate };
+}
+
+describe("CommandPalette shortcut", () => {
+  it("quick_connect_opens_on_ctrl_shift_k", () => {
+    const { isOpen, open } = setup();
+    expect(isOpen()).toBe(false);
+    open();
+    expect(isOpen()).toBe(true);
+  });
+
+  it("plain_ctrl_k_no_longer_opens_quick_connect", () => {
+    const { press, isOpen } = setup();
+    press({ key: "k", code: "KeyK", ctrlKey: true });
+    expect(isOpen()).toBe(false);
+  });
+
+  it("quick_connect_follows_a_rebinding", async () => {
+    await act(() =>
+      useShortcutStore.getState().setBinding("app.quickConnect", "ctrl+alt+k"),
+    );
+    const { press, isOpen } = setup();
+    press({ key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+    expect(isOpen()).toBe(true);
+  });
+
+  it("quick_connect_leaves_keys_the_editor_handled", () => {
+    const { isOpen } = setup();
+    // The code editor binds Ctrl+Shift+K to "delete line" and marks the event handled.
+    const editor = document.createElement("div");
+    editor.addEventListener("keydown", (e) => e.preventDefault());
+    document.body.append(editor);
+    act(() => {
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          key: "K",
+          code: "KeyK",
+          ctrlKey: true,
+          shiftKey: true,
+        }),
+      );
+    });
+    expect(isOpen()).toBe(false);
+  });
+});
+
+describe("CommandPalette picks", () => {
+  it("connects to a host and to a typed user@host:port", async () => {
+    m.hosts = [
+      {
+        id: "h1",
+        name: "web-1",
+        address: "10.0.0.4",
+        port: 22,
+        tags: [],
+        sortOrder: 0,
+        createdAt: "",
+        updatedAt: "",
+      },
+    ];
+    const p = setup();
+    p.open();
+    expect(p.text()).toContain("Enter to connect");
+    await p.key("Enter");
+    expect(p.onConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "h1" }),
+    );
+    expect(p.isOpen()).toBe(false);
+    p.open();
+    p.type("root@1.2.3.4:2222");
+    await p.key("Enter");
+    expect(p.onConnect).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        address: "1.2.3.4",
+        port: 2222,
+        username: "root",
+      }),
+    );
+  });
+
+  it("runs a live action of the open view and closes", async () => {
+    useShortcutStore.setState({ activeContext: "terminal" });
+    const find = vi.fn();
+    cleanups.push(registerShortcutHandler("terminal.find", find));
+    const p = setup();
+    p.open();
+    p.type("find");
+    await p.key("Enter");
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(p.isOpen()).toBe(false);
+  });
+
+  it("goes to a page and opens a create form", async () => {
+    const p = setup();
+    p.open();
+    p.type("keychain");
+    await p.key("Enter");
+    expect(p.onNavigate).toHaveBeenCalledWith("/keys");
+    p.open();
+    p.type("new host");
+    await p.key("Enter");
+    expect(p.onNavigate).toHaveBeenLastCalledWith("/hosts?new=host");
+  });
+
+  it("in the terminal, snippet keys insert, run, or run in all tabs", async () => {
+    m.snippets = [{ id: "s1", name: "restart nginx", tags: [] }];
+    let done = false;
+    const picker = vi.fn(async () => done);
+    cleanups.push(setTerminalSnippetPicker(picker));
+    useShortcutStore.setState({ activeContext: "terminal" });
+    const p = setup();
+    act(() => openCommandPalette("snippets"));
+    expect(p.text()).toContain(
+      "Enter to insert · Ctrl+Enter to run · Ctrl+Shift+Enter to run in all tabs",
+    );
+    const item = { snippetId: "s1", command: "" };
+    await p.key("Enter");
+    expect(picker).toHaveBeenLastCalledWith(item, false, false);
+    // The picker failed: the palette stays open.
+    expect(p.isOpen()).toBe(true);
+    await p.key("Enter", { ctrlKey: true });
+    expect(picker).toHaveBeenLastCalledWith(item, true, false);
+    done = true;
+    await p.key("Enter", { ctrlKey: true, shiftKey: true });
+    expect(picker).toHaveBeenLastCalledWith(item, true, true);
+    expect(p.isOpen()).toBe(false);
+  });
+
+  it("outside the terminal, a snippet opens Run on hosts", async () => {
+    m.snippets = [{ id: "s1", name: "restart nginx", tags: [] }];
+    const p = setup();
+    p.open();
+    p.type("restart");
+    expect(p.text()).toContain("Enter to run on hosts");
+    await p.key("Enter");
+    expect(
+      document.querySelector('[data-testid="run-on-hosts"]')?.textContent,
+    ).toBe("restart nginx");
+  });
+
+  it("the snippets filter resets on the next plain open", () => {
+    m.snippets = [{ id: "s1", name: "restart nginx", tags: [] }];
+    useShortcutStore.setState({ activeContext: "terminal" });
+    cleanups.push(registerShortcutHandler("terminal.find", () => {}));
+    const p = setup();
+    act(() => openCommandPalette("snippets"));
+    expect(p.input().placeholder).toBe("Search snippets");
+    expect(p.text()).not.toContain("Find in terminal");
+    act(() => openCommandPalette());
+    expect(p.text()).toContain("Find in terminal");
+  });
+});

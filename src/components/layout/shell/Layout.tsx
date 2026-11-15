@@ -4,11 +4,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import UnsavedChangesDialog from "@/components/common/UnsavedChangesDialog";
+import CommandPalette from "@/components/layout/palette/CommandPalette";
 import AppSidebar from "@/components/layout/shell/AppSidebar";
 import Header from "@/components/layout/shell/Header";
 
 import SettingsModal from "@/components/settings/modal/SettingsModal";
-import QuickConnect from "@/components/terminal/views/QuickConnect";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useWindowCloseGuard } from "@/hooks/layout/useWindowCloseGuard";
@@ -402,7 +402,8 @@ export default function Layout() {
       </div>
       <UnsavedChangesDialog />
       {/* Opened with Ctrl/Cmd+K from any view; no on-screen trigger. */}
-      <QuickConnect
+      <CommandPalette
+        onNavigate={(path) => guarded(() => navigate(path))}
         onConnect={(host) =>
           guarded(() =>
             showTerminalTab(

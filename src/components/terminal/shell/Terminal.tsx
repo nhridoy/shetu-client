@@ -271,7 +271,7 @@ export default function Terminal({
                         .getState()
                         .splitPane(tabId, paneId, direction),
                     // Right-click already made this the active pane, so the pick lands here.
-                    openCommandPalette,
+                    () => openCommandPalette("snippets"),
                     openFindBar,
                     {
                       on: !!useTerminalStore

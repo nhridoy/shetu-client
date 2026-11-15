@@ -1,17 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import PaneTree from "@/components/terminal/panes/PaneTree";
-import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useShortcutContext } from "@/hooks/useShortcutContext";
 import { toggleTabBroadcast } from "@/lib/terminal/broadcast";
 import { openFind } from "@/lib/terminal/findCommand";
 import {
-  onOpenCommandPalette,
+  openCommandPalette,
   type PaletteItem,
   pickPaletteItem,
   resolvePaletteCommand,
   runInAllTabs,
+  setTerminalSnippetPicker,
 } from "@/lib/terminal/paletteCommand";
 import { insertIntoPane } from "@/lib/terminal/sessionManager";
 import { dispatchAppAction } from "@/lib/window/menuActions";
@@ -38,7 +38,6 @@ interface TerminalViewProps {
 
 export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   const { tabs, activeTabId, splitPane } = useTerminalStore();
-  const [showCommandPalette, setShowCommandPalette] = useState(false);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
 
@@ -68,11 +67,10 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     }
   }, [tabs, activeTabId, onSetActiveView]);
 
-  useEffect(() => onOpenCommandPalette(() => setShowCommandPalette(true)), []);
   useShortcutContext("terminal");
 
   const handleCommandSelect = useCallback(
-    async (item: PaletteItem, run: boolean, all?: boolean) => {
+    async (item: PaletteItem, run: boolean, all: boolean): Promise<boolean> => {
       if (all) {
         const resolved = await resolvePaletteCommand(item, {
           decryptSnippet: (id) =>
@@ -82,20 +80,20 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
         if (resolved.status !== "ok") {
           if (resolved.status === "decrypt-failed")
             toast.error("Couldn't load this snippet");
-          return;
+          return false;
         }
         const { ran, local } = runInAllTabs(resolved.command, {
           tabs: useTerminalStore.getState().tabs,
           insert: insertIntoPane,
         });
-        if (ran === 0) toast.error("No connected terminals");
-        else {
-          toast.success(
-            `Ran in ${ran} terminal${ran === 1 ? "" : "s"}${local ? ` (${local} local)` : ""}`,
-          );
-          setShowCommandPalette(false);
+        if (ran === 0) {
+          toast.error("No connected terminals");
+          return false;
         }
-        return;
+        toast.success(
+          `Ran in ${ran} terminal${ran === 1 ? "" : "s"}${local ? ` (${local} local)` : ""}`,
+        );
+        return true;
       }
       const activeTab = () => {
         const { tabs: currentTabs, activeTabId: atId } =
@@ -118,9 +116,9 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
         askVariables: askSnippetVariables,
       });
       const runKey = navigator.platform.includes("Mac") ? "Cmd" : "Ctrl";
-      if (result === "ok") setShowCommandPalette(false);
-      else if (result === "cancelled") return;
-      else if (result === "no-pane") toast.error("Open a terminal first");
+      if (result === "ok") return true;
+      if (result === "cancelled") return false;
+      if (result === "no-pane") toast.error("Open a terminal first");
       else if (result === "not-connected")
         toast.error("This terminal isn't connected");
       else if (result === "empty") toast.error("This snippet is empty");
@@ -129,8 +127,14 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
           `This shell would run each line. Use ${runKey}+Enter to run it.`,
         );
       else toast.error("Couldn't load this snippet");
+      return false;
     },
     [],
+  );
+  // Palette snippet picks land in this view's active pane while it is open.
+  useEffect(
+    () => setTerminalSnippetPicker(handleCommandSelect),
+    [handleCommandSelect],
   );
 
   const handleSplit = useCallback(
@@ -160,7 +164,7 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onPrevTab: handlePrevTab,
     onSplitHorizontal: () => handleSplit("horizontal"),
     onSplitVertical: () => handleSplit("vertical"),
-    onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
+    onCommandPalette: () => openCommandPalette("snippets"),
     onFind: openFind,
     onBroadcast: () => {
       const id = useTerminalStore.getState().activeTabId;
@@ -189,12 +193,6 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
           </div>
         ))}
       </div>
-
-      <CommandAutocomplete
-        isVisible={showCommandPalette}
-        onSelect={handleCommandSelect}
-        onClose={() => setShowCommandPalette(false)}
-      />
     </div>
   );
 }
