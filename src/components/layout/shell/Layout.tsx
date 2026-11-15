@@ -14,6 +14,7 @@ import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useWindowCloseGuard } from "@/hooks/layout/useWindowCloseGuard";
 import { useModal } from "@/hooks/useModal";
 import { useShortcut } from "@/hooks/useShortcut";
+import { autoStartOnUnlock } from "@/lib/forwarding/autoStart";
 import {
   restoreLastSession,
   startSessionPersistence,
@@ -148,6 +149,7 @@ export default function Layout() {
       return;
     restoredSession.current = true;
     void restoreLastSession(accountId, currentVaultId);
+    void autoStartOnUnlock(accountId);
   }, [isUnlocked, accountId, currentVaultId]);
 
   useEffect(() => {

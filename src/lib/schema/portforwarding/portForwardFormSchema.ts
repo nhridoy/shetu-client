@@ -12,6 +12,8 @@ const destinationHost = z
   .min(1, "Destination host is required")
   .max(255);
 
+const autoStart = z.enum(["off", "unlock", "terminal"]).default("off");
+
 export const portForwardFormSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("local"),
@@ -19,6 +21,7 @@ export const portForwardFormSchema = z.discriminatedUnion("mode", [
     localPort: port,
     destinationHost,
     destinationPort: port,
+    autoStart,
   }),
   z.object({
     mode: z.literal("remote"),
@@ -27,8 +30,9 @@ export const portForwardFormSchema = z.discriminatedUnion("mode", [
     remotePort: port,
     destinationHost,
     destinationPort: port,
+    autoStart,
   }),
-  z.object({ mode: z.literal("dynamic"), name, localPort: port }),
+  z.object({ mode: z.literal("dynamic"), name, localPort: port, autoStart }),
 ]);
 
 export type PortForwardFormSchema = z.infer<typeof portForwardFormSchema>;
@@ -39,4 +43,5 @@ export const portForwardFormDefaultValues: PortForwardFormSchema = {
   localPort: 8080,
   destinationHost: "localhost",
   destinationPort: 80,
+  autoStart: "off",
 };

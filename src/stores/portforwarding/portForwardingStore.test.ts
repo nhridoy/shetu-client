@@ -35,6 +35,7 @@ const input: ForwardInput = {
   remotePort: null,
   destinationHost: "localhost",
   destinationPort: 80,
+  autoStart: "off",
 };
 const view: ForwardView = {
   definition: { id: "forward-1", ...input },
@@ -193,5 +194,17 @@ describe("portForwardingStore", () => {
       },
     });
     expect(usePortForwardingStore.getState().forwards).toEqual([]);
+  });
+
+  it("the auto-start choice is saved with the forward", async () => {
+    const { toForwardInput } = await import("./portForwardingStore");
+    expect(
+      toForwardInput("h1", {
+        mode: "dynamic",
+        name: "socks",
+        localPort: 1080,
+        autoStart: "unlock",
+      }).autoStart,
+    ).toBe("unlock");
   });
 });

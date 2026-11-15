@@ -7,6 +7,7 @@ import {
   portForwardFormSchema,
 } from "@/lib/schema/portforwarding/portForwardFormSchema";
 import type {
+  AutoStart,
   ForwardMode,
   PortForward,
 } from "@/stores/portforwarding/portForwardingStore";
@@ -24,11 +25,15 @@ type FieldName =
   | "remotePort"
   | "destinationHost"
   | "destinationPort";
-type Draft = Record<FieldName, string> & { mode: ForwardMode };
+type Draft = Record<FieldName, string> & {
+  mode: ForwardMode;
+  autoStart: AutoStart;
+};
 
 function draftFromForward(forward?: PortForward): Draft {
   return {
     mode: forward?.mode ?? "local",
+    autoStart: forward?.autoStart ?? "off",
     name: forward?.name ?? "",
     localPort: String(forward?.localPort ?? 8080),
     remoteBindAddress: forward?.remoteBindAddress ?? "127.0.0.1",
@@ -95,6 +100,7 @@ export default function PortForwardForm({
             localPort: Number(draft.localPort),
             destinationHost: draft.destinationHost,
             destinationPort: Number(draft.destinationPort),
+            autoStart: draft.autoStart,
           }
         : draft.mode === "remote"
           ? {
@@ -104,11 +110,13 @@ export default function PortForwardForm({
               remotePort: Number(draft.remotePort),
               destinationHost: draft.destinationHost,
               destinationPort: Number(draft.destinationPort),
+              autoStart: draft.autoStart,
             }
           : {
               mode: "dynamic" as const,
               name: draft.name,
               localPort: Number(draft.localPort),
+              autoStart: draft.autoStart,
             };
     const parsed = portForwardFormSchema.safeParse(data);
     if (!parsed.success) {
@@ -208,6 +216,27 @@ export default function PortForwardForm({
           {submissionError}
         </p>
       )}
+      <label
+        className="block space-y-1 text-xs text-dark-300"
+        htmlFor="forward-auto-start"
+      >
+        <span>Start automatically</span>
+        <Select
+          id="forward-auto-start"
+          value={draft.autoStart}
+          onValueChange={(value) =>
+            setDraft((current) => ({
+              ...current,
+              autoStart: value as AutoStart,
+            }))
+          }
+          options={[
+            { value: "off", label: "Off" },
+            { value: "unlock", label: "When Shetu unlocks" },
+            { value: "terminal", label: "With a terminal to this host" },
+          ]}
+        />
+      </label>
     </ModalForm>
   );
 }
