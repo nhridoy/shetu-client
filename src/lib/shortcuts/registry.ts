@@ -50,6 +50,8 @@ export interface ShortcutDef {
   macFixed?: boolean;
   /** What macOS shows for a fixed system key, e.g. "⌘C". */
   macLabel?: string;
+  /** Left out of the command palette (acts on a focused selection, or is the palette). */
+  palette?: false;
 }
 
 const def = (
@@ -66,12 +68,13 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   def(
     "app.quickConnect",
     "app",
-    "Quick Connect",
+    "Command palette",
     "ctrl+shift+k",
     "meta+k",
     true,
     {
       menuItem: "quick-connect",
+      palette: false,
     },
   ),
   def("app.settings", "app", "Settings", "ctrl+comma", "meta+comma", true, {
@@ -132,6 +135,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     "ctrl+shift+p",
     "shift+meta+p",
     true,
+    { palette: false },
   ),
   def(
     "terminal.find",
@@ -152,14 +156,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   def("terminal.copy", "terminal", "Copy", "ctrl+shift+c", "", true, {
     macFixed: true,
     macLabel: "⌘C",
+    palette: false,
   }),
   def("terminal.paste", "terminal", "Paste", "ctrl+shift+v", "", true, {
     macFixed: true,
     macLabel: "⌘V",
+    palette: false,
   }),
-  def("files.copy", "files", "Copy", "mod+c", "mod+c", false),
-  def("files.cut", "files", "Cut", "mod+x", "mod+x", false),
-  def("files.paste", "files", "Paste", "mod+v", "mod+v", false),
+  def("files.copy", "files", "Copy", "mod+c", "mod+c", false, {
+    palette: false,
+  }),
+  def("files.cut", "files", "Cut", "mod+x", "mod+x", false, { palette: false }),
+  def("files.paste", "files", "Paste", "mod+v", "mod+v", false, {
+    palette: false,
+  }),
   def("files.newFile", "files", "New file", "mod+n", "mod+n", false),
   def(
     "files.newFolder",
@@ -169,11 +179,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     "mod+shift+n",
     false,
   ),
-  def("files.selectAll", "files", "Select all", "mod+a", "mod+a", false),
-  def("files.rename", "files", "Rename", "f2", "f2", false),
+  def("files.selectAll", "files", "Select all", "mod+a", "mod+a", false, {
+    palette: false,
+  }),
+  def("files.rename", "files", "Rename", "f2", "f2", false, { palette: false }),
   def("files.refresh", "files", "Refresh", "f5", "f5", false),
-  def("files.delete", "files", "Delete", "delete", "delete", false),
-  def("files.up", "files", "Up a folder", "backspace", "backspace", false),
+  def("files.delete", "files", "Delete", "delete", "delete", false, {
+    palette: false,
+  }),
+  def("files.up", "files", "Up a folder", "backspace", "backspace", false, {
+    palette: false,
+  }),
   def("editor.quickOpen", "editor", "Quick open", "mod+p", "mod+p", true),
   def(
     "editor.toggleFiles",
@@ -184,9 +200,15 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     false,
   ),
   def("editor.save", "editor", "Save", "mod+s", "mod+s", true),
-  def("editor.copyPath", "editor", "Copy path", "mod+c", "mod+c", false),
-  def("editor.rename", "editor", "Rename", "f2", "f2", false),
-  def("editor.delete", "editor", "Delete", "delete", "delete", false),
+  def("editor.copyPath", "editor", "Copy path", "mod+c", "mod+c", false, {
+    palette: false,
+  }),
+  def("editor.rename", "editor", "Rename", "f2", "f2", false, {
+    palette: false,
+  }),
+  def("editor.delete", "editor", "Delete", "delete", "delete", false, {
+    palette: false,
+  }),
 ];
 
 export const CONTEXT_LABELS: Record<ShortcutContext, string> = {

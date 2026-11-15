@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
 }));
 
+import { liveShortcutIds, runShortcutAction } from "@/lib/shortcuts/actions";
 import type { ShortcutId } from "@/lib/shortcuts/registry";
 import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import { useShortcut } from "./useShortcut";
@@ -100,5 +101,49 @@ describe("useShortcut", () => {
     textarea.focus();
     press({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }, textarea);
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+function FindProbe({ cb, enabled }: { cb: () => void; enabled?: boolean }) {
+  useShortcut("terminal.find", cb, { enabled });
+  return null;
+}
+
+describe("useShortcut from the palette", () => {
+  function mount(opts: { enabled?: boolean } = {}) {
+    const cb = vi.fn();
+    const root = createRoot(document.createElement("div"));
+    act(() => root.render(<FindProbe cb={cb} enabled={opts.enabled} />));
+    return { cb, root };
+  }
+
+  it("a palette request runs the handler", () => {
+    const { cb, root } = mount();
+    expect(runShortcutAction("terminal.find")).toBe(true);
+    expect(cb).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+    expect(liveShortcutIds().has("terminal.find")).toBe(false);
+  });
+
+  it("a disabled handler is not live", () => {
+    const { root } = mount({ enabled: false });
+    expect(liveShortcutIds().has("terminal.find")).toBe(false);
+    act(() => root.unmount());
+  });
+
+  it("an unbound action still runs", () => {
+    useShortcutStore.setState({ overrides: { "terminal.find": "" } });
+    const { cb, root } = mount();
+    expect(runShortcutAction("terminal.find")).toBe(true);
+    expect(cb).toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("nothing runs while a key is being recorded", () => {
+    useShortcutStore.setState({ recording: true });
+    const { cb, root } = mount();
+    expect(runShortcutAction("terminal.find")).toBe(false);
+    expect(cb).not.toHaveBeenCalled();
+    act(() => root.unmount());
   });
 });

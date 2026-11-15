@@ -163,7 +163,7 @@ describe("KeyboardTab", () => {
     click(cap("editor.quickOpen"));
     await press({ code: "KeyK", key: "K", ctrlKey: true, shiftKey: true });
     expect(row("editor.quickOpen").textContent).toContain(
-      "Overrides Quick Connect in the Editor.",
+      "Overrides Command palette in the Editor.",
     );
   });
 
