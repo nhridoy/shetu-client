@@ -333,9 +333,13 @@ where
                 let code = crate::totp::code(params, crate::totp::unix_now());
                 totp = None;
                 vec![code]
-            } else if let (1, false, false, Some(_)) =
-                (prompts.len(), prompts[0].echo, crate::totp::is_code_prompt(&prompts[0].prompt), &auto_answer)
-            {
+            } else if let (1, false, false, Some(_)) = (
+                prompts.len(),
+                prompts[0].echo,
+                // Only identities with TOTP keep the password away from code prompts; other hosts behave as before.
+                config.totp.is_some() && crate::totp::is_code_prompt(&prompts[0].prompt),
+                &auto_answer,
+            ) {
                 auto_answered = true;
                 vec![auto_answer.take().unwrap_or_default()]
             } else if let Some(prompter) = &ctx.prompter {
@@ -784,12 +788,36 @@ mod tests {
 
     #[tokio::test]
     async fn password_not_sent_to_code_prompt() {
-        let srv = Srv { kbd: vec![("Verification code: ", "123456")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let server_totp = totp_params(b"the-real-secret");
+        let srv = Srv {
+            kbd: vec![("Verification code: ", "<totp>")],
+            totp: Some(server_totp.clone()),
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        let (prompter, calls) = counting_prompter(|| "123456".into());
-        within(run(srv, config(None, Some("pw")), None, Some(prompter))).await.unwrap();
+        let mut config = config(None, Some("pw"));
+        config.totp = Some(totp_params(b"a-stale-secret"));
+        let (prompter, calls) = counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
+        within(run(srv, config, None, Some(prompter))).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(count(&log, "kbd-answer:pw"), 0);
+    }
+
+    #[tokio::test]
+    async fn plain_password_host_still_auto_answers_any_single_prompt() {
+        let srv = Srv { kbd: vec![("Verification code: ", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let log = srv.log.clone();
+        within(run(srv, config(None, Some("pw")), None, None)).await.unwrap();
+        assert_eq!(count(&log, "kbd-answer:pw"), 1);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_naming_a_host_gets_the_password_not_the_code() {
+        let srv = Srv { kbd: vec![("(deploy@hotpot) Password:", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let mut config = config(None, Some("pw"));
+        config.totp = Some(totp_params(b"identity-secret"));
+        within(run(srv, config, None, None)).await.unwrap();
     }
 
     #[tokio::test]

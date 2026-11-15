@@ -205,9 +205,15 @@ pub async fn run_sync_cycle(
         };
         let response = match push(&pending).await {
             Err(err) => match without_tables_old_servers_reject(&err, &pending) {
-                // Identities stay queued until the server knows the table.
-                Some(kept) if !kept.is_empty() => push(&kept).await?,
-                Some(_) => return finish_cycle(vault_id, db, crypto, http).await,
+                // Identities stay queued, out of the batch and the pending count, until a restart retries them.
+                Some(kept) if !kept.is_empty() => {
+                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
+                    push(&kept).await?
+                }
+                Some(_) => {
+                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return finish_cycle(vault_id, db, crypto, http).await;
+                }
                 None => return Err(err),
             },
             ok => ok?,

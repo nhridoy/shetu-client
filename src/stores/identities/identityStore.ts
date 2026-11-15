@@ -1,8 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { getDeviceId } from "@/lib/common/device";
 import { runSerial } from "@/lib/common/runSerial";
-import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
-import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
+import { deleteRow, listRows, notifyLocalMutation } from "@/lib/db/db";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 
 /** List entry: plaintext columns only. Secrets never live in store state. */
@@ -20,13 +21,6 @@ export interface IdentityView {
   keyId?: string;
   hasPassword: boolean;
   hasTotp: boolean;
-}
-
-interface IdentityPayload {
-  username: string;
-  password?: string;
-  keyId?: string;
-  totpSecret?: string;
 }
 
 export interface NewIdentity {
@@ -72,15 +66,22 @@ function fromRow(row: SyncRow): Identity {
   };
 }
 
-/** Drop empty optional secrets so the payload only holds what is set. */
-function compact(p: IdentityPayload): IdentityPayload {
-  return Object.fromEntries(
-    Object.entries(p).filter(([, v]) => typeof v === "string" && v !== ""),
-  ) as unknown as IdentityPayload;
-}
-
-async function readPayload(row: SyncRow): Promise<IdentityPayload> {
-  return ((await decryptRowData(row.data)) ?? {}) as IdentityPayload;
+/** Rust merges the patch and encrypts; secrets never come back to the webview. */
+async function saveIdentity(
+  id: string | null,
+  vaultId: string,
+  name: string,
+  patch: Record<string, string | null | undefined>,
+): Promise<SyncRow> {
+  const saved = await invoke<SyncRow>("identity_save", {
+    id,
+    vaultId,
+    name,
+    patch,
+    deviceId: await getDeviceId(),
+  });
+  notifyLocalMutation("identities", saved.vault_id);
+  return saved;
 }
 
 export const useIdentityStore = create<IdentityState>((set, get) => ({
@@ -100,17 +101,8 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     }
   },
 
-  getDecryptedIdentity: async (id) => {
-    const row = await getRow("identities", id);
-    if (!row || row.deleted_at) return null;
-    const p = await readPayload(row);
-    return {
-      username: p.username ?? "",
-      keyId: p.keyId || undefined,
-      hasPassword: !!p.password,
-      hasTotp: !!p.totpSecret,
-    };
-  },
+  getDecryptedIdentity: (id) =>
+    invoke<IdentityView | null>("identity_view", { id }),
 
   createIdentity: async ({ vaultId, name, ...secrets }) => {
     const vid = vaultId ?? useVaultStore.getState().currentVaultId;
@@ -119,14 +111,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       return null;
     }
     try {
-      const row = await upsertRow(
-        "identities",
-        { id: crypto.randomUUID(), vault_id: vid, name, sort_order: 0 },
-        {
-          plaintext: JSON.stringify(compact(secrets)),
-          recordType: "identities",
-        },
-      );
+      const row = await saveIdentity(null, vid, name, { ...secrets });
       set({ identities: [...get().identities, fromRow(row)], error: null });
       return row.id;
     } catch (err) {
@@ -137,31 +122,14 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   updateIdentity: (id, { name, ...patch }) =>
     runSerial(`identities:${id}`, async () => {
+      const current = get().identities.find((i) => i.id === id);
       try {
-        const row = await getRow("identities", id);
-        if (!row || row.deleted_at) {
-          set({ error: "Identity not found" });
-          return false;
-        }
-        const merged: Record<string, unknown> = { ...(await readPayload(row)) };
-        for (const [key, value] of Object.entries(patch)) {
-          if (value === null) delete merged[key];
-          else if (value !== undefined && value !== "") merged[key] = value;
-        }
-        const saved = await upsertRow(
-          "identities",
-          {
-            id,
-            vault_id: row.vault_id,
-            name: name ?? row.name,
-            sort_order: row.sort_order,
-          },
-          {
-            plaintext: JSON.stringify(
-              compact(merged as unknown as IdentityPayload),
-            ),
-            recordType: "identities",
-          },
+        // Rust keeps the row's own vault; the name falls back to the listed one.
+        const saved = await saveIdentity(
+          id,
+          current?.vaultId ?? "",
+          name ?? current?.name ?? "",
+          { ...patch },
         );
         set({
           identities: get().identities.map((i) =>

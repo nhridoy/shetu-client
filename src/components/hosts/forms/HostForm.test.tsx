@@ -29,6 +29,7 @@ vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
 }));
 
+import { getRow } from "@/lib/db/db";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useIdentityStore } from "@/stores/identities/identityStore";
@@ -593,10 +594,24 @@ describe("HostForm inherits from its group", () => {
     expect(input("username")).toBeNull();
   });
 
+  it("keeps a live identity that a stale list is missing", async () => {
+    vi.mocked(getRow).mockResolvedValueOnce({
+      id: "i9",
+      vault_id: "v1",
+      deleted_at: null,
+    } as never);
+    await mount({
+      host: existing({ authType: "identity", identityId: "i9" }),
+    });
+    expect(document.getElementById("authType")?.textContent).toBe("Identity");
+  });
+
   it("host form with a deleted identity shows Ask when connecting", async () => {
+    vi.mocked(getRow).mockResolvedValue(null);
     await mount({
       host: existing({ authType: "identity", identityId: "gone" }),
     });
+    await act(async () => {});
     expect(document.getElementById("authType")?.textContent).toBe(
       "Ask when connecting",
     );

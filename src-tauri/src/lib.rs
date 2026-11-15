@@ -5,6 +5,7 @@ mod db;
 mod forwarding;
 mod git;
 mod host_inherit;
+mod identities;
 mod http;
 mod keys;
 mod logging;
@@ -1202,6 +1203,10 @@ fn decrypt_secret(
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let header: serde_json::Value =
         serde_json::from_str(&payload).map_err(|_| "invalid ciphertext".to_string())?;
+    // Identity secrets stay in Rust; the frontend uses identity_view / identity_save.
+    if identities::is_identity_ciphertext(&header) {
+        return Err("identity records are not readable here".into());
+    }
     if header.get("v").and_then(serde_json::Value::as_u64) == Some(2) {
         let table = header
             .get("record_type")
@@ -1666,6 +1671,8 @@ pub fn run() {
             menu_accelerators::set_menu_accelerators,
             totp::totp_preview,
             host_inherit::identity_usage,
+            identities::identity_view,
+            identities::identity_save,
             update::update_installation_kind,
             get_device_id,
             host_inherit::inherited_host_defaults,

@@ -1,21 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const h = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("../../lib/db/db");
 vi.mock("../../lib/crypto/crypto");
+vi.mock("../../lib/common/device", () => ({ getDeviceId: async () => "d1" }));
 vi.mock("../auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1", email: "a@b.c" } }) },
 }));
 
 import { decryptRowData } from "../../lib/crypto/crypto";
-import { deleteRow, getRow, listRows, upsertRow } from "../../lib/db/db";
+import { deleteRow, listRows } from "../../lib/db/db";
 import { useVaultStore } from "../vault/vaultStore";
 import { useIdentityStore } from "./identityStore";
-
-const mockList = vi.mocked(listRows);
-const mockGet = vi.mocked(getRow);
-const mockUpsert = vi.mocked(upsertRow);
-const mockDelete = vi.mocked(deleteRow);
-const mockDecrypt = vi.mocked(decryptRowData);
 
 const row = {
   id: "i1",
@@ -29,32 +26,24 @@ const row = {
   data: "enc",
 };
 
-const stored = {
-  username: "deploy",
-  password: "pw",
-  keyId: "k1",
-  totpSecret: "GEZDGNBV",
-};
-
-function savedPlaintext(call = 0) {
-  return JSON.parse(mockUpsert.mock.calls[call][2]?.plaintext ?? "{}");
-}
+const saveCalls = () =>
+  h.invoke.mock.calls.filter(([cmd]) => cmd === "identity_save");
 
 beforeEach(() => {
   useIdentityStore.setState({ identities: [], isLoading: false, error: null });
   vi.clearAllMocks();
   useVaultStore.setState({ currentVaultId: "v1" });
-  mockGet.mockResolvedValue(row);
-  mockDecrypt.mockResolvedValue(stored);
-  mockUpsert.mockImplementation(async (_t, r) => ({ ...row, ...r }));
+  h.invoke.mockImplementation(async (cmd: string, args: { name?: string }) =>
+    cmd === "identity_save" ? { ...row, name: args.name } : null,
+  );
 });
 
 describe("identityStore", () => {
   it("lists labels without decrypting or holding secrets", async () => {
-    mockList.mockResolvedValue([row]);
+    vi.mocked(listRows).mockResolvedValue([row]);
     await useIdentityStore.getState().fetchIdentities("v1");
-    expect(mockList).toHaveBeenCalledWith("identities", "v1");
-    expect(mockDecrypt).not.toHaveBeenCalled();
+    expect(listRows).toHaveBeenCalledWith("identities", "v1");
+    expect(decryptRowData).not.toHaveBeenCalled();
     expect(useIdentityStore.getState().identities).toEqual([
       {
         id: "i1",
@@ -66,90 +55,99 @@ describe("identityStore", () => {
     ]);
   });
 
-  it("create puts secrets only in the encrypted plaintext", async () => {
+  it("create hands the secrets to Rust and keeps none in state", async () => {
     const id = await useIdentityStore.getState().createIdentity({
       name: "deploy@prod",
       username: "deploy",
       password: "pw",
       totpSecret: "GEZDGNBV",
     });
-    expect(id).toBeTruthy();
-    const [table, written, opts] = mockUpsert.mock.calls[0];
-    expect(table).toBe("identities");
-    expect(written).toMatchObject({ name: "deploy@prod", vault_id: "v1" });
-    expect(JSON.stringify(written)).not.toContain("pw");
-    expect(opts?.recordType).toBe("identities");
-    expect(savedPlaintext()).toEqual({
-      username: "deploy",
-      password: "pw",
-      totpSecret: "GEZDGNBV",
+    expect(id).toBe("i1");
+    expect(saveCalls()[0][1]).toEqual({
+      id: null,
+      vaultId: "v1",
+      name: "deploy@prod",
+      patch: { username: "deploy", password: "pw", totpSecret: "GEZDGNBV" },
+      deviceId: "d1",
     });
     expect(
       JSON.stringify(useIdentityStore.getState().identities),
     ).not.toContain("pw");
   });
 
-  it("update merges and keeps unpatched fields", async () => {
+  it("update sends only the patch; Rust merges it", async () => {
+    useIdentityStore.setState({
+      identities: [
+        { id: "i1", name: "old", vaultId: "v1", sortOrder: 0, createdAt: "1" },
+      ],
+    });
     expect(
       await useIdentityStore
         .getState()
-        .updateIdentity("i1", { username: "ops" }),
+        .updateIdentity("i1", { username: "ops", password: "", keyId: null }),
     ).toBe(true);
-    expect(savedPlaintext()).toEqual({ ...stored, username: "ops" });
-  });
-
-  it("an empty password or TOTP on update keeps the stored one; null clears", async () => {
-    await useIdentityStore
-      .getState()
-      .updateIdentity("i1", { password: "", totpSecret: "" });
-    expect(savedPlaintext()).toEqual(stored);
-    await useIdentityStore
-      .getState()
-      .updateIdentity("i1", { password: null, totpSecret: null, keyId: null });
-    expect(savedPlaintext(1)).toEqual({ username: "deploy" });
+    expect(saveCalls()[0][1]).toMatchObject({
+      id: "i1",
+      vaultId: "v1",
+      name: "old",
+      patch: { username: "ops", password: "", keyId: null },
+    });
   });
 
   it("updates of one identity run one after another", async () => {
-    let current: Record<string, unknown> = { ...stored };
-    mockDecrypt.mockImplementation(async () => ({ ...current }));
-    mockUpsert.mockImplementation(async (_t, r, opts) => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      current = JSON.parse(opts?.plaintext ?? "{}");
-      return { ...row, ...r };
-    });
+    const order: string[] = [];
+    h.invoke.mockImplementation(
+      async (_cmd: string, args: { patch: object }) => {
+        order.push(`start ${JSON.stringify(args.patch)}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("end");
+        return row;
+      },
+    );
     const store = useIdentityStore.getState();
     await Promise.all([
       store.updateIdentity("i1", { username: "a" }),
       store.updateIdentity("i1", { keyId: "k2" }),
     ]);
-    expect(current).toMatchObject({ username: "a", keyId: "k2" });
+    expect(order).toEqual([
+      'start {"username":"a"}',
+      "end",
+      'start {"keyId":"k2"}',
+      "end",
+    ]);
   });
 
-  it("decrypted view says whether secrets exist without returning them", async () => {
-    expect(
-      await useIdentityStore.getState().getDecryptedIdentity("i1"),
-    ).toEqual({
+  it("the edit view comes from Rust without secrets", async () => {
+    const view = {
       username: "deploy",
       keyId: "k1",
       hasPassword: true,
       hasTotp: true,
-    });
+    };
+    h.invoke.mockResolvedValue(view);
+    expect(
+      await useIdentityStore.getState().getDecryptedIdentity("i1"),
+    ).toEqual(view);
+    expect(h.invoke).toHaveBeenCalledWith("identity_view", { id: "i1" });
+    expect(decryptRowData).not.toHaveBeenCalled();
+  });
+
+  it("a failed save reports the error", async () => {
+    h.invoke.mockRejectedValue("Username is required");
+    expect(
+      await useIdentityStore.getState().updateIdentity("i1", { username: "" }),
+    ).toBe(false);
+    expect(useIdentityStore.getState().error).toBe("Username is required");
   });
 
   it("delete tombstones the row and drops it from the list", async () => {
     useIdentityStore.setState({
       identities: [
-        {
-          id: "i1",
-          name: "x",
-          vaultId: "v1",
-          sortOrder: 0,
-          createdAt: row.created_at,
-        },
+        { id: "i1", name: "x", vaultId: "v1", sortOrder: 0, createdAt: "1" },
       ],
     });
     await useIdentityStore.getState().deleteIdentity("i1");
-    expect(mockDelete).toHaveBeenCalledWith("identities", "i1");
+    expect(deleteRow).toHaveBeenCalledWith("identities", "i1");
     expect(useIdentityStore.getState().identities).toEqual([]);
   });
 });

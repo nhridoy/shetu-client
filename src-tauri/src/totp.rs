@@ -125,7 +125,7 @@ pub fn unix_now() -> u64 {
 pub fn is_code_prompt(prompt: &str) -> bool {
     static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(?i)(verification|one[- ]?time|otp|token|authenticator|2fa|two[- ]factor|code)",
+            r"(?i)\b(verification|one[- ]?time|otp|token|authenticator|2fa|two[- ]factor|code|passcode)\b",
         )
         .unwrap()
     });
@@ -257,7 +257,7 @@ mod tests {
         ] {
             assert!(is_code_prompt(yes), "{yes}");
         }
-        for no in ["Password: ", "password for deploy:", "Username:"] {
+        for no in ["Password: ", "password for deploy:", "Username:", "(deploy@hotpot) Password:", "Password for alice@CODEBASE.EXAMPLE:"] {
             assert!(!is_code_prompt(no), "{no}");
         }
     }

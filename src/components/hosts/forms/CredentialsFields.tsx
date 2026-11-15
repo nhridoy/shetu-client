@@ -11,6 +11,7 @@ import { FormBase } from "@/components/ui/forms/FormBase";
 import { FormInput } from "@/components/ui/forms/FormInput";
 import { FormSelect } from "@/components/ui/forms/FormSelect";
 import Select from "@/components/ui/Select";
+import { getRow } from "@/lib/db/db";
 import type { InheritedDefaults } from "@/lib/hosts/inherited";
 import { loginLine } from "@/lib/hosts/inheritedLabels";
 import { useIdentityStore } from "@/stores/identities/identityStore";
@@ -74,10 +75,28 @@ export default function CredentialsFields<T extends FieldValues>({
   useEffect(() => {
     if (!identitiesLoaded || authType !== "identity" || !identityField.value)
       return;
-    if (identities.some((i) => i.id === identityField.value)) return;
-    resetField?.("authType", { defaultValue: mode === "host" ? "none" : "" });
-    resetField?.("identityId", { defaultValue: "" });
+    const id = identityField.value as string;
+    if (identities.some((i) => i.id === id)) return;
+    // The list can be stale (vault switch, sync refresh); only the row itself says it's gone.
+    let live = true;
+    void getRow("identities", id)
+      .catch(() => null)
+      .then((row) => {
+        if (
+          !live ||
+          (row && !row.deleted_at && row.vault_id === currentVaultId)
+        )
+          return;
+        resetField?.("authType", {
+          defaultValue: mode === "host" ? "none" : "",
+        });
+        resetField?.("identityId", { defaultValue: "" });
+      });
+    return () => {
+      live = false;
+    };
   }, [
+    currentVaultId,
     identitiesLoaded,
     identities,
     authType,

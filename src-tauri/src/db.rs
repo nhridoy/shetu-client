@@ -49,6 +49,8 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
 
 pub struct LocalDb {
     pub conn: Mutex<Connection>,
+    /// The sync server rejected the identities table (older self-hosted server).
+    pub server_lacks_identities: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1643,6 +1645,7 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
     migrate_port_forward_fk(&conn)?;
     Ok(LocalDb {
         conn: Mutex::new(conn),
+        server_lacks_identities: Default::default(),
     })
 }
 
@@ -3662,6 +3665,7 @@ mod tests {
         migrate_sync_schema(&conn).unwrap();
         let db = LocalDb {
             conn: Mutex::new(conn),
+            server_lacks_identities: Default::default(),
         };
 
         let vault = SyncRow {
