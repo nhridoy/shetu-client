@@ -4,6 +4,7 @@ import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useShortcutContext } from "@/hooks/useShortcutContext";
+import { toggleTabBroadcast } from "@/lib/terminal/broadcast";
 import { openFind } from "@/lib/terminal/findCommand";
 import {
   onOpenCommandPalette,
@@ -132,6 +133,10 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onSplitVertical: () => handleSplit("vertical"),
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
     onFind: openFind,
+    onBroadcast: () => {
+      const id = useTerminalStore.getState().activeTabId;
+      if (id) toggleTabBroadcast(id);
+    },
   });
 
   if (!activeTab) return null;

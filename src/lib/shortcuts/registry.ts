@@ -14,6 +14,7 @@ export type ShortcutId =
   | "terminal.splitDown"
   | "terminal.palette"
   | "terminal.find"
+  | "terminal.broadcast"
   | "terminal.copy"
   | "terminal.paste"
   | "files.copy"
@@ -138,6 +139,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     "Find in terminal",
     "ctrl+shift+f",
     "meta+f",
+    true,
+  ),
+  def(
+    "terminal.broadcast",
+    "terminal",
+    "Broadcast input",
+    "ctrl+shift+b",
+    "shift+meta+b",
     true,
   ),
   def("terminal.copy", "terminal", "Copy", "ctrl+shift+c", "", true, {

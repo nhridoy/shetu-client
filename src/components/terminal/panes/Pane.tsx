@@ -1,5 +1,9 @@
 import { useDraggable } from "@dnd-kit/react";
-import { ArrowsLeftRightIcon, XIcon } from "@phosphor-icons/react";
+import {
+  ArrowsLeftRightIcon,
+  BroadcastIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { DropZone } from "@/components/common/DropZone";
 import PortForwarding from "@/components/portforwarding/panels/PortForwarding";
@@ -44,6 +48,18 @@ export default function Pane({
   onRestorePreset,
 }: PaneProps) {
   const setActivePane = useTerminalStore((s) => s.setActivePane);
+  const broadcasting = useTerminalStore(
+    (s) => !!s.tabs.find((t) => t.id === tabId)?.broadcast,
+  );
+  // Connected after broadcast started: receives from the next line on.
+  const joining = useTerminalStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return (
+      !!tab?.broadcast &&
+      pane.connectionStatus === "connected" &&
+      !tab.broadcastReady?.includes(pane.id)
+    );
+  });
   const splitPane = useTerminalStore((s) => s.splitPane);
   const removePane = useTerminalStore((s) => s.removePane);
   const connectPane = useTerminalStore((s) => s.connectPane);
@@ -93,9 +109,14 @@ export default function Pane({
       role="button"
       tabIndex={0}
       className={`flex flex-col h-full min-h-0 min-w-0 bg-dark-950 relative ${
-        isActive
-          ? "ring-1 ring-inset ring-primary-600/60"
-          : "ring-1 ring-inset ring-dark-800"
+        broadcasting
+          ? // The pane you type in stays brighter than the ones that receive.
+            isActive
+            ? "ring-2 ring-inset ring-amber-400"
+            : "ring-2 ring-inset ring-amber-500/50"
+          : isActive
+            ? "ring-1 ring-inset ring-primary-600/60"
+            : "ring-1 ring-inset ring-dark-800"
       } ${dropSide ? "ring-1 ring-inset ring-primary-500" : ""} ${
         isDragging ? "opacity-40" : ""
       }`}
@@ -116,6 +137,12 @@ export default function Pane({
         onClose={() => removePane(tabId, pane.id)}
         extra={
           <>
+            {broadcasting && pane.hostId && (
+              <span className="flex shrink-0 items-center gap-1 rounded bg-amber-500/90 px-1.5 text-[11px] font-medium leading-4 text-dark-950">
+                <BroadcastIcon className="size-3" weight="bold" aria-hidden />
+                {joining ? "Joins at next line" : "Broadcasting"}
+              </span>
+            )}
             {recording && (
               <span
                 className="text-xs text-red-300"

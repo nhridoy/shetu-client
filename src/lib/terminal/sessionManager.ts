@@ -2,9 +2,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
+import { toast } from "sonner";
 import "@xterm/xterm/css/xterm.css";
 import { useHostStore } from "@/stores/hosts/hostStore";
-import { useTerminalStore } from "@/stores/terminal/terminalStore";
+import {
+  broadcastTargets,
+  useTerminalStore,
+} from "@/stores/terminal/terminalStore";
 import {
   type TerminalTheme,
   terminalThemeFor,
@@ -43,6 +47,8 @@ export interface Session {
   xterm: XTerminal;
   fitAddon: FitAddon;
   searchAddon: SearchAddon;
+  /** Writes input to this pane's shell; a no-op until it connects. */
+  send: (data: string) => void;
   container: HTMLDivElement;
   opened: boolean;
   resizeObserver: ResizeObserver | null;
@@ -88,6 +94,7 @@ function createSession(params: SessionParams): Session {
     xterm,
     fitAddon,
     searchAddon,
+    send: () => {},
     container,
     opened: false,
     resizeObserver: null,
@@ -302,13 +309,11 @@ async function connectViaTauri(session: Session) {
 
     session.unlisten = unlisten;
 
-    xterm.onData(async (data) => {
-      try {
-        await invoke("send_input", { sessionId: params.paneId, data });
-      } catch {
-        // Session may have been closed
-      }
-    });
+    session.send = (data) => {
+      // A closed session rejects; nothing to do.
+      invoke("send_input", { sessionId: params.paneId, data }).catch(() => {});
+    };
+    xterm.onData((data) => sendInput(session, data));
 
     let lastResize = { cols, rows };
     xterm.onResize(async ({ cols: newCols, rows: newRows }) => {
@@ -393,13 +398,12 @@ async function connectLocal(session: Session) {
 
     session.unlisten = unlisten;
 
-    xterm.onData(async (data) => {
-      try {
-        await invoke("send_input_local", { sessionId: params.paneId, data });
-      } catch {
-        // Session may have been closed
-      }
-    });
+    session.send = (data) => {
+      invoke("send_input_local", { sessionId: params.paneId, data }).catch(
+        () => {},
+      );
+    };
+    xterm.onData((data) => sendInput(session, data));
 
     let lastResize = { cols, rows };
     xterm.onResize(async ({ cols: newCols, rows: newRows }) => {
@@ -463,6 +467,50 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 }
 
 export const getSession = (paneId: string) => sessions.get(paneId);
+
+/**
+ * Replies xterm writes on its own (device attributes, cursor/status reports, focus and
+ * mouse reports, OSC/DCS answers): they describe this pane, so they never broadcast.
+ */
+const TERMINAL_REPLY =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching escape sequences
+  /^\x1b(?:\[[?>]?[\d;]*[cRnyIO$]|\[M[\s\S]{3}|\[<[\d;]+[Mm]|\]\d|P[\d>])/;
+const BRACKETED_PASTE = "\x1b[200~";
+
+/** Input typed in a pane: to its own shell, and to the tab's other panes while it broadcasts. */
+export function sendInput(session: Session, data: string): void {
+  session.send(data);
+  if (TERMINAL_REPLY.test(data)) return;
+  const tab = useTerminalStore
+    .getState()
+    .tabs.find((t) => t.id === session.params.tabId);
+  if (!tab) return;
+  const bracketed = data.startsWith(BRACKETED_PASTE);
+  // Typing sends one key per event; a line break with more text after it (and no ESC in
+  // front, unlike Alt+Enter) is a multi-line paste, raw when the source lacks bracketed paste.
+  const rawPaste =
+    !bracketed && !data.startsWith("\x1b") && /[\r\n](?!$)/.test(data);
+  // A multi-line paste reaches a target only as a bracketed paste, or its lines would run.
+  const multiLinePaste = rawPaste || (bracketed && /[\r\n]/.test(data));
+  const safePaste = rawPaste ? `${BRACKETED_PASTE}${data}\x1b[201~` : data;
+  let skipped = 0;
+  for (const id of broadcastTargets(tab, session.params.paneId)) {
+    const target = sessions.get(id);
+    if (!target) continue;
+    if (multiLinePaste && !target.xterm.modes.bracketedPasteMode) {
+      skipped++;
+      continue;
+    }
+    target.send(multiLinePaste ? safePaste : data);
+  }
+  // A typed key that ends the line is the safe point for waiting panes to join.
+  if (!bracketed && !rawPaste && /[\r\n]$/.test(data))
+    useTerminalStore.getState().syncBroadcastPanes(tab.id);
+  if (skipped)
+    toast.warning(
+      `Paste not sent to ${skipped} pane${skipped === 1 ? "" : "s"} without bracketed paste`,
+    );
+}
 
 /**
  * Types `text` at the prompt like a paste; `run` also presses Enter. Returns false, without

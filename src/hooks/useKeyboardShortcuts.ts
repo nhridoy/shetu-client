@@ -9,6 +9,7 @@ interface UseKeyboardShortcutsProps {
   onSplitVertical?: () => void;
   onCommandPalette?: () => void;
   onFind?: () => void;
+  onBroadcast?: () => void;
 }
 
 /** The terminal view's shortcuts, on the user's bindings (Settings → Keyboard). */
@@ -21,6 +22,7 @@ export function useKeyboardShortcuts({
   onSplitVertical,
   onCommandPalette,
   onFind,
+  onBroadcast,
 }: UseKeyboardShortcutsProps) {
   const run = (cb?: () => void) => [() => cb?.(), { enabled: !!cb }] as const;
   useShortcut("terminal.newTab", ...run(onNewTab));
@@ -31,4 +33,5 @@ export function useKeyboardShortcuts({
   useShortcut("terminal.splitDown", ...run(onSplitVertical));
   useShortcut("terminal.palette", ...run(onCommandPalette));
   useShortcut("terminal.find", ...run(onFind));
+  useShortcut("terminal.broadcast", ...run(onBroadcast));
 }

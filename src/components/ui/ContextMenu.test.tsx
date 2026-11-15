@@ -32,4 +32,19 @@ describe("ContextMenu highlight", () => {
     );
     expect(html).not.toContain("text-dark-400");
   });
+
+  it("a checked item is a menu checkbox screen readers announce", () => {
+    const html = (checked: boolean) =>
+      renderToStaticMarkup(
+        <ContextMenu
+          items={[{ label: "Broadcast Input", checked, onClick: () => {} }]}
+          x={0}
+          y={0}
+          onClose={() => {}}
+        />,
+      );
+    expect(html(true)).toContain('role="menuitemcheckbox"');
+    expect(html(true)).toContain('aria-checked="true"');
+    expect(html(false)).toContain('aria-checked="false"');
+  });
 });

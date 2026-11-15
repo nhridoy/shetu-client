@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   countLeaves as countLeavesUtil,
   type DropSide,
+  findAllLeaves,
   findFirstLeafId,
   findLeaf as findLeafUtil,
   recomputeSizes as recomputeSizesUtil,
@@ -75,9 +76,30 @@ export interface TerminalTab {
   activePresetName: string | null;
   savedPresetSnapshot: string;
   presetDirty: boolean;
+  /** Input typed in one pane also goes to the tab's other connected panes. */
+  broadcast?: boolean;
+  /** Panes that receive broadcast input; one that connects later joins at the next line. */
+  broadcastReady?: string[];
 }
 
 export const findLeaf = findLeafUtil;
+
+/** Panes that also receive input typed in `sourcePaneId` (empty unless the tab broadcasts). */
+export function broadcastTargets(
+  tab: TerminalTab,
+  sourcePaneId: string,
+): string[] {
+  if (!tab.broadcast) return [];
+  return connectedPanes(tab).filter(
+    (id) => id !== sourcePaneId && tab.broadcastReady?.includes(id),
+  );
+}
+
+function connectedPanes(tab: TerminalTab): string[] {
+  return findAllLeaves(tab.root)
+    .filter((l) => l.connectionStatus === "connected")
+    .map((l) => l.id);
+}
 
 export function computeTabSnapshot(root: PaneNode): string {
   return JSON.stringify(serializePresetRoot(root));
@@ -235,6 +257,9 @@ interface TerminalState {
   /** Closes the active tab's active pane (the tab too, if it was the last pane). Returns the new active tab id. */
   closeActivePane: () => string | null;
   setActivePane: (tabId: string, paneId: string) => void;
+  toggleBroadcast: (tabId: string) => void;
+  /** Lets panes that connected since the last line start receiving broadcast input. */
+  syncBroadcastPanes: (tabId: string) => void;
   setFocusedPane: (tabId: string, paneId: string | null) => void;
   setActiveTab: (id: string) => void;
   updatePaneConnectionStatus: (
@@ -501,6 +526,24 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     });
   },
 
+  toggleBroadcast: (tabId) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, broadcast: !t.broadcast, broadcastReady: connectedPanes(t) }
+          : t,
+      ),
+    })),
+
+  syncBroadcastPanes: (tabId) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId && t.broadcast
+          ? { ...t, broadcastReady: connectedPanes(t) }
+          : t,
+      ),
+    })),
+
   setActivePane: (tabId, paneId) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
@@ -537,6 +580,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
             ...leaf,
             connectionStatus: status,
           }),
+          // A dropped connection missed input; it rejoins broadcast at the next line end.
+          broadcastReady:
+            status === "connected"
+              ? tab.broadcastReady
+              : tab.broadcastReady?.filter((id) => id !== paneId),
         };
       }),
     }));
