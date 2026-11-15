@@ -95,6 +95,23 @@ describe("CommandAutocomplete", () => {
     expect(onSelect).toHaveBeenLastCalledWith(expect.anything(), true);
   });
 
+  it("shift plus the run key runs in all tabs", () => {
+    const { onSelect, key } = render();
+    key({ key: "Enter", ctrlKey: true, shiftKey: true });
+    expect(onSelect).toHaveBeenLastCalledWith(
+      { snippetId: "s1", command: "" },
+      true,
+      true,
+    );
+    const mac = render("MacIntel");
+    mac.key({ key: "Enter", metaKey: true, shiftKey: true });
+    expect(mac.onSelect).toHaveBeenLastCalledWith(
+      expect.anything(),
+      true,
+      true,
+    );
+  });
+
   it("click_inserts", () => {
     const { container, onSelect } = render();
     const row = [...container.querySelectorAll("button")].find((b) =>
@@ -117,7 +134,7 @@ describe("CommandAutocomplete", () => {
 
   it("footer_hint_shown with the platform modifier", () => {
     expect(render().container.textContent).toContain(
-      "Enter to insert · Ctrl+Enter to run",
+      "Enter to insert · Ctrl+Enter to run · Ctrl+Shift+Enter to run in all tabs",
     );
     expect(render("MacIntel").container.textContent).toContain(
       "Enter to insert · Cmd+Enter to run",

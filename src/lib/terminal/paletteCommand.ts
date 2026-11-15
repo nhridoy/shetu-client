@@ -1,4 +1,6 @@
+import { findAllLeaves } from "@/lib/common/treeUtils";
 import { fillSnippet, snippetVariables } from "@/lib/snippets/variables";
+import type { TerminalTab } from "@/stores/terminal/terminalStore";
 
 /** A command palette entry: a user snippet (decrypted on pick) or a built-in command. */
 export type PaletteItem = { snippetId?: string; command: string };
@@ -49,6 +51,45 @@ export async function pickPaletteItem(
     if (!deps.isConnected(deps.activePaneId)) return "not-connected";
   }
   return deps.insert(deps.activePaneId, command, run);
+}
+
+/** The command a palette pick stands for: decrypted and with its variables filled. */
+export async function resolvePaletteCommand(
+  item: PaletteItem,
+  deps: Pick<
+    Parameters<typeof pickPaletteItem>[2],
+    "decryptSnippet" | "askVariables"
+  >,
+): Promise<string | "decrypt-failed" | "cancelled"> {
+  let command = item.command;
+  if (item.snippetId) {
+    const snippet = await deps.decryptSnippet(item.snippetId).catch(() => null);
+    if (!snippet) return "decrypt-failed";
+    command = snippet.command;
+  }
+  const names = snippetVariables(command);
+  if (names.length === 0) return command;
+  const values = await deps.askVariables(names);
+  return values ? fillSnippet(command, values) : "cancelled";
+}
+
+/** Runs the command in every connected pane of every tab; returns how many took it. */
+export function runInAllTabs(
+  command: string,
+  deps: {
+    tabs: Pick<TerminalTab, "root">[];
+    insert(paneId: string, text: string, run: boolean): string;
+  },
+): number {
+  let ran = 0;
+  for (const tab of deps.tabs)
+    for (const leaf of findAllLeaves(tab.root))
+      if (
+        leaf.connectionStatus === "connected" &&
+        deps.insert(leaf.id, command, true) === "ok"
+      )
+        ran++;
+  return ran;
 }
 
 const OPEN_PALETTE_EVENT = "shetu:open-command-palette";

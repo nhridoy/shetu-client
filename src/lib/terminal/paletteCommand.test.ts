@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { pickPaletteItem } from "./paletteCommand";
+import { pickPaletteItem, runInAllTabs } from "./paletteCommand";
 
 const deps = (over: Partial<Parameters<typeof pickPaletteItem>[2]> = {}) => ({
   activePaneId: "p1" as string | null,
@@ -118,5 +118,45 @@ describe("pickPaletteItem", () => {
     expect(await pickPaletteItem({ command: "a\nb" }, false, d)).toBe(
       "unsafe-multiline",
     );
+  });
+});
+
+describe("runInAllTabs", () => {
+  const leaf = (id: string, connectionStatus: string) => ({
+    type: "leaf" as const,
+    id,
+    hostName: id,
+    title: id,
+    connectionStatus,
+    reconnect: null,
+    size: 100,
+  });
+  const tabs = [
+    { root: leaf("a", "connected") },
+    {
+      root: {
+        type: "split" as const,
+        id: "s",
+        direction: "horizontal" as const,
+        size: 100,
+        children: [leaf("b", "connected"), leaf("c", "reconnecting")],
+      },
+    },
+  ];
+
+  it("runs in every connected pane and counts them", () => {
+    const insert = vi.fn(() => "ok" as const);
+    expect(runInAllTabs("uptime", { tabs: tabs as never, insert })).toBe(2);
+    expect(insert.mock.calls).toEqual([
+      ["a", "uptime", true],
+      ["b", "uptime", true],
+    ]);
+  });
+
+  it("counts only panes that took the command", () => {
+    const insert = vi.fn((id: string) => (id === "a" ? "ok" : "no-pane"));
+    expect(
+      runInAllTabs("x", { tabs: tabs as never, insert: insert as never }),
+    ).toBe(1);
   });
 });

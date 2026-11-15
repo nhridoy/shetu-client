@@ -10,6 +10,8 @@ import {
   onOpenCommandPalette,
   type PaletteItem,
   pickPaletteItem,
+  resolvePaletteCommand,
+  runInAllTabs,
 } from "@/lib/terminal/paletteCommand";
 import { insertIntoPane } from "@/lib/terminal/sessionManager";
 import { dispatchAppAction } from "@/lib/window/menuActions";
@@ -70,7 +72,29 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   useShortcutContext("terminal");
 
   const handleCommandSelect = useCallback(
-    async (item: PaletteItem, run: boolean) => {
+    async (item: PaletteItem, run: boolean, all?: boolean) => {
+      if (all) {
+        const command = await resolvePaletteCommand(item, {
+          decryptSnippet: (id) =>
+            useSnippetStore.getState().getDecryptedSnippet(id),
+          askVariables: askSnippetVariables,
+        });
+        if (command === "cancelled") return;
+        if (command === "decrypt-failed") {
+          toast.error("Couldn't load this snippet");
+          return;
+        }
+        const ran = runInAllTabs(command, {
+          tabs: useTerminalStore.getState().tabs,
+          insert: insertIntoPane,
+        });
+        if (ran === 0) toast.error("No connected terminals");
+        else {
+          toast.success(`Ran in ${ran} terminal${ran === 1 ? "" : "s"}`);
+          setShowCommandPalette(false);
+        }
+        return;
+      }
       const activeTab = () => {
         const { tabs: currentTabs, activeTabId: atId } =
           useTerminalStore.getState();
