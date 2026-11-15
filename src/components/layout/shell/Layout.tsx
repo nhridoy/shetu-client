@@ -149,7 +149,7 @@ export default function Layout() {
       return;
     restoredSession.current = true;
     void restoreLastSession(accountId, currentVaultId);
-    void autoStartOnUnlock();
+    void autoStartOnUnlock(accountId);
   }, [isUnlocked, accountId, currentVaultId]);
 
   useEffect(() => {

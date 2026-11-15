@@ -15,13 +15,16 @@ beforeEach(() => {
 });
 
 describe("forward auto-start triggers", () => {
-  it("unlock starts the unlock forwards once per run", async () => {
-    await autoStartOnUnlock();
-    await autoStartOnUnlock();
+  it("unlock starts the unlock forwards once per account", async () => {
+    await autoStartOnUnlock("acct-1");
+    await autoStartOnUnlock("acct-1");
     expect(m.invoke).toHaveBeenCalledTimes(1);
     expect(m.invoke).toHaveBeenCalledWith("auto_start_forwards", {
       trigger: "unlock",
     });
+    // Logging in as someone else in the same run starts theirs too.
+    await autoStartOnUnlock("acct-2");
+    expect(m.invoke).toHaveBeenCalledTimes(2);
   });
 
   it("a connected terminal starts that host's terminal forwards, every time", async () => {

@@ -679,7 +679,7 @@ fn settle_pending(waiters: Vec<(String, oneshot::Sender<bool>)>, approved: &str,
 }
 
 /// True when the connection failed because we refused the server's host key.
-fn is_host_key_rejection(error: &str) -> bool {
+pub(crate) fn is_host_key_rejection(error: &str) -> bool {
     error.contains(&russh::Error::UnknownKey.to_string())
 }
 

@@ -15,6 +15,7 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     for table in [
         "port_forwards",
+        "forward_auto_start",
         "user_profiles",
         "user_keys",
         "team_vault_keys",
@@ -1609,6 +1610,8 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         );
         CREATE TABLE IF NOT EXISTS sync_known_vaults (vault_id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);
+        -- Per-device auto-start choice for port forwards; never synced.
+        CREATE TABLE IF NOT EXISTS forward_auto_start (forward_id TEXT PRIMARY KEY, mode TEXT NOT NULL);
 
         CREATE TABLE IF NOT EXISTS __sync_meta (
             vault_id TEXT PRIMARY KEY,

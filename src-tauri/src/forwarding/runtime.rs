@@ -128,25 +128,41 @@ impl ForwardingState {
                 let app = app.clone();
                 let stop = cancel.clone();
                 // Each reconnect attempt reads the app's own state, so the task needs no borrows.
+                let forward_id = id.clone();
                 let attempt = move || {
-                    let (app, definition, stop) = (app.clone(), definition.clone(), stop.clone());
+                    let (app, id, stop) = (app.clone(), forward_id.clone(), stop.clone());
                     async move {
                         use tauri::Manager;
                         let state = app.state::<ForwardingState>();
                         let db = app.state::<crate::db::LocalDb>();
                         let crypto = app.state::<crate::CryptoState>();
                         let ssh = app.state::<SshSessions>();
+                        // Re-read it: edited elsewhere uses the new settings; deleted stops for good.
+                        let current = {
+                            let session = crypto.session.lock().map_err(|e| e.to_string())?;
+                            super::storage::get_live(&db, &session, &id)?
+                        };
+                        let Some(definition) = current else {
+                            state.stop(&id);
+                            return Err("Forward was deleted".to_string());
+                        };
                         state
                             .prepare(&definition, &db, &crypto, &app, &ssh, stop)
                             .await
                             .map(|run| Box::pin(run) as RunFuture)
                     }
                 };
+                let own_run = cancel.clone();
                 tokio::spawn(supervise(
                     cancel,
                     Box::pin(task) as RunFuture,
                     attempt,
-                    move |status| update_status(&entries, &id, status),
+                    // A stopped run must not write over a newer run of the same forward.
+                    move |status| {
+                        if !own_run.is_cancelled() {
+                            update_status(&entries, &id, status)
+                        }
+                    },
                 ));
                 Ok(ForwardStatus::Active)
             }
@@ -239,8 +255,8 @@ impl ForwardingState {
                 loop {
                     tokio::select! {
                         _ = stop.cancelled() => break,
-                        ended = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err(format!("Bastion connection ended: {ended:?}")),
-                        ended = &mut session => return Err(format!("SSH connection ended: {ended:?}")),
+                        _ = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err("Jump host connection closed".to_string()),
+                        _ = &mut session => return Err("SSH connection closed".to_string()),
                         accepted = listener.accept() => {
                             let (mut stream, peer) = accepted.map_err(|e| format!("accept: {e}"))?;
                             let tx = ready_tx.clone();
@@ -295,8 +311,8 @@ impl ForwardingState {
                 loop {
                     let received = tokio::select! {
                         _ = stop.cancelled() => break,
-                        ended = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err(format!("Bastion connection ended: {ended:?}")),
-                        ended = &mut session => return Err(format!("SSH connection ended: {ended:?}")),
+                        _ = async { match &mut bastion { Some(handle) => Some(handle.await), None => std::future::pending().await } } => return Err("Jump host connection closed".to_string()),
+                        _ = &mut session => return Err("SSH connection closed".to_string()),
                         received = rx.recv() => received,
                     };
                     let Some((channel, reply)) = received else {
@@ -359,6 +375,18 @@ pub fn reconnect_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(STEPS.get(attempt as usize).copied().unwrap_or(30))
 }
 
+/// Failures a retry can't fix: retrying a rejected login every 30 s can get the IP banned.
+pub fn is_permanent_failure(error: &str) -> bool {
+    error.contains("authentication rejected")
+        || error.contains(crate::ssh_auth::NON_INTERACTIVE)
+        || error.contains(crate::ssh_auth::CANCELLED)
+        || crate::ssh::is_host_key_rejection(error)
+        || error.contains("key not trusted")
+        || error.contains("No username set")
+        || error.contains("does not exist")
+        || error.contains("Forward was deleted")
+}
+
 /// Auto-start leaves alone a forward that is already up or on its way.
 pub fn should_auto_start(status: &ForwardStatus) -> bool {
     matches!(status, ForwardStatus::Stopped | ForwardStatus::Failed(_))
@@ -399,6 +427,10 @@ pub(crate) async fn supervise<A, Fut, R>(
             };
             match result {
                 Ok(next) => break next,
+                Err(error) if is_permanent_failure(&error) => {
+                    on_status(ForwardStatus::Failed(error));
+                    return;
+                }
                 Err(error) => reason = error,
             }
         };
@@ -487,6 +519,47 @@ mod tests {
                 ForwardStatus::Reconnecting("refused".into()),
                 ForwardStatus::Active,
             ]
+        );
+    }
+
+    #[test]
+    fn login_and_host_key_failures_are_permanent() {
+        let host_key = format!("destination connection: ssh handshake web:22: {}", russh::Error::UnknownKey);
+        for permanent in [
+            "authentication rejected",
+            host_key.as_str(),
+            crate::ssh_auth::NON_INTERACTIVE,
+            "No username set for this host",
+            "Forward was deleted",
+        ] {
+            assert!(is_permanent_failure(permanent), "{permanent}");
+        }
+        for transient in ["SSH connection closed", "connect web:22: Connection refused", "timed out"] {
+            assert!(!is_permanent_failure(transient), "{transient}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_permanent_failure_stops_retrying() {
+        let cancel = CancellationToken::new();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (s, a) = (statuses.clone(), attempts.clone());
+        let task = tokio::spawn(supervise(
+            cancel.clone(),
+            ended("SSH connection closed"),
+            move || {
+                a.fetch_add(1, Ordering::SeqCst);
+                async { Err::<Run, String>("authentication rejected".into()) }
+            },
+            move |status| s.lock().unwrap().push(status),
+        ));
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        assert!(task.is_finished(), "a rejected login must not be retried");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            statuses.lock().unwrap().last(),
+            Some(&ForwardStatus::Failed("authentication rejected".into()))
         );
     }
 

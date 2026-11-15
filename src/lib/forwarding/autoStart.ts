@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
-let unlockStarted = false;
+let unlockStartedFor: string | null = null;
 
-/** Starts forwards set to "When Shetu unlocks", once per app run. Best-effort. */
-export async function autoStartOnUnlock(): Promise<void> {
-  if (unlockStarted) return;
-  unlockStarted = true;
+/** Starts forwards set to "When Shetu unlocks", once per account per run. Best-effort. */
+export async function autoStartOnUnlock(accountId: string): Promise<void> {
+  if (unlockStartedFor === accountId) return;
+  unlockStartedFor = accountId;
   await invoke("auto_start_forwards", { trigger: "unlock" }).catch(() => {});
 }
 
@@ -22,5 +22,5 @@ export async function autoStartWithTerminal(
 }
 
 export function resetAutoStartForTests() {
-  unlockStarted = false;
+  unlockStartedFor = null;
 }
