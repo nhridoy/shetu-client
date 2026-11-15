@@ -138,6 +138,9 @@ export default function TerminalFindBar({
       clearOurSelection();
       return;
     }
+    // Add-on 0.16.0 checks for changed options after storing them, so a toggle alone
+    // would keep stale highlights; clearing its cache forces a fresh highlight pass.
+    search.clearDecorations();
     run("next", true);
   }, [query, caseSensitive, wholeWord, regex, search]);
 

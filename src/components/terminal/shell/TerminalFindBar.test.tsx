@@ -177,6 +177,25 @@ describe("TerminalFindBar", () => {
     expect(/\b(?:foo)\b/.exec("foobar foo")?.index).toBe(7);
   });
 
+  it("changing a toggle with the same text re-highlights from scratch", async () => {
+    // Add-on 0.16.0 stores new options before comparing them, so a toggle alone
+    // would keep the old highlights unless the cache is cleared first.
+    const calls: string[] = [];
+    search.clearDecorations.mockImplementation(() => calls.push("clear"));
+    search.findNext.mockImplementation((term) => {
+      calls.push(`find ${term}`);
+      return true;
+    });
+    await render();
+    type("foo");
+    calls.length = 0;
+    act(() => byLabel("Match case").click());
+    expect(calls).toEqual(["clear", "find foo"]);
+    calls.length = 0;
+    key("Enter");
+    expect(calls).toEqual(["find foo"]);
+  });
+
   it("invalid regex shows Invalid pattern", async () => {
     await render();
     act(() => byLabel("Use regex").click());
