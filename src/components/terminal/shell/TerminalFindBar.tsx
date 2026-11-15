@@ -64,6 +64,12 @@ export default function TerminalFindBar({
   const [results, setResults] = useState<{ index: number; count: number }>();
   const [invalid, setInvalid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // True once a search may have selected a match; only that selection is ours to clear.
+  const selected = useRef(false);
+  const clearOurSelection = () => {
+    if (selected.current) clearSelection();
+    selected.current = false;
+  };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: opened is the trigger
   useEffect(() => {
@@ -93,6 +99,7 @@ export default function TerminalFindBar({
     const term = searchTerm(query, regex, wholeWord);
     try {
       if (regex || wholeWord) new RegExp(term);
+      selected.current = true;
       if (direction === "next") search.findNext(term, options(incremental));
       else search.findPrevious(term, options(false));
       setInvalid(false);
@@ -111,7 +118,7 @@ export default function TerminalFindBar({
       setInvalid(false);
       setResults(undefined);
       search.clearDecorations();
-      clearSelection();
+      clearOurSelection();
       return;
     }
     run("next", true);
@@ -119,7 +126,7 @@ export default function TerminalFindBar({
 
   const close = () => {
     search.clearDecorations();
-    clearSelection();
+    clearOurSelection();
     onClose();
   };
 

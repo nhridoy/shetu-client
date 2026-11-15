@@ -179,9 +179,22 @@ describe("TerminalFindBar", () => {
     expect(search.clearDecorations).toHaveBeenCalled();
   });
 
+  it("opening with an empty query keeps the user's own selection", async () => {
+    await render();
+    type("");
+    await act(async () => root?.unmount());
+    root = undefined;
+    clearSelection.mockClear();
+    await render();
+    key("Escape");
+    expect(clearSelection).not.toHaveBeenCalled();
+  });
+
   it("Escape closes and clears", async () => {
     await render();
     type("error");
+    clearSelection.mockClear();
+    search.clearDecorations.mockClear();
     key("Escape");
     expect(search.clearDecorations).toHaveBeenCalled();
     expect(clearSelection).toHaveBeenCalled();
@@ -193,6 +206,8 @@ describe("TerminalFindBar", () => {
     type("error");
     act(() => emit({ resultIndex: 0, resultCount: 3 }));
     search.findNext.mockClear();
+    search.clearDecorations.mockClear();
+    clearSelection.mockClear();
     type("");
     expect(search.findNext).not.toHaveBeenCalled();
     expect(search.clearDecorations).toHaveBeenCalled();
