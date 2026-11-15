@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import GroupForm from "@/components/hosts/forms/GroupForm";
@@ -10,6 +10,7 @@ import { openGroupId } from "@/lib/hosts/helpers";
 import { type Host, useHostStore } from "@/stores/hosts/hostStore";
 import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
+import { useVaultStore } from "@/stores/vault/vaultStore";
 
 type Panel =
   | { kind: "host"; id?: string; defaultGroupId?: string; host?: Host }
@@ -45,6 +46,15 @@ export default function HostsPage() {
     openSeq.current++; // drop an edit-host open still loading
     setPanel(null);
   };
+  // A draft from another vault would save its credentials into this one.
+  const vaultId = useVaultStore((s) => s.currentVaultId);
+  const panelVaultId = useRef(vaultId);
+  useEffect(() => {
+    if (vaultId === panelVaultId.current) return;
+    panelVaultId.current = vaultId;
+    openSeq.current++;
+    setPanel(null);
+  }, [vaultId]);
   const editHost = (host: Host) =>
     openPanel(async () => {
       const full = await useHostStore

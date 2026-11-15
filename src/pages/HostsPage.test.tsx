@@ -245,6 +245,14 @@ describe("HostsPage side panel", () => {
     expect(title()).toBe("New group");
   });
 
+  it("switching vault closes the open panel", async () => {
+    await mount();
+    await click(button("Edit web"));
+    type("name", "web2");
+    await act(async () => useVaultStore.setState({ currentVaultId: "v2" }));
+    expect(document.querySelector("aside")).toBeNull();
+  });
+
   it("card click connects when no panel is open", async () => {
     await mount();
     await click(button("Connect web"));
