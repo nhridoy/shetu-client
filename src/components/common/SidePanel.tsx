@@ -86,9 +86,15 @@ function SidePanel({
     return () => opener?.focus();
   }, [open]);
 
-  // The overlay is modal: narrowing into it pulls focus in from outside.
+  // The overlay is modal: narrowing into it pulls focus in from outside,
+  // unless another dialog (e.g. "Discard changes?") holds it.
   useEffect(() => {
-    if (overlay && !panelRef.current?.contains(document.activeElement))
+    const active = document.activeElement;
+    if (
+      overlay &&
+      !panelRef.current?.contains(active) &&
+      !active?.closest('[role="dialog"]')
+    )
       bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
   }, [overlay]);
 

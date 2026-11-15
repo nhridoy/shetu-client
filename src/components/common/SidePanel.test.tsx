@@ -218,6 +218,19 @@ describe("SidePanel", () => {
     expect(document.activeElement).toBe(q('input[aria-label="Name"]'));
   });
 
+  it("narrowing into overlay leaves focus in an open dialog", () => {
+    mount(<Harness onClose={() => {}} />);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const keep = document.createElement("button");
+    dialog.append(keep);
+    document.body.append(dialog);
+    act(() => keep.focus());
+    act(() => resize(800));
+    expect(document.activeElement).toBe(keep);
+    dialog.remove();
+  });
+
   it("no backdrop at 900px or wider", () => {
     mount(<Harness onClose={() => {}} />);
     expect(q("aside").getAttribute("role")).toBeNull();
