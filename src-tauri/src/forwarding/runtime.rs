@@ -76,18 +76,19 @@ impl ForwardingState {
 
     /// Stops `id` only if `run` is still the current one (a retry finding its forward deleted).
     pub(crate) fn stop_run(&self, id: &str, run: u64) {
-        let current = self
-            .entries
-            .lock()
-            .map(|e| e.get(id).is_some_and(|entry| entry.run == run))
-            .unwrap_or(false);
-        if current {
-            self.stop(id);
-        }
+        self.stop_if(id, |entry| entry.run == run);
     }
 
     pub fn stop(&self, id: &str) {
+        self.stop_if(id, |_| true);
+    }
+
+    /// Checks and removes under one lock, so a run started in between is never stopped.
+    fn stop_if(&self, id: &str, matches: impl FnOnce(&Running) -> bool) {
         if let Ok(mut entries) = self.entries.lock() {
+            if !entries.get(id).is_some_and(matches) {
+                return;
+            }
             if let Some(entry) = entries.remove(id) {
                 entry.cancel.cancel();
                 if let Some(app) = &entry.app {
