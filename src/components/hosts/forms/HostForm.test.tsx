@@ -119,7 +119,10 @@ const changeInput = (el: HTMLInputElement, value: string) =>
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-async function mountAndFill(groups: { id: string; name: string }[] = []) {
+async function mountAndFill(
+  groups: { id: string; name: string }[] = [],
+  onClose = () => {},
+) {
   const createHost = vi.fn();
   useHostStore.setState({ createHost, hosts: [], groups } as never);
   useVaultStore.setState({ currentVaultId: "v1" });
@@ -128,7 +131,7 @@ async function mountAndFill(groups: { id: string; name: string }[] = []) {
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(<HostForm onClose={() => {}} />);
+    root.render(<HostForm onClose={onClose} />);
   });
   pick("authType", "Password");
   for (const [id, v] of [
@@ -214,6 +217,18 @@ describe("HostForm advanced validation", () => {
     changeInput(nameInput, "1X");
     await submit();
     expect(document.body.textContent).toContain("no leading digit");
+  });
+});
+
+describe("HostForm create", () => {
+  it("a failed create keeps the draft and the form open", async () => {
+    const onClose = vi.fn();
+    const createHost = await mountAndFill([], onClose);
+    createHost.mockResolvedValue(null);
+    await submit();
+    expect(createHost).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input("name")?.value).toBe("n");
   });
 });
 

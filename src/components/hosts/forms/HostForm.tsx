@@ -306,7 +306,11 @@ export default function HostForm({
       else if (turnedOff) await recordAgentForwarding(host.id, null);
     } else {
       const created = await createHost(hostData);
-      if (created && turnedOn) await recordAgentForwarding(created.id, true);
+      if (!created) {
+        toast.error(useHostStore.getState().error ?? "Couldn't save host");
+        return;
+      }
+      if (turnedOn) await recordAgentForwarding(created.id, true);
     }
     reset();
     onClose();
