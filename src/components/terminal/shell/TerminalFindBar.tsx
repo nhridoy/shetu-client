@@ -31,9 +31,12 @@ let lastQuery = "";
 export default function TerminalFindBar({
   search,
   onClose,
+  opened = 0,
 }: {
   search: FindTarget;
   onClose: () => void;
+  /** Bumped each time find is asked for, so an open bar takes focus again. */
+  opened?: number;
 }) {
   const [query, setQuery] = useState(lastQuery);
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -43,8 +46,14 @@ export default function TerminalFindBar({
   const [invalid, setInvalid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opened is the trigger
   useEffect(() => {
+    // select() alone doesn't move focus in every webview.
+    inputRef.current?.focus();
     inputRef.current?.select();
+  }, [opened]);
+
+  useEffect(() => {
     const sub = search.onDidChangeResults((e) =>
       setResults({ index: e.resultIndex, count: e.resultCount }),
     );
@@ -100,7 +109,8 @@ export default function TerminalFindBar({
         ? "No results"
         : results.index >= 0
           ? `${results.index + 1} of ${results.count}`
-          : `${results.count} matches`;
+          : // The add-on stops counting at its highlight limit.
+            `${results.count}${results.count >= 1000 ? "+" : ""} matches`;
 
   const toggle = (
     label: string,
@@ -122,8 +132,15 @@ export default function TerminalFindBar({
   );
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: older WebKitGTK webviews lack <search>
     <div
       role="search"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }}
       className="absolute top-2 right-4 z-20 flex items-center gap-1 rounded-md border border-dark-700 bg-dark-900/95 px-2 py-1 shadow-lg"
       aria-label="Find in terminal"
     >
@@ -140,10 +157,6 @@ export default function TerminalFindBar({
           if (e.key === "Enter") {
             e.preventDefault();
             run(e.shiftKey ? "previous" : "next", false);
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            e.stopPropagation();
-            close();
           }
         }}
       />

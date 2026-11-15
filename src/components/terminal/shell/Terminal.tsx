@@ -1,9 +1,10 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import type { SearchAddon } from "@xterm/addon-search";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
 import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
-import { onOpenFind } from "@/lib/terminal/findCommand";
+import { findOpensHere, onOpenFind } from "@/lib/terminal/findCommand";
 import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
   attachSession,
@@ -72,10 +73,18 @@ export default function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [finding, setFinding] = useState(false);
+  // 0 = closed; each request bumps it so an open bar takes focus again.
+  const [finding, setFinding] = useState(0);
+  const openFindBar = () => setFinding((n) => n + 1);
 
-  // The find shortcut opens the bar in the focused pane only.
-  useEffect(() => onOpenFind(() => isActive && setFinding(true)), [isActive]);
+  // The find shortcut opens the bar in the focused pane of the shown tab only.
+  useEffect(
+    () =>
+      onOpenFind(
+        () => findOpensHere(tabId, !!isActive) && setFinding((n) => n + 1),
+      ),
+    [tabId, isActive],
+  );
 
   // Right-click opens the terminal menu instead of the webview's.
   useEffect(() => {
@@ -83,6 +92,9 @@ export default function Terminal({
     if (!el) return;
     const open = (event: MouseEvent) => {
       if (!getSession(paneId)) return;
+      // The find bar's input keeps the webview's own text menu.
+      if ((event.target as Element | null)?.closest?.('[role="search"]'))
+        return;
       event.preventDefault();
       setMenu({ x: event.clientX, y: event.clientY });
     };
@@ -251,18 +263,19 @@ export default function Terminal({
                         .splitPane(tabId, paneId, direction),
                     // Right-click already made this the active pane, so the pick lands here.
                     openCommandPalette,
-                    () => setFinding(true),
+                    openFindBar,
                   )
                 : [];
             })()}
           />,
           document.body,
         )}
-      {finding && getSession(paneId) && (
+      {finding > 0 && getSession(paneId) && (
         <TerminalFindBar
-          search={getSession(paneId)?.searchAddon as never}
+          search={getSession(paneId)?.searchAddon as SearchAddon}
+          opened={finding}
           onClose={() => {
-            setFinding(false);
+            setFinding(0);
             getSession(paneId)?.xterm.focus();
           }}
         />

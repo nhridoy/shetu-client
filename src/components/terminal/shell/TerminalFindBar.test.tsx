@@ -12,6 +12,8 @@ import {
 } from "vitest";
 import TerminalFindBar, { type FindTarget } from "./TerminalFindBar";
 
+let opened = 0;
+
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,7 +54,9 @@ const key = (k: string, shift = false) =>
 async function render() {
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
-    root?.render(<TerminalFindBar search={search} onClose={onClose} />),
+    root?.render(
+      <TerminalFindBar search={search} onClose={onClose} opened={opened} />,
+    ),
   );
 }
 
@@ -168,6 +172,37 @@ describe("TerminalFindBar", () => {
     expect(search.findNext).not.toHaveBeenCalled();
     expect(search.clearDecorations).toHaveBeenCalled();
     expect(text()).not.toContain("of 3");
+  });
+
+  it("Escape closes from the toggle buttons too", async () => {
+    await render();
+    act(() => {
+      byLabel("Match case").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows 1000+ past the highlight limit", async () => {
+    await render();
+    type("x");
+    act(() => emit({ resultIndex: -1, resultCount: 1000 }));
+    expect(text()).toContain("1000+ matches");
+  });
+
+  it("the shortcut again refocuses the open bar", async () => {
+    await render();
+    (
+      document.body.appendChild(document.createElement("button")) as HTMLElement
+    ).focus();
+    opened += 1;
+    await act(async () =>
+      root?.render(
+        <TerminalFindBar search={search} onClose={onClose} opened={opened} />,
+      ),
+    );
+    expect(document.activeElement).toBe(field());
   });
 
   it("reopening keeps the last query", async () => {
