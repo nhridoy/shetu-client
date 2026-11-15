@@ -163,6 +163,42 @@ describe("snippetStore", () => {
     );
   });
 
+  it("save targets keeps the command", async () => {
+    useSnippetStore.setState({
+      snippets: [
+        { id: "s1", name: "deploy", command: "", tags: [], createdAt: "1" },
+      ],
+    });
+    mockGet.mockResolvedValue(snippetRow);
+    mockDecrypt.mockResolvedValue({ command: "pnpm build" });
+    await useSnippetStore
+      .getState()
+      .updateSnippet("s1", { targets: ["h1", "h2"] });
+    const opts = mockUpsert.mock.calls[0][2] as { plaintext: string };
+    expect(JSON.parse(opts.plaintext)).toEqual({
+      command: "pnpm build",
+      targets: ["h1", "h2"],
+    });
+  });
+
+  it("getDecryptedSnippet returns saved targets", async () => {
+    useSnippetStore.setState({
+      snippets: [
+        {
+          id: "s1",
+          name: "d",
+          command: "",
+          tags: [],
+          createdAt: "1",
+          data: "enc",
+        },
+      ],
+    });
+    mockDecrypt.mockResolvedValue({ command: "ls", targets: ["h1", 5] });
+    const snippet = await useSnippetStore.getState().getDecryptedSnippet("s1");
+    expect(snippet?.targets).toEqual(["h1"]);
+  });
+
   it("updateSnippet preserves unpatched command/tags", async () => {
     useSnippetStore.setState({
       snippets: [

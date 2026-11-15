@@ -12,6 +12,8 @@ interface Snippet {
   tags: string[];
   vaultId?: string;
   createdAt: string;
+  /** Hosts "Run on hosts" preselects (encrypted with the command). */
+  targets?: string[];
   /** @internal encrypted payload blob — kept for on-demand decrypt, never render */
   data?: string;
 }
@@ -35,7 +37,13 @@ interface SnippetState {
 
 interface SnippetPayload {
   command: string;
+  targets?: unknown;
 }
+
+const cleanTargets = (v: unknown): string[] | undefined =>
+  Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string")
+    : undefined;
 
 function parseTags(tags: string | null | undefined): string[] {
   if (!tags) return [];
@@ -77,6 +85,7 @@ async function decryptSnippetRow(row: SyncRow): Promise<Snippet> {
   return {
     ...snippetFromRow(row),
     command: payload.command ?? "",
+    targets: cleanTargets(payload.targets),
   };
 }
 
@@ -110,7 +119,11 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
     if (cached?.data) {
       const payload = ((await decryptRowData(cached.data)) ??
         {}) as Partial<SnippetPayload>;
-      return { ...cached, command: payload.command ?? "" };
+      return {
+        ...cached,
+        command: payload.command ?? "",
+        targets: cleanTargets(payload.targets),
+      };
     }
     const row = await getRow("snippets", id);
     if (!row) {
@@ -173,6 +186,7 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
       >;
       const sensitive: Record<string, unknown> = {};
       if (patch.command !== undefined) sensitive.command = patch.command;
+      if (patch.targets !== undefined) sensitive.targets = patch.targets;
       await upsertRow(
         "snippets",
         {
