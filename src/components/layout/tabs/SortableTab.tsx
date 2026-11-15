@@ -1,6 +1,6 @@
 import { closestCenter } from "@dnd-kit/collision";
 import { useSortable } from "@dnd-kit/react/sortable";
-import { FloppyDiskIcon, XIcon } from "@phosphor-icons/react";
+import { BroadcastIcon, FloppyDiskIcon, XIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/Button";
 import { accessibleClickHandler } from "@/lib/common/accessibleClickHandler";
 import { getWorstStatus } from "@/lib/common/connectionStatus";
@@ -66,6 +66,11 @@ export default function SortableTab({
     >
       <StatusDot status={getWorstStatus(statuses)} size="xs" />
       <span className="truncate">{tab.title}</span>
+      {tab.broadcast && (
+        <span title="Broadcasting input" className="shrink-0 text-amber-400">
+          <BroadcastIcon className="size-3.5" weight="bold" aria-hidden />
+        </span>
+      )}
 
       {/* Quick Preset controls */}
       {hasPreset ? (

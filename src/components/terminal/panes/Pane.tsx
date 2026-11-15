@@ -1,5 +1,9 @@
 import { useDraggable } from "@dnd-kit/react";
-import { ArrowsLeftRightIcon, XIcon } from "@phosphor-icons/react";
+import {
+  ArrowsLeftRightIcon,
+  BroadcastIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { DropZone } from "@/components/common/DropZone";
 import PortForwarding from "@/components/portforwarding/panels/PortForwarding";
@@ -44,6 +48,9 @@ export default function Pane({
   onRestorePreset,
 }: PaneProps) {
   const setActivePane = useTerminalStore((s) => s.setActivePane);
+  const broadcasting = useTerminalStore(
+    (s) => !!s.tabs.find((t) => t.id === tabId)?.broadcast,
+  );
   const splitPane = useTerminalStore((s) => s.splitPane);
   const removePane = useTerminalStore((s) => s.removePane);
   const connectPane = useTerminalStore((s) => s.connectPane);
@@ -93,9 +100,11 @@ export default function Pane({
       role="button"
       tabIndex={0}
       className={`flex flex-col h-full min-h-0 min-w-0 bg-dark-950 relative ${
-        isActive
-          ? "ring-1 ring-inset ring-primary-600/60"
-          : "ring-1 ring-inset ring-dark-800"
+        broadcasting
+          ? "ring-2 ring-inset ring-amber-500/70"
+          : isActive
+            ? "ring-1 ring-inset ring-primary-600/60"
+            : "ring-1 ring-inset ring-dark-800"
       } ${dropSide ? "ring-1 ring-inset ring-primary-500" : ""} ${
         isDragging ? "opacity-40" : ""
       }`}
@@ -145,6 +154,12 @@ export default function Pane({
 
       {/* Pane body */}
       <div className="flex-1 min-h-0 relative">
+        {broadcasting && (
+          <span className="pointer-events-none absolute bottom-2 right-3 z-20 flex items-center gap-1 rounded bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-dark-950">
+            <BroadcastIcon className="size-3" weight="bold" />
+            Broadcasting
+          </span>
+        )}
         {pane.hostId ? (
           <ErrorBoundary
             onReset={() => {

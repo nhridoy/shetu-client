@@ -43,6 +43,7 @@ export function terminalContextMenuItems(
   split: (direction: "horizontal" | "vertical") => void,
   openSnippets: () => void,
   openFind?: () => void,
+  broadcast?: { on: boolean; toggle: () => void },
 ): ContextMenuItem[] {
   const then = (action: () => void) => () => {
     action();
@@ -68,6 +69,15 @@ export function terminalContextMenuItems(
             label: "Find…",
             shortcut: shortcutLabel("terminal.find"),
             onClick: openFind,
+          },
+        ]
+      : []),
+    ...(broadcast
+      ? [
+          {
+            label: broadcast.on ? "✓ Broadcast Input" : "Broadcast Input",
+            shortcut: shortcutLabel("terminal.broadcast"),
+            onClick: then(broadcast.toggle),
           },
         ]
       : []),

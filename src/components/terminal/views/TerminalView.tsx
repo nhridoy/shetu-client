@@ -132,6 +132,10 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onSplitVertical: () => handleSplit("vertical"),
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
     onFind: openFind,
+    onBroadcast: () => {
+      const id = useTerminalStore.getState().activeTabId;
+      if (id) useTerminalStore.getState().toggleBroadcast(id);
+    },
   });
 
   if (!activeTab) return null;

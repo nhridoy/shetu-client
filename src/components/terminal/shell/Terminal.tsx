@@ -272,6 +272,13 @@ export default function Terminal({
                     // Right-click already made this the active pane, so the pick lands here.
                     openCommandPalette,
                     openFindBar,
+                    {
+                      on: !!useTerminalStore
+                        .getState()
+                        .tabs.find((t) => t.id === tabId)?.broadcast,
+                      toggle: () =>
+                        useTerminalStore.getState().toggleBroadcast(tabId),
+                    },
                   )
                 : [];
             })()}

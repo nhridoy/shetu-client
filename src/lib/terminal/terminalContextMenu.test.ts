@@ -101,6 +101,27 @@ describe("terminalContextMenuItems", () => {
     expect(openFind).toHaveBeenCalled();
   });
 
+  it("Broadcast Input toggles and shows a check while on", () => {
+    const toggle = vi.fn();
+    const label = (on: boolean) =>
+      terminalContextMenuItems(terminal(), vi.fn(), vi.fn(), vi.fn(), {
+        on,
+        toggle,
+      }).flatMap((i) =>
+        "label" in i && i.label.includes("Broadcast") ? [i.label] : [],
+      );
+    expect(label(false)).toEqual(["Broadcast Input"]);
+    expect(label(true)).toEqual(["✓ Broadcast Input"]);
+    item(
+      terminalContextMenuItems(terminal(), vi.fn(), vi.fn(), vi.fn(), {
+        on: false,
+        toggle,
+      }),
+      "Broadcast Input",
+    ).onClick();
+    expect(toggle).toHaveBeenCalled();
+  });
+
   it("snippets_opens_the_palette in its own group before Clear", () => {
     const openSnippets = vi.fn();
     const items = terminalContextMenuItems(terminal(), vi.fn(), openSnippets);
