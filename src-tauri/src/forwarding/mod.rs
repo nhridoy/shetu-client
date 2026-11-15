@@ -101,6 +101,51 @@ pub async fn start_port_forward(
     Ok(view(definition, &state))
 }
 
+/// Owner of forwards started on unlock: no pane, they run until stopped or logout.
+pub const APP_OWNER: &str = "app";
+
+/// Starts the forwards set to auto-start for `trigger` ("unlock", or "terminal" with the
+/// host and its pane). Forwards already up are left alone; one that fails to start shows
+/// Failed like a manual start. Returns how many started.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn auto_start_forwards(
+    trigger: String,
+    host_id: Option<String>,
+    owner_pane_id: Option<String>,
+    db: tauri::State<'_, crate::db::LocalDb>,
+    crypto: tauri::State<'_, crate::CryptoState>,
+    ssh: tauri::State<'_, crate::ssh::SshSessions>,
+    state: tauri::State<'_, ForwardingState>,
+    app: tauri::AppHandle,
+) -> Result<u32, String> {
+    let (trigger, owner) = match (trigger.as_str(), host_id, owner_pane_id) {
+        ("unlock", _, _) => (storage::Trigger::Unlock, APP_OWNER.to_string()),
+        ("terminal", Some(host), Some(pane)) if !pane.trim().is_empty() => {
+            (storage::Trigger::Terminal(host), pane)
+        }
+        _ => return Err("Unknown auto-start trigger".into()),
+    };
+    let candidates = {
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        storage::auto_start_candidates(&db, &session, &trigger)?
+    };
+    let mut started = 0;
+    for definition in candidates {
+        if !runtime::should_auto_start(&state.status(&definition.id)) {
+            continue;
+        }
+        if state
+            .start(definition, owner.clone(), &db, &crypto, &app, &ssh)
+            .await
+            .is_ok()
+        {
+            started += 1;
+        }
+    }
+    Ok(started)
+}
+
 #[tauri::command]
 pub fn stop_port_forward(
     id: String,

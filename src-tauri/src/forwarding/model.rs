@@ -27,6 +27,18 @@ impl ForwardMode {
     }
 }
 
+/// When a forward starts without being clicked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoStart {
+    #[default]
+    Off,
+    /// After Shetu unlocks, owned by the app.
+    Unlock,
+    /// When a terminal to the host connects, owned by that pane.
+    Terminal,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForwardInput {
@@ -38,6 +50,8 @@ pub struct ForwardInput {
     pub remote_port: Option<u16>,
     pub destination_host: Option<String>,
     pub destination_port: Option<u16>,
+    #[serde(default)]
+    pub auto_start: AutoStart,
 }
 
 impl ForwardInput {
@@ -57,6 +71,7 @@ impl ForwardInput {
             remote_port: None,
             destination_host: Some(destination_host.into()),
             destination_port: Some(destination_port),
+            auto_start: AutoStart::Off,
         }
     }
 
@@ -70,6 +85,7 @@ impl ForwardInput {
             remote_port: None,
             destination_host: None,
             destination_port: None,
+            auto_start: AutoStart::Off,
         }
     }
 }
@@ -86,6 +102,7 @@ pub struct ForwardDefinition {
     pub remote_port: Option<u16>,
     pub destination_host: Option<String>,
     pub destination_port: Option<u16>,
+    pub auto_start: AutoStart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -94,6 +111,8 @@ pub enum ForwardStatus {
     Stopped,
     Starting,
     Active,
+    /// The connection dropped; retrying until it's back or stopped.
+    Reconnecting(String),
     Failed(String),
 }
 
@@ -173,6 +192,7 @@ mod tests {
             remote_port: Some(8080),
             destination_host: Some("localhost".into()),
             destination_port: Some(80),
+            auto_start: AutoStart::Off,
         })
         .is_ok());
         assert!(validate(&ForwardInput::dynamic("h1", "socks", 1080)).is_ok());
@@ -198,6 +218,7 @@ mod tests {
             remote_port: Some(8080),
             destination_host: Some("localhost".into()),
             destination_port: Some(80),
+            auto_start: AutoStart::Off,
         };
         remote.remote_port = None;
         assert!(validate(&remote).is_err());

@@ -36,15 +36,7 @@ impl ForwardingState {
     }
 
     fn set_status(&self, id: &str, status: ForwardStatus) {
-        if let Ok(mut entries) = self.entries.lock() {
-            if let Some(entry) = entries.get_mut(id) {
-                entry.status = status.clone();
-                let _ = entry.app.emit(
-                    "forward-status",
-                    serde_json::json!({ "id": id, "status": status }),
-                );
-            }
-        }
+        update_status(&self.entries, id, status);
     }
 
     pub fn stop(&self, id: &str) {
@@ -107,10 +99,7 @@ impl ForwardingState {
         {
             let mut entries = self.entries.lock().map_err(|e| e.to_string())?;
             if let Some(entry) = entries.get(&id) {
-                if matches!(
-                    entry.status,
-                    ForwardStatus::Starting | ForwardStatus::Active
-                ) {
+                if !should_auto_start(&entry.status) {
                     return Err("Forward is already running".into());
                 }
             }
@@ -136,26 +125,29 @@ impl ForwardingState {
                 }
                 self.set_status(&id, ForwardStatus::Active);
                 let entries = Arc::clone(&self.entries);
-                tokio::spawn(async move {
-                    let outcome = task.await;
-                    if !cancel.is_cancelled() {
-                        cancel.cancel();
-                        if let Ok(mut map) = entries.lock() {
-                            if let Some(entry) = map.get_mut(&id) {
-                                let status = ForwardStatus::Failed(
-                                    outcome
-                                        .err()
-                                        .unwrap_or_else(|| "SSH connection closed".into()),
-                                );
-                                entry.status = status.clone();
-                                let _ = entry.app.emit(
-                                    "forward-status",
-                                    serde_json::json!({ "id": id, "status": status }),
-                                );
-                            }
-                        }
+                let app = app.clone();
+                let stop = cancel.clone();
+                // Each reconnect attempt reads the app's own state, so the task needs no borrows.
+                let attempt = move || {
+                    let (app, definition, stop) = (app.clone(), definition.clone(), stop.clone());
+                    async move {
+                        use tauri::Manager;
+                        let state = app.state::<ForwardingState>();
+                        let db = app.state::<crate::db::LocalDb>();
+                        let crypto = app.state::<crate::CryptoState>();
+                        let ssh = app.state::<SshSessions>();
+                        state
+                            .prepare(&definition, &db, &crypto, &app, &ssh, stop)
+                            .await
+                            .map(|run| Box::pin(run) as RunFuture)
                     }
-                });
+                };
+                tokio::spawn(supervise(
+                    cancel,
+                    Box::pin(task) as RunFuture,
+                    attempt,
+                    move |status| update_status(&entries, &id, status),
+                ));
                 Ok(ForwardStatus::Active)
             }
             Err(error) => {
@@ -210,10 +202,15 @@ impl ForwardingState {
         }
         let bastion_config = route.bastion.as_ref().unwrap_or(config);
         let bastion_handler = SshHandler::new(
-            bastion_config.host.clone(), bastion_config.port,
-            format!("forward:{}", definition.id), app.clone(),
-            Arc::clone(&ssh.known_hosts), Arc::clone(&ssh.pending_keys), true,
-        ).require_known_host();
+            bastion_config.host.clone(),
+            bastion_config.port,
+            format!("forward:{}", definition.id),
+            app.clone(),
+            Arc::clone(&ssh.known_hosts),
+            Arc::clone(&ssh.pending_keys),
+            true,
+        )
+        .require_known_host();
         let connection = tokio::select! {
             _ = stop.cancelled() => return Err("Forward stopped".into()),
             result = crate::ssh_route::connect_saved_route(&route, handler, bastion_handler, None) => result?,
@@ -341,6 +338,74 @@ impl ForwardingState {
     }
 }
 
+type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+fn update_status(entries: &Mutex<HashMap<String, Running>>, id: &str, status: ForwardStatus) {
+    if let Ok(mut entries) = entries.lock() {
+        // A stopped forward has no entry: late status from its task is dropped.
+        if let Some(entry) = entries.get_mut(id) {
+            entry.status = status.clone();
+            let _ = entry.app.emit(
+                "forward-status",
+                serde_json::json!({ "id": id, "status": status }),
+            );
+        }
+    }
+}
+
+/// Wait before reconnect attempt `n` (0-based): 1, 2, 5, 10, then 30 seconds.
+pub fn reconnect_delay(attempt: u32) -> std::time::Duration {
+    const STEPS: [u64; 4] = [1, 2, 5, 10];
+    std::time::Duration::from_secs(STEPS.get(attempt as usize).copied().unwrap_or(30))
+}
+
+/// Auto-start leaves alone a forward that is already up or on its way.
+pub fn should_auto_start(status: &ForwardStatus) -> bool {
+    matches!(status, ForwardStatus::Stopped | ForwardStatus::Failed(_))
+}
+
+/// Keeps a started forward alive: when its connection ends without a stop, retries with
+/// back-off until a new connection is up again, or until `stop` is cancelled.
+pub(crate) async fn supervise<A, Fut, R>(
+    stop: CancellationToken,
+    first: R,
+    mut attempt: A,
+    mut on_status: impl FnMut(ForwardStatus),
+) where
+    A: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<R, String>>,
+    R: std::future::Future<Output = Result<(), String>> + Unpin,
+{
+    let mut run = first;
+    loop {
+        let outcome = tokio::select! {
+            _ = stop.cancelled() => return,
+            outcome = &mut run => outcome,
+        };
+        let mut reason = outcome
+            .err()
+            .unwrap_or_else(|| "SSH connection closed".into());
+        let mut tries = 0;
+        run = loop {
+            on_status(ForwardStatus::Reconnecting(reason.clone()));
+            tokio::select! {
+                _ = stop.cancelled() => return,
+                _ = tokio::time::sleep(reconnect_delay(tries)) => {}
+            }
+            tries += 1;
+            let result = tokio::select! {
+                _ = stop.cancelled() => return,
+                result = attempt() => result,
+            };
+            match result {
+                Ok(next) => break next,
+                Err(error) => reason = error,
+            }
+        };
+        on_status(ForwardStatus::Active);
+    }
+}
+
 impl Drop for ForwardingState {
     fn drop(&mut self) {
         self.stop_all();
@@ -350,6 +415,103 @@ impl Drop for ForwardingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type Run = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+    fn ended(err: &str) -> Run {
+        let err = err.to_string();
+        Box::pin(async move { Err(err) })
+    }
+    fn forever() -> Run {
+        Box::pin(std::future::pending())
+    }
+
+    #[test]
+    fn reconnect_delays_back_off_then_hold_at_30s() {
+        let secs: Vec<u64> = (0..7).map(|n| reconnect_delay(n).as_secs()).collect();
+        assert_eq!(secs, vec![1, 2, 5, 10, 30, 30, 30]);
+    }
+
+    #[test]
+    fn reconnecting_serializes_with_its_reason() {
+        let v = serde_json::to_value(ForwardStatus::Reconnecting("SSH connection ended".into()))
+            .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"state": "reconnecting", "error": "SSH connection ended"})
+        );
+    }
+
+    #[test]
+    fn terminal_trigger_skips_running_forwards() {
+        assert!(should_auto_start(&ForwardStatus::Stopped));
+        assert!(should_auto_start(&ForwardStatus::Failed("x".into())));
+        for running in [
+            ForwardStatus::Starting,
+            ForwardStatus::Active,
+            ForwardStatus::Reconnecting("x".into()),
+        ] {
+            assert!(!should_auto_start(&running));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_connection_reconnects_after_the_delay() {
+        let cancel = CancellationToken::new();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let (s, a) = (statuses.clone(), attempts.clone());
+        let task = tokio::spawn(supervise(
+            cancel.clone(),
+            ended("SSH connection ended"),
+            move || {
+                let n = a.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n == 0 {
+                        Err("refused".to_string())
+                    } else {
+                        Ok(forever())
+                    }
+                }
+            },
+            move |status| s.lock().unwrap().push(status),
+        ));
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        cancel.cancel();
+        task.await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *statuses.lock().unwrap(),
+            vec![
+                ForwardStatus::Reconnecting("SSH connection ended".into()),
+                ForwardStatus::Reconnecting("refused".into()),
+                ForwardStatus::Active,
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_ends_reconnecting() {
+        let cancel = CancellationToken::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let a = attempts.clone();
+        let task = tokio::spawn(supervise(
+            cancel.clone(),
+            ended("dropped"),
+            move || {
+                a.fetch_add(1, Ordering::SeqCst);
+                async { Err::<Run, String>("refused".into()) }
+            },
+            |_| {},
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        cancel.cancel();
+        task.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        // Stopped during the first wait: no attempt ever ran, and none run later.
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn stopped_is_default_status() {
         let state = ForwardingState::new();

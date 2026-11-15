@@ -1728,6 +1728,7 @@ pub fn run() {
             forwarding::update_port_forward,
             forwarding::delete_port_forward,
             forwarding::start_port_forward,
+            forwarding::auto_start_forwards,
             forwarding::stop_port_forward,
             forwarding::stop_port_forwards_for_owner,
             write_file,

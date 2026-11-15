@@ -1,4 +1,4 @@
-use super::model::{validate, ForwardDefinition, ForwardInput, ForwardMode};
+use super::model::{validate, AutoStart, ForwardDefinition, ForwardInput, ForwardMode};
 use crate::crypto::KeySession;
 use crate::db::{self, LocalDb, SyncRow, Table};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,9 @@ struct SecretFields {
     remote_port: Option<u16>,
     destination_host: Option<String>,
     destination_port: Option<u16>,
+    /// Rows saved before auto-start existed have none: they stay Off.
+    #[serde(default)]
+    auto_start: AutoStart,
 }
 
 impl From<&ForwardInput> for SecretFields {
@@ -20,18 +23,39 @@ impl From<&ForwardInput> for SecretFields {
             remote_port: input.remote_port,
             destination_host: input.destination_host.clone(),
             destination_port: input.destination_port,
+            auto_start: input.auto_start,
         }
     }
 }
 
-fn encode_secret(db: &LocalDb, input: &ForwardInput, session: &KeySession) -> Result<String, String> {
+fn encode_secret(
+    db: &LocalDb,
+    input: &ForwardInput,
+    session: &KeySession,
+) -> Result<String, String> {
     let host = live_host(db, &input.host_id)?;
     let plaintext = serde_json::to_string(&SecretFields::from(input)).map_err(|e| e.to_string())?;
-    crate::team_keys::encrypt_row_secret(db, session, &plaintext, Table::PortForwards.as_str(), &host.vault_id)
+    crate::team_keys::encrypt_row_secret(
+        db,
+        session,
+        &plaintext,
+        Table::PortForwards.as_str(),
+        &host.vault_id,
+    )
 }
 
-fn definition(db: &LocalDb, row: &SyncRow, session: &KeySession) -> Result<ForwardDefinition, String> {
-    let plaintext = crate::team_keys::decrypt_row_secret(db, session, &row.data, Table::PortForwards.as_str(), &row.vault_id)?;
+fn definition(
+    db: &LocalDb,
+    row: &SyncRow,
+    session: &KeySession,
+) -> Result<ForwardDefinition, String> {
+    let plaintext = crate::team_keys::decrypt_row_secret(
+        db,
+        session,
+        &row.data,
+        Table::PortForwards.as_str(),
+        &row.vault_id,
+    )?;
     let secret: SecretFields =
         serde_json::from_str(&plaintext).map_err(|e| format!("Invalid saved forward: {e}"))?;
     let mode = ForwardMode::parse(row.mode.as_deref().ok_or("Forward mode missing")?)?;
@@ -45,6 +69,7 @@ fn definition(db: &LocalDb, row: &SyncRow, session: &KeySession) -> Result<Forwa
         remote_port: secret.remote_port,
         destination_host: secret.destination_host,
         destination_port: secret.destination_port,
+        auto_start: secret.auto_start,
     })
 }
 
@@ -109,6 +134,7 @@ pub fn migrate_legacy(db: &LocalDb, session: &KeySession, device_id: &str) -> Re
             remote_port,
             destination_host,
             destination_port,
+            auto_start: AutoStart::Off,
         };
         validate(&input)?;
         let row = SyncRow {
@@ -146,6 +172,58 @@ pub fn get(
     }
     live_host(db, row.host_id.as_deref().ok_or("Forward host missing")?)?;
     definition(db, &row, session)
+}
+
+/// What starts forwards without a click.
+pub enum Trigger {
+    /// Shetu unlocked: every live forward set to start on unlock, across vaults.
+    Unlock,
+    /// A terminal to this host connected: its forwards set to start with a terminal.
+    Terminal(String),
+}
+
+/// Forwards to start for `trigger` (whether they are already running is the caller's check).
+pub fn auto_start_candidates(
+    db: &LocalDb,
+    session: &KeySession,
+    trigger: &Trigger,
+) -> Result<Vec<ForwardDefinition>, String> {
+    let ids: Vec<String> = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM port_forwards WHERE deleted_at IS NULL AND host_id IS NOT NULL ORDER BY sort_order, id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let mut out = Vec::new();
+    for id in ids {
+        let Some(row) = db::get_sync_row(db, Table::PortForwards, &id)? else {
+            continue;
+        };
+        let Some(host_id) = row.host_id.as_deref() else {
+            continue;
+        };
+        // A forward of a deleted host, or one this device can't decrypt, never starts.
+        if live_host(db, host_id).is_err() {
+            continue;
+        }
+        let Ok(def) = definition(db, &row, session) else {
+            continue;
+        };
+        let wanted = match trigger {
+            Trigger::Unlock => def.auto_start == AutoStart::Unlock,
+            Trigger::Terminal(host) => {
+                def.auto_start == AutoStart::Terminal && &def.host_id == host
+            }
+        };
+        if wanted {
+            out.push(def);
+        }
+    }
+    Ok(out)
 }
 
 pub fn list(
@@ -413,6 +491,52 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(tombstone.deleted_at.is_some());
+    }
+
+    #[test]
+    fn auto_start_round_trips() {
+        let db = crate::db::open(":memory:").unwrap();
+        host(&db, "h1");
+        let session = session();
+        let mut input = ForwardInput::local("h1", "db", 5432, "localhost", 5432);
+        input.auto_start = AutoStart::Unlock;
+        let saved = create(&db, &session, DEVICE, input).unwrap();
+        assert_eq!(
+            get(&db, &session, DEVICE, &saved.id).unwrap().auto_start,
+            AutoStart::Unlock
+        );
+    }
+
+    #[test]
+    fn missing_auto_start_is_off() {
+        let fields: SecretFields = serde_json::from_str(r#"{"local_port":1080}"#).unwrap();
+        assert_eq!(fields.auto_start, AutoStart::Off);
+    }
+
+    #[test]
+    fn auto_start_candidates_by_trigger() {
+        let db = crate::db::open(":memory:").unwrap();
+        host(&db, "h1");
+        host(&db, "h2");
+        let session = session();
+        let mk = |host: &str, name: &str, port: u16, auto: AutoStart| {
+            let mut input = ForwardInput::local(host, name, port, "localhost", 80);
+            input.auto_start = auto;
+            create(&db, &session, DEVICE, input).unwrap()
+        };
+        let unlock = mk("h1", "unlock", 9001, AutoStart::Unlock);
+        let term1 = mk("h1", "term", 9002, AutoStart::Terminal);
+        mk("h2", "term-other", 9003, AutoStart::Terminal);
+        mk("h1", "off", 9004, AutoStart::Off);
+        let ids = |t: Trigger| {
+            auto_start_candidates(&db, &session, &t)
+                .unwrap()
+                .into_iter()
+                .map(|d| d.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Trigger::Unlock), vec![unlock.id]);
+        assert_eq!(ids(Trigger::Terminal("h1".into())), vec![term1.id]);
     }
 
     #[test]
