@@ -4,6 +4,7 @@ import PaneTree from "@/components/terminal/panes/PaneTree";
 import CommandAutocomplete from "@/components/terminal/views/CommandAutocomplete";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useShortcutContext } from "@/hooks/useShortcutContext";
+import { openFind } from "@/lib/terminal/findCommand";
 import {
   onOpenCommandPalette,
   type PaletteItem,
@@ -130,6 +131,7 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
     onSplitHorizontal: () => handleSplit("horizontal"),
     onSplitVertical: () => handleSplit("vertical"),
     onCommandPalette: () => setShowCommandPalette(!showCommandPalette),
+    onFind: openFind,
   });
 
   if (!activeTab) return null;

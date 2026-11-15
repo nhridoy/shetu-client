@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -41,6 +42,7 @@ export interface Session {
   params: SessionParams;
   xterm: XTerminal;
   fitAddon: FitAddon;
+  searchAddon: SearchAddon;
   container: HTMLDivElement;
   opened: boolean;
   resizeObserver: ResizeObserver | null;
@@ -68,11 +70,15 @@ function createSession(params: SessionParams): Session {
     cursorStyle: "block",
     allowTransparency: true,
     convertEol: true,
+    // The search add-on highlights matches with decorations, a proposed API.
+    allowProposedApi: true,
   });
 
   const fitAddon = new FitAddon();
   xterm.loadAddon(fitAddon);
   xterm.loadAddon(new WebLinksAddon());
+  const searchAddon = new SearchAddon();
+  xterm.loadAddon(searchAddon);
   xterm.attachCustomKeyEventHandler((e) =>
     handleTerminalKey(e, xterm, navigator.platform.includes("Mac")),
   );
@@ -81,6 +87,7 @@ function createSession(params: SessionParams): Session {
     params,
     xterm,
     fitAddon,
+    searchAddon,
     container,
     opened: false,
     resizeObserver: null,
