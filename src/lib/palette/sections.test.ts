@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ShortcutId } from "@/lib/shortcuts/registry";
 import type { Host } from "@/stores/hosts/hostStore";
-import { buildPaletteSections, type PaletteSection } from "./sections";
+import {
+  buildPaletteSections,
+  type PaletteSection,
+  parseDirectTarget,
+} from "./sections";
 
 const host = (i: number): Host => ({
   id: `h${i}`,
@@ -177,5 +181,28 @@ describe("buildPaletteSections", () => {
     expect(titles(buildPaletteSections({ ...base, query: "a.b" }))).toEqual([
       "Hosts",
     ]);
+  });
+
+  it("parses direct targets, IPv6 included, and offers only what it can parse", () => {
+    expect(parseDirectTarget("root@10.0.0.1:2222")).toEqual({
+      username: "root",
+      address: "10.0.0.1",
+      port: 2222,
+    });
+    expect(parseDirectTarget("root@[2001:db8::1]:2222")).toEqual({
+      username: "root",
+      address: "2001:db8::1",
+      port: 2222,
+    });
+    expect(parseDirectTarget("::1")).toEqual({
+      username: undefined,
+      address: "::1",
+      port: undefined,
+    });
+    expect(parseDirectTarget("a@b@c")).toBeNull();
+    const direct = (query: string) =>
+      buildPaletteSections({ ...base, query })[0]?.rows[0]?.kind === "direct";
+    expect(direct("root@[2001:db8::1]:2222")).toBe(true);
+    expect(direct("a@b@c")).toBe(false);
   });
 });

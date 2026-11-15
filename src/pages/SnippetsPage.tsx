@@ -10,6 +10,8 @@ export default function SnippetsPage() {
   const formModal = useModal();
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
   const openNew = () => {
+    // A form already open (maybe an edit) stays as it is.
+    if (formModal.open) return;
     setEditingSnippet(null);
     formModal.show();
   };

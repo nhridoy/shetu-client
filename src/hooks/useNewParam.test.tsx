@@ -52,4 +52,12 @@ describe("useNewParam", () => {
     expect(search).toBe("?new=key");
     act(() => root.unmount());
   });
+
+  it("ignores inherited names like __proto__", () => {
+    const host = vi.fn();
+    const root = mount("/hosts?new=__proto__", { host });
+    expect(host).not.toHaveBeenCalled();
+    expect(search).toBe("?new=__proto__");
+    act(() => root.unmount());
+  });
 });

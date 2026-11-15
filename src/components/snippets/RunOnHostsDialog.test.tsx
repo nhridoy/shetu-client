@@ -148,6 +148,22 @@ describe("RunOnHostsDialog", () => {
     useUnsavedChanges.setState({ confirmLeave: async () => true });
   });
 
+  it("can't be dismissed while the run is in progress", async () => {
+    let finish: (v: string) => void = () => {};
+    m.run.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    await render();
+    await act(async () => button("Run")?.click());
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.querySelector('[aria-label="Close"]')).toBeNull();
+    await act(async () => finish("ok"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("Run with nothing picked asks for a host", async () => {
     m.decrypt.mockResolvedValueOnce({ command: "ls", targets: [] });
     await render();

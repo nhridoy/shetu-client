@@ -27,6 +27,24 @@ export interface PaletteSection {
 
 const CAP = 8;
 
+/** `user@host:port` typed into the palette: a name or IPv4 host, `[IPv6]`, or a bare IPv6 address. */
+export function parseDirectTarget(
+  text: string,
+): { username?: string; address: string; port?: number } | null {
+  const m = text
+    .trim()
+    .match(
+      /^(?:([^@\s]+)@)?(?:\[([0-9a-fA-F:.]+)\]|([^@:\s[\]]+)|([0-9a-fA-F]*:[0-9a-fA-F]*:[0-9a-fA-F:.]*))(?::(\d+))?$/,
+    );
+  if (!m) return null;
+  const [, username, bracketed, host, bare, port] = m;
+  return {
+    username,
+    address: bracketed ?? host ?? bare,
+    port: port ? Number.parseInt(port, 10) : undefined,
+  };
+}
+
 const CREATES: { target: CreateTarget; label: string }[] = [
   { target: "host", label: "New host" },
   { target: "group", label: "New group" },
@@ -89,7 +107,7 @@ export function buildPaletteSections(input: {
   );
   // Only address-like text (user@host, an IP, a domain), so typing an action's name never
   // puts a connection first.
-  if (/^[^\s]*[@.:][^\s]*$/.test(q) && !exact)
+  if (/[@.:]/.test(q) && parseDirectTarget(q) && !exact)
     hosts.unshift({ kind: "direct", query: input.query.trim() });
 
   const shells: PaletteRow[] = cap(

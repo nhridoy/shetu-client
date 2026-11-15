@@ -156,6 +156,8 @@ export default function Layout() {
     if (!isUnlocked) return;
     void fetchHosts(currentVaultId || undefined);
     void fetchGroups(currentVaultId || undefined);
+    // The palette lists snippets from any view, even before (or without) a sync.
+    void useSnippetStore.getState().fetchSnippets(currentVaultId || undefined);
   }, [currentVaultId, fetchHosts, fetchGroups, isUnlocked]);
 
   useEffect(() => {

@@ -12,8 +12,12 @@ export function useNewParam(
   latest.current = handlers;
   const target = params.get("new");
   useEffect(() => {
-    const open = target ? latest.current[target as NewTarget] : undefined;
-    if (!open) return;
+    const handlers = latest.current;
+    const open =
+      target && Object.hasOwn(handlers, target)
+        ? handlers[target as NewTarget]
+        : undefined;
+    if (typeof open !== "function") return;
     setParams(
       (p) => {
         p.delete("new");

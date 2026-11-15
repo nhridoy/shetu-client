@@ -74,7 +74,13 @@ export default function RunOnHostsDialog({
   };
 
   return (
-    <Modal onClose={onClose} title="Run on hosts" maxWidth="max-w-md">
+    <Modal
+      onClose={onClose}
+      title="Run on hosts"
+      maxWidth="max-w-md"
+      // Closing mid-run would let edits start behind it that the jump to the terminal drops.
+      hideClose={busy}
+    >
       {/* Modal turns Enter into its last button (Run); here Enter must never run. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: only swallows Enter from the fields inside */}
       <div

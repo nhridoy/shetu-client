@@ -415,4 +415,45 @@ describe("CommandPalette picks", () => {
     act(() => openCommandPalette("snippets"));
     expect(p.input().placeholder).toBe("Search snippets");
   });
+
+  it("a pick from an earlier opening doesn't close or block a newer one", async () => {
+    m.snippets = [{ id: "s1", name: "restart nginx", tags: [] }];
+    let finish: (v: boolean) => void = () => {};
+    const picker = vi.fn(() => new Promise<boolean>((r) => (finish = r)));
+    cleanups.push(setTerminalSnippetPicker(picker));
+    useShortcutStore.setState({ activeContext: "terminal" });
+    const p = setup();
+    act(() => openCommandPalette("snippets"));
+    await p.key("Enter");
+    const first = finish;
+    await p.key("Escape");
+    act(() => openCommandPalette("snippets"));
+    // The new opening can pick while the first is still pending.
+    await p.key("Enter");
+    expect(picker).toHaveBeenCalledTimes(2);
+    await act(async () => first(true));
+    expect(p.isOpen()).toBe(true);
+  });
+
+  it("stops using the terminal's picker once the terminal is gone", async () => {
+    m.snippets = [{ id: "s1", name: "restart nginx", tags: [] }];
+    const old = vi.fn(async () => true);
+    const unregister = setTerminalSnippetPicker(old);
+    useShortcutStore.setState({ activeContext: "terminal" });
+    const p = setup();
+    act(() => openCommandPalette("snippets"));
+    unregister();
+    await p.key("Enter");
+    expect(old).not.toHaveBeenCalled();
+    expect(p.isOpen()).toBe(false);
+    // A re-registered picker (same terminal, new handler) is the one used.
+    const next = vi.fn(async () => true);
+    cleanups.push(setTerminalSnippetPicker(next));
+    act(() => openCommandPalette("snippets"));
+    const replaced = vi.fn(async () => true);
+    cleanups.push(setTerminalSnippetPicker(replaced));
+    await p.key("Enter");
+    expect(next).not.toHaveBeenCalled();
+    expect(replaced).toHaveBeenCalled();
+  });
 });

@@ -18,6 +18,7 @@ import {
   buildPaletteSections,
   type CreateTarget,
   type PaletteRow,
+  parseDirectTarget,
 } from "@/lib/palette/sections";
 import { liveShortcutIds, runShortcutAction } from "@/lib/shortcuts/actions";
 import type { ShortcutContext, ShortcutId } from "@/lib/shortcuts/registry";
@@ -26,7 +27,6 @@ import {
   onOpenCommandPalette,
   openPortForwarding,
   type PaletteMode,
-  type SnippetPicker,
   terminalSnippetPicker,
 } from "@/lib/terminal/paletteCommand";
 import { listenAppActions } from "@/lib/window/menuActions";
@@ -58,8 +58,8 @@ interface OpenState {
   mode: PaletteMode;
   live: ReadonlySet<ShortcutId>;
   activeContext: ShortcutContext | null;
-  /** Set while the terminal view is open: snippet picks go into its active pane. */
-  picker: SnippetPicker | null;
+  /** Opened over the terminal view: snippet picks go into its active pane. */
+  inTerminal: boolean;
   /** The active pane, when it is a connected SSH host (it has port forwarding). */
   portForwardingPaneId: string | null;
 }
@@ -82,15 +82,15 @@ const isMac = () => navigator.platform.includes("Mac");
 
 /** user@host:port typed into the palette, as a one-off host. */
 function directHost(query: string): Host | null {
-  const match = query.match(/^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/);
-  if (!match) return null;
-  const [, username, address, port] = match;
+  const target = parseDirectTarget(query);
+  if (!target) return null;
+  const { username, address, port } = target;
   const now = new Date().toISOString();
   return {
     id: `direct_${Date.now()}`,
     name: address,
     address,
-    port: Number.parseInt(port || "22", 10),
+    port: port ?? 22,
     username: username || "root",
     tags: [],
     sortOrder: 0,
@@ -135,8 +135,10 @@ export default function CommandPalette({
     name: string;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Each opening is a session; a pick still running belongs to the session that started it.
+  const session = useRef(0);
   // Ignore further picks while one is still running (e.g. a double Ctrl+Enter).
-  const picking = useRef(false);
+  const picking = useRef<number | null>(null);
 
   const listId = useId();
   /** Opens in `mode`; the same shortcut again (same mode) closes it. */
@@ -146,15 +148,18 @@ export default function CommandPalette({
       mode,
       live: liveShortcutIds(),
       activeContext,
-      picker: activeContext === "terminal" ? terminalSnippetPicker() : null,
+      inTerminal:
+        activeContext === "terminal" && terminalSnippetPicker() !== null,
       portForwardingPaneId: activeContext === "terminal" ? sshPaneId() : null,
     };
+    session.current++;
     setState((prev) => (prev?.mode === mode ? null : next));
     setQuery("");
     setSelectedIndex(0);
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
   const close = () => {
+    session.current++;
     setState(null);
     setQuery("");
   };
@@ -179,7 +184,7 @@ export default function CommandPalette({
         hosts,
         shells,
         snippets,
-        builtins: state.picker ? BUILTIN_COMMANDS : null,
+        builtins: state.inTerminal ? BUILTIN_COMMANDS : null,
         live: state.live,
         activeContext: state.activeContext,
         portForwardingPaneId: state.portForwardingPaneId,
@@ -190,7 +195,7 @@ export default function CommandPalette({
   const selected = Math.max(0, Math.min(selectedIndex, rows.length - 1));
 
   const pick = async (row: PaletteRow, run = false, all = false) => {
-    if (picking.current || !state) return;
+    if (picking.current === session.current || !state) return;
     switch (row.kind) {
       case "direct": {
         const host = directHost(row.query);
@@ -221,16 +226,21 @@ export default function CommandPalette({
         close();
         return openPortForwarding(row.paneId);
       case "snippet": {
-        if (!state.picker) {
+        if (!state.inTerminal) {
           if (row.item.snippetId)
             setRunTarget({ id: row.item.snippetId, name: row.label });
           return close();
         }
-        picking.current = true;
+        // Read now, not at open: the terminal may have gone or re-registered since.
+        const picker = terminalSnippetPicker();
+        if (!picker) return close();
+        const mine = session.current;
+        picking.current = mine;
         try {
-          if (await state.picker(row.item, run, all)) close();
+          const done = await picker(row.item, run, all);
+          if (done && session.current === mine) close();
         } finally {
-          picking.current = false;
+          if (picking.current === mine) picking.current = null;
         }
       }
     }
@@ -339,7 +349,7 @@ export default function CommandPalette({
             </div>
 
             <div className="p-3 border-t border-dark-700 text-dark-500 text-xs">
-              {hint(rows[selected], !!state.picker)}
+              {hint(rows[selected], state.inTerminal)}
             </div>
           </div>
         </Modal>
