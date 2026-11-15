@@ -9,6 +9,7 @@ vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
 }));
 
+import { getRow } from "@/lib/db/db";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
   answerUsername,
@@ -64,6 +65,25 @@ describe("pending credentials", () => {
       password: "pw",
       authType: "both",
     });
+  });
+
+  it("reads a key host's auth from the db after a vault switch emptied the cache", async () => {
+    useHostStore.setState({ hosts: [], updateHost } as never);
+    vi.mocked(getRow).mockResolvedValueOnce({ auth_type: "key" } as never);
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", {
+      password: "pw",
+      authType: "both",
+    });
+  });
+
+  it("saves only the password when the host's auth can't be read", async () => {
+    useHostStore.setState({ hosts: [], updateHost } as never);
+    vi.mocked(getRow).mockResolvedValueOnce(undefined as never);
+    rememberCredentials("s1", { password: "pw" });
+    await savePendingCredentials("s1");
+    expect(updateHost).toHaveBeenCalledWith("h1", { password: "pw" });
   });
 
   it("saves a username alone without touching authType", async () => {

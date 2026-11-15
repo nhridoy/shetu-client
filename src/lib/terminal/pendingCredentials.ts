@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { create } from "zustand";
+import { getRow } from "@/lib/db/db";
 import type { Host } from "@/stores/hosts/hostStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
 
@@ -50,10 +51,15 @@ export async function savePendingCredentials(sessionId: string) {
   const patch: Partial<Host> = {};
   if (creds.username !== undefined) patch.username = creds.username;
   if (creds.password !== undefined) {
-    const own = hosts.find((h) => h.id === hostId)?.authType;
+    // The vault-scoped cache is empty after a vault switch mid-connect; fall back to the row.
+    const own =
+      hosts.find((h) => h.id === hostId)?.authType ??
+      (await getRow("hosts", hostId).catch(() => null))?.auth_type;
     patch.password = creds.password;
     // A key the host already uses stays in play next to the saved password.
-    patch.authType = own === "key" || own === "both" ? "both" : "password";
+    // Unreadable auth type: leave it alone rather than guess "password".
+    if (own)
+      patch.authType = own === "key" || own === "both" ? "both" : "password";
   }
   if (Object.keys(patch).length === 0) return;
   const saved = await updateHost(hostId, patch).catch(() => false);
