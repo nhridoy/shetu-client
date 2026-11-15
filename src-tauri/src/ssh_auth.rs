@@ -195,9 +195,11 @@ where
         last_error = "authentication required — add a password or SSH key".to_string();
     }
 
+    let mut saved_key_tried = false;
     if let Some(pem) = config.private_key.as_deref() {
         match russh::keys::decode_secret_key(pem, config.passphrase.as_deref()) {
             Ok(key) => {
+                saved_key_tried = true;
                 let key = russh::keys::key::PrivateKeyWithHashAlg::new(
                     Arc::new(key),
                     Some(russh::keys::HashAlg::Sha256),
@@ -221,7 +223,8 @@ where
             let cap = if config.password.is_some() {
                 AGENT_CAP_WITH_PASSWORD
             } else if ctx.prompter.is_some() && allows(&allowed, MethodKind::Password) {
-                AGENT_CAP_BEFORE_PROMPT
+                // A rejected saved key used one of the server's tries too.
+                AGENT_CAP_BEFORE_PROMPT - usize::from(saved_key_tried)
             } else {
                 usize::MAX
             };
@@ -667,14 +670,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejected_saved_key_counts_against_the_agent_cap() {
+        // OpenSSH's default MaxAuthTries is 6: saved key + 4 agent keys leaves one for the prompt.
+        let agent_keys: Vec<_> = (0..6).map(|_| random_key()).collect();
+        let agent = agent_with(&agent_keys).await;
+        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let log = srv.log.clone();
+        let prompted = log.clone();
+        let prompter: Prompter = Arc::new(move |_| {
+            prompted.lock().unwrap().push("prompt".into());
+            Box::pin(async { Some(vec!["pw".to_string()]) })
+        });
+        let saved = config(Some(pem(&random_key())), None);
+        within(run(srv, saved, Some(agent), Some(prompter))).await.unwrap();
+        let log = log.lock().unwrap().clone();
+        let publickey_attempts = log.iter().take_while(|e| *e != "prompt").count();
+        assert_eq!(publickey_attempts, 5, "{log:?}");
+        assert_eq!(log[5..], ["prompt".to_string(), "password".to_string()], "{log:?}");
+    }
+
+    #[tokio::test]
     async fn fourth_of_five_agent_keys_connects_without_prompting() {
         let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
-        let agent = agent_with(&agent_keys).await;
-        let srv = Srv { keys: vec![agent_keys[3].public_key().clone()], ..Default::default() };
+        let mut agent = agent_with(&agent_keys).await;
+        // The test agent stores keys in a HashMap, so accept whichever key it lists fourth.
+        let fourth = match &agent.request_identities().await.unwrap()[3] {
+            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => key.clone(),
+            other => panic!("unexpected identity {other:?}"),
+        };
+        let srv = Srv { keys: vec![fourth.clone()], ..Default::default() };
         let log = srv.log.clone();
         let prompter: Prompter = Arc::new(|_| panic!("must not prompt"));
         within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
-        assert_eq!(log.lock().unwrap().len(), 4);
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 4);
+        assert_eq!(log.last(), Some(&fp(&fourth)));
     }
 
     #[tokio::test]
