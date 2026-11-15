@@ -232,6 +232,10 @@ export default function CommandPalette({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Every Enter here is the palette's; the dialog's own Enter would click a row.
+    if (e.key === "Enter") e.stopPropagation();
+    // Enter that confirms an IME candidate is not a pick.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex((i) => Math.min(i + 1, rows.length - 1));
@@ -240,8 +244,6 @@ export default function CommandPalette({
       setSelectedIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter" && rows[selectedIndex]) {
       e.preventDefault();
-      // Handled here; the dialog's own Enter would click a row a second time.
-      e.stopPropagation();
       const run = isMac() ? e.metaKey : e.ctrlKey;
       void pick(rows[selectedIndex], run, run && e.shiftKey);
     }
@@ -387,6 +389,9 @@ function PaletteRowButton({
       variant="ghost"
       onClick={onPick}
       className={`w-full h-auto px-3 py-2 justify-start ${selected ? "bg-dark-800" : ""}`}
+      ref={(el) => {
+        if (selected) el?.scrollIntoView?.({ block: "nearest" });
+      }}
     >
       <div
         className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"

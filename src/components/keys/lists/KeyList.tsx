@@ -13,7 +13,14 @@ import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore } from "@/stores/vault/vaultStore";
 import type { KeyItem } from "@/types/keys/types";
 
-export default function KeyList({ onMutation }: { onMutation?: () => void }) {
+export default function KeyList({
+  onMutation,
+  onNewKeyParam,
+}: {
+  onMutation?: () => void;
+  /** `?new=key` arrived: the page shows this list before the form opens. */
+  onNewKeyParam?: () => void;
+}) {
   const keys = useKeyStore((s) => s.keys);
   const fetchKeys = useKeyStore((s) => s.fetchKeys);
   const deleteKey = useKeyStore((s) => s.deleteKey);
@@ -22,7 +29,12 @@ export default function KeyList({ onMutation }: { onMutation?: () => void }) {
   const deleteDialog = useModal();
   const importModal = useModal();
   const generateModal = useModal();
-  useNewParam({ key: generateModal.show });
+  useNewParam({
+    key: () => {
+      onNewKeyParam?.();
+      generateModal.show();
+    },
+  });
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   const loadKeys = useCallback(() => {

@@ -71,11 +71,37 @@ describe("buildPaletteSections", () => {
       ),
     ).toEqual(["restart"]);
     expect(
-      labels(buildPaletteSections({ ...base, snippets, builtins }), "Snippets"),
+      labels(
+        buildPaletteSections({ ...base, snippets, builtins, mode: "snippets" }),
+        "Snippets",
+      ),
     ).toEqual(["restart", "pwd"]);
     expect(
       labels(buildPaletteSections({ ...base, snippets }), "Snippets"),
     ).toEqual(["restart"]);
+  });
+
+  it("built-ins are listed only when filtering to snippets", () => {
+    const builtins = [
+      { name: "find", command: "find ", description: "Find files" },
+    ];
+    expect(
+      labels(
+        buildPaletteSections({ ...base, builtins, query: "find" }),
+        "Snippets",
+      ),
+    ).toEqual([]);
+    expect(
+      labels(
+        buildPaletteSections({
+          ...base,
+          builtins,
+          query: "find",
+          mode: "snippets",
+        }),
+        "Snippets",
+      ),
+    ).toEqual(["find"]);
   });
 
   it("snippets mode shows only snippets", () => {

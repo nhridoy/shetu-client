@@ -41,7 +41,11 @@ export default function KeysPage() {
           aria-labelledby={`${id}-tab-${name}`}
           hidden={tab !== name}
         >
-          {name === "Keys" ? <KeyList /> : <IdentityList />}
+          {name === "Keys" ? (
+            <KeyList onNewKeyParam={() => setTab("Keys")} />
+          ) : (
+            <IdentityList />
+          )}
         </div>
       ))}
     </div>

@@ -6,6 +6,7 @@ import Modal from "@/components/ui/Modal";
 import { runOnHosts } from "@/lib/snippets/runOnHosts";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 
 /** Termius-style "Run on hosts": pick hosts (saved per snippet), one tab each. */
 export default function RunOnHostsDialog({
@@ -59,6 +60,8 @@ export default function RunOnHostsDialog({
       toast.error("Pick at least one host");
       return;
     }
+    // Opened from the palette on any page: leaving must not drop unsaved edits there.
+    if (!(await useUnsavedChanges.getState().confirmLeave())) return;
     setBusy(true);
     const result = await runOnHosts(snippet.id, selected);
     setBusy(false);

@@ -66,7 +66,8 @@ export function buildPaletteSections(input: {
         label: s.name,
         detail: s.description,
       })),
-    ...(input.builtins ?? [])
+    // Common commands only when filtering to snippets, so they never shadow an action.
+    ...(input.mode === "snippets" ? (input.builtins ?? []) : [])
       .filter((b) => has(b.name, b.command))
       .map((b) => ({
         kind: "snippet" as const,

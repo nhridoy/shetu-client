@@ -196,6 +196,8 @@ describe("CommandPalette picks", () => {
     useShortcutStore.setState({ activeContext: "terminal" });
     const find = vi.fn();
     cleanups.push(registerShortcutHandler("terminal.find", find));
+    // In the terminal the snippet picker is registered too; built-ins mustn't shadow actions.
+    cleanups.push(setTerminalSnippetPicker(vi.fn(async () => true)));
     const p = setup();
     p.open();
     p.type("find");
@@ -301,7 +303,32 @@ describe("CommandPalette picks", () => {
       p.open();
       p.type("port");
       expect(p.text()).not.toContain("Port forwarding");
-      act(() => p.press({ key: "Escape" }));
+      await p.key("Escape");
     }
+  });
+
+  it("Enter confirming an IME candidate doesn't pick", async () => {
+    const p = setup();
+    p.open();
+    p.type("keychain");
+    await p.key("Enter", { isComposing: true });
+    expect(p.onNavigate).not.toHaveBeenCalled();
+    expect(p.isOpen()).toBe(true);
+  });
+
+  it("the selected row scrolls into view", async () => {
+    const scrolled: string[] = [];
+    const orig = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function () {
+      scrolled.push(this.textContent ?? "");
+    };
+    cleanups.push(() => {
+      HTMLElement.prototype.scrollIntoView = orig;
+    });
+    const p = setup();
+    p.open();
+    p.type("go to");
+    await p.key("ArrowDown");
+    expect(scrolled.at(-1)).toContain("Go to Workspaces");
   });
 });

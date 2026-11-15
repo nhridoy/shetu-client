@@ -42,6 +42,7 @@ vi.mock("@/stores/hosts/hostStore", () => {
   };
 });
 
+import { useUnsavedChanges } from "@/stores/ui/unsavedChangesStore";
 import RunOnHostsDialog from "./RunOnHostsDialog";
 
 (
@@ -134,6 +135,17 @@ describe("RunOnHostsDialog", () => {
     expect(m.run).toHaveBeenCalledWith("s1", ["h2"]);
     expect(onClose).toHaveBeenCalled();
     expect(document.body.textContent).toContain("terminal view");
+  });
+
+  it("Run keeps unsaved edits elsewhere when the user stays", async () => {
+    const confirmLeave = vi.fn(async () => false);
+    useUnsavedChanges.setState({ confirmLeave });
+    await render();
+    await act(async () => button("Run")?.click());
+    expect(confirmLeave).toHaveBeenCalled();
+    expect(m.run).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("terminal view");
+    useUnsavedChanges.setState({ confirmLeave: async () => true });
   });
 
   it("Run with nothing picked asks for a host", async () => {
