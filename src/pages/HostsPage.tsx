@@ -84,7 +84,7 @@ export default function HostsPage() {
       hostPort: host.port ?? undefined,
       hostUsername: host.username,
       authType: host.authType,
-      keyId: host.keyId,
+      keyId: host.keyId ?? undefined,
     });
     navigate("/terminal");
   };

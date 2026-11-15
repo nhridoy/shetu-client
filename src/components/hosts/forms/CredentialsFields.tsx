@@ -7,7 +7,7 @@ import {
   PlusIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   type Control,
   type FieldValues,
@@ -77,23 +77,37 @@ function Chip({
 }
 
 /** Options shown under a field; mousedown keeps focus in the field while picking. */
+interface Item {
+  key: string;
+  label: ReactNode;
+  onPick: () => void;
+}
+
 function Suggestions({
+  id,
   items,
+  active,
 }: {
-  items: { key: string; label: ReactNode; onPick: () => void }[];
+  id: string;
+  items: Item[];
+  active: number;
 }) {
   return (
     <div
+      id={id}
       role="listbox"
       className="absolute z-20 mt-1 w-full overflow-hidden rounded-md border border-dark-700 bg-dark-800 py-1 shadow-lg"
     >
-      {items.map((item) => (
+      {items.map((item, i) => (
         <div
           key={item.key}
+          id={`${id}-${i}`}
           role="option"
-          aria-selected={false}
+          aria-selected={i === active}
           tabIndex={-1}
-          className="cursor-pointer px-2 py-1 text-sm text-dark-200 hover:bg-dark-700 hover:text-white"
+          className={`cursor-pointer px-2 py-1 text-sm hover:bg-dark-700 hover:text-white ${
+            i === active ? "bg-dark-700 text-white" : "text-dark-200"
+          }`}
           onMouseDown={(e) => {
             e.preventDefault();
             item.onPick();
@@ -104,6 +118,37 @@ function Suggestions({
       ))}
     </div>
   );
+}
+
+/** Arrow keys move through an open list (opening it first), Enter picks, Escape closes. */
+function useListNav(
+  items: Item[],
+  open: boolean,
+  setOpen: (open: boolean) => void,
+) {
+  const [active, setActive] = useState(-1);
+  useEffect(() => {
+    if (!open) setActive(-1);
+  }, [open]);
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const n = items.length;
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n > 0) {
+      e.preventDefault();
+      if (!open) {
+        setOpen(true);
+        setActive(e.key === "ArrowDown" ? 0 : n - 1);
+      } else setActive((a) => (a + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
+    } else if (e.key === "Enter" && open && items[active]) {
+      e.preventDefault();
+      items[active].onPick();
+    } else if (e.key === "Escape" && open) {
+      // Close the list, not the side panel around it.
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    }
+  };
+  return { active, onKeyDown };
 }
 
 /**
@@ -127,6 +172,8 @@ export default function CredentialsFields<T extends FieldValues>({
   const identityField = useController({ control, name: "identityId" }).field;
   const keyField = useController({ control, name: "keyId" }).field;
   const usernameField = useController({ control, name: "username" }).field;
+  // The method stored before this edit; "none" means ask when connecting (host) or no login (group).
+  const storedField = useController({ control, name: "authType" }).field;
   const [password, groupId] = useWatch({
     control,
     name: ["password", "groupId"],
@@ -142,6 +189,29 @@ export default function CredentialsFields<T extends FieldValues>({
   const [showPassword, setShowPassword] = useState(false);
   const [identityUser, setIdentityUser] = useState("");
   const usernameRef = useRef<HTMLInputElement | null>(null);
+  const keyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const keyPickerRef = useRef<HTMLDivElement | null>(null);
+  // After removing a chip, focus goes to the control that replaces it.
+  const refocus = useRef<"key" | "username" | null>(null);
+  const listId = useId();
+
+  useEffect(() => {
+    if (refocus.current === "key" && !keyId) keyButtonRef.current?.focus();
+    if (refocus.current === "username" && !identityId)
+      usernameRef.current?.focus();
+    refocus.current = null;
+  }, [keyId, identityId]);
+
+  // Close the key list on any click outside it (a clicked button may not take focus in WebKit).
+  useEffect(() => {
+    if (!pickingKey) return;
+    const close = (e: MouseEvent) => {
+      if (!keyPickerRef.current?.contains(e.target as Node))
+        setPickingKey(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [pickingKey]);
 
   useEffect(() => {
     setIdentitiesLoaded(false);
@@ -180,21 +250,77 @@ export default function CredentialsFields<T extends FieldValues>({
         )
           return;
         resetField?.("identityId", { defaultValue: "" });
+        // Like connecting does: a host asks, a group sets no login.
+        resetField?.("authType", {
+          defaultValue: mode === "host" ? "none" : "",
+        });
       });
     return () => {
       live = false;
     };
-  }, [currentVaultId, identitiesLoaded, identities, identityId, resetField]);
+  }, [
+    currentVaultId,
+    identitiesLoaded,
+    identities,
+    identityId,
+    resetField,
+    mode,
+  ]);
 
+  const own = ownCredentials({ password, keyId, identityId });
+  const storedNone = storedField.value === "none" && !own;
   // Empty host fields fall back to the group's login.
   const from = inherited?.authFrom;
-  const inheriting =
-    mode === "host" &&
-    !!groupId &&
-    !ownCredentials({ password, keyId, identityId });
+  const inheriting = mode === "host" && !!groupId && !own && !storedNone;
   const inheritedAuth = inheriting && from ? inherited?.authType : undefined;
   const typed = query.toLowerCase();
   const identityName = identities.find((i) => i.id === identityId)?.name;
+
+  const identityItems: Item[] = [
+    ...identities
+      .filter((i) => !typed || i.name.toLowerCase().includes(typed))
+      .map((i) => ({
+        key: i.id,
+        label: (
+          <span className="flex items-center gap-1.5">
+            <IdentificationCardIcon className="size-3.5" />
+            {i.name}
+          </span>
+        ),
+        onPick: () => {
+          identityField.onChange(i.id);
+          setSuggesting(false);
+        },
+      })),
+    {
+      key: "new",
+      label: "+ New identity",
+      onPick: () => {
+        setSuggesting(false);
+        setCreating(true);
+      },
+    },
+  ];
+  const keyItems: Item[] = keys.length
+    ? keys.map((k) => ({
+        key: k.id,
+        label: k.name,
+        onPick: () => {
+          keyField.onChange(k.id);
+          setPickingKey(false);
+        },
+      }))
+    : [
+        {
+          key: "none",
+          label: "No keys in this vault",
+          onPick: () => setPickingKey(false),
+        },
+      ];
+  const identityNav = useListNav(identityItems, suggesting, setSuggesting);
+  const keyNav = useListNav(keyItems, pickingKey, setPickingKey);
+  const identityList = `${listId}-identities`;
+  const keyList = `${listId}-keys`;
 
   const usernameRow = identityId ? (
     <div>
@@ -202,7 +328,10 @@ export default function CredentialsFields<T extends FieldValues>({
       <Chip
         icon={<IdentificationCardIcon />}
         removeLabel="Remove identity"
-        onRemove={() => identityField.onChange("")}
+        onRemove={() => {
+          refocus.current = "username";
+          identityField.onChange("");
+        }}
       >
         {identityName ?? "Identity"}
         {identityUser && ` (${identityUser})`}
@@ -227,6 +356,16 @@ export default function CredentialsFields<T extends FieldValues>({
                 usernameRef.current = el;
               }}
               autoComplete="off"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={suggesting}
+              aria-controls={identityList}
+              aria-activedescendant={
+                identityNav.active >= 0
+                  ? `${identityList}-${identityNav.active}`
+                  : undefined
+              }
+              onKeyDown={identityNav.onKeyDown}
               placeholder={
                 mode === "group"
                   ? "Not set"
@@ -247,33 +386,9 @@ export default function CredentialsFields<T extends FieldValues>({
             />
             {suggesting && (
               <Suggestions
-                items={[
-                  ...identities
-                    .filter(
-                      (i) => !typed || i.name.toLowerCase().includes(typed),
-                    )
-                    .map((i) => ({
-                      key: i.id,
-                      label: (
-                        <span className="flex items-center gap-1.5">
-                          <IdentificationCardIcon className="size-3.5" />
-                          {i.name}
-                        </span>
-                      ),
-                      onPick: () => {
-                        identityField.onChange(i.id);
-                        setSuggesting(false);
-                      },
-                    })),
-                  {
-                    key: "new",
-                    label: "+ New identity",
-                    onPick: () => {
-                      setSuggesting(false);
-                      setCreating(true);
-                    },
-                  },
-                ]}
+                id={identityList}
+                items={identityItems}
+                active={identityNav.active}
               />
             )}
           </div>
@@ -349,22 +464,36 @@ export default function CredentialsFields<T extends FieldValues>({
             <Chip
               icon={<KeyIcon />}
               removeLabel="Remove key"
-              onRemove={() => keyField.onChange("")}
+              onRemove={() => {
+                refocus.current = "key";
+                keyField.onChange("");
+              }}
             >
               {keyName ?? "Key"}
             </Chip>
           ) : (
-            <div className="relative flex items-center gap-2">
+            <div
+              ref={keyPickerRef}
+              className="relative flex items-center gap-2"
+            >
               {groupKey && (
                 <Chip icon={<KeyIcon />} muted>
                   {inherited?.keyName} · {from}
                 </Chip>
               )}
               <Button
+                ref={keyButtonRef}
                 type="button"
                 variant="secondary"
                 size="sm"
+                aria-haspopup="listbox"
+                aria-expanded={pickingKey}
+                aria-controls={keyList}
+                aria-activedescendant={
+                  keyNav.active >= 0 ? `${keyList}-${keyNav.active}` : undefined
+                }
                 onClick={() => setPickingKey((p) => !p)}
+                onKeyDown={keyNav.onKeyDown}
                 onBlur={() => setPickingKey(false)}
               >
                 <PlusIcon className="size-3" weight="bold" />
@@ -373,29 +502,32 @@ export default function CredentialsFields<T extends FieldValues>({
               {pickingKey && (
                 <div className="absolute top-7 left-0 w-full">
                   <Suggestions
-                    items={
-                      keys.length
-                        ? keys.map((k) => ({
-                            key: k.id,
-                            label: k.name,
-                            onPick: () => {
-                              keyField.onChange(k.id);
-                              setPickingKey(false);
-                            },
-                          }))
-                        : [
-                            {
-                              key: "none",
-                              label: "No keys in this vault",
-                              onPick: () => setPickingKey(false),
-                            },
-                          ]
-                    }
+                    id={keyList}
+                    items={keyItems}
+                    active={keyNav.active}
                   />
                 </div>
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {storedNone && (mode === "group" || !!groupId) && (
+        <div className="flex items-center gap-2 text-xs text-dark-400">
+          <span>
+            {mode === "host"
+              ? "Asks when connecting"
+              : "No login: hosts here don't use a parent group's login"}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => storedField.onChange("")}
+          >
+            {mode === "host" ? "Use group login" : "Clear"}
+          </Button>
         </div>
       )}
 

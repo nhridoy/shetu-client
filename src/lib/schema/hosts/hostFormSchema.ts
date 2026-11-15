@@ -45,6 +45,8 @@ export const hostFormSchema = z
       .string()
       .trim()
       .max(255, { error: "Username must be at most 255 characters" }),
+    /** The stored method; the credential fields decide the saved one. */
+    authType: z.string().nullish(),
     identityId: z.string().optional(),
     password: z.string().max(4096).optional(),
     keyId: z.string().optional(),

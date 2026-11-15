@@ -581,9 +581,9 @@ describe("HostForm inherits from its group", () => {
       authType: "identity",
       identityId: "i1",
       username: "u",
+      password: "",
+      keyId: null,
     });
-    expect(patch.password).toBeUndefined();
-    expect(patch.keyId).toBeUndefined();
   });
 
   it("removing the identity chip falls back to the fields", async () => {
@@ -660,14 +660,77 @@ describe("HostForm inherits from its group", () => {
     expect(buttonLabelled("Remove identity")).toBeDefined();
   });
 
-  it("host form with a deleted identity drops the pick", async () => {
+  it("host form with a deleted identity drops the pick and keeps asking", async () => {
     vi.mocked(getRow).mockResolvedValue(null);
-    await mount({
+    const { updateHost } = await mount({
       host: existing({ authType: "identity", identityId: "gone" }),
     });
     await act(async () => {});
     expect(buttonLabelled("Remove identity")).toBeUndefined();
     expect(input("password")).not.toBeNull();
+    await submit();
+    expect(updateHost.mock.calls[0][1].authType).toBe("none");
+  });
+
+  const keyDown = (el: Element | null | undefined, key: string) =>
+    act(() => {
+      el?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+
+  it("keyboard: arrows and Enter pick an identity, Escape closes", async () => {
+    await mount({ host: existing({}) });
+    const user = input("username");
+    focusIn(user);
+    expect(user?.getAttribute("role")).toBe("combobox");
+    expect(user?.getAttribute("aria-expanded")).toBe("true");
+    keyDown(user, "Escape");
+    expect(options()).toEqual([]);
+    keyDown(user, "ArrowDown");
+    expect(
+      document.querySelector('[role=option][aria-selected="true"]')
+        ?.textContent,
+    ).toBe("deploy@prod");
+    keyDown(user, "Enter");
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeDefined();
+  });
+
+  it("keyboard: the key picker opens with ArrowDown and picks with Enter", async () => {
+    await mount({ host: existing({}) });
+    keyDown(keyButton(), "ArrowDown");
+    expect(options()).toEqual(["deploy-key"]);
+    keyDown(keyButton(), "Enter");
+    expect(buttonLabelled("Remove key")).toBeDefined();
+    click(buttonLabelled("Remove key"));
+    expect(document.activeElement).toBe(keyButton());
+  });
+
+  it("an ask host in a group says so and can switch to the group login", async () => {
+    const { updateHost } = await mount({
+      host: existing({ authType: "none" }),
+      inherited: PROD,
+    });
+    expect(document.body.textContent).toContain("Asks when connecting");
+    expect(document.body.textContent).not.toContain("deploy-key · prod");
+    click(byText("button", "Use group login"));
+    expect(document.body.textContent).toContain("deploy-key · prod");
+    await submit();
+    expect(updateHost.mock.calls[0][1].authType).toBe("inherit");
+  });
+
+  it("clearing a host's password deletes it", async () => {
+    const { updateHost } = await mount({
+      host: existing({ keyId: "k1", authType: "both" }),
+      inherited: PROD,
+    });
+    changeInput(input("password") as HTMLInputElement, "");
+    click(buttonLabelled("Remove key"));
+    await submit();
+    expect(updateHost.mock.calls[0][1]).toMatchObject({
+      authType: "inherit",
+      password: "",
+      keyId: null,
+    });
   });
 
   it("puts the jump host in the Connection card", async () => {
@@ -1036,7 +1099,7 @@ describe("HostForm inherits from its group", () => {
     await submit();
     const patch = updateHost.mock.calls[0][1];
     expect(patch.authType).toBe("key");
-    expect(patch.password).toBeUndefined();
+    expect(patch.password).toBe("");
   });
 
   it("the password can be shown", async () => {

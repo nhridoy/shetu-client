@@ -34,7 +34,7 @@ export interface Host {
   password?: string;
   privateKey?: string;
   passphrase?: string;
-  keyId?: string;
+  keyId?: string | null;
   jumpHostId?: string | null;
   keepaliveSecs?: number | null;
   forwardAgent?: boolean | null;

@@ -362,6 +362,17 @@ describe("GroupForm", () => {
     );
   });
 
+  it("a None group says so and can be cleared", async () => {
+    const { updateGroup } = await mount(
+      { id: "g1", name: "Prod" },
+      { authType: "none" },
+    );
+    expect(document.body.textContent).toContain("No login");
+    click(byText("button", "Clear"));
+    await submit();
+    expect(updateGroup.mock.calls[0][1].authType).toBeNull();
+  });
+
   it("an untouched None group keeps none", async () => {
     const { updateGroup } = await mount(
       { id: "g1", name: "Prod" },

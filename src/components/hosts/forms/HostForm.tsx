@@ -49,7 +49,7 @@ export interface HostData {
   authType: "inherit" | "password" | "key" | "both" | "none" | "identity";
   identityId?: string | null;
   password?: string;
-  keyId?: string;
+  keyId?: string | null;
   jumpHostId?: string | null;
   color?: string;
   groupId?: string;
@@ -152,6 +152,7 @@ export default function HostForm({
       address: host?.address || hostFormDefaultValues.address,
       port: host?.port ?? hostFormDefaultValues.port,
       username: host?.username || hostFormDefaultValues.username,
+      authType: host?.authType ?? "",
       ...loadedCredentials(host?.authType, host ?? {}),
       jumpHostId: host?.jumpHostId || "",
       color: host?.color || hostFormDefaultValues.color,
@@ -258,7 +259,7 @@ export default function HostForm({
     const authType = deriveAuthType(data, {
       mode: "host",
       groupId: data.groupId,
-      stored: host?.authType,
+      stored: data.authType,
       touched: CREDENTIAL_FIELDS.some((f) => dirtyFields[f]),
     }) as HostData["authType"];
     const hostData = {
@@ -268,12 +269,11 @@ export default function HostForm({
       username: data.username,
       authType,
       identityId: authType === "identity" ? data.identityId : null,
-      keyId: authType === "key" || authType === "both" ? data.keyId : undefined,
+      // Unused secrets are cleared, so a removed password or key really goes.
+      keyId: authType === "key" || authType === "both" ? data.keyId : null,
       jumpHostId: data.jumpHostId || null,
       password:
-        authType === "password" || authType === "both"
-          ? data.password
-          : undefined,
+        authType === "password" || authType === "both" ? data.password : "",
       color: data.color,
       groupId: data.groupId || null,
       vaultId: currentVaultId || undefined,
