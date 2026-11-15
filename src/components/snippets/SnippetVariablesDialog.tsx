@@ -25,7 +25,7 @@ export default function SnippetVariablesDialog() {
 
 function VariablesForm({ names }: { names: string[] }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(names.map((n) => [n, lastSnippetValues[n] ?? ""])),
+    Object.fromEntries(names.map((n) => [n, lastSnippetValues.get(n) ?? ""])),
   );
   return (
     <form

@@ -74,17 +74,17 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
   const handleCommandSelect = useCallback(
     async (item: PaletteItem, run: boolean, all?: boolean) => {
       if (all) {
-        const command = await resolvePaletteCommand(item, {
+        const resolved = await resolvePaletteCommand(item, {
           decryptSnippet: (id) =>
             useSnippetStore.getState().getDecryptedSnippet(id),
           askVariables: askSnippetVariables,
         });
-        if (command === "cancelled") return;
-        if (command === "decrypt-failed") {
-          toast.error("Couldn't load this snippet");
+        if (resolved.status !== "ok") {
+          if (resolved.status === "decrypt-failed")
+            toast.error("Couldn't load this snippet");
           return;
         }
-        const { ran, local } = runInAllTabs(command, {
+        const { ran, local } = runInAllTabs(resolved.command, {
           tabs: useTerminalStore.getState().tabs,
           insert: insertIntoPane,
         });

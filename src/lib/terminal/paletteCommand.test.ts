@@ -10,7 +10,11 @@ vi.mock("@/stores/workspaces/workspaceStore", () => ({
   useWorkspaceStore: { getState: vi.fn() },
 }));
 
-import { pickPaletteItem, runInAllTabs } from "./paletteCommand";
+import {
+  pickPaletteItem,
+  resolvePaletteCommand,
+  runInAllTabs,
+} from "./paletteCommand";
 
 const deps = (over: Partial<Parameters<typeof pickPaletteItem>[2]> = {}) => ({
   activePaneId: "p1" as string | null,
@@ -162,8 +166,8 @@ describe("runInAllTabs", () => {
       local: 0,
     });
     expect(insert.mock.calls).toEqual([
-      ["a", "uptime", true, { focus: false }],
-      ["b", "uptime", true, { focus: false }],
+      ["a", "uptime", true, { focus: false, fanOut: false }],
+      ["b", "uptime", true, { focus: false, fanOut: false }],
     ]);
   });
 
@@ -174,12 +178,13 @@ describe("runInAllTabs", () => {
     ).toBe(1);
   });
 
-  it("a broadcasting tab gets the command once, not once per pane", () => {
+  it("a broadcasting tab gets the command once per pane, never fanned out", () => {
     const insert = vi.fn(() => "ok" as const);
     const broadcasting = [
       {
         broadcast: true,
-        broadcastReady: ["x", "y", "z"],
+        // y connected late and isn't a broadcast target yet.
+        broadcastReady: ["x", "z"],
         root: split(
           leaf("x", "connected"),
           leaf("y", "connected"),
@@ -190,7 +195,10 @@ describe("runInAllTabs", () => {
     expect(
       runInAllTabs("uptime", { tabs: broadcasting as never, insert }),
     ).toEqual({ ran: 3, local: 0 });
-    expect(insert).toHaveBeenCalledTimes(1);
+    const calls = insert.mock.calls as unknown[][];
+    expect(calls.map((c) => c[0])).toEqual(["x", "y", "z"]);
+    for (const call of calls)
+      expect(call[3]).toEqual({ focus: false, fanOut: false });
   });
 
   it("names local shells in the count", () => {
@@ -201,5 +209,35 @@ describe("runInAllTabs", () => {
         insert,
       }),
     ).toEqual({ ran: 1, local: 1 });
+  });
+});
+
+describe("resolvePaletteCommand", () => {
+  it("a snippet whose text is a status word is still a command", async () => {
+    expect(
+      await resolvePaletteCommand(
+        { snippetId: "s1", command: "" },
+        {
+          decryptSnippet: async () => ({ command: "cancelled" }),
+          askVariables: async () => ({}),
+        },
+      ),
+    ).toEqual({ status: "ok", command: "cancelled" });
+  });
+
+  it("cancel and decrypt failure are statuses, not commands", async () => {
+    const deps = {
+      decryptSnippet: async () => ({ command: "echo {{x}}" }),
+      askVariables: async () => null,
+    };
+    expect(
+      await resolvePaletteCommand({ snippetId: "s1", command: "" }, deps),
+    ).toEqual({ status: "cancelled" });
+    expect(
+      await resolvePaletteCommand(
+        { snippetId: "s1", command: "" },
+        { ...deps, decryptSnippet: async () => null },
+      ),
+    ).toEqual({ status: "decrypt-failed" });
   });
 });

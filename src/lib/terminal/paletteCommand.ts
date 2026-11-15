@@ -1,9 +1,6 @@
 import { findAllLeaves } from "@/lib/common/treeUtils";
 import { fillSnippet, snippetVariables } from "@/lib/snippets/variables";
-import {
-  broadcastTargets,
-  type TerminalTab,
-} from "@/stores/terminal/terminalStore";
+import type { TerminalTab } from "@/stores/terminal/terminalStore";
 
 /** A command palette entry: a user snippet (decrypted on pick) or a built-in command. */
 export type PaletteItem = { snippetId?: string; command: string };
@@ -56,6 +53,10 @@ export async function pickPaletteItem(
   return deps.insert(deps.activePaneId, command, run);
 }
 
+export type ResolvedCommand =
+  | { status: "ok"; command: string }
+  | { status: "cancelled" | "decrypt-failed" };
+
 /** The command a palette pick stands for: decrypted and with its variables filled. */
 export async function resolvePaletteCommand(
   item: PaletteItem,
@@ -63,60 +64,50 @@ export async function resolvePaletteCommand(
     Parameters<typeof pickPaletteItem>[2],
     "decryptSnippet" | "askVariables"
   >,
-): Promise<string | "decrypt-failed" | "cancelled"> {
+): Promise<ResolvedCommand> {
   let command = item.command;
   if (item.snippetId) {
     const snippet = await deps.decryptSnippet(item.snippetId).catch(() => null);
-    if (!snippet) return "decrypt-failed";
+    if (!snippet) return { status: "decrypt-failed" };
     command = snippet.command;
   }
   const names = snippetVariables(command);
-  if (names.length === 0) return command;
+  if (names.length === 0) return { status: "ok", command };
   const values = await deps.askVariables(names);
-  return values ? fillSnippet(command, values) : "cancelled";
+  return values
+    ? { status: "ok", command: fillSnippet(command, values) }
+    : { status: "cancelled" };
 }
 
 /**
- * Runs the command in every connected pane of every tab, in the background. A
- * broadcasting tab gets it once: its other panes receive it through broadcast.
+ * Runs the command in every connected pane of every tab, in the background. Each pane
+ * is typed into directly with fan-out off, so broadcast never runs it a second time.
  */
 export function runInAllTabs(
   command: string,
   deps: {
-    tabs: Pick<TerminalTab, "root" | "broadcast" | "broadcastReady">[];
+    tabs: Pick<TerminalTab, "root">[];
     insert(
       paneId: string,
       text: string,
       run: boolean,
-      options: { focus: boolean },
+      options: { focus: boolean; fanOut: boolean },
     ): string;
   },
 ): { ran: number; local: number } {
   let ran = 0;
   let local = 0;
-  for (const tab of deps.tabs) {
-    const reached = new Set<string>();
+  for (const tab of deps.tabs)
     for (const leaf of findAllLeaves(tab.root)) {
-      if (leaf.connectionStatus !== "connected" || reached.has(leaf.id))
+      if (leaf.connectionStatus !== "connected") continue;
+      if (
+        deps.insert(leaf.id, command, true, { focus: false, fanOut: false }) !==
+        "ok"
+      )
         continue;
-      if (deps.insert(leaf.id, command, true, { focus: false }) !== "ok")
-        continue;
-      const covered = [
-        leaf.id,
-        ...broadcastTargets(tab as TerminalTab, leaf.id),
-      ];
-      for (const id of covered) {
-        if (reached.has(id)) continue;
-        reached.add(id);
-        ran++;
-        if (
-          findAllLeaves(tab.root).find((l) => l.id === id)?.connectionType ===
-          "local"
-        )
-          local++;
-      }
+      ran++;
+      if (leaf.connectionType === "local") local++;
     }
-  }
   return { ran, local };
 }
 

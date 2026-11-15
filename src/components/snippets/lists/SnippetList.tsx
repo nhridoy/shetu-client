@@ -138,7 +138,11 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                 role="button"
                 tabIndex={0}
                 onClick={() => handleEdit(snippet)}
-                onKeyDown={accessibleClickHandler(() => handleEdit(snippet))}
+                // Keys on the card's own buttons belong to those buttons, not to Edit.
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget)
+                    accessibleClickHandler(() => handleEdit(snippet))(e);
+                }}
                 className="relative p-3 transition-colors rounded-lg cursor-pointer bg-dark-800/50 hover:bg-dark-800 border border-primary-500/10 group"
               >
                 <div className="flex items-center gap-2">

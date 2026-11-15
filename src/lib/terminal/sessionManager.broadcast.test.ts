@@ -47,6 +47,7 @@ import { useTerminalStore } from "@/stores/terminal/terminalStore";
 import {
   destroySession,
   getOrCreateSession,
+  insertIntoPane,
   sendInput,
 } from "./sessionManager";
 
@@ -198,6 +199,23 @@ describe("broadcast fan-out", () => {
     sendInput(sa, "date\r");
     expect(sc.send).toHaveBeenCalledWith("date\r");
     await destroySession(c);
+    await done();
+  });
+
+  it("a background insert reaches only its own pane", async () => {
+    const { sa, sb, done } = await broadcastingPair();
+    // Like xterm: paste and input fire onData synchronously.
+    Object.assign(sa.xterm, {
+      paste: (d: string) => sendInput(sa, d),
+      input: (d: string) => sendInput(sa, d),
+      focus: () => {},
+      modes: { bracketedPasteMode: true },
+    });
+    insertIntoPane(sa.params.paneId, "uptime", true, { fanOut: false });
+    expect(sa.send).toHaveBeenCalledWith("uptime");
+    expect(sb.send).not.toHaveBeenCalled();
+    insertIntoPane(sa.params.paneId, "date", true);
+    expect(sb.send).toHaveBeenCalledWith("date");
     await done();
   });
 

@@ -12,7 +12,8 @@ export const useSnippetVariableAsks = create<{ queue: VariablesAsk[] }>(() => ({
 }));
 
 // Values typed this session, so the next use of a variable starts with them. Memory only.
-export const lastSnippetValues: Record<string, string> = {};
+// A Map, so names like "constructor" never pick up built-in object properties.
+export const lastSnippetValues = new Map<string, string>();
 
 let nextAskId = 0;
 
@@ -30,6 +31,8 @@ export function askSnippetVariables(
 export function answerSnippetVariables(values: Record<string, string> | null) {
   const [ask, ...rest] = useSnippetVariableAsks.getState().queue;
   useSnippetVariableAsks.setState({ queue: rest });
-  if (values) Object.assign(lastSnippetValues, values);
+  if (values)
+    for (const [name, value] of Object.entries(values))
+      lastSnippetValues.set(name, value);
   ask?.resolve(values);
 }

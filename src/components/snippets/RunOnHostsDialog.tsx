@@ -20,6 +20,8 @@ export default function RunOnHostsDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+  // Picking waits for the saved targets, so they can't overwrite a choice already made.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     void useSnippetStore
@@ -33,7 +35,8 @@ export default function RunOnHostsDialog({
           ),
         ),
       )
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoaded(true));
   }, [snippet.id]);
 
   const q = query.trim().toLowerCase();
@@ -103,6 +106,7 @@ export default function RunOnHostsDialog({
               <input
                 type="checkbox"
                 checked={selected.includes(h.id)}
+                disabled={!loaded}
                 onChange={() => toggle(h.id)}
                 className="accent-primary-500"
               />
@@ -123,7 +127,12 @@ export default function RunOnHostsDialog({
             >
               Save targets
             </Button>
-            <Button type="button" size="sm" disabled={busy} onClick={run}>
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy || !loaded}
+              onClick={run}
+            >
               Run
             </Button>
           </div>

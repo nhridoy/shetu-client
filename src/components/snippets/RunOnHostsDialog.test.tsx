@@ -108,6 +108,17 @@ describe("RunOnHostsDialog", () => {
     expect(box("web-1")).toBeDefined();
   });
 
+  it("hosts can't be picked until the saved targets load", async () => {
+    let finish: (v: { command: string; targets: string[] }) => void = () => {};
+    m.decrypt.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    await render();
+    expect(box("web-1").disabled).toBe(true);
+    expect(button("Run")?.disabled).toBe(true);
+    await act(async () => finish({ command: "ls", targets: ["h2"] }));
+    expect(box("web-1").disabled).toBe(false);
+    expect(box("db-1").checked).toBe(true);
+  });
+
   it("Save targets stores the selection", async () => {
     await render();
     act(() => box("web-1").click());

@@ -2,7 +2,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { askSnippetVariables } from "@/stores/snippets/snippetVariablesStore";
+import {
+  askSnippetVariables,
+  lastSnippetValues,
+  useSnippetVariableAsks,
+} from "@/stores/snippets/snippetVariablesStore";
 import SnippetVariablesDialog from "./SnippetVariablesDialog";
 
 (
@@ -11,6 +15,8 @@ import SnippetVariablesDialog from "./SnippetVariablesDialog";
 
 afterEach(() => {
   document.body.innerHTML = "";
+  lastSnippetValues.clear();
+  useSnippetVariableAsks.setState({ queue: [] });
 });
 
 async function mount() {
@@ -58,6 +64,7 @@ describe("SnippetVariablesDialog", () => {
   });
 
   it("prefills the values used last time this session", async () => {
+    lastSnippetValues.set("service", "nginx");
     const root = await mount();
     let answer: Promise<Record<string, string> | null> = Promise.resolve(null);
     await act(async () => {
@@ -66,6 +73,16 @@ describe("SnippetVariablesDialog", () => {
     expect(field("service").value).toBe("nginx");
     await submit();
     expect(await answer).toEqual({ service: "nginx" });
+    act(() => root.unmount());
+  });
+
+  it("names like constructor start empty", async () => {
+    const root = await mount();
+    await act(async () => {
+      void askSnippetVariables(["constructor", "toString"]);
+    });
+    expect(field("constructor").value).toBe("");
+    expect(field("toString").value).toBe("");
     act(() => root.unmount());
   });
 
