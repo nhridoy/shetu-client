@@ -88,4 +88,10 @@ describe("insertIntoPane", () => {
   it("missing_session_returns_false", () => {
     expect(insertIntoPane("nope", "ls", false)).toBe("no-pane");
   });
+
+  it("background inserts leave focus where it is", () => {
+    const t = fakeTerm();
+    expect(insertIntoTerminal(t, "uptime", true, { focus: false })).toBe("ok");
+    expect(t.focus).not.toHaveBeenCalled();
+  });
 });

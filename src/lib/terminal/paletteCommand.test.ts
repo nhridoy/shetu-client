@@ -1,4 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/stores/sessions/tabGroupStore", () => ({
+  useTabGroupStore: { getState: vi.fn() },
+}));
+vi.mock("@/stores/hosts/hostStore", () => ({
+  useHostStore: { getState: () => ({ hosts: [] }) },
+}));
+vi.mock("@/stores/workspaces/workspaceStore", () => ({
+  useWorkspaceStore: { getState: vi.fn() },
+}));
+
 import { pickPaletteItem, runInAllTabs } from "./paletteCommand";
 
 const deps = (over: Partial<Parameters<typeof pickPaletteItem>[2]> = {}) => ({
@@ -122,41 +133,73 @@ describe("pickPaletteItem", () => {
 });
 
 describe("runInAllTabs", () => {
-  const leaf = (id: string, connectionStatus: string) => ({
+  const leaf = (id: string, connectionStatus: string, local = false) => ({
     type: "leaf" as const,
     id,
     hostName: id,
     title: id,
     connectionStatus,
+    connectionType: local ? ("local" as const) : undefined,
     reconnect: null,
     size: 100,
   });
+  const split = (...children: unknown[]) => ({
+    type: "split" as const,
+    id: "s",
+    direction: "horizontal" as const,
+    size: 100,
+    children,
+  });
   const tabs = [
     { root: leaf("a", "connected") },
-    {
-      root: {
-        type: "split" as const,
-        id: "s",
-        direction: "horizontal" as const,
-        size: 100,
-        children: [leaf("b", "connected"), leaf("c", "reconnecting")],
-      },
-    },
+    { root: split(leaf("b", "connected"), leaf("c", "reconnecting")) },
   ];
 
-  it("runs in every connected pane and counts them", () => {
+  it("runs in every connected pane in the background and counts them", () => {
     const insert = vi.fn(() => "ok" as const);
-    expect(runInAllTabs("uptime", { tabs: tabs as never, insert })).toBe(2);
+    expect(runInAllTabs("uptime", { tabs: tabs as never, insert })).toEqual({
+      ran: 2,
+      local: 0,
+    });
     expect(insert.mock.calls).toEqual([
-      ["a", "uptime", true],
-      ["b", "uptime", true],
+      ["a", "uptime", true, { focus: false }],
+      ["b", "uptime", true, { focus: false }],
     ]);
   });
 
   it("counts only panes that took the command", () => {
     const insert = vi.fn((id: string) => (id === "a" ? "ok" : "no-pane"));
     expect(
-      runInAllTabs("x", { tabs: tabs as never, insert: insert as never }),
+      runInAllTabs("x", { tabs: tabs as never, insert: insert as never }).ran,
     ).toBe(1);
+  });
+
+  it("a broadcasting tab gets the command once, not once per pane", () => {
+    const insert = vi.fn(() => "ok" as const);
+    const broadcasting = [
+      {
+        broadcast: true,
+        broadcastReady: ["x", "y", "z"],
+        root: split(
+          leaf("x", "connected"),
+          leaf("y", "connected"),
+          leaf("z", "connected"),
+        ),
+      },
+    ];
+    expect(
+      runInAllTabs("uptime", { tabs: broadcasting as never, insert }),
+    ).toEqual({ ran: 3, local: 0 });
+    expect(insert).toHaveBeenCalledTimes(1);
+  });
+
+  it("names local shells in the count", () => {
+    const insert = vi.fn(() => "ok" as const);
+    expect(
+      runInAllTabs("x", {
+        tabs: [{ root: leaf("l", "connected", true) }] as never,
+        insert,
+      }),
+    ).toEqual({ ran: 1, local: 1 });
   });
 });

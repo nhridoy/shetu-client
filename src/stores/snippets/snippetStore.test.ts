@@ -166,7 +166,14 @@ describe("snippetStore", () => {
   it("save targets keeps the command", async () => {
     useSnippetStore.setState({
       snippets: [
-        { id: "s1", name: "deploy", command: "", tags: [], createdAt: "1" },
+        {
+          id: "s1",
+          name: "deploy",
+          command: "",
+          tags: [],
+          createdAt: "1",
+          data: "enc",
+        },
       ],
     });
     mockGet.mockResolvedValue(snippetRow);
@@ -179,6 +186,8 @@ describe("snippetStore", () => {
       command: "pnpm build",
       targets: ["h1", "h2"],
     });
+    // The cached ciphertext is stale now: the next read must come from the row.
+    expect(useSnippetStore.getState().snippets[0].data).toBeUndefined();
   });
 
   it("getDecryptedSnippet returns saved targets", async () => {

@@ -25,7 +25,14 @@ export default function RunOnHostsDialog({
     void useSnippetStore
       .getState()
       .getDecryptedSnippet(snippet.id)
-      .then((s) => setSelected(s?.targets ?? []))
+      // Saved ids of hosts deleted since don't count as picked.
+      .then((s) =>
+        setSelected(
+          (s?.targets ?? []).filter((id) =>
+            useHostStore.getState().hosts.some((h) => h.id === id),
+          ),
+        ),
+      )
       .catch(() => {});
   }, [snippet.id]);
 
@@ -40,7 +47,8 @@ export default function RunOnHostsDialog({
     await useSnippetStore.getState().updateSnippet(snippet.id, {
       targets: selected,
     });
-    toast.success("Targets saved");
+    if (useSnippetStore.getState().error) toast.error("Couldn't save targets");
+    else toast.success("Targets saved");
   };
 
   const run = async () => {
@@ -61,48 +69,64 @@ export default function RunOnHostsDialog({
 
   return (
     <Modal onClose={onClose} title="Run on hosts" maxWidth="max-w-md">
-      <p className="mb-3 text-sm text-dark-400">
-        Opens a tab for each host and runs{" "}
-        <span className="text-white">{snippet.name}</span> once it connects.
-      </p>
-      <input
-        type="search"
-        aria-label="Search hosts"
-        placeholder="Search hosts"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        className="mb-2 h-8 w-full rounded-md border border-dark-700 bg-dark-900 px-2 text-sm text-white outline-none"
-      />
-      <div className="max-h-64 space-y-0.5 overflow-y-auto">
-        {shown.length === 0 && (
-          <p className="py-4 text-center text-sm text-dark-500">No hosts</p>
-        )}
-        {shown.map((h) => (
-          <label
-            key={h.id}
-            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm text-dark-200 hover:bg-dark-800"
-          >
-            <input
-              type="checkbox"
-              checked={selected.includes(h.id)}
-              onChange={() => toggle(h.id)}
-              className="accent-primary-500"
-            />
-            {h.name}
-          </label>
-        ))}
-      </div>
-      <div className="mt-4 flex items-center justify-between gap-2">
-        <span className="text-xs text-dark-400">
-          {selected.length} selected
-        </span>
-        <div className="flex gap-2">
-          <Button type="button" variant="ghost" size="sm" onClick={saveTargets}>
-            Save targets
-          </Button>
-          <Button type="button" size="sm" disabled={busy} onClick={run}>
-            Run
-          </Button>
+      {/* Modal turns Enter into its last button (Run); here Enter must never run. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: only swallows Enter from the fields inside */}
+      <div
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+      >
+        <p className="mb-3 text-sm text-dark-400">
+          Opens a tab for each host and runs{" "}
+          <span className="text-white">{snippet.name}</span> once it connects.
+        </p>
+        <input
+          type="search"
+          aria-label="Search hosts"
+          placeholder="Search hosts"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="mb-2 h-8 w-full rounded-md border border-dark-700 bg-dark-900 px-2 text-sm text-white outline-none"
+        />
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          {shown.length === 0 && (
+            <p className="py-4 text-center text-sm text-dark-500">No hosts</p>
+          )}
+          {shown.map((h) => (
+            <label
+              key={h.id}
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm text-dark-200 hover:bg-dark-800"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(h.id)}
+                onChange={() => toggle(h.id)}
+                className="accent-primary-500"
+              />
+              {h.name}
+            </label>
+          ))}
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <span aria-live="polite" className="text-xs text-dark-400">
+            {selected.length} selected
+          </span>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={saveTargets}
+            >
+              Save targets
+            </Button>
+            <Button type="button" size="sm" disabled={busy} onClick={run}>
+              Run
+            </Button>
+          </div>
         </div>
       </div>
     </Modal>

@@ -1,6 +1,9 @@
 import { findAllLeaves } from "@/lib/common/treeUtils";
 import { fillSnippet, snippetVariables } from "@/lib/snippets/variables";
-import type { TerminalTab } from "@/stores/terminal/terminalStore";
+import {
+  broadcastTargets,
+  type TerminalTab,
+} from "@/stores/terminal/terminalStore";
 
 /** A command palette entry: a user snippet (decrypted on pick) or a built-in command. */
 export type PaletteItem = { snippetId?: string; command: string };
@@ -73,23 +76,48 @@ export async function resolvePaletteCommand(
   return values ? fillSnippet(command, values) : "cancelled";
 }
 
-/** Runs the command in every connected pane of every tab; returns how many took it. */
+/**
+ * Runs the command in every connected pane of every tab, in the background. A
+ * broadcasting tab gets it once: its other panes receive it through broadcast.
+ */
 export function runInAllTabs(
   command: string,
   deps: {
-    tabs: Pick<TerminalTab, "root">[];
-    insert(paneId: string, text: string, run: boolean): string;
+    tabs: Pick<TerminalTab, "root" | "broadcast" | "broadcastReady">[];
+    insert(
+      paneId: string,
+      text: string,
+      run: boolean,
+      options: { focus: boolean },
+    ): string;
   },
-): number {
+): { ran: number; local: number } {
   let ran = 0;
-  for (const tab of deps.tabs)
-    for (const leaf of findAllLeaves(tab.root))
-      if (
-        leaf.connectionStatus === "connected" &&
-        deps.insert(leaf.id, command, true) === "ok"
-      )
+  let local = 0;
+  for (const tab of deps.tabs) {
+    const reached = new Set<string>();
+    for (const leaf of findAllLeaves(tab.root)) {
+      if (leaf.connectionStatus !== "connected" || reached.has(leaf.id))
+        continue;
+      if (deps.insert(leaf.id, command, true, { focus: false }) !== "ok")
+        continue;
+      const covered = [
+        leaf.id,
+        ...broadcastTargets(tab as TerminalTab, leaf.id),
+      ];
+      for (const id of covered) {
+        if (reached.has(id)) continue;
+        reached.add(id);
         ran++;
-  return ran;
+        if (
+          findAllLeaves(tab.root).find((l) => l.id === id)?.connectionType ===
+          "local"
+        )
+          local++;
+      }
+    }
+  }
+  return { ran, local };
 }
 
 const OPEN_PALETTE_EVENT = "shetu:open-command-palette";

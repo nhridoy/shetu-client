@@ -42,7 +42,10 @@ describe("runWhenConnected", () => {
       .getState()
       .updatePaneConnectionStatus(tabId, paneId, "connected");
     expect(m.insert).toHaveBeenCalledTimes(1);
-    expect(m.insert).toHaveBeenCalledWith(paneId, "uptime", true);
+    // In the background: a password typed into another prompt must keep its focus.
+    expect(m.insert).toHaveBeenCalledWith(paneId, "uptime", true, {
+      focus: false,
+    });
   });
 
   it("closed pane never receives", () => {
@@ -56,12 +59,12 @@ describe("runWhenConnected", () => {
     expect(m.insert).not.toHaveBeenCalled();
   });
 
-  it("a failed connection stops waiting", () => {
+  it("a failed first connection stops waiting, even if reconnected later", () => {
     const { tabId, paneId } = newTab();
     runWhenConnected(tabId, paneId, "uptime");
     useTerminalStore
       .getState()
-      .updatePaneConnectionStatus(tabId, paneId, "failed");
+      .updatePaneConnectionStatus(tabId, paneId, "error");
     useTerminalStore
       .getState()
       .updatePaneConnectionStatus(tabId, paneId, "connected");

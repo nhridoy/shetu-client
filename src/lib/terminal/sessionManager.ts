@@ -522,6 +522,8 @@ export function insertIntoTerminal(
   },
   text: string,
   run: boolean,
+  /** focus: false for background runs, so typing elsewhere keeps its focus. */
+  { focus = true }: { focus?: boolean } = {},
 ): "ok" | "unsafe-multiline" | "empty" {
   // Control characters (incl. ESC, so no fake bracketed-paste end) never reach the shell;
   // trailing newlines would run the command even when the user only inserts.
@@ -537,7 +539,7 @@ export function insertIntoTerminal(
   }
   term.paste(clean);
   if (run) term.input("\r");
-  term.focus();
+  if (focus) term.focus();
   return "ok";
 }
 
@@ -548,10 +550,11 @@ export function insertIntoPane(
   paneId: string,
   text: string,
   run: boolean,
+  options?: { focus?: boolean },
 ): InsertResult {
   const session = sessions.get(paneId);
   if (!session) return "no-pane";
-  return insertIntoTerminal(session.xterm, text, run);
+  return insertIntoTerminal(session.xterm, text, run, options);
 }
 
 export function getOrCreateSession(params: SessionParams): Session {

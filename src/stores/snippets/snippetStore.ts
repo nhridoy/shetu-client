@@ -210,7 +210,8 @@ export const useSnippetStore = create<SnippetState>((set, get) => ({
       );
       set({
         snippets: get().snippets.map((s) =>
-          s.id === id ? { ...s, ...patch } : s,
+          // The cached ciphertext is now stale; reads fall back to the saved row.
+          s.id === id ? { ...s, ...patch, data: undefined } : s,
         ),
         isLoading: false,
       });

@@ -7,7 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
   run: vi.fn(async (): Promise<string> => "ok"),
   update: vi.fn(async () => {}),
-  decrypt: vi.fn(async () => ({ command: "ls", targets: ["h2"] })),
+  decrypt: vi.fn(
+    async (): Promise<{ command: string; targets: string[] }> => ({
+      command: "ls",
+      targets: ["h2"],
+    }),
+  ),
+  storeError: null as string | null,
   error: vi.fn(),
 }));
 vi.mock("@/lib/snippets/runOnHosts", () => ({ runOnHosts: m.run }));
@@ -17,18 +23,24 @@ vi.mock("@/stores/snippets/snippetStore", () => ({
     getState: () => ({
       getDecryptedSnippet: m.decrypt,
       updateSnippet: m.update,
+      error: m.storeError,
     }),
   },
 }));
-vi.mock("@/stores/hosts/hostStore", () => ({
-  useHostStore: (pick: (s: unknown) => unknown) =>
-    pick({
-      hosts: [
-        { id: "h1", name: "web-1" },
-        { id: "h2", name: "db-1" },
-      ],
-    }),
-}));
+vi.mock("@/stores/hosts/hostStore", () => {
+  const state = {
+    hosts: [
+      { id: "h1", name: "web-1" },
+      { id: "h2", name: "db-1" },
+    ],
+  };
+  return {
+    useHostStore: Object.assign(
+      (pick: (s: unknown) => unknown) => pick(state),
+      { getState: () => state },
+    ),
+  };
+});
 
 import RunOnHostsDialog from "./RunOnHostsDialog";
 
@@ -37,7 +49,10 @@ import RunOnHostsDialog from "./RunOnHostsDialog";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const onClose = vi.fn();
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  m.storeError = null;
+});
 afterEach(() => {
   document.body.innerHTML = "";
 });
@@ -114,6 +129,35 @@ describe("RunOnHostsDialog", () => {
     await act(async () => button("Run")?.click());
     expect(m.run).not.toHaveBeenCalled();
     expect(m.error).toHaveBeenCalledWith("Pick at least one host");
+  });
+
+  it("Enter in the search box doesn't run anything", async () => {
+    await render();
+    const search = document.querySelector(
+      'input[type="search"]',
+    ) as HTMLInputElement;
+    act(() => {
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    await act(async () => {});
+    expect(m.run).not.toHaveBeenCalled();
+  });
+
+  it("saved ids of deleted hosts don't count as selected", async () => {
+    m.decrypt.mockResolvedValueOnce({ command: "ls", targets: ["h2", "gone"] });
+    await render();
+    expect(document.querySelector("[aria-live]")?.textContent).toContain(
+      "1 selected",
+    );
+  });
+
+  it("a failed save says so", async () => {
+    m.storeError = "db locked";
+    await render();
+    await act(async () => button("Save targets")?.click());
+    expect(m.error).toHaveBeenCalledWith("Couldn't save targets");
   });
 
   it("a cancelled variables form keeps the dialog open", async () => {

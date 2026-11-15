@@ -84,13 +84,15 @@ export default function TerminalView({ onSetActiveView }: TerminalViewProps) {
           toast.error("Couldn't load this snippet");
           return;
         }
-        const ran = runInAllTabs(command, {
+        const { ran, local } = runInAllTabs(command, {
           tabs: useTerminalStore.getState().tabs,
           insert: insertIntoPane,
         });
         if (ran === 0) toast.error("No connected terminals");
         else {
-          toast.success(`Ran in ${ran} terminal${ran === 1 ? "" : "s"}`);
+          toast.success(
+            `Ran in ${ran} terminal${ran === 1 ? "" : "s"}${local ? ` (${local} local)` : ""}`,
+          );
           setShowCommandPalette(false);
         }
         return;

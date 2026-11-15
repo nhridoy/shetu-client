@@ -167,6 +167,7 @@ export default function SnippetList({ onNew, onEdit }: SnippetListProps) {
                     variant="ghost"
                     size="icon-sm"
                     title="Run on hosts"
+                    aria-label={`Run ${snippet.name} on hosts`}
                   >
                     <PlayIcon className="w-3 h-3" />
                   </Button>

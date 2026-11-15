@@ -22,11 +22,15 @@ export function runWhenConnected(
     if (done) return;
     const tab = useTerminalStore.getState().tabs.find((t) => t.id === tabId);
     const leaf = tab ? findLeaf(tab.root, paneId) : null;
-    if (!leaf || leaf.connectionStatus === "failed") return stop();
+    // Anything but still-connecting (error, failed, closed) ends the wait: a later
+    // manual reconnect must not run the command after all.
+    if (!leaf || !["connecting", "connected"].includes(leaf.connectionStatus))
+      return stop();
     if (leaf.connectionStatus !== "connected") return;
     stop();
-    // Typed through the safe insert: control characters are stripped, one Enter runs it.
-    insertIntoPane(paneId, command, true);
+    // Safe insert (control characters stripped, one Enter), without taking focus from
+    // whatever the user is typing in, such as another host's password prompt.
+    insertIntoPane(paneId, command, true, { focus: false });
   };
   const unsubscribe = useTerminalStore.subscribe(check);
   const timer = setTimeout(stop, GIVE_UP_MS);
