@@ -123,6 +123,7 @@ export default function RunOnHostsDialog({
               type="button"
               variant="ghost"
               size="sm"
+              disabled={!loaded}
               onClick={saveTargets}
             >
               Save targets

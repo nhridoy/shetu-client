@@ -114,6 +114,8 @@ describe("RunOnHostsDialog", () => {
     await render();
     expect(box("web-1").disabled).toBe(true);
     expect(button("Run")?.disabled).toBe(true);
+    // Saving now would replace the stored targets with an empty list.
+    expect(button("Save targets")?.disabled).toBe(true);
     await act(async () => finish({ command: "ls", targets: ["h2"] }));
     expect(box("web-1").disabled).toBe(false);
     expect(box("db-1").checked).toBe(true);
