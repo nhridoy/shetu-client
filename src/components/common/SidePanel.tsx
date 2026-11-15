@@ -86,6 +86,12 @@ function SidePanel({
     return () => opener?.focus();
   }, [open]);
 
+  // The overlay is modal: narrowing into it pulls focus in from outside.
+  useEffect(() => {
+    if (overlay && !panelRef.current?.contains(document.activeElement))
+      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+  }, [overlay]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {

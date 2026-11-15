@@ -13,8 +13,11 @@ import UnsavedChangesDialog from "./UnsavedChangesDialog";
 
 let width = 1200;
 let roReports = true;
+let resize: (width: number) => void = () => {};
 class RO {
-  constructor(private cb: (e: unknown[]) => void) {}
+  constructor(private cb: (e: unknown[]) => void) {
+    resize = (w) => cb([{ contentRect: { width: w } }]);
+  }
   observe() {
     if (roReports) this.cb([{ contentRect: { width } }]);
   }
@@ -203,6 +206,16 @@ describe("SidePanel", () => {
     await flush();
     expect(document.body.textContent).toContain("Discard changes?");
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("narrowing into overlay pulls outside focus into the panel", () => {
+    mount(<Harness onClose={() => {}} />);
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    act(() => outside.focus());
+    act(() => resize(800));
+    expect(q("aside").getAttribute("role")).toBe("dialog");
+    expect(document.activeElement).toBe(q('input[aria-label="Name"]'));
   });
 
   it("no backdrop at 900px or wider", () => {
