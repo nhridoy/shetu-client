@@ -28,6 +28,7 @@ let search: FindTarget & {
 };
 let onClose: Mock<() => void>;
 let clearSelection: Mock<() => void>;
+let selectionChanged: () => void;
 
 const text = () => document.body.textContent ?? "";
 const field = () => document.querySelector("input") as HTMLInputElement;
@@ -60,6 +61,10 @@ async function render() {
         search={search}
         onClose={onClose}
         clearSelection={clearSelection}
+        onSelectionChange={(listener) => {
+          selectionChanged = listener;
+          return { dispose: () => {} };
+        }}
         opened={opened}
       />,
     ),
@@ -68,7 +73,11 @@ async function render() {
 
 beforeEach(() => {
   search = {
-    findNext: vi.fn<FindFn>(() => true),
+    // Like the add-on: a search selects its match, which fires a selection change.
+    findNext: vi.fn<FindFn>(() => {
+      selectionChanged?.();
+      return true;
+    }),
     findPrevious: vi.fn<FindFn>(() => true),
     clearDecorations: vi.fn<() => void>(),
     onDidChangeResults: (listener) => {
@@ -190,6 +199,15 @@ describe("TerminalFindBar", () => {
     expect(clearSelection).not.toHaveBeenCalled();
   });
 
+  it("a selection the user makes after searching survives closing", async () => {
+    await render();
+    type("error");
+    clearSelection.mockClear();
+    act(() => selectionChanged());
+    key("Escape");
+    expect(clearSelection).not.toHaveBeenCalled();
+  });
+
   it("Escape closes and clears", async () => {
     await render();
     type("error");
@@ -244,6 +262,10 @@ describe("TerminalFindBar", () => {
           search={search}
           onClose={onClose}
           clearSelection={clearSelection}
+          onSelectionChange={(listener) => {
+            selectionChanged = listener;
+            return { dispose: () => {} };
+          }}
           opened={opened}
         />,
       ),

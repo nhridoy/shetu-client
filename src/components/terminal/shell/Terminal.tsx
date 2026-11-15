@@ -1,6 +1,6 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { SearchAddon } from "@xterm/addon-search";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
 import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
@@ -73,6 +73,14 @@ export default function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Stable per pane so the find bar subscribes once.
+  const selectionEvents = useCallback(
+    (listener: () => void) =>
+      getSession(paneId)?.xterm.onSelectionChange(listener) ?? {
+        dispose: () => {},
+      },
+    [paneId],
+  );
   // 0 = closed; each request bumps it so an open bar takes focus again.
   const [finding, setFinding] = useState(0);
   const openFindBar = () => setFinding((n) => n + 1);
@@ -275,6 +283,7 @@ export default function Terminal({
           search={getSession(paneId)?.searchAddon as SearchAddon}
           opened={finding}
           clearSelection={() => getSession(paneId)?.xterm.clearSelection()}
+          onSelectionChange={selectionEvents}
           onClose={() => {
             setFinding(0);
             getSession(paneId)?.xterm.focus();

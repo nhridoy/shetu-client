@@ -48,12 +48,15 @@ export default function TerminalFindBar({
   search,
   onClose,
   clearSelection,
+  onSelectionChange,
   opened = 0,
 }: {
   search: FindTarget;
   onClose: () => void;
   /** Searching selects the active match; leaving search must unselect it. */
   clearSelection: () => void;
+  /** The terminal's selection events, to tell a user's own selection from a search's. */
+  onSelectionChange: (listener: () => void) => { dispose: () => void };
   /** Bumped each time find is asked for, so an open bar takes focus again. */
   opened?: number;
 }) {
@@ -66,6 +69,7 @@ export default function TerminalFindBar({
   const inputRef = useRef<HTMLInputElement>(null);
   // True once a search may have selected a match; only that selection is ours to clear.
   const selected = useRef(false);
+  const searching = useRef(false);
   const clearOurSelection = () => {
     if (selected.current) clearSelection();
     selected.current = false;
@@ -77,6 +81,14 @@ export default function TerminalFindBar({
     inputRef.current?.focus();
     inputRef.current?.select();
   }, [opened]);
+
+  // A selection change outside our own find calls is the user's; leave it alone.
+  useEffect(() => {
+    const sub = onSelectionChange(() => {
+      if (!searching.current) selected.current = false;
+    });
+    return () => sub.dispose();
+  }, [onSelectionChange]);
 
   useEffect(() => {
     const sub = search.onDidChangeResults((e) =>
@@ -100,8 +112,13 @@ export default function TerminalFindBar({
     try {
       if (regex || wholeWord) new RegExp(term);
       selected.current = true;
-      if (direction === "next") search.findNext(term, options(incremental));
-      else search.findPrevious(term, options(false));
+      searching.current = true;
+      try {
+        if (direction === "next") search.findNext(term, options(incremental));
+        else search.findPrevious(term, options(false));
+      } finally {
+        searching.current = false;
+      }
       setInvalid(false);
     } catch {
       setInvalid(true);
