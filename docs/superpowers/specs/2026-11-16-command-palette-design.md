@@ -42,8 +42,8 @@ Goal: one searchable place to connect, run a snippet, jump to a page, or trigger
 - ↑/↓ move across sections, Enter picks, Esc closes. Footer hint follows the selected row
   ("Enter to connect", "Enter to insert · Ctrl+Enter to run", "Enter to run on hosts", …).
 - Hosts / shells: connect as Quick Connect does today.
-- Snippets in the terminal view also list the current built-in commands; outside it they don't
-  (nothing to insert into). Failures keep the palette open with the existing toasts.
+- The built-in commands are listed only in the snippets filter (Ctrl+Shift+P in the terminal),
+  so they never push an action down the list. Failures keep the palette open with the existing toasts.
 - Actions run through their shortcut handler. Ids whose handler isn't mounted are not listed.
   Unbound actions (binding cleared) still run from the palette. Menu-bar actions run the same
   handler, which already routes through `dispatchAppAction` where needed.
