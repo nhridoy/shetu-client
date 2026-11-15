@@ -7,9 +7,12 @@ import { useHostStore } from "@/stores/hosts/hostStore";
 
 export type ForwardMode = "local" | "remote" | "dynamic";
 export type ForwardStatus = {
-  state: "stopped" | "starting" | "active" | "failed";
+  state: "stopped" | "starting" | "active" | "reconnecting" | "failed";
   error?: string;
 };
+
+/** When a forward starts without a click. */
+export type AutoStart = "off" | "unlock" | "terminal";
 
 export interface ForwardDefinition {
   id: string;
@@ -21,6 +24,7 @@ export interface ForwardDefinition {
   remotePort: number | null;
   destinationHost: string | null;
   destinationPort: number | null;
+  autoStart: AutoStart;
 }
 
 export interface ForwardView {
@@ -73,6 +77,7 @@ export function toForwardInput(
     destinationHost:
       form.mode === "dynamic" ? null : form.destinationHost.trim(),
     destinationPort: form.mode === "dynamic" ? null : form.destinationPort,
+    autoStart: form.autoStart,
   };
 }
 

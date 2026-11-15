@@ -3,6 +3,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import { toast } from "sonner";
+import { autoStartWithTerminal } from "@/lib/forwarding/autoStart";
 import "@xterm/xterm/css/xterm.css";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
@@ -280,6 +281,9 @@ async function connectViaTauri(session: Session) {
           updateReconnect(params.tabId, params.paneId, null);
           update(params.tabId, params.paneId, "connected");
           void savePendingCredentials(params.paneId);
+          // This host's "With a terminal" tunnels come up with it (and again after a reconnect).
+          if (params.hostId)
+            void autoStartWithTerminal(params.hostId, params.paneId);
           if (event.payload.os && params.hostId) {
             void useHostStore
               .getState()

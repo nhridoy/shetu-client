@@ -16,6 +16,11 @@ function endpoint(forward: PortForward) {
   return `127.0.0.1:${forward.localPort}`;
 }
 
+const AUTO_START_HINTS = {
+  unlock: "Starts when Shetu unlocks",
+  terminal: "Starts with a terminal to this host",
+};
+
 const modeNames = {
   local: "Local TCP",
   remote: "Remote TCP",
@@ -31,7 +36,11 @@ export function ForwardCard({
   onDelete,
 }: ForwardCardProps) {
   const active = forward.status.state === "active";
-  const starting = forward.status.state === "starting";
+  // Reconnecting is still running: it can be stopped, not edited.
+  const starting =
+    forward.status.state === "starting" ||
+    forward.status.state === "reconnecting";
+  const reconnecting = forward.status.state === "reconnecting";
   return (
     <article className="rounded-lg border border-dark-700 bg-dark-800 p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
@@ -39,12 +48,22 @@ export function ForwardCard({
           <h3 className="truncate text-sm font-medium text-white">
             {forward.name}
           </h3>
-          <p className="text-xs text-dark-400">{modeNames[forward.mode]}</p>
+          <p className="flex items-center gap-1.5 text-xs text-dark-400">
+            {modeNames[forward.mode]}
+            {forward.autoStart !== "off" && (
+              <span
+                title={AUTO_START_HINTS[forward.autoStart]}
+                className="rounded bg-primary-500/15 px-1 text-[10px] text-primary-400"
+              >
+                Auto
+              </span>
+            )}
+          </p>
         </div>
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs capitalize ${active ? "bg-green-500/15 text-green-400" : starting ? "bg-primary-500/15 text-primary-400" : forward.status.state === "failed" ? "bg-danger-500/15 text-danger-400" : "bg-dark-700 text-dark-300"}`}
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs capitalize ${active ? "bg-green-500/15 text-green-400" : reconnecting ? "bg-amber-500/15 text-amber-400" : starting ? "bg-primary-500/15 text-primary-400" : forward.status.state === "failed" ? "bg-danger-500/15 text-danger-400" : "bg-dark-700 text-dark-300"}`}
         >
-          {forward.status.state}
+          {reconnecting ? "Reconnecting…" : forward.status.state}
         </span>
       </div>
       <p className="break-all text-xs text-dark-300">
