@@ -12,6 +12,8 @@ pub(crate) const NON_INTERACTIVE: &str =
     "This server needs an interactive login (2FA). Connect in a terminal instead.";
 pub(crate) const CANCELLED: &str = "Login cancelled";
 const AGENT_CAP_WITH_PASSWORD: usize = 3;
+/// Leaves one of OpenSSH's default 6 MaxAuthTries for the password prompt.
+const AGENT_CAP_BEFORE_PROMPT: usize = 5;
 const KBD_MAX_ROUNDS: usize = 10;
 const AGENT_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -216,9 +218,13 @@ where
 
     if let Some(connect) = ctx.agent.filter(|_| allows(&allowed, MethodKind::PublicKey)) {
         if let Some(mut agent) = connect.await {
-            let password_possible =
-                config.password.is_some() || (ctx.prompter.is_some() && allows(&allowed, MethodKind::Password));
-            let cap = if password_possible { AGENT_CAP_WITH_PASSWORD } else { usize::MAX };
+            let cap = if config.password.is_some() {
+                AGENT_CAP_WITH_PASSWORD
+            } else if ctx.prompter.is_some() && allows(&allowed, MethodKind::Password) {
+                AGENT_CAP_BEFORE_PROMPT
+            } else {
+                usize::MAX
+            };
             // Agent unreachable, erroring or silent ends this step. Signing stays unlimited
             // because confirmation popups are legitimate.
             let identities = tokio::time::timeout(AGENT_LIST_TIMEOUT, agent.request_identities())
@@ -642,8 +648,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_capped_at_three_when_password_can_be_prompted() {
-        let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
+    async fn agent_capped_at_five_when_password_can_be_prompted() {
+        let agent_keys: Vec<_> = (0..6).map(|_| random_key()).collect();
         let agent = agent_with(&agent_keys).await;
         let srv = Srv { password: Some("pw"), ..Default::default() };
         let log = srv.log.clone();
@@ -656,8 +662,19 @@ mod tests {
         within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
         let log = log.lock().unwrap().clone();
         let agent_attempts = log.iter().take_while(|e| *e != "prompt").count();
-        assert_eq!(agent_attempts, 3, "{log:?}");
-        assert_eq!(log[3..], ["prompt".to_string(), "password".to_string()], "{log:?}");
+        assert_eq!(agent_attempts, 5, "{log:?}");
+        assert_eq!(log[5..], ["prompt".to_string(), "password".to_string()], "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn fourth_of_five_agent_keys_connects_without_prompting() {
+        let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
+        let agent = agent_with(&agent_keys).await;
+        let srv = Srv { keys: vec![agent_keys[3].public_key().clone()], ..Default::default() };
+        let log = srv.log.clone();
+        let prompter: Prompter = Arc::new(|_| panic!("must not prompt"));
+        within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
+        assert_eq!(log.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]
