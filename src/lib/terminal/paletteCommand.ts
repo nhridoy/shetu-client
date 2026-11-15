@@ -1,3 +1,5 @@
+import { fillSnippet, snippetVariables } from "@/lib/snippets/variables";
+
 /** A command palette entry: a user snippet (decrypted on pick) or a built-in command. */
 export type PaletteItem = { snippetId?: string; command: string };
 
@@ -7,7 +9,8 @@ export type PickResult =
   | "not-connected"
   | "decrypt-failed"
   | "unsafe-multiline"
-  | "empty";
+  | "empty"
+  | "cancelled";
 
 /** Puts the picked command into the active pane: inserted, or run when `run`. */
 export async function pickPaletteItem(
@@ -22,6 +25,8 @@ export async function pickPaletteItem(
       text: string,
       run: boolean,
     ): "ok" | "no-pane" | "unsafe-multiline" | "empty";
+    /** Values for the snippet's {{variables}}; null when the user cancels. */
+    askVariables(names: string[]): Promise<Record<string, string> | null>;
   },
 ): Promise<PickResult> {
   if (!deps.activePaneId) return "no-pane";
@@ -34,6 +39,13 @@ export async function pickPaletteItem(
     if (!snippet) return "decrypt-failed";
     command = snippet.command;
     // The pane may have disconnected while we waited.
+    if (!deps.isConnected(deps.activePaneId)) return "not-connected";
+  }
+  const names = snippetVariables(command);
+  if (names.length > 0) {
+    const values = await deps.askVariables(names);
+    if (!values) return "cancelled";
+    command = fillSnippet(command, values);
     if (!deps.isConnected(deps.activePaneId)) return "not-connected";
   }
   return deps.insert(deps.activePaneId, command, run);

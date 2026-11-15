@@ -6,6 +6,7 @@ const deps = (over: Partial<Parameters<typeof pickPaletteItem>[2]> = {}) => ({
   decryptSnippet: vi.fn(async () => ({ command: "docker ps" })),
   isConnected: vi.fn(() => true),
   insert: vi.fn(() => "ok" as const),
+  askVariables: vi.fn(async () => ({}) as Record<string, string> | null),
   ...over,
 });
 
@@ -20,6 +21,35 @@ describe("pickPaletteItem", () => {
     expect(result).toBe("ok");
     expect(d.decryptSnippet).toHaveBeenCalledWith("s1");
     expect(d.insert).toHaveBeenCalledWith("p1", "docker ps", true);
+  });
+
+  it("fills variables before inserting", async () => {
+    const d = deps({
+      decryptSnippet: vi.fn(async () => ({ command: "tail -n {{n}} {{f}}" })),
+      askVariables: vi.fn(async () => ({ n: "20", f: "app.log" })),
+    });
+    expect(
+      await pickPaletteItem({ snippetId: "s1", command: "" }, true, d),
+    ).toBe("ok");
+    expect(d.askVariables).toHaveBeenCalledWith(["n", "f"]);
+    expect(d.insert).toHaveBeenCalledWith("p1", "tail -n 20 app.log", true);
+  });
+
+  it("cancel sends nothing", async () => {
+    const d = deps({
+      decryptSnippet: vi.fn(async () => ({ command: "echo {{x}}" })),
+      askVariables: vi.fn(async () => null),
+    });
+    expect(
+      await pickPaletteItem({ snippetId: "s1", command: "" }, true, d),
+    ).toBe("cancelled");
+    expect(d.insert).not.toHaveBeenCalled();
+  });
+
+  it("no variables means no form", async () => {
+    const d = deps();
+    await pickPaletteItem({ snippetId: "s1", command: "" }, true, d);
+    expect(d.askVariables).not.toHaveBeenCalled();
   });
 
   it("builtin_inserts_its_command", async () => {
