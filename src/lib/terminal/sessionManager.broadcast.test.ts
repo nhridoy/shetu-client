@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   begin: vi.fn(),
   finish: vi.fn(),
   connectSaved: vi.fn(),
+  warning: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: m.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -16,6 +17,7 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     options = {};
+    modes = { bracketedPasteMode: false };
     loadAddon() {}
     attachCustomKeyEventHandler() {}
     open() {}
@@ -32,6 +34,7 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class {} }));
+vi.mock("sonner", () => ({ toast: { warning: m.warning } }));
 vi.mock("./agentForwarding", () => ({ connectSavedTerminal: m.connectSaved }));
 vi.mock("./sessionHistory", () => ({
   beginHistoryAttempt: m.begin,
@@ -89,5 +92,82 @@ describe("broadcast fan-out", () => {
 
     await destroySession(a);
     await destroySession(b);
+  });
+
+  async function broadcastingPair() {
+    useTerminalStore.setState({ tabs: [], activeTabId: null });
+    const store = useTerminalStore.getState();
+    const tabId = store.addEmptyTab();
+    const a = useTerminalStore.getState().tabs[0].activePaneId as string;
+    store.splitPane(tabId, a, "horizontal");
+    const b = useTerminalStore.getState().tabs[0].activePaneId as string;
+    for (const id of [a, b])
+      useTerminalStore
+        .getState()
+        .updatePaneConnectionStatus(tabId, id, "connected");
+    useTerminalStore.getState().toggleBroadcast(tabId);
+    const sa = getOrCreateSession({
+      paneId: a,
+      tabId,
+      hostId: "h",
+      hostName: "x",
+    });
+    const sb = getOrCreateSession({
+      paneId: b,
+      tabId,
+      hostId: "h",
+      hostName: "y",
+    });
+    sa.send = vi.fn();
+    sb.send = vi.fn();
+    return {
+      sa,
+      sb,
+      done: () => Promise.all([destroySession(a), destroySession(b)]),
+    };
+  }
+
+  it("terminal replies stay in their own pane", async () => {
+    const { sa, sb, done } = await broadcastingPair();
+    for (const reply of [
+      "\x1b[?1;2c", // device attributes
+      "\x1b[12;5R", // cursor position
+      "\x1b[0n", // status report
+      "\x1b[I", // focus in
+      "\x1b[O", // focus out
+      "\x1b[<0;12;5M", // SGR mouse
+      "\x1b[M !!", // X10 mouse
+      "\x1b]11;rgb:0000/0000/0000\x07", // OSC colour reply
+      "\x1bP1$r0m\x1b\\", // DECRQSS reply
+      "\x1b[?2004;2$y", // DECRPM
+    ])
+      sendInput(sa, reply);
+    expect(sa.send).toHaveBeenCalledTimes(10);
+    expect(sb.send).not.toHaveBeenCalled();
+    // Real keys that start with ESC still go everywhere.
+    for (const key of ["\x1b[A", "\x1bOA", "\x1b[15~", "\x1b[Z", "\x1bb"])
+      sendInput(sa, key);
+    expect(sb.send).toHaveBeenCalledTimes(5);
+    await done();
+  });
+
+  it("a multi-line paste skips panes without bracketed paste", async () => {
+    const { sa, sb, done } = await broadcastingPair();
+    const paste = "\x1b[200~echo a\recho b\x1b[201~";
+    sendInput(sa, paste);
+    expect(sb.send).not.toHaveBeenCalled();
+    expect(m.warning).toHaveBeenCalledWith(
+      "Paste not sent to 1 pane without bracketed paste",
+    );
+    (sb.xterm.modes as { bracketedPasteMode: boolean }).bracketedPasteMode =
+      true;
+    sendInput(sa, paste);
+    expect(sb.send).toHaveBeenCalledWith(paste);
+    // A one-line paste is safe everywhere.
+    (sb.xterm.modes as { bracketedPasteMode: boolean }).bracketedPasteMode =
+      false;
+    sendInput(sa, "\x1b[200~uptime\x1b[201~");
+    expect(sb.send).toHaveBeenCalledTimes(2);
+    await done();
   });
 });

@@ -101,7 +101,10 @@ export default function Pane({
       tabIndex={0}
       className={`flex flex-col h-full min-h-0 min-w-0 bg-dark-950 relative ${
         broadcasting
-          ? "ring-2 ring-inset ring-amber-500/70"
+          ? // The pane you type in stays brighter than the ones that receive.
+            isActive
+            ? "ring-2 ring-inset ring-amber-400"
+            : "ring-2 ring-inset ring-amber-500/50"
           : isActive
             ? "ring-1 ring-inset ring-primary-600/60"
             : "ring-1 ring-inset ring-dark-800"
@@ -154,7 +157,7 @@ export default function Pane({
 
       {/* Pane body */}
       <div className="flex-1 min-h-0 relative">
-        {broadcasting && (
+        {broadcasting && pane.hostId && (
           <span className="pointer-events-none absolute bottom-2 right-3 z-20 flex items-center gap-1 rounded bg-amber-500/90 px-1.5 py-0.5 text-[11px] font-medium text-dark-950">
             <BroadcastIcon className="size-3" weight="bold" />
             Broadcasting

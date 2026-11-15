@@ -63,9 +63,9 @@ describe("SortableTab", () => {
     expect(document.querySelector('[title="Broadcasting input"]')).toBeNull();
     unmount();
     unmount = await render(true);
-    expect(
-      document.querySelector('[title="Broadcasting input"]'),
-    ).not.toBeNull();
+    const icon = document.querySelector('[title="Broadcasting input"]');
+    expect(icon?.getAttribute("role")).toBe("img");
+    expect(icon?.getAttribute("aria-label")).toBe("Broadcasting input");
     unmount();
   });
 });

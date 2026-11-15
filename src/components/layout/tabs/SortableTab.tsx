@@ -67,7 +67,12 @@ export default function SortableTab({
       <StatusDot status={getWorstStatus(statuses)} size="xs" />
       <span className="truncate">{tab.title}</span>
       {tab.broadcast && (
-        <span title="Broadcasting input" className="shrink-0 text-amber-400">
+        <span
+          role="img"
+          aria-label="Broadcasting input"
+          title="Broadcasting input"
+          className="shrink-0 text-amber-400"
+        >
           <BroadcastIcon className="size-3.5" weight="bold" aria-hidden />
         </span>
       )}

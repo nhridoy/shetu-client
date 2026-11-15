@@ -46,9 +46,9 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-async function render(broadcast: boolean) {
+async function render(broadcast: boolean, pane = leaf, isActive = true) {
   useTerminalStore.setState({
-    tabs: [{ id: "t1", root: leaf, activePaneId: "p1", broadcast } as never],
+    tabs: [{ id: "t1", root: pane, activePaneId: "p1", broadcast } as never],
     activeTabId: "t1",
   });
   const root = createRoot(
@@ -58,8 +58,8 @@ async function render(broadcast: boolean) {
     root.render(
       <Pane
         tabId="t1"
-        pane={leaf}
-        isActive
+        pane={pane}
+        isActive={isActive}
         closable={false}
         isActiveTab
         onRestorePreset={() => {}}
@@ -78,7 +78,17 @@ describe("Pane broadcast indicator", () => {
     act(() => root.unmount());
     root = await render(true);
     expect(document.body.textContent).toContain("Broadcasting");
-    expect(pane()?.className).toContain("ring-amber-500/70");
+    // The pane you type in stays distinguishable from the ones that receive.
+    expect(pane()?.className).toContain("ring-amber-400");
+    act(() => root.unmount());
+    root = await render(true, leaf, false);
+    expect(pane()?.className).toContain("ring-amber-500/50");
+    act(() => root.unmount());
+  });
+
+  it("an empty pane shows no badge", async () => {
+    const root = await render(true, { ...leaf, hostId: "", hostName: "" });
+    expect(document.body.textContent).not.toContain("Broadcasting");
     act(() => root.unmount());
   });
 });

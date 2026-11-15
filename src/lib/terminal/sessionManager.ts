@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerminal } from "@xterm/xterm";
+import { toast } from "sonner";
 import "@xterm/xterm/css/xterm.css";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
@@ -467,15 +468,40 @@ export function detachSession(session: Session, reactEl: HTMLElement) {
 
 export const getSession = (paneId: string) => sessions.get(paneId);
 
+/**
+ * Replies xterm writes on its own (device attributes, cursor/status reports, focus and
+ * mouse reports, OSC/DCS answers): they describe this pane, so they never broadcast.
+ */
+const TERMINAL_REPLY =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching escape sequences
+  /^\x1b(?:\[[?>]?[\d;]*[cRnyIO$]|\[M[\s\S]{3}|\[<[\d;]+[Mm]|\]\d|P[\d>])/;
+const BRACKETED_PASTE = "\x1b[200~";
+
 /** Input typed in a pane: to its own shell, and to the tab's other panes while it broadcasts. */
 export function sendInput(session: Session, data: string): void {
   session.send(data);
+  if (TERMINAL_REPLY.test(data)) return;
   const tab = useTerminalStore
     .getState()
     .tabs.find((t) => t.id === session.params.tabId);
   if (!tab) return;
-  for (const id of broadcastTargets(tab, session.params.paneId))
-    sessions.get(id)?.send(data);
+  // A target without bracketed paste would run every pasted line as it arrives.
+  const multiLinePaste =
+    data.startsWith(BRACKETED_PASTE) && /[\r\n]/.test(data);
+  let skipped = 0;
+  for (const id of broadcastTargets(tab, session.params.paneId)) {
+    const target = sessions.get(id);
+    if (!target) continue;
+    if (multiLinePaste && !target.xterm.modes.bracketedPasteMode) {
+      skipped++;
+      continue;
+    }
+    target.send(data);
+  }
+  if (skipped)
+    toast.warning(
+      `Paste not sent to ${skipped} pane${skipped === 1 ? "" : "s"} without bracketed paste`,
+    );
 }
 
 /**
