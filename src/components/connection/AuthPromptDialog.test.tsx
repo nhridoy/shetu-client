@@ -265,10 +265,11 @@ describe("AuthPromptDialog", () => {
         responses: ["pw"],
       });
       await savePendingCredentials("term-1");
-      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
-        password: "pw",
-        authType: "password",
-      });
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { password: "pw" },
+        { passwordAuth: true },
+      );
     });
 
     it("a rejected password is not saved when the server moves on to keyboard-interactive", async () => {
@@ -285,9 +286,11 @@ describe("AuthPromptDialog", () => {
         prompts: [{ text: "Password: ", echo: false }],
       });
       await savePendingCredentials("term-1");
-      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
-        username: "deploy",
-      });
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { username: "deploy" },
+        { passwordAuth: false },
+      );
     });
 
     it("a bastion keyboard-interactive prompt leaves the target's password", async () => {
@@ -303,10 +306,11 @@ describe("AuthPromptDialog", () => {
         hop: "bastion",
       });
       await savePendingCredentials("term-1");
-      expect(mocks.updateHost).toHaveBeenCalledWith("h1", {
-        password: "pw",
-        authType: "password",
-      });
+      expect(mocks.updateHost).toHaveBeenCalledWith(
+        "h1",
+        { password: "pw" },
+        { passwordAuth: true },
+      );
     });
 
     it("remembers nothing when unchecked or cancelled", async () => {

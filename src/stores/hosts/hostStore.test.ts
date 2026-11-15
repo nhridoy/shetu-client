@@ -302,6 +302,33 @@ describe("hostStore", () => {
     expect(plain.startup).toEqual({ command: "ls" });
   });
 
+  it.each([
+    ["key", "both"],
+    ["both", "both"],
+    ["none", "password"],
+    ["inherit", "password"],
+    ["password", "password"],
+  ])(
+    "updateHost with passwordAuth turns %s into %s from the row it read",
+    async (stored, saved) => {
+      mockGet.mockResolvedValue({
+        id: "h1",
+        vault_id: "v1",
+        name: "prod",
+        sort_order: 0,
+        auth_type: stored,
+        data: "enc",
+      } as never);
+      mockDecrypt.mockResolvedValue({ address: "1.2.3.4" });
+      await useHostStore
+        .getState()
+        .updateHost("h1", { password: "pw" }, { passwordAuth: true });
+      expect(
+        (mockUpsert.mock.calls[0][1] as { auth_type: string }).auth_type,
+      ).toBe(saved);
+    },
+  );
+
   it("updateHostGroup waits for a save already running on the same host", async () => {
     mockGet.mockResolvedValue({
       id: "h1",

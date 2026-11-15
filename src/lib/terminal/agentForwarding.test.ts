@@ -300,7 +300,11 @@ describe("missing username", () => {
     await pending;
     expect(updateHost).not.toHaveBeenCalled();
     await savePendingCredentials(args.sessionId);
-    expect(updateHost).toHaveBeenCalledWith("h1", { username: "deploy" });
+    expect(updateHost).toHaveBeenCalledWith(
+      "h1",
+      { username: "deploy" },
+      { passwordAuth: false },
+    );
   });
 
   it("asks without Save when the group lookup fails", async () => {

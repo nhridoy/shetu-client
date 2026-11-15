@@ -3,13 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({ toastError: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { error: m.toastError } }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@/lib/db/db");
 vi.mock("@/lib/crypto/crypto");
 vi.mock("@/stores/auth/authStore", () => ({
   useAuthStore: { getState: () => ({ user: { id: "u1" } }) },
 }));
 
-import { getRow } from "@/lib/db/db";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import {
   answerUsername,
@@ -48,59 +46,35 @@ describe("pending credentials", () => {
     expect(isSavedHostSession("s1")).toBe(false);
   });
 
-  it("saves a password after connected with authType password", async () => {
+  it("saves a password after connected and lets the store derive authType", async () => {
     rememberCredentials("s1", { password: "pw" });
     await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", {
-      password: "pw",
-      authType: "password",
-    });
-  });
-
-  it("keeps the key when the host's own auth is key", async () => {
-    hostAuth("key");
-    rememberCredentials("s1", { password: "pw" });
-    await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", {
-      password: "pw",
-      authType: "both",
-    });
-  });
-
-  it("reads a key host's auth from the db after a vault switch emptied the cache", async () => {
-    useHostStore.setState({ hosts: [], updateHost } as never);
-    vi.mocked(getRow).mockResolvedValueOnce({ auth_type: "key" } as never);
-    rememberCredentials("s1", { password: "pw" });
-    await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", {
-      password: "pw",
-      authType: "both",
-    });
-  });
-
-  it("saves only the password when the host's auth can't be read", async () => {
-    useHostStore.setState({ hosts: [], updateHost } as never);
-    vi.mocked(getRow).mockResolvedValueOnce(undefined as never);
-    rememberCredentials("s1", { password: "pw" });
-    await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", { password: "pw" });
+    expect(updateHost).toHaveBeenCalledWith(
+      "h1",
+      { password: "pw" },
+      { passwordAuth: true },
+    );
   });
 
   it("saves a username alone without touching authType", async () => {
     rememberCredentials("s1", { username: "deploy" });
     await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", { username: "deploy" });
+    expect(updateHost).toHaveBeenCalledWith(
+      "h1",
+      { username: "deploy" },
+      { passwordAuth: false },
+    );
   });
 
   it("merges username and password remembered for one session", async () => {
     rememberCredentials("s1", { username: "deploy" });
     rememberCredentials("s1", { password: "pw" });
     await savePendingCredentials("s1");
-    expect(updateHost).toHaveBeenCalledWith("h1", {
-      username: "deploy",
-      password: "pw",
-      authType: "password",
-    });
+    expect(updateHost).toHaveBeenCalledWith(
+      "h1",
+      { username: "deploy", password: "pw" },
+      { passwordAuth: true },
+    );
   });
 
   it("an unchecked retry replaces a password marked to save", async () => {

@@ -75,7 +75,11 @@ interface HostState {
     opts?: { probeOs?: boolean },
   ) => Promise<Host | null>;
   /** False when the save failed (the reason is in `error`). */
-  updateHost: (id: string, host: Partial<Host>) => Promise<boolean>;
+  updateHost: (
+    id: string,
+    host: Partial<Host>,
+    opts?: { passwordAuth?: boolean },
+  ) => Promise<boolean>;
   deleteHost: (id: string) => Promise<void>;
   selectHost: (host: Host | null) => void;
   getDecryptedHost: (hostId: string) => Promise<Host | null>;
@@ -430,7 +434,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
 
-  updateHost: (id, patch) =>
+  updateHost: (id, patch, opts) =>
     runSerial(`hosts:${id}`, async () => {
       set({ isLoading: true, error: null });
       try {
@@ -463,8 +467,13 @@ export const useHostStore = create<HostState>((set, get) => ({
             vault_id: row.vault_id,
             name: patch.name ?? row.name,
             os: patch.os !== undefined ? patch.os : (row.os ?? null),
-            auth_type:
-              patch.authType !== undefined
+            // passwordAuth: derived from the row read inside this queued save, so a
+            // concurrent auth change can't be overwritten; a key in use stays in play.
+            auth_type: opts?.passwordAuth
+              ? row.auth_type === "key" || row.auth_type === "both"
+                ? "both"
+                : "password"
+              : patch.authType !== undefined
                 ? patch.authType
                 : (row.auth_type ?? "password"),
             tags:
@@ -488,7 +497,14 @@ export const useHostStore = create<HostState>((set, get) => ({
         );
         set({
           hosts: get().hosts.map((h) =>
-            h.id === id ? { ...h, ...patch, data: saved.data } : h,
+            h.id === id
+              ? {
+                  ...h,
+                  ...patch,
+                  authType: (saved.auth_type ?? h.authType) as Host["authType"],
+                  data: saved.data,
+                }
+              : h,
           ),
           isLoading: false,
         });
