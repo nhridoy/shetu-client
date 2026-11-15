@@ -84,8 +84,10 @@ export function VaultSelector({ compact = false }: { compact?: boolean }) {
     };
   }, [open]);
 
-  const openCreateModal = () => {
+  const openCreateModal = async () => {
     setOpen(false);
+    // Saving the new vault switches to it.
+    if (!(await useUnsavedChanges.getState().confirmLeave())) return;
     setEditingVault(null);
     formModal.show();
   };

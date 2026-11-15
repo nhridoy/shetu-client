@@ -85,4 +85,21 @@ describe("leave guards outside the sidebar", () => {
     await click(byText("Discard"));
     expect(switchVault).toHaveBeenCalledWith("v2");
   });
+
+  it("creating a vault asks first, since saving it switches to it", async () => {
+    useVaultStore.setState({
+      vaults: [{ id: "v1", name: "Personal" }] as never,
+      currentVaultId: "v1",
+    } as never);
+    render(<VaultSelector />);
+    await click(byText("Personal"));
+    await click(byText("Create vault"));
+    expect(document.body.textContent).toContain("Discard changes?");
+    await click(byText("Keep editing"));
+    expect(document.body.textContent).not.toContain("Create Vault");
+    await click(byText("Personal"));
+    await click(byText("Create vault"));
+    await click(byText("Discard"));
+    expect(document.body.textContent).toContain("Create Vault");
+  });
 });
