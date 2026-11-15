@@ -229,6 +229,12 @@ pub(crate) fn defaults(db: &LocalDb, crypto: &CryptoState, group_id: Option<&str
         out["authFrom"] = json!(e.auth_from);
     }
     if let Some(login) = &e.identity {
+        // Hosts with their own login don't get the identity's username: report the group's plain one.
+        if let Some((name, _)) = nearest(&json!({}), &chain, "username", |v| {
+            v.as_str().filter(|s| !s.is_empty()).map(String::from)
+        }) {
+            out["groupUsername"] = json!(name);
+        }
         out["identityName"] = json!(login.name);
         out["identityFrom"] = json!(e.auth_from);
         out["identityUsername"] = json!(login.username);

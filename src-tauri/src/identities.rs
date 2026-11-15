@@ -109,7 +109,14 @@ pub fn save(
         &row.vault_id,
     )?;
     drop(session);
-    db::local_mutate(db, Table::Identities, &row, device_id)
+    match id {
+        // A sync deletion or edit since the read wins over this save.
+        Some(_) => {
+            let expected = row.operation_id.clone();
+            db::local_mutate_if(db, Table::Identities, &row, device_id, &expected)
+        }
+        None => db::local_mutate(db, Table::Identities, &row, device_id),
+    }
 }
 
 #[tauri::command]
@@ -257,6 +264,49 @@ mod tests {
         )
         .is_err());
         assert!(view(&db, &crypto, &row.id).is_none());
+    }
+
+    #[test]
+    fn a_write_based_on_a_stale_read_is_refused() {
+        let (db, crypto) = fixture();
+        let row = save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "x",
+            &json!({"username": "u"}),
+            DEVICE,
+        )
+        .unwrap();
+        db::tombstone_sync_row(&db, db::Table::Identities, &row.id).unwrap();
+        // The save read `row` before sync deleted it; its write must not bring it back.
+        let err = db::local_mutate_if(&db, db::Table::Identities, &row, DEVICE, &row.operation_id)
+            .unwrap_err();
+        assert!(err.contains("changed"), "{err}");
+        assert!(db::get_sync_row(&db, db::Table::Identities, &row.id)
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some());
+        let live = save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "y",
+            &json!({"username": "u"}),
+            DEVICE,
+        )
+        .unwrap();
+        assert!(db::local_mutate_if(
+            &db,
+            db::Table::Identities,
+            &live,
+            DEVICE,
+            &live.operation_id
+        )
+        .is_ok());
     }
 
     #[test]

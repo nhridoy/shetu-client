@@ -22,7 +22,7 @@ import IdentityModal from "./IdentityModal";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const text = () => document.body.textContent ?? "";
-let root: Root;
+let root: Root | undefined;
 
 function setValue(el: Element | null, value: string) {
   if (!el) throw new Error("missing input");
@@ -41,8 +41,11 @@ const button = (label: string) =>
   );
 
 async function render(node: React.ReactNode) {
-  root = createRoot(document.body.appendChild(document.createElement("div")));
-  await act(async () => root.render(<MemoryRouter>{node}</MemoryRouter>));
+  const created = createRoot(
+    document.body.appendChild(document.createElement("div")),
+  );
+  root = created;
+  await act(async () => created.render(<MemoryRouter>{node}</MemoryRouter>));
 }
 
 const identity = {
@@ -80,7 +83,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => root.unmount());
+  if (root) await act(async () => root?.unmount());
+  root = undefined;
   document.body.innerHTML = "";
   vi.useRealTimers();
 });
@@ -112,6 +116,45 @@ describe("IdentityModal", () => {
       }),
     );
     expect(onSaved).toHaveBeenCalledWith("new-id");
+  });
+
+  it("editing waits for the stored identity before Save works", async () => {
+    let resolve: (v: unknown) => void = () => {};
+    getDecryptedIdentity.mockImplementationOnce(
+      () => new Promise((r) => (resolve = r)) as never,
+    );
+    await render(
+      <IdentityModal
+        identity={identity}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    expect(button("Save")?.disabled).toBe(true);
+    await act(async () =>
+      resolve({ username: "deploy", hasPassword: false, hasTotp: false }),
+    );
+    expect(button("Save")?.disabled).toBe(false);
+  });
+
+  it("an identity that can't be loaded can't be saved", async () => {
+    getDecryptedIdentity.mockResolvedValueOnce(null as never);
+    await render(
+      <IdentityModal
+        identity={identity}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    expect(button("Save")?.disabled).toBe(true);
+    expect(text()).toContain("Couldn't load this identity");
+  });
+
+  it("closes when the vault changes", async () => {
+    const onClose = vi.fn();
+    await render(<IdentityModal onClose={onClose} onSaved={() => {}} />);
+    await act(async () => useVaultStore.setState({ currentVaultId: "v2" }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("editing with an empty password keeps the stored one", async () => {
@@ -213,5 +256,14 @@ describe("KeysPage", () => {
       (document.querySelectorAll('[role="tab"]')[1] as HTMLElement).click(),
     );
     expect(text()).toContain("No identities");
+    for (const tab of document.querySelectorAll('[role="tab"]')) {
+      const panel = document.getElementById(
+        tab.getAttribute("aria-controls") ?? "",
+      );
+      if (tab.getAttribute("aria-selected") === "true") {
+        expect(panel?.getAttribute("role")).toBe("tabpanel");
+        expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+      }
+    }
   });
 });

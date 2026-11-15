@@ -241,9 +241,9 @@ export default function CredentialsFields<T extends FieldValues>({
     if (identities.some((i) => i.id === identityId)) return;
     // The list can be stale (vault switch, sync refresh); only the row itself says it's gone.
     let live = true;
-    void getRow("identities", identityId)
-      .catch(() => null)
-      .then((row) => {
+    // A failed lookup proves nothing; only a confirmed missing/foreign/deleted row drops the pick.
+    void getRow("identities", identityId).then(
+      (row) => {
         if (
           !live ||
           (row && !row.deleted_at && row.vault_id === currentVaultId)
@@ -254,7 +254,9 @@ export default function CredentialsFields<T extends FieldValues>({
         resetField?.("authType", {
           defaultValue: mode === "host" ? "none" : "",
         });
-      });
+      },
+      () => {},
+    );
     return () => {
       live = false;
     };
@@ -337,15 +339,13 @@ export default function CredentialsFields<T extends FieldValues>({
         {identityUser && ` (${identityUser})`}
       </Chip>
     </div>
-  ) : inheritedAuth === "identity" ? (
-    <div>
-      <p className="mb-1 text-sm font-medium text-dark-200">Identity</p>
-      <Chip icon={<IdentificationCardIcon />} muted>
-        Identity '{inherited?.identityName}' · {from}
-      </Chip>
-    </div>
   ) : (
-    <div>
+    <div className="space-y-1">
+      {inheritedAuth === "identity" && (
+        <Chip icon={<IdentificationCardIcon />} muted>
+          Identity '{inherited?.identityName}' · {from}
+        </Chip>
+      )}
       <FormBase name="username" label="Username" control={control}>
         {({ ref, onBlur, placeholder: _p, ...field }) => (
           <div className="relative">

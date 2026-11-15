@@ -16,9 +16,9 @@ export function useCardSummaries<T extends FieldValues>(
 ) {
   // Shared by the host and group forms, whose value types differ.
   const control = typedControl as unknown as Control<FieldValues>;
-  const [password, keyId, identityId, groupId] = useWatch({
+  const [password, keyId, identityId, groupId, storedAuth] = useWatch({
     control,
-    name: ["password", "keyId", "identityId", "groupId"],
+    name: ["password", "keyId", "identityId", "groupId", "authType"],
   });
   const keepalive = useWatch({ control, name: "keepaliveSecs" });
   const forwardMode = useWatch({ control, name: "forwardAgentMode" });
@@ -31,7 +31,10 @@ export function useCardSummaries<T extends FieldValues>(
     visibleInheritedEnv(inherited, env).length;
   return {
     credentials: from(
-      !!groupId && !ownCredentials({ password, keyId, identityId }),
+      // A host stored as "none" keeps asking until its login is edited.
+      !!groupId &&
+        storedAuth !== "none" &&
+        !ownCredentials({ password, keyId, identityId }),
       inherited?.authFrom,
     ),
     connection:

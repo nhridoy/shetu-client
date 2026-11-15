@@ -156,7 +156,12 @@ async function missingUsername(
   // A usable identity supplies the username; a deleted one leaves the host on its own.
   if (ownIdentity && (await identityUsable(host.identityId, host.vaultId)))
     return undefined;
-  if (ownName || inherited?.username) return undefined;
+  // A group identity's username only applies to hosts that inherit the login.
+  const groupName =
+    host.authType === "inherit" || inherited?.authType !== "identity"
+      ? inherited?.username
+      : inherited?.groupUsername;
+  if (ownName || groupName) return undefined;
   const groupKnown = !host.groupId || !!inherited;
   // A closed pane gets no question; its caller checks isCancelled and stops.
   if (isCancelled()) return undefined;

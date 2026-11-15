@@ -710,4 +710,17 @@ mod tests {
         let text = out.to_string();
         assert!(!text.contains("\"pw\"") && !text.contains("GEZDGNBV"), "{text}");
     }
+
+    #[test]
+    fn defaults_report_the_group_username_apart_from_the_identity() {
+        let (db, crypto, vault) = fixture();
+        identity_with(&db, &crypto, "i1", &vault, deploy(), false);
+        group_with(&db, &crypto, "g", &vault, None, serde_json::json!({"authType": "identity", "identityId": "i1"}), false);
+        let out = crate::host_inherit::defaults(&db, &crypto, Some("g"), &vault);
+        assert_eq!(out["username"], "deploy");
+        assert!(out.get("groupUsername").is_none(), "{out}");
+        group_with(&db, &crypto, "g2", &vault, None, serde_json::json!({"username": "grp", "authType": "identity", "identityId": "i1"}), false);
+        let out = crate::host_inherit::defaults(&db, &crypto, Some("g2"), &vault);
+        assert_eq!(out["groupUsername"], "grp");
+    }
 }

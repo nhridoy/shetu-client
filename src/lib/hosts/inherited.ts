@@ -10,6 +10,8 @@ export interface InheritedDefaults {
   identityName?: string;
   identityFrom?: string;
   identityUsername?: string;
+  /** The nearest group username, for hosts with their own login under an identity group. */
+  groupUsername?: string;
   hasPassword: boolean;
   keyName?: string;
   keepaliveSecs?: number;

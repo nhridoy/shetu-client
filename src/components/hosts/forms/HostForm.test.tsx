@@ -627,7 +627,7 @@ describe("HostForm inherits from its group", () => {
     expect(document.body.textContent).toContain("ops (deploy)");
   });
 
-  it("shows the inherited identity and hides the username", async () => {
+  it("shows the inherited identity and still offers the identity picker", async () => {
     await mount({
       host: existing({ authType: "inherit" }),
       inherited: {
@@ -644,7 +644,9 @@ describe("HostForm inherits from its group", () => {
     expect(document.body.textContent).toContain(
       "Identity 'deploy@prod' · prod",
     );
-    expect(input("username")).toBeNull();
+    expect(input("username")).not.toBeNull();
+    focusIn(input("username"));
+    expect(options()).toContain("deploy@prod");
   });
 
   it("keeps a live identity that a stale list is missing", async () => {
@@ -653,6 +655,15 @@ describe("HostForm inherits from its group", () => {
       vault_id: "v1",
       deleted_at: null,
     } as never);
+    await mount({
+      host: existing({ authType: "identity", identityId: "i9" }),
+    });
+    await act(async () => {});
+    expect(buttonLabelled("Remove identity")).toBeDefined();
+  });
+
+  it("a failed identity lookup keeps the pick", async () => {
+    vi.mocked(getRow).mockRejectedValue(new Error("db locked"));
     await mount({
       host: existing({ authType: "identity", identityId: "i9" }),
     });
@@ -901,6 +912,7 @@ describe("HostForm inherits from its group", () => {
       host: existing({ authType: "none" }),
       inherited: PROD,
     });
+    expect(summary("Credentials")).toBeUndefined();
     await submit();
     expect(updateHost.mock.calls[0][1].authType).toBe("none");
   });

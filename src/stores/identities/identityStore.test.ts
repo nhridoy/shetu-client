@@ -55,6 +55,22 @@ describe("identityStore", () => {
     ]);
   });
 
+  it("an older vault's fetch can't overwrite a newer one", async () => {
+    let finishOld: (rows: unknown[]) => void = () => {};
+    vi.mocked(listRows)
+      .mockImplementationOnce(
+        () => new Promise((r) => (finishOld = r as never)) as never,
+      )
+      .mockResolvedValueOnce([{ ...row, id: "new", vault_id: "v2" }]);
+    const old = useIdentityStore.getState().fetchIdentities("v1");
+    await useIdentityStore.getState().fetchIdentities("v2");
+    finishOld([row]);
+    await old;
+    expect(useIdentityStore.getState().identities.map((i) => i.id)).toEqual([
+      "new",
+    ]);
+  });
+
   it("create hands the secrets to Rust and keeps none in state", async () => {
     const id = await useIdentityStore.getState().createIdentity({
       name: "deploy@prod",

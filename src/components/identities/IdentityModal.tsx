@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useForm, useWatch } from "react-hook-form";
 import { Button } from "@/components/ui/Button";
@@ -71,6 +71,9 @@ export default function IdentityModal({
   const [stored, setStored] = useState({ password: false, totp: false });
   const [remove, setRemove] = useState({ password: false, totp: false });
   const [error, setError] = useState<string | null>(null);
+  // Editing waits for the stored values, so a Save can't drop what wasn't loaded yet.
+  const [hydrated, setHydrated] = useState(!identity);
+  const openedVaultId = useRef(currentVaultId);
   const { control, handleSubmit, reset, formState } =
     useForm<IdentityFormSchema>({
       resolver: zodResolver(identityFormSchema),
@@ -89,7 +92,10 @@ export default function IdentityModal({
       .getState()
       .getDecryptedIdentity(identity.id)
       .then((view) => {
-        if (!view) return;
+        if (!view) {
+          setError("Couldn't load this identity");
+          return;
+        }
         reset({
           ...identityFormDefaultValues,
           name: identity.name,
@@ -97,10 +103,19 @@ export default function IdentityModal({
           keyId: view.keyId ?? "",
         });
         setStored({ password: view.hasPassword, totp: view.hasTotp });
-      });
+        setHydrated(true);
+      })
+      .catch(() => setError("Couldn't load this identity"));
   }, [identity, reset]);
 
+  // A draft belongs to the vault it was opened in; a vault switch discards it.
+  useEffect(() => {
+    if (openedVaultId.current && currentVaultId !== openedVaultId.current)
+      onClose();
+  }, [currentVaultId, onClose]);
+
   const onSubmit = async (data: IdentityFormSchema) => {
+    if (!hydrated) return;
     setError(null);
     if (data.totpSecret) {
       try {
@@ -237,7 +252,11 @@ export default function IdentityModal({
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" size="sm" disabled={formState.isSubmitting}>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={!hydrated || formState.isSubmitting}
+          >
             Save
           </Button>
         </div>

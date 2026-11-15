@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import IdentityList from "@/components/identities/IdentityList";
 import KeyList from "@/components/keys/lists/KeyList";
 
@@ -6,6 +6,7 @@ const TABS = ["Keys", "Identities"] as const;
 
 export default function KeysPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Keys");
+  const id = useId();
   return (
     <div className="flex-1 p-4 overflow-y-auto">
       <div
@@ -18,6 +19,8 @@ export default function KeysPage() {
             key={name}
             type="button"
             role="tab"
+            id={`${id}-tab-${name}`}
+            aria-controls={`${id}-panel-${name}`}
             aria-selected={tab === name}
             onClick={() => setTab(name)}
             className={`px-3 py-1.5 text-sm -mb-px border-b-2 transition-colors ${
@@ -30,7 +33,13 @@ export default function KeysPage() {
           </button>
         ))}
       </div>
-      {tab === "Keys" ? <KeyList /> : <IdentityList />}
+      <div
+        role="tabpanel"
+        id={`${id}-panel-${tab}`}
+        aria-labelledby={`${id}-tab-${tab}`}
+      >
+        {tab === "Keys" ? <KeyList /> : <IdentityList />}
+      </div>
     </div>
   );
 }

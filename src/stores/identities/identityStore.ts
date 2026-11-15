@@ -84,6 +84,9 @@ async function saveIdentity(
   return saved;
 }
 
+// Only the latest list request may publish (vault switches, sync refreshes).
+let fetchGeneration = 0;
+
 export const useIdentityStore = create<IdentityState>((set, get) => ({
   identities: [],
   isLoading: false,
@@ -92,11 +95,14 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   fetchIdentities: async (vaultId) => {
     const vid = vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vid) return;
+    const generation = ++fetchGeneration;
     set({ isLoading: true, error: null });
     try {
       const rows = await listRows("identities", vid);
+      if (generation !== fetchGeneration) return;
       set({ identities: rows.map(fromRow), isLoading: false });
     } catch (err) {
+      if (generation !== fetchGeneration) return;
       set({ isLoading: false, error: errorMessage(err) });
     }
   },

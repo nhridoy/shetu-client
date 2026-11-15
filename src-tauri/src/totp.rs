@@ -32,6 +32,24 @@ fn decode_base32(input: &str) -> Option<Vec<u8>> {
     (!bytes.is_empty()).then_some(bytes)
 }
 
+/// `%XX` escapes in a URI value; None for a malformed escape or non-UTF-8 result.
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// A base32 secret, or an `otpauth://totp/...` URI with its algorithm, digits and period.
 pub fn parse(input: &str) -> Result<TotpParams, String> {
     let input = input.trim();
@@ -55,7 +73,9 @@ pub fn parse(input: &str) -> Result<TotpParams, String> {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key.to_ascii_lowercase().as_str() {
             "secret" => {
-                params.secret = decode_base32(&value.replace("%20", "")).ok_or_else(invalid)?
+                params.secret = percent_decode(value)
+                    .and_then(|v| decode_base32(&v))
+                    .ok_or_else(invalid)?
             }
             "algorithm" => {
                 params.algorithm = match value.to_ascii_uppercase().as_str() {
@@ -129,7 +149,10 @@ pub fn is_code_prompt(prompt: &str) -> bool {
         )
         .unwrap()
     });
-    CODE.is_match(prompt)
+    // Users and hosts named in the prompt ("Password for deploy@code.example:") aren't the factor asked for.
+    static LOGIN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[\w-]+(?:[@.][\w-]+)+").unwrap());
+    CODE.is_match(&LOGIN.replace_all(prompt, " "))
 }
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -228,6 +251,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_percent_decodes_uri_values() {
+        let p = parse("otpauth://totp/x?secret=%47EZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ%3D%3D&digits=6")
+            .unwrap();
+        assert_eq!(p.secret, b"12345678901234567890");
+    }
+
+    #[test]
     fn parse_rejects_garbage() {
         for bad in [
             "",
@@ -257,7 +287,15 @@ mod tests {
         ] {
             assert!(is_code_prompt(yes), "{yes}");
         }
-        for no in ["Password: ", "password for deploy:", "Username:", "(deploy@hotpot) Password:", "Password for alice@CODEBASE.EXAMPLE:"] {
+        for no in [
+            "Password: ",
+            "password for deploy:",
+            "Username:",
+            "(deploy@hotpot) Password:",
+            "Password for alice@CODEBASE.EXAMPLE:",
+            "Password for deploy@code.example:",
+            "Password for token.internal:",
+        ] {
             assert!(!is_code_prompt(no), "{no}");
         }
     }

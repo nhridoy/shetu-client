@@ -2254,6 +2254,24 @@ pub fn local_mutate(
     local_mutate_locked(&mut conn, table, row, device_id)
 }
 
+/// Like [`local_mutate`], but only if the row is still live and unchanged since it was read
+/// (`expected_operation_id`); checked under the same lock as the write.
+pub fn local_mutate_if(
+    db: &LocalDb,
+    table: Table,
+    row: &SyncRow,
+    device_id: &str,
+    expected_operation_id: &str,
+) -> Result<SyncRow, String> {
+    uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let current = get_sync_row_unlocked(&conn, table, &row.id)?;
+    if !current.is_some_and(|c| c.deleted_at.is_none() && c.operation_id == expected_operation_id) {
+        return Err("This item changed elsewhere; reopen it and try again".into());
+    }
+    local_mutate_locked(&mut conn, table, row, device_id)
+}
+
 fn local_mutate_locked(
     conn: &mut Connection,
     table: Table,

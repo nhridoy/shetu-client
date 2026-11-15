@@ -505,6 +505,17 @@ describe("identity hosts", () => {
     expect(isSavedHostSession(args.sessionId)).toBe(false);
   });
 
+  it("a password host under an identity group still asks for its own username", async () => {
+    identityHost(
+      { authType: "password", groupId: "g1" },
+      { authType: "identity", authFrom: "prod", username: "deploy" },
+    );
+    const pending = connectSavedTerminal(args);
+    await vi.waitFor(() => expect(usernameAsks()).toHaveLength(1));
+    answerUsername({ username: "me", save: false });
+    await pending;
+  });
+
   it("a deleted identity asks for the username without Save", async () => {
     identityHost({});
     vi.mocked(getRow).mockResolvedValue(null);
