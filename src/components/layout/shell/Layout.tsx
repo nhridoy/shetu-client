@@ -15,6 +15,10 @@ import { useWindowCloseGuard } from "@/hooks/layout/useWindowCloseGuard";
 import { useModal } from "@/hooks/useModal";
 import { useShortcut } from "@/hooks/useShortcut";
 import {
+  restoreLastSession,
+  startSessionPersistence,
+} from "@/lib/terminal/sessionRestore";
+import {
   isModalOpen,
   listenAppActions,
   type MenuActionId,
@@ -129,6 +133,22 @@ export default function Layout() {
     );
     return () => window.clearInterval(timer);
   }, [isUnlocked, defaultPersonalVaultId]);
+
+  // Keep the open tabs saved, and reopen the last ones once after unlock.
+  const accountId = useAuthStore(
+    (state) => state.user?.id ?? state.localAccessAccountId,
+  );
+  useEffect(() => {
+    if (!isUnlocked || !accountId) return;
+    return startSessionPersistence(accountId);
+  }, [isUnlocked, accountId]);
+  const restoredSession = useRef(false);
+  useEffect(() => {
+    if (!isUnlocked || !accountId || !currentVaultId || restoredSession.current)
+      return;
+    restoredSession.current = true;
+    void restoreLastSession(accountId, currentVaultId);
+  }, [isUnlocked, accountId, currentVaultId]);
 
   useEffect(() => {
     if (!isUnlocked) return;
