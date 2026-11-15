@@ -110,8 +110,7 @@ export default function IdentityModal({
 
   // A draft belongs to the vault it was opened in; a vault switch discards it.
   useEffect(() => {
-    if (openedVaultId.current && currentVaultId !== openedVaultId.current)
-      onClose();
+    if (currentVaultId !== openedVaultId.current) onClose();
   }, [currentVaultId, onClose]);
 
   const onSubmit = async (data: IdentityFormSchema) => {
@@ -186,67 +185,72 @@ export default function IdentityModal({
         }}
         className="space-y-4"
       >
-        <FormInput
-          name="name"
-          label="Label"
-          placeholder="deploy@prod"
-          control={control}
-          required
-        />
-        <FormInput
-          name="username"
-          label="Username"
-          placeholder="deploy"
-          control={control}
-          required
-        />
-        <div>
+        {/* Typing before the stored values load would be overwritten by them. */}
+        <fieldset disabled={!hydrated} className="min-w-0 space-y-4">
           <FormInput
-            name="password"
-            label="Password"
-            type="password"
-            placeholder={
-              remove.password
-                ? "Saved password will be removed"
-                : keepHint(stored.password)
-            }
+            name="name"
+            label="Label"
+            placeholder="deploy@prod"
             control={control}
+            required
           />
-          {removeToggle("password", stored.password)}
-        </div>
-        <FormSelect
-          name="keyId"
-          label="SSH key"
-          control={control}
-          options={[
-            { value: "", label: "None" },
-            ...keys.map((k) => ({ value: k.id, label: k.name })),
-          ]}
-        />
-        <div>
           <FormInput
-            name="totpSecret"
-            label="TOTP secret"
-            description="Base32 secret or otpauth:// URI. Fills 2FA codes when the server asks."
-            placeholder={
-              remove.totp
-                ? "Saved TOTP will be removed"
-                : (keepHint(stored.totp) ?? "JBSWY3DPEHPK3PXP")
-            }
+            name="username"
+            label="Username"
+            placeholder="deploy"
             control={control}
+            required
           />
-          {removeToggle("totp", stored.totp)}
-          {totp.preview && (
-            <p className="mt-1 text-sm text-dark-300">
-              Current code{" "}
-              <span className="font-mono text-white">{totp.preview.code}</span>{" "}
-              · {totp.preview.secondsLeft}s
-            </p>
-          )}
-          {totp.error && (
-            <p className="mt-1 text-sm text-red-500">{totp.error}</p>
-          )}
-        </div>
+          <div>
+            <FormInput
+              name="password"
+              label="Password"
+              type="password"
+              placeholder={
+                remove.password
+                  ? "Saved password will be removed"
+                  : keepHint(stored.password)
+              }
+              control={control}
+            />
+            {removeToggle("password", stored.password)}
+          </div>
+          <FormSelect
+            name="keyId"
+            label="SSH key"
+            control={control}
+            options={[
+              { value: "", label: "None" },
+              ...keys.map((k) => ({ value: k.id, label: k.name })),
+            ]}
+          />
+          <div>
+            <FormInput
+              name="totpSecret"
+              label="TOTP secret"
+              description="Base32 secret or otpauth:// URI. Fills 2FA codes when the server asks."
+              placeholder={
+                remove.totp
+                  ? "Saved TOTP will be removed"
+                  : (keepHint(stored.totp) ?? "JBSWY3DPEHPK3PXP")
+              }
+              control={control}
+            />
+            {removeToggle("totp", stored.totp)}
+            {totp.preview && (
+              <p className="mt-1 text-sm text-dark-300">
+                Current code{" "}
+                <span className="font-mono text-white">
+                  {totp.preview.code}
+                </span>{" "}
+                · {totp.preview.secondsLeft}s
+              </p>
+            )}
+            {totp.error && (
+              <p className="mt-1 text-sm text-red-500">{totp.error}</p>
+            )}
+          </div>
+        </fieldset>
         {error && <p className="text-sm text-red-500">{error}</p>}
         <div className="flex justify-end gap-3">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>

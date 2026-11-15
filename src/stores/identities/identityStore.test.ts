@@ -63,12 +63,25 @@ describe("identityStore", () => {
       )
       .mockResolvedValueOnce([{ ...row, id: "new", vault_id: "v2" }]);
     const old = useIdentityStore.getState().fetchIdentities("v1");
+    useVaultStore.setState({ currentVaultId: "v2" });
     await useIdentityStore.getState().fetchIdentities("v2");
     finishOld([row]);
     await old;
     expect(useIdentityStore.getState().identities.map((i) => i.id)).toEqual([
       "new",
     ]);
+  });
+
+  it("a fetch for the vault the user left doesn't publish", async () => {
+    let finish: (rows: unknown[]) => void = () => {};
+    vi.mocked(listRows).mockImplementationOnce(
+      () => new Promise((r) => (finish = r as never)) as never,
+    );
+    const pending = useIdentityStore.getState().fetchIdentities("v1");
+    useVaultStore.setState({ currentVaultId: "v2" });
+    finish([row]);
+    await pending;
+    expect(useIdentityStore.getState().identities).toEqual([]);
   });
 
   it("create hands the secrets to Rust and keeps none in state", async () => {

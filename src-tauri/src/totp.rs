@@ -39,8 +39,12 @@ fn percent_decode(value: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
+            let hex = bytes.get(i + 1..i + 3)?;
+            // from_str_radix alone would accept "+A".
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -150,8 +154,9 @@ pub fn is_code_prompt(prompt: &str) -> bool {
         .unwrap()
     });
     // Users and hosts named in the prompt ("Password for deploy@code.example:") aren't the factor asked for.
-    static LOGIN: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"[\w-]+(?:[@.][\w-]+)+").unwrap());
+    static LOGIN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)[\w-]+(?:[@.][\w-]+)+|\bfor\s+\S+").unwrap()
+    });
     CODE.is_match(&LOGIN.replace_all(prompt, " "))
 }
 
@@ -255,6 +260,7 @@ mod tests {
         let p = parse("otpauth://totp/x?secret=%47EZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ%3D%3D&digits=6")
             .unwrap();
         assert_eq!(p.secret, b"12345678901234567890");
+        assert!(parse("otpauth://totp/x?secret=GEZDGNBV%+A").is_err());
     }
 
     #[test]
@@ -295,6 +301,7 @@ mod tests {
             "Password for alice@CODEBASE.EXAMPLE:",
             "Password for deploy@code.example:",
             "Password for token.internal:",
+            "Password for code:",
         ] {
             assert!(!is_code_prompt(no), "{no}");
         }

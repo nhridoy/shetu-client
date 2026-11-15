@@ -131,10 +131,13 @@ describe("IdentityModal", () => {
       />,
     );
     expect(button("Save")?.disabled).toBe(true);
+    // A disabled fieldset disables every field inside it.
+    expect(input("password")?.closest("fieldset")?.disabled).toBe(true);
     await act(async () =>
       resolve({ username: "deploy", hasPassword: false, hasTotp: false }),
     );
     expect(button("Save")?.disabled).toBe(false);
+    expect(input("password")?.closest("fieldset")?.disabled).toBe(false);
   });
 
   it("an identity that can't be loaded can't be saved", async () => {
@@ -148,6 +151,14 @@ describe("IdentityModal", () => {
     );
     expect(button("Save")?.disabled).toBe(true);
     expect(text()).toContain("Couldn't load this identity");
+  });
+
+  it("closes when a vault is picked after opening without one", async () => {
+    useVaultStore.setState({ currentVaultId: null });
+    const onClose = vi.fn();
+    await render(<IdentityModal onClose={onClose} onSaved={() => {}} />);
+    await act(async () => useVaultStore.setState({ currentVaultId: "v1" }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("closes when the vault changes", async () => {
@@ -260,10 +271,9 @@ describe("KeysPage", () => {
       const panel = document.getElementById(
         tab.getAttribute("aria-controls") ?? "",
       );
-      if (tab.getAttribute("aria-selected") === "true") {
-        expect(panel?.getAttribute("role")).toBe("tabpanel");
-        expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
-      }
+      expect(panel?.getAttribute("role")).toBe("tabpanel");
+      expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+      expect(panel?.hidden).toBe(tab.getAttribute("aria-selected") !== "true");
     }
   });
 });

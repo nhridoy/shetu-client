@@ -33,13 +33,17 @@ export default function KeysPage() {
           </button>
         ))}
       </div>
-      <div
-        role="tabpanel"
-        id={`${id}-panel-${tab}`}
-        aria-labelledby={`${id}-tab-${tab}`}
-      >
-        {tab === "Keys" ? <KeyList /> : <IdentityList />}
-      </div>
+      {TABS.map((name) => (
+        <div
+          key={name}
+          role="tabpanel"
+          id={`${id}-panel-${name}`}
+          aria-labelledby={`${id}-tab-${name}`}
+          hidden={tab !== name}
+        >
+          {name === "Keys" ? <KeyList /> : <IdentityList />}
+        </div>
+      ))}
     </div>
   );
 }
