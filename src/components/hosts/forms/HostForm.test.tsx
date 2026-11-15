@@ -795,6 +795,17 @@ describe("HostForm inherits from its group", () => {
     );
   });
 
+  it("a group picked before its lookup resolves still saves the From group defaults", async () => {
+    const { createHost } = await mount({});
+    fetchInherited.mockReturnValue(new Promise(() => {}));
+    pick("groupId", "prod");
+    await submit();
+    const saved = createHost.mock.calls[0][0];
+    expect(saved.authType).toBe("inherit");
+    expect(saved.startup).toBeNull();
+    expect(saved.forwardAgent).toBeNull();
+  });
+
   it("refetches when the group changes and ignores stale answers", async () => {
     let resolveFirst: (v: InheritedDefaults) => void = () => {};
     fetchInherited.mockImplementationOnce(

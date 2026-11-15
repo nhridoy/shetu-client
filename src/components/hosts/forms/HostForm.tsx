@@ -206,9 +206,11 @@ export default function HostForm({
     // Drop the previous group's values until the new ones arrive.
     setInherited(undefined);
     const apply = (d: InheritedDefaults | undefined) => {
-      if (stale) return;
-      setInherited(d);
-      if (!isNew) return;
+      if (!stale) setInherited(d);
+    };
+    // Untouched mode defaults follow the group right away, not after the lookup,
+    // so a save before it resolves doesn't store explicit none/off.
+    if (isNew) {
       const defaults = {
         authType: groupId ? "inherit" : "none",
         startupMode: groupId ? "inherit" : "none",
@@ -218,7 +220,7 @@ export default function HostForm({
       for (const [name, value] of Object.entries(defaults))
         if (!userSet.current.has(name))
           resetField(name as keyof typeof defaults, { defaultValue: value });
-    };
+    }
     if (groupId && currentVaultId)
       fetchInheritedDefaults(groupId, currentVaultId).then(apply, () =>
         apply(undefined),
