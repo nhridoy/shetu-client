@@ -1,8 +1,10 @@
 import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import type { SearchAddon } from "@xterm/addon-search";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ContextMenu from "@/components/ui/ContextMenu";
 import { connectSavedTerminal } from "@/lib/terminal/agentForwarding";
+import { findOpensHere, onOpenFind } from "@/lib/terminal/findCommand";
 import { openCommandPalette } from "@/lib/terminal/paletteCommand";
 import {
   attachSession,
@@ -20,6 +22,7 @@ import {
   type ReconnectState,
   useTerminalStore,
 } from "@/stores/terminal/terminalStore";
+import TerminalFindBar from "./TerminalFindBar";
 
 const SSH_PROGRESS_STEP: Record<string, number> = {
   resolving: 0,
@@ -70,6 +73,26 @@ export default function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // Stable per pane so the find bar subscribes once.
+  const selectionEvents = useCallback(
+    (listener: () => void) =>
+      getSession(paneId)?.xterm.onSelectionChange(listener) ?? {
+        dispose: () => {},
+      },
+    [paneId],
+  );
+  // 0 = closed; each request bumps it so an open bar takes focus again.
+  const [finding, setFinding] = useState(0);
+  const openFindBar = () => setFinding((n) => n + 1);
+
+  // The find shortcut opens the bar in the focused pane of the shown tab only.
+  useEffect(
+    () =>
+      onOpenFind(
+        () => findOpensHere(tabId, !!isActive) && setFinding((n) => n + 1),
+      ),
+    [tabId, isActive],
+  );
 
   // Right-click opens the terminal menu instead of the webview's.
   useEffect(() => {
@@ -77,6 +100,9 @@ export default function Terminal({
     if (!el) return;
     const open = (event: MouseEvent) => {
       if (!getSession(paneId)) return;
+      // The find bar's input keeps the webview's own text menu.
+      if ((event.target as Element | null)?.closest?.('[role="search"]'))
+        return;
       event.preventDefault();
       setMenu({ x: event.clientX, y: event.clientY });
     };
@@ -245,12 +271,25 @@ export default function Terminal({
                         .splitPane(tabId, paneId, direction),
                     // Right-click already made this the active pane, so the pick lands here.
                     openCommandPalette,
+                    openFindBar,
                   )
                 : [];
             })()}
           />,
           document.body,
         )}
+      {finding > 0 && getSession(paneId) && (
+        <TerminalFindBar
+          search={getSession(paneId)?.searchAddon as SearchAddon}
+          opened={finding}
+          clearSelection={() => getSession(paneId)?.xterm.clearSelection()}
+          onSelectionChange={selectionEvents}
+          onClose={() => {
+            setFinding(0);
+            getSession(paneId)?.xterm.focus();
+          }}
+        />
+      )}
       {connStep !== null && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-950/90 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">

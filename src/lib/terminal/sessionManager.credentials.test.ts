@@ -40,6 +40,7 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+vi.mock("@xterm/addon-search", () => ({ SearchAddon: class {} }));
 vi.mock("./agentForwarding", () => ({
   connectSavedTerminal: m.connectSaved,
   ConnectCancelled: m.Cancelled,

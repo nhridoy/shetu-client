@@ -3,9 +3,9 @@ import { isShellKey, isValidBinding, resolveMod } from "./binding";
 import { SHORTCUTS } from "./registry";
 
 describe("shortcut registry", () => {
-  it("registry_has_28_unique_ids_with_valid_defaults", () => {
-    expect(SHORTCUTS).toHaveLength(28);
-    expect(new Set(SHORTCUTS.map((s) => s.id)).size).toBe(28);
+  it("registry_has_29_unique_ids_with_valid_defaults", () => {
+    expect(SHORTCUTS).toHaveLength(29);
+    expect(new Set(SHORTCUTS.map((s) => s.id)).size).toBe(29);
     // Focus mode was removed and Toggle sidebar never did anything.
     const ids = SHORTCUTS.map((s) => s.id as string);
     expect(ids).not.toContain("terminal.focusMode");
@@ -14,6 +14,17 @@ describe("shortcut registry", () => {
       expect(isValidBinding(resolveMod(s.other, false)), s.id).toBe(true);
       expect(isValidBinding(resolveMod(s.mac, true)), s.id).toBe(true);
     }
+  });
+
+  it("find in terminal is Ctrl+Shift+F, Cmd+F on macOS, and works while typing", () => {
+    const find = SHORTCUTS.find((s) => s.id === "terminal.find");
+    expect(find).toMatchObject({
+      context: "terminal",
+      label: "Find in terminal",
+      other: "ctrl+shift+f",
+      mac: "meta+f",
+      whileTyping: true,
+    });
   });
 
   it("defaults_have_no_conflicts_within_a_context", () => {
