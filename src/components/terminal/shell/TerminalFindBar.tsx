@@ -27,14 +27,33 @@ const DECORATIONS = {
 // Reopening the bar keeps the last search.
 let lastQuery = "";
 
+const escapeRegExp = (text: string) =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The search term sent to the add-on. Whole word is done here with \b, because
+ * add-on 0.16.0 gives up on a line after one non-word match ("foobar foo").
+ */
+export function searchTerm(query: string, regex: boolean, wholeWord: boolean) {
+  if (!wholeWord) return query;
+  const core = regex ? query : escapeRegExp(query);
+  // A \b next to a non-word character would stop "-v" from ever matching.
+  const start = regex || /^\w/.test(query) ? "\\b" : "";
+  const end = regex || /\w$/.test(query) ? "\\b" : "";
+  return `${start}(?:${core})${end}`;
+}
+
 /** Find bar over a terminal pane, driving xterm's search add-on. */
 export default function TerminalFindBar({
   search,
   onClose,
+  clearSelection,
   opened = 0,
 }: {
   search: FindTarget;
   onClose: () => void;
+  /** Searching selects the active match; leaving search must unselect it. */
+  clearSelection: () => void;
   /** Bumped each time find is asked for, so an open bar takes focus again. */
   opened?: number;
 }) {
@@ -62,8 +81,8 @@ export default function TerminalFindBar({
 
   const options = (incremental: boolean): ISearchOptions => ({
     caseSensitive,
-    wholeWord,
-    regex,
+    wholeWord: false,
+    regex: regex || wholeWord,
     incremental,
     decorations: DECORATIONS,
   });
@@ -71,10 +90,11 @@ export default function TerminalFindBar({
   /** Runs one search; a bad regex shows "Invalid pattern" instead of throwing. */
   const run = (direction: "next" | "previous", incremental: boolean) => {
     if (!query) return;
+    const term = searchTerm(query, regex, wholeWord);
     try {
-      if (regex) new RegExp(query);
-      if (direction === "next") search.findNext(query, options(incremental));
-      else search.findPrevious(query, options(false));
+      if (regex || wholeWord) new RegExp(term);
+      if (direction === "next") search.findNext(term, options(incremental));
+      else search.findPrevious(term, options(false));
       setInvalid(false);
     } catch {
       setInvalid(true);
@@ -91,6 +111,7 @@ export default function TerminalFindBar({
       setInvalid(false);
       setResults(undefined);
       search.clearDecorations();
+      clearSelection();
       return;
     }
     run("next", true);
@@ -98,6 +119,7 @@ export default function TerminalFindBar({
 
   const close = () => {
     search.clearDecorations();
+    clearSelection();
     onClose();
   };
 

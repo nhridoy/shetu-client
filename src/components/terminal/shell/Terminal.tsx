@@ -274,6 +274,7 @@ export default function Terminal({
         <TerminalFindBar
           search={getSession(paneId)?.searchAddon as SearchAddon}
           opened={finding}
+          clearSelection={() => getSession(paneId)?.xterm.clearSelection()}
           onClose={() => {
             setFinding(0);
             getSession(paneId)?.xterm.focus();

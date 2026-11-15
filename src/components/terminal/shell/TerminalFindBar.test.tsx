@@ -27,6 +27,7 @@ let search: FindTarget & {
   clearDecorations: Mock<() => void>;
 };
 let onClose: Mock<() => void>;
+let clearSelection: Mock<() => void>;
 
 const text = () => document.body.textContent ?? "";
 const field = () => document.querySelector("input") as HTMLInputElement;
@@ -55,7 +56,12 @@ async function render() {
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
     root?.render(
-      <TerminalFindBar search={search} onClose={onClose} opened={opened} />,
+      <TerminalFindBar
+        search={search}
+        onClose={onClose}
+        clearSelection={clearSelection}
+        opened={opened}
+      />,
     ),
   );
 }
@@ -71,6 +77,7 @@ beforeEach(() => {
     },
   };
   onClose = vi.fn<() => void>();
+  clearSelection = vi.fn<() => void>();
 });
 
 afterEach(async () => {
@@ -133,15 +140,32 @@ describe("TerminalFindBar", () => {
     act(() => byLabel("Match case").click());
     act(() => byLabel("Whole word").click());
     act(() => byLabel("Use regex").click());
+    // Whole word goes through word-boundary regex, not the add-on's own (buggy) option.
     expect(search.findNext).toHaveBeenLastCalledWith(
-      "Err",
+      "\\b(?:Err)\\b",
       expect.objectContaining({
         caseSensitive: true,
-        wholeWord: true,
+        wholeWord: false,
         regex: true,
       }),
     );
     expect(byLabel("Use regex").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("whole word escapes plain text and only bounds word-character ends", async () => {
+    await render();
+    act(() => byLabel("Whole word").click());
+    type("a.b");
+    expect(search.findNext).toHaveBeenLastCalledWith(
+      "\\b(?:a\\.b)\\b",
+      expect.objectContaining({ regex: true, wholeWord: false }),
+    );
+    type("-v");
+    expect(search.findNext).toHaveBeenLastCalledWith(
+      "(?:-v)\\b",
+      expect.anything(),
+    );
+    expect(/\b(?:foo)\b/.exec("foobar foo")?.index).toBe(7);
   });
 
   it("invalid regex shows Invalid pattern", async () => {
@@ -160,6 +184,7 @@ describe("TerminalFindBar", () => {
     type("error");
     key("Escape");
     expect(search.clearDecorations).toHaveBeenCalled();
+    expect(clearSelection).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -171,6 +196,7 @@ describe("TerminalFindBar", () => {
     type("");
     expect(search.findNext).not.toHaveBeenCalled();
     expect(search.clearDecorations).toHaveBeenCalled();
+    expect(clearSelection).toHaveBeenCalled();
     expect(text()).not.toContain("of 3");
   });
 
@@ -199,7 +225,12 @@ describe("TerminalFindBar", () => {
     opened += 1;
     await act(async () =>
       root?.render(
-        <TerminalFindBar search={search} onClose={onClose} opened={opened} />,
+        <TerminalFindBar
+          search={search}
+          onClose={onClose}
+          clearSelection={clearSelection}
+          opened={opened}
+        />,
       ),
     );
     expect(document.activeElement).toBe(field());
