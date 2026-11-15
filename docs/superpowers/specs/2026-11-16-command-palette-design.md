@@ -45,8 +45,8 @@ Goal: one searchable place to connect, run a snippet, jump to a page, or trigger
 - Snippets in the terminal view also list the current built-in commands; outside it they don't
   (nothing to insert into). Failures keep the palette open with the existing toasts.
 - Actions run through their shortcut handler. Ids whose handler isn't mounted are not listed.
-  Unbound actions (binding cleared) still run from the palette. On macOS, menu-bar actions
-  (`menuItem`) go through `dispatchAppAction`, as the menu does.
+  Unbound actions (binding cleared) still run from the palette. Menu-bar actions run the same
+  handler, which already routes through `dispatchAppAction` where needed.
 - Not listed (they act on a focused selection the palette would steal focus from, or are the
   palette itself): `app.quickConnect`, `terminal.palette`, `terminal.copy`, `terminal.paste`,
   `files.copy/cut/paste/selectAll/rename/delete/up`, `editor.copyPath/rename/delete`.
