@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { getDeviceId } from "@/lib/common/device";
+import { runSerial } from "@/lib/common/runSerial";
 import { decryptRowData } from "@/lib/crypto/crypto";
 import type { SyncRow } from "@/lib/db/db";
 import { deleteRow, getRow, listRows, upsertRow } from "@/lib/db/db";
@@ -259,20 +260,6 @@ function definedFields(g: Partial<Group>): Partial<GroupFields> {
   return Object.fromEntries(
     GROUP_KEYS.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]),
   );
-}
-
-const queues = new Map<string, Promise<unknown>>();
-
-/** Run fn after earlier work on the same key settles, so read-merge-write
- *  updates of one encrypted row never interleave. */
-function runSerial<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const run = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
-  const tail = run.catch(() => {});
-  queues.set(key, tail);
-  void tail.then(() => {
-    if (queues.get(key) === tail) queues.delete(key);
-  });
-  return run;
 }
 
 function newId(): string {

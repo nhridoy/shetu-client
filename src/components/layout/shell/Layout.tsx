@@ -21,6 +21,7 @@ import {
 } from "@/lib/window/menuActions";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useHostStore } from "@/stores/hosts/hostStore";
+import { useIdentityStore } from "@/stores/identities/identityStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSessionStore } from "@/stores/sessions/sessionStore";
 import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
@@ -158,6 +159,7 @@ export default function Layout() {
         fetchGroups(currentVaultId),
         useKeyStore.getState().fetchKeys(currentVaultId),
         useSnippetStore.getState().fetchSnippets(currentVaultId),
+        useIdentityStore.getState().fetchIdentities(currentVaultId),
         useWorkspaceStore.getState().fetchWorkspaces(currentVaultId),
         useTabGroupStore.getState().fetchTabGroups(currentVaultId),
       ]);
