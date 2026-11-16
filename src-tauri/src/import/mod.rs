@@ -2,6 +2,7 @@
 
 pub(crate) mod encoding;
 pub(crate) mod ini;
+pub(crate) mod iterm2;
 pub(crate) mod mobaxterm;
 pub(crate) mod putty;
 pub(crate) mod securecrt;
@@ -62,10 +63,10 @@ pub struct Detected {
 }
 
 const KEY_LIMIT: u64 = 64 * 1024;
-const SOURCE_LIMIT: u64 = 5 * 1024 * 1024;
+pub(crate) const SOURCE_LIMIT: u64 = 5 * 1024 * 1024;
 
 /// Regular files up to `limit` only, so a FIFO, device or huge file can't hang or exhaust memory.
-fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -230,6 +231,8 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("securecrt", None) => securecrt::detected(home).ok_or_else(|| "No SecureCRT sessions found".into()),
         ("tabby", Some(p)) => file(p).and_then(|(text, origin)| tabby::parse(&text, &origin)),
         ("tabby", None) => tabby::detected().ok_or_else(|| "No Tabby SSH profiles found".into()),
+        ("iterm2", Some(p)) => file(p).and_then(|(text, origin)| iterm2::parse_json(&text, &origin)),
+        ("iterm2", None) => iterm2::detected(home).ok_or_else(|| "No iTerm2 ssh profiles found".into()),
         ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
         ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
@@ -277,6 +280,9 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     }
     if let Some(p) = tabby::detected() {
         found.push(Detected { source: "tabby".into(), origin: p.origin });
+    }
+    if let Some(p) = iterm2::detected(home) {
+        found.push(Detected { source: "iterm2".into(), origin: p.origin });
     }
     found
 }
