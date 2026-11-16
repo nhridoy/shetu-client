@@ -20,13 +20,20 @@ import { useAuthStore } from "@/stores/auth/authStore";
 import type { SecurityTabProps } from "@/types/settings/types";
 import AppLockSettings from "./AppLockSettings";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import DevicesSettings from "./DevicesSettings";
 
 export default function SecurityTab({
   tabs,
   onClearAllSessions,
 }: SecurityTabProps) {
-  const { user, updateProfile, changePassword, alwaysAsk, setAlwaysAsk } =
-    useAuthStore();
+  const {
+    user,
+    updateProfile,
+    changePassword,
+    alwaysAsk,
+    setAlwaysAsk,
+    serverAuthenticated,
+  } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -111,6 +118,13 @@ export default function SecurityTab({
           </Button>
         </form>
       </div>
+
+      {serverAuthenticated && (
+        <div className="border-t border-dark-700 pt-6">
+          <h3 className="text-sm font-medium text-white mb-3">Devices</h3>
+          <DevicesSettings />
+        </div>
+      )}
 
       <div className="border-t border-dark-700 pt-6">
         <h3 className="text-sm font-medium text-white mb-3">App Lock</h3>
