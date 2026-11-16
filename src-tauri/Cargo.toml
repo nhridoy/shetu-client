@@ -61,6 +61,9 @@ regex = "1"
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
 [dev-dependencies]
 rand10 = { package = "rand", version = "0.10" }
 tokio = { version = "1.53.1", features = ["test-util"] }

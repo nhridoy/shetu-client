@@ -1,5 +1,9 @@
 //! Importing hosts from other SSH clients: one model, one adapter per source.
 
+pub(crate) mod encoding;
+pub(crate) mod ini;
+pub(crate) mod putty;
+
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -140,9 +144,11 @@ pub(crate) fn describe_key(path: &Path) -> ImportKey {
 }
 
 pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Result<ImportPreview, String> {
-    let _ = path;
-    match source {
-        "ssh_config" => crate::ssh_config_import::to_preview(home),
+    let file = |path: &Path| read_source_file(path).map(|text| (text, path.to_string_lossy().into_owned()));
+    match (source, path) {
+        ("ssh_config", _) => crate::ssh_config_import::to_preview(home),
+        ("putty", Some(p)) => file(p).map(|(text, origin)| putty::parse_reg(&text, &origin)),
+        ("putty", None) => putty::detected(home).ok_or_else(|| "No PuTTY sessions found".into()),
         _ => Err("Unknown import source".into()),
     }
 }
@@ -173,6 +179,9 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     let mut found = Vec::new();
     if home.join(".ssh").join("config").is_file() {
         found.push(Detected { source: "ssh_config".into(), origin: "~/.ssh/config".into() });
+    }
+    if let Some(p) = putty::detected(home) {
+        found.push(Detected { source: "putty".into(), origin: p.origin });
     }
     found
 }
