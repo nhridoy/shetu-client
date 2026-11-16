@@ -25,6 +25,7 @@ mod ssh_config_import;
 mod ssh_options;
 mod ssh_route;
 mod sync;
+mod system_lock;
 mod team_keys;
 mod team_sync;
 mod totp;
@@ -1617,6 +1618,7 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
             window.set_title("Shetu")?;
+            system_lock::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             menu::install(app)?;
 
