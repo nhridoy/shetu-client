@@ -1,5 +1,6 @@
 //! Read `~/.ssh/config` (with `Include`; `Match` blocks dropped) into plain host records.
 
+use crate::import::{describe_key, read_small_file, ImportKey as SshConfigKey};
 use serde::Serialize;
 use ssh2_config::{ParseRule, SshConfig};
 use std::collections::HashSet;
@@ -189,16 +190,6 @@ pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>, 
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SshConfigKey {
-    path: String,
-    file_name: String,
-    status: &'static str,
-    fingerprint: Option<String>,
-    key_type: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SshConfigHost {
     alias: String,
     hostname: String,
@@ -225,54 +216,6 @@ const DEFAULT_KEYS: [&str; 6] = [
     "id_dsa",
 ];
 
-/// Regular files up to 64 KiB only, so a FIFO, device or huge file can't hang or exhaust memory.
-fn read_small_file(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > 64 * 1024 {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
-}
-
-fn describe_key(path: &Path) -> SshConfigKey {
-    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut key = SshConfigKey {
-        path: path.to_string_lossy().into_owned(),
-        file_name,
-        status: "unreadable",
-        fingerprint: None,
-        key_type: None,
-    };
-    if !path.exists() {
-        key.status = "missing";
-        return key;
-    }
-    let Some(content) = read_small_file(path) else {
-        return key;
-    };
-    match russh::keys::decode_secret_key(&content, None) {
-        Ok(k) => {
-            if let Ok(meta) = crate::keys::metadata_for_key(&k) {
-                key.status = "ready";
-                key.fingerprint = Some(meta.fingerprint);
-                key.key_type = Some(meta.key_type);
-            }
-        }
-        Err(russh::keys::Error::KeyIsEncrypted) => {
-            key.status = "encrypted";
-            // OpenSSH-format keys keep the public half unencrypted; legacy PEM won't parse and stays unmatched.
-            if let Ok(k) = russh::keys::ssh_key::PrivateKey::from_openssh(&content) {
-                if let Ok(meta) = crate::keys::metadata_for_key(&k) {
-                    key.fingerprint = Some(meta.fingerprint);
-                    key.key_type = Some(meta.key_type);
-                }
-            }
-        }
-        Err(_) => {}
-    }
-    key
-}
-
 fn pick_key(host: &ParsedHost, home: &Path) -> Option<SshConfigKey> {
     let found = if host.identity_files.is_empty() {
         DEFAULT_KEYS.iter().map(|n| home.join(".ssh").join(n)).find(|p| p.exists())
@@ -297,6 +240,41 @@ pub(crate) fn preview(home: &Path) -> Result<SshConfigPreview, String> {
         })
         .collect();
     Ok(SshConfigPreview { hosts, ignored_match_files, ignored_scoped_include_files })
+}
+
+/// The ssh_config source in the shared import model.
+pub(crate) fn to_preview(home: &Path) -> Result<crate::import::ImportPreview, String> {
+    use crate::import::{ImportPreview, ImportedHost, Skipped};
+    let (parsed, match_files, scoped_files) = parse_hosts(home)?;
+    let hosts = parsed
+        .iter()
+        .map(|h| ImportedHost {
+            id: h.alias.clone(),
+            name: h.alias.clone(),
+            hostname: h.hostname.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            key: pick_key(h, home),
+            jump: h.proxy_jump.clone(),
+            folder: Vec::new(),
+            tags: Vec::new(),
+        })
+        .collect();
+    let note = |files: Vec<String>, reason: &'static str| {
+        files.into_iter().map(move |name| Skipped { name, reason: reason.to_string() })
+    };
+    let skipped = note(match_files, "Match blocks aren't supported and were ignored")
+        .chain(note(
+            scoped_files,
+            "Host blocks inside an Include under a Host entry aren't supported and were ignored",
+        ))
+        .collect();
+    Ok(ImportPreview {
+        source: "ssh_config".into(),
+        origin: "~/.ssh/config".into(),
+        hosts,
+        skipped,
+    })
 }
 
 pub(crate) fn read_key(home: &Path, path: &str) -> Result<String, String> {

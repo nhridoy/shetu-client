@@ -6,6 +6,7 @@ mod forwarding;
 mod git;
 mod host_inherit;
 mod identities;
+mod import;
 mod http;
 mod keys;
 mod logging;
@@ -1753,6 +1754,9 @@ pub fn run() {
             keys::convert_ppk,
             ssh_config_import::ssh_config_preview,
             ssh_config_import::ssh_config_read_key,
+            import::import_detect,
+            import::import_preview,
+            import::import_read_key,
             keys::generate_ssh_key,
             ssh::connect_saved,
             ssh::disconnect,
