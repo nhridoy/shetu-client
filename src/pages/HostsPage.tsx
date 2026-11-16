@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
+import ExportModal from "@/components/hosts/modals/ExportModal";
 import ImportModal from "@/components/hosts/modals/ImportModal";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
@@ -31,6 +32,7 @@ export default function HostsPage() {
   // Bumped on every open so the form remounts with a fresh baseline.
   const [panelKey, setPanelKey] = useState(0);
   const importModal = useModal();
+  const exportModal = useModal();
 
   const openSeq = useRef(0);
   const openPanel = async (next: Panel | (() => Promise<Panel | null>)) => {
@@ -109,6 +111,7 @@ export default function HostsPage() {
             openPanel({ kind: "host", defaultGroupId: groupId })
           }
           onImport={importModal.show}
+          onExport={exportModal.show}
           onEditGroup={(group) => openPanel({ kind: "group", id: group.id })}
           onEditHost={editHost}
           // With a panel open, a card click switches the panel instead of connecting.
@@ -157,6 +160,9 @@ export default function HostsPage() {
 
       {importModal.open && (
         <ImportModal groupId={openGroup} onClose={importModal.hide} />
+      )}
+      {exportModal.open && (
+        <ExportModal groupId={openGroup} onClose={exportModal.hide} />
       )}
 
       {panel?.kind === "group" && (!panel.id || editingGroup) && (

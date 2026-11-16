@@ -4,6 +4,7 @@ import {
   DownloadSimpleIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  UploadSimpleIcon,
 } from "@phosphor-icons/react";
 import { useRef, useState } from "react";
 import { DraggableHostCard } from "@/components/hosts/cards/DraggableHostCard";
@@ -28,6 +29,7 @@ interface HostsPanelProps {
   onNewGroup: (parentId?: string) => void;
   onNewHost: (groupId?: string) => void;
   onImport: () => void;
+  onExport: () => void;
   onEditGroup: (group: Group) => void;
   onEditHost: (host: Host) => void;
   onConnect: (host: Host) => void;
@@ -41,6 +43,7 @@ export default function HostsPanel({
   onNewGroup,
   onNewHost,
   onImport,
+  onExport,
   onEditGroup,
   onEditHost,
   onConnect,
@@ -251,6 +254,15 @@ export default function HostsPanel({
             >
               <DownloadSimpleIcon className="w-3 h-3" weight="bold" />
               Import
+            </Button>
+            <Button
+              type="button"
+              onClick={onExport}
+              variant="secondary"
+              size="sm"
+            >
+              <UploadSimpleIcon className="w-3 h-3" weight="bold" />
+              Export
             </Button>
             <Button
               type="button"
