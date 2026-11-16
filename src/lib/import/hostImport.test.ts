@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   type ImportDeps,
-  planSshImport,
-  runSshImport,
-  type SshConfigHost,
-  type SshConfigKey,
-} from "./sshImport";
+  type ImportedHost,
+  type ImportKey,
+  type ImportPreview,
+  planImport,
+  runImport,
+} from "./hostImport";
 
-const key = (over: Partial<SshConfigKey> = {}): SshConfigKey => ({
+const key = (over: Partial<ImportKey> = {}): ImportKey => ({
   path: "/k/id",
   fileName: "id",
   status: "ready",
@@ -17,32 +18,49 @@ const key = (over: Partial<SshConfigKey> = {}): SshConfigKey => ({
 });
 
 const host = (
-  alias: string,
-  over: Partial<SshConfigHost> = {},
-): SshConfigHost => ({
-  alias,
-  hostname: `${alias}.example.com`,
+  name: string,
+  over: Partial<ImportedHost> = {},
+): ImportedHost => ({
+  id: name,
+  name,
+  hostname: `${name}.example.com`,
   user: "me",
   port: 22,
-  proxyJump: null,
+  jump: null,
   key: null,
+  folder: [],
+  tags: [],
   ...over,
 });
 
-const preview = (hosts: SshConfigHost[]) => ({
-  hosts,
-  ignoredMatchFiles: [],
-  ignoredScopedIncludeFiles: [],
-});
+const preview = (
+  hosts: ImportedHost[],
+  source = "ssh_config",
+): ImportPreview => ({ source, origin: "test", hosts, skipped: [] });
+
+/** Existing host names all sit in the dialog's group, "g1". */
+const planSshImport = (p: ImportPreview, names: string[]) =>
+  planImport(p, {
+    rootGroupId: "g1",
+    groups: [],
+    hosts: names.map((name) => ({ name, groupId: "g1" })),
+  });
+const runSshImport = runImport;
 
 function makeDeps(over: Partial<ImportDeps> = {}) {
   let n = 0;
   const createHost = vi.fn(async (h: Record<string, unknown>) => h as never);
-  const importKey = vi.fn(async () => {});
+  const importKey = vi.fn(async (_k: Record<string, unknown>) => {});
   const deps: ImportDeps = {
     groupId: "g1",
+    source: "ssh_config",
     existingKeys: [],
     existingHosts: [],
+    groups: [],
+    createGroup: vi.fn(async (g: { name: string }) => ({
+      id: `grp-${g.name}`,
+    })),
+    convertPpk: vi.fn(async (t: string) => `converted:${t}`),
     readKey: vi.fn(async (p: string) => `pem:${p}`),
     importKey,
     createHost,
@@ -61,9 +79,9 @@ describe("planSshImport", () => {
   it("single_hop_jump_linked", () => {
     const rows = planSshImport(
       preview([
-        host("a", { proxyJump: "b" }),
+        host("a", { jump: "b" }),
         host("b"),
-        host("c", { proxyJump: "fixed" }),
+        host("c", { jump: "fixed" }),
       ]),
       ["Fixed"],
     );
@@ -73,11 +91,7 @@ describe("planSshImport", () => {
 
   it("jump_chain_drops_outer_link", () => {
     const rows = planSshImport(
-      preview([
-        host("A", { proxyJump: "B" }),
-        host("B", { proxyJump: "C" }),
-        host("C"),
-      ]),
+      preview([host("A", { jump: "B" }), host("B", { jump: "C" }), host("C")]),
       [],
     );
     expect(rows[0].jumpAlias).toBeNull();
@@ -85,14 +99,14 @@ describe("planSshImport", () => {
       "Jump chains aren't supported; imported without a jump host",
     );
     expect(rows[1].jumpAlias).toBe("C");
-    const multi = planSshImport(preview([host("A", { proxyJump: "B,C" })]), []);
+    const multi = planSshImport(preview([host("A", { jump: "B,C" })]), []);
     expect(multi[0].jumpNote).toBe(
       "Jump chains aren't supported; imported without a jump host",
     );
   });
 
   it("unknown_jump_target_noted", () => {
-    const rows = planSshImport(preview([host("A", { proxyJump: "zzz" })]), []);
+    const rows = planSshImport(preview([host("A", { jump: "zzz" })]), []);
     expect(rows[0].jumpAlias).toBeNull();
     expect(rows[0].jumpNote).toBe(
       "Jump host zzz isn't in your config or Shetu",
@@ -176,13 +190,13 @@ describe("runSshImport", () => {
 
   it("jump_host_id_points_to_row_or_existing", async () => {
     const { deps, createHost } = makeDeps({
-      existingHosts: [{ id: "h7", name: "Fixed" }],
+      existingHosts: [{ id: "h7", name: "Fixed", groupId: "g1" }],
     });
     const rows = planSshImport(
       preview([
-        host("a", { proxyJump: "b" }),
+        host("a", { jump: "b" }),
         host("b"),
-        host("c", { proxyJump: "fixed" }),
+        host("c", { jump: "fixed" }),
         host("fixed"),
       ]),
       ["Fixed"],
@@ -235,7 +249,7 @@ describe("runSshImport", () => {
     );
     const { deps } = makeDeps({ createHost });
     const rows = planSshImport(
-      preview([host("a", { proxyJump: "b" }), host("b")]),
+      preview([host("a", { jump: "b" }), host("b")]),
       [],
     );
     const s = await runSshImport(rows, {}, deps);
@@ -251,11 +265,13 @@ describe("runSshImport", () => {
   });
 
   it("notes_and_skipped_rows_reach_problems", async () => {
-    const { deps } = makeDeps({ existingHosts: [{ id: "e1", name: "old" }] });
+    const { deps } = makeDeps({
+      existingHosts: [{ id: "e1", name: "old", groupId: "g1" }],
+    });
     const rows = planSshImport(
       preview([
         host("nokey", { key: key({ status: "missing" }) }),
-        host("chain", { proxyJump: "x,y" }),
+        host("chain", { jump: "x,y" }),
         host("old"),
       ]),
       ["old"],
@@ -280,12 +296,175 @@ describe("runSshImport", () => {
   it("jump_target_defined_later_in_config_still_links", async () => {
     const { deps, createHost } = makeDeps();
     const rows = planSshImport(
-      preview([host("a", { proxyJump: "b" }), host("b")]),
+      preview([host("a", { jump: "b" }), host("b")]),
       [],
     );
     await runSshImport(rows, {}, deps);
     const calls = createHost.mock.calls.map((c) => c[0]);
     expect(calls[0].name).toBe("b");
     expect(calls[1].jumpHostId).toBe(calls[0].id);
+  });
+});
+
+describe("folders, groups and other sources", () => {
+  const ctx = (
+    groups: { id: string; name: string; parentId: string | null }[],
+    hosts: { name: string; groupId: string | null }[] = [],
+  ) => ({ rootGroupId: null, groups, hosts });
+
+  it("folders_become_nested_groups_and_are_reused", async () => {
+    const groups = [{ id: "p1", name: "prod", parentId: null }];
+    const rows = planImport(
+      preview(
+        [
+          host("web", { folder: ["Prod", "Web"] }),
+          host("api", { folder: ["Prod", "Web"] }),
+        ],
+        "winscp",
+      ),
+      ctx(groups),
+    );
+    const createGroup = vi.fn(
+      async (g: { name: string; parentId: string | null }) => ({
+        id: `new-${g.name}`,
+      }),
+    );
+    const { deps, createHost } = makeDeps({
+      groupId: null,
+      groups,
+      createGroup,
+    });
+    await runImport(rows, {}, { ...deps, source: "winscp" });
+    expect(createGroup).toHaveBeenCalledTimes(1);
+    expect(createGroup).toHaveBeenCalledWith({ name: "Web", parentId: "p1" });
+    expect(createHost.mock.calls.map((c) => c[0].groupId)).toEqual([
+      "new-Web",
+      "new-Web",
+    ]);
+  });
+
+  it("same_name_folders_under_different_parents_stay_apart", async () => {
+    const rows = planImport(
+      preview(
+        [
+          host("a", { folder: ["A", "Web"] }),
+          host("b", { folder: ["B", "Web"] }),
+        ],
+        "winscp",
+      ),
+      ctx([]),
+    );
+    let n = 0;
+    const createGroup = vi.fn(async () => ({ id: `g${++n}` }));
+    const { deps, createHost } = makeDeps({ groupId: null, createGroup });
+    await runImport(rows, {}, { ...deps, source: "winscp" });
+    expect(createGroup).toHaveBeenCalledTimes(4);
+    const [a, b] = createHost.mock.calls.map((c) => c[0].groupId);
+    expect(a).not.toBe(b);
+  });
+
+  it("duplicate_only_within_target_group", () => {
+    const groups = [{ id: "p1", name: "Prod", parentId: null }];
+    const rows = planImport(
+      preview(
+        [
+          host("web", { folder: ["Prod"] }),
+          host("web2", { folder: ["New"] }),
+          host("db"),
+        ],
+        "winscp",
+      ),
+      ctx(groups, [
+        { name: "web", groupId: null },
+        { name: "web2", groupId: null },
+        { name: "db", groupId: null },
+      ]),
+    );
+    expect(rows.map((r) => [r.alias, r.existing])).toEqual([
+      ["web", false],
+      ["web2", false],
+      ["db", true],
+    ]);
+    expect(rows[0].folder).toEqual(["Prod"]);
+  });
+
+  it("ppk_key_is_converted_before_import", async () => {
+    const readKey = vi.fn(
+      async () => "PuTTY-User-Key-File-3: ssh-ed25519\n...",
+    );
+    const { deps, importKey } = makeDeps({ readKey });
+    const rows = planImport(
+      preview(
+        [host("a", { key: key({ status: "encrypted", path: "/k/a.ppk" }) })],
+        "putty",
+      ),
+      ctx([]),
+    );
+    await runImport(rows, { "/k/a.ppk": "pw" }, { ...deps, source: "putty" });
+    expect(deps.convertPpk).toHaveBeenCalledWith(
+      "PuTTY-User-Key-File-3: ssh-ed25519\n...",
+      "pw",
+    );
+    expect(importKey.mock.calls[0][0]).toMatchObject({
+      encryptedPrivateKey: "converted:PuTTY-User-Key-File-3: ssh-ed25519\n...",
+      passphrase: "pw",
+    });
+  });
+
+  it("missing_user_left_empty_except_ssh_config", async () => {
+    const rows = planImport(
+      preview([host("a", { user: null })], "putty"),
+      ctx([]),
+    );
+    const { deps, createHost } = makeDeps({ groupId: null });
+    await runImport(rows, {}, { ...deps, source: "putty" });
+    expect(createHost.mock.calls[0][0].username).toBeUndefined();
+  });
+
+  it("tags_pass_through", async () => {
+    const rows = planImport(
+      preview([host("a", { tags: ["x", "y"] })], "termius_csv"),
+      ctx([]),
+    );
+    const { deps, createHost } = makeDeps({ groupId: null });
+    await runImport(rows, {}, { ...deps, source: "termius_csv" });
+    expect(createHost.mock.calls[0][0].tags).toEqual(["x", "y"]);
+  });
+
+  it("jump_links_by_row_id", async () => {
+    const rows = planImport(
+      preview(
+        [
+          host("inner", { id: "p/inner", jump: "p/bastion" }),
+          host("bastion", { id: "p/bastion" }),
+        ],
+        "tabby",
+      ),
+      ctx([]),
+    );
+    expect(rows[0].jumpAlias).toBe("p/bastion");
+    const { deps, createHost } = makeDeps({ groupId: null });
+    await runImport(rows, {}, { ...deps, source: "tabby" });
+    const calls = createHost.mock.calls.map((c) => c[0]);
+    expect(calls.find((c) => c.name === "inner")?.jumpHostId).toBe(
+      calls.find((c) => c.name === "bastion")?.id,
+    );
+  });
+
+  it("failed_group_creation_lands_in_nearest_parent", async () => {
+    const rows = planImport(
+      preview([host("a", { folder: ["X"] })], "winscp"),
+      ctx([]),
+    );
+    const { deps, createHost } = makeDeps({
+      groupId: "root",
+      createGroup: vi.fn(async () => null),
+    });
+    const s = await runImport(rows, {}, { ...deps, source: "winscp" });
+    expect(createHost.mock.calls[0][0].groupId).toBe("root");
+    expect(s.problems).toContainEqual({
+      alias: "a",
+      message: "Couldn't create group X; imported one level up",
+    });
   });
 });
