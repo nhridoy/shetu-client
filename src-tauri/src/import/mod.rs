@@ -2,7 +2,11 @@
 
 pub(crate) mod encoding;
 pub(crate) mod ini;
+pub(crate) mod iterm2;
+pub(crate) mod mobaxterm;
 pub(crate) mod putty;
+pub(crate) mod securecrt;
+pub(crate) mod tabby;
 pub(crate) mod termius_csv;
 pub(crate) mod winscp;
 
@@ -59,10 +63,10 @@ pub struct Detected {
 }
 
 const KEY_LIMIT: u64 = 64 * 1024;
-const SOURCE_LIMIT: u64 = 5 * 1024 * 1024;
+pub(crate) const SOURCE_LIMIT: u64 = 5 * 1024 * 1024;
 
 /// Regular files up to `limit` only, so a FIFO, device or huge file can't hang or exhaust memory.
-fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -143,8 +147,21 @@ pub(crate) fn read_source_file(path: &Path) -> Result<String, String> {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        all => String::from_utf8_lossy(all).into_owned(),
+        // Windows apps (MobaXterm, SecureCRT) often save in the ANSI codepage, not UTF-8.
+        all => String::from_utf8(all.to_vec()).unwrap_or_else(|_| windows_1252(all)),
     })
+}
+
+/// Windows-1252: Latin-1 plus printable characters in 0x80..0x9F.
+fn windows_1252(bytes: &[u8]) -> String {
+    const HIGH: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž', '\u{8F}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}', 'ž', 'Ÿ',
+    ];
+    bytes
+        .iter()
+        .map(|&b| if (0x80..0xA0).contains(&b) { HIGH[(b - 0x80) as usize] } else { b as char })
+        .collect()
 }
 
 pub(crate) fn describe_key(path: &Path) -> ImportKey {
@@ -201,6 +218,12 @@ pub(crate) fn describe_key(path: &Path) -> ImportKey {
 }
 
 pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Result<ImportPreview, String> {
+    let mut preview = preview_raw(source, path, home)?;
+    unique_ids(&mut preview);
+    Ok(preview)
+}
+
+fn preview_raw(source: &str, path: Option<&Path>, home: &Path) -> Result<ImportPreview, String> {
     let file = |path: &Path| read_source_file(path).map(|text| (text, path.to_string_lossy().into_owned()));
     match (source, path) {
         ("ssh_config", _) => crate::ssh_config_import::to_preview(home),
@@ -208,9 +231,30 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("putty", None) => putty::detected(home).ok_or_else(|| "No PuTTY sessions found".into()),
         ("winscp", Some(p)) => file(p).map(|(text, origin)| winscp::parse_ini(&text, &origin)),
         ("winscp", None) => winscp::detected().ok_or_else(|| "No WinSCP sites found".into()),
+        ("mobaxterm", Some(p)) => file(p).map(|(text, origin)| mobaxterm::parse(&text, &origin, home)),
+        ("mobaxterm", None) => mobaxterm::detected(home).ok_or_else(|| "No MobaXterm sessions found".into()),
+        ("securecrt", Some(p)) => file(p).and_then(|(text, origin)| securecrt::parse_xml(&text, &origin)),
+        ("securecrt", None) => securecrt::detected(home).ok_or_else(|| "No SecureCRT sessions found".into()),
+        ("tabby", Some(p)) => file(p).and_then(|(text, origin)| tabby::parse(&text, &origin)),
+        ("tabby", None) => tabby::detected().ok_or_else(|| "No Tabby SSH profiles found".into()),
+        ("iterm2", Some(p)) => file(p).and_then(|(text, origin)| iterm2::parse_json(&text, &origin)),
+        ("iterm2", None) => iterm2::detected(home).ok_or_else(|| "No iTerm2 ssh profiles found".into()),
         ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
         ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
+    }
+}
+
+/// Two rows with one id would be created as one host (the second replacing the first):
+/// later duplicates get `#2`, `#3`, … (e.g. a profile in both iTerm2's prefs and DynamicProfiles).
+pub(crate) fn unique_ids(preview: &mut ImportPreview) {
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    for host in &mut preview.hosts {
+        let n = seen.entry(host.id.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            host.id = format!("{}#{n}", host.id);
+        }
     }
 }
 
@@ -246,6 +290,18 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     }
     if let Some(p) = winscp::detected() {
         found.push(Detected { source: "winscp".into(), origin: p.origin });
+    }
+    if let Some(p) = mobaxterm::detected(home) {
+        found.push(Detected { source: "mobaxterm".into(), origin: p.origin });
+    }
+    if let Some(p) = securecrt::detected(home) {
+        found.push(Detected { source: "securecrt".into(), origin: p.origin });
+    }
+    if let Some(p) = tabby::detected() {
+        found.push(Detected { source: "tabby".into(), origin: p.origin });
+    }
+    if let Some(p) = iterm2::detected(home) {
+        found.push(Detected { source: "iterm2".into(), origin: p.origin });
     }
     found
 }
@@ -392,6 +448,34 @@ mod tests {
         let bad = dir.join("bad.ppk");
         std::fs::write(&bad, "PuTTY-User-Key-File-3: ssh-ed25519\nnot really a key\n").unwrap();
         assert!(read_key_bytes(&bad).is_err());
+    }
+
+    #[test]
+    fn cp1252_names_decode() {
+        let dir = temp_dir();
+        let path = dir.join("s.mxtsessions");
+        std::fs::write(&path, b"[Bookmarks]\r\nweb-caf\xE9=x \x80\r\n").unwrap();
+        let text = read_source_file(&path).unwrap();
+        assert!(text.contains("web-café=x €"), "{text:?}");
+    }
+
+    #[test]
+    fn duplicate_row_ids_are_made_unique() {
+        let host = |id: &str| ImportedHost {
+            id: id.into(),
+            name: "n".into(),
+            hostname: "h".into(),
+            port: 22,
+            user: None,
+            key: None,
+            jump: None,
+            folder: Vec::new(),
+            tags: Vec::new(),
+        };
+        let mut p = ImportPreview { source: "iterm2".into(), origin: "o".into(), hosts: vec![host("g"), host("g"), host("x"), host("g")], skipped: Vec::new() };
+        unique_ids(&mut p);
+        let ids: Vec<_> = p.hosts.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["g", "g#2", "x", "g#3"]);
     }
 
     #[test]
