@@ -2,6 +2,7 @@
 
 pub(crate) mod encoding;
 pub(crate) mod ini;
+pub(crate) mod mobaxterm;
 pub(crate) mod putty;
 pub(crate) mod termius_csv;
 pub(crate) mod winscp;
@@ -143,8 +144,21 @@ pub(crate) fn read_source_file(path: &Path) -> Result<String, String> {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        all => String::from_utf8_lossy(all).into_owned(),
+        // Windows apps (MobaXterm, SecureCRT) often save in the ANSI codepage, not UTF-8.
+        all => String::from_utf8(all.to_vec()).unwrap_or_else(|_| windows_1252(all)),
     })
+}
+
+/// Windows-1252: Latin-1 plus printable characters in 0x80..0x9F.
+fn windows_1252(bytes: &[u8]) -> String {
+    const HIGH: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž', '\u{8F}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}', 'ž', 'Ÿ',
+    ];
+    bytes
+        .iter()
+        .map(|&b| if (0x80..0xA0).contains(&b) { HIGH[(b - 0x80) as usize] } else { b as char })
+        .collect()
 }
 
 pub(crate) fn describe_key(path: &Path) -> ImportKey {
@@ -208,6 +222,8 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("putty", None) => putty::detected(home).ok_or_else(|| "No PuTTY sessions found".into()),
         ("winscp", Some(p)) => file(p).map(|(text, origin)| winscp::parse_ini(&text, &origin)),
         ("winscp", None) => winscp::detected().ok_or_else(|| "No WinSCP sites found".into()),
+        ("mobaxterm", Some(p)) => file(p).map(|(text, origin)| mobaxterm::parse(&text, &origin, home)),
+        ("mobaxterm", None) => mobaxterm::detected(home).ok_or_else(|| "No MobaXterm sessions found".into()),
         ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
         ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
@@ -246,6 +262,9 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     }
     if let Some(p) = winscp::detected() {
         found.push(Detected { source: "winscp".into(), origin: p.origin });
+    }
+    if let Some(p) = mobaxterm::detected(home) {
+        found.push(Detected { source: "mobaxterm".into(), origin: p.origin });
     }
     found
 }
@@ -392,6 +411,15 @@ mod tests {
         let bad = dir.join("bad.ppk");
         std::fs::write(&bad, "PuTTY-User-Key-File-3: ssh-ed25519\nnot really a key\n").unwrap();
         assert!(read_key_bytes(&bad).is_err());
+    }
+
+    #[test]
+    fn cp1252_names_decode() {
+        let dir = temp_dir();
+        let path = dir.join("s.mxtsessions");
+        std::fs::write(&path, b"[Bookmarks]\r\nweb-caf\xE9=x \x80\r\n").unwrap();
+        let text = read_source_file(&path).unwrap();
+        assert!(text.contains("web-café=x €"), "{text:?}");
     }
 
     #[test]
