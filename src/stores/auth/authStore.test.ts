@@ -109,9 +109,11 @@ import { AuthApiError, authApi } from "../../lib/api/auth";
 import { onSessionRevoked } from "../../lib/api/http";
 import {
   clearKeychain,
+  deriveKek,
   loadRefreshToken,
   lockSession,
   setAuthTokens,
+  unwrapDek,
 } from "../../lib/crypto/crypto";
 import {
   loadOfflineIdentity,
@@ -858,5 +860,138 @@ describe("authStore email verification", () => {
     const s = useAuthStore.getState();
     expect(s.isAuthenticated).toBe(false);
     expect(s.isInitialized).toBe(true);
+  });
+});
+
+describe("app lock", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthStore.setState({
+      user,
+      localAccessAccountId: "u1",
+      isUnlocked: true,
+      appLocked: false,
+      serverAuthenticated: false,
+      alwaysAsk: false,
+      error: null,
+    });
+  });
+
+  it("lockApp_wipes_keys_and_locks", async () => {
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState()).toMatchObject({
+      isUnlocked: false,
+      appLocked: true,
+    });
+  });
+
+  it("lockApp_noop_when_not_unlocked", async () => {
+    useAuthStore.setState({ isUnlocked: false });
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().appLocked).toBe(false);
+    useAuthStore.setState({ isUnlocked: true, appLocked: true });
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).not.toHaveBeenCalled();
+  });
+
+  it("unlock_clears_appLocked", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    await useAuthStore.getState().unlock("pw");
+    expect(useAuthStore.getState()).toMatchObject({
+      isUnlocked: true,
+      appLocked: false,
+    });
+  });
+
+  it("logout_clears_appLocked", async () => {
+    await useAuthStore.getState().lockApp();
+    await useAuthStore.getState().logout();
+    expect(useAuthStore.getState().appLocked).toBe(false);
+  });
+
+  it("an unlock that finishes after sign-out relocks and saves nothing", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(lockSession).mockClear();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    let finish: () => void = () => {};
+    vi.mocked(deriveKek).mockImplementationOnce(
+      () => new Promise<void>((r) => (finish = r)),
+    );
+    const pending = useAuthStore.getState().unlock("pw");
+    await Promise.resolve();
+    await useAuthStore.getState().logout();
+    finish();
+    await expect(pending).rejects.toThrow();
+    expect(useAuthStore.getState().isUnlocked).toBe(false);
+    expect(savePassword).not.toHaveBeenCalled();
+    // Keys a late unwrap may have restored are wiped again.
+    expect(vi.mocked(lockSession).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a key derived for an unlock that then fails after sign-out is wiped", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(lockSession).mockClear();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    let fail: (e: Error) => void = () => {};
+    vi.mocked(unwrapDek).mockImplementationOnce(
+      () => new Promise<void>((_, reject) => (fail = reject)),
+    );
+    const pending = useAuthStore.getState().unlock("pw");
+    await vi.waitFor(() => expect(unwrapDek).toHaveBeenCalled());
+    await useAuthStore.getState().logout();
+    const wipesAtSignOut = vi.mocked(lockSession).mock.calls.length;
+    fail(new Error("bad"));
+    await expect(pending).rejects.toThrow();
+    expect(vi.mocked(lockSession).mock.calls.length).toBeGreaterThan(
+      wipesAtSignOut,
+    );
+  });
+
+  it("a password save still running when sign-out deletes it never wins", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    const events: string[] = [];
+    let saved: () => void = () => {};
+    vi.mocked(savePassword).mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          saved = () => {
+            events.push("saved");
+            r();
+          };
+        }),
+    );
+    vi.mocked(deletePassword).mockImplementation(async () => {
+      events.push("deleted");
+    });
+    const pending = useAuthStore.getState().unlock("pw");
+    await vi.waitFor(() => expect(savePassword).toHaveBeenCalled());
+    const signOut = useAuthStore.getState().logout();
+    await new Promise((r) => setTimeout(r, 0));
+    saved();
+    await pending.catch(() => {});
+    await signOut;
+    // The keychain ends up empty: sign-out's delete lands after the save.
+    expect(events.at(-1)).toBe("deleted");
+    vi.mocked(deletePassword).mockImplementation(async () => {});
   });
 });

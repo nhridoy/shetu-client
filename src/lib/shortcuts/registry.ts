@@ -6,6 +6,7 @@ export type ShortcutId =
   | "app.quickConnect"
   | "app.settings"
   | "app.searchHosts"
+  | "app.lock"
   | "terminal.newTab"
   | "terminal.closePane"
   | "terminal.nextTab"
@@ -81,6 +82,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     menuItem: "settings",
   }),
   def("app.searchHosts", "app", "Search hosts", "slash", "slash", false),
+  def("app.lock", "app", "Lock Shetu", "ctrl+shift+l", "shift+meta+l", true),
   def(
     "terminal.newTab",
     "terminal",

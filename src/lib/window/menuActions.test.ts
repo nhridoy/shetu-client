@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment happy-dom
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
+}));
+
 import { SHORTCUTS } from "@/lib/shortcuts/registry";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import menuRs from "../../../src-tauri/src/menu.rs?raw";
-import { isMenuActionId, isModalOpen, MENU_ACTION_IDS } from "./menuActions";
+import {
+  dispatchAppAction,
+  isMenuActionId,
+  isModalOpen,
+  listenAppActions,
+  MENU_ACTION_IDS,
+} from "./menuActions";
 
 describe("menu actions", () => {
   it("validates ids", () => {
@@ -27,5 +40,17 @@ describe("menu actions", () => {
     });
     expect(isModalOpen(doc(true))).toBe(true);
     expect(isModalOpen(doc(false))).toBe(false);
+  });
+
+  it("menu actions do nothing while Shetu is locked", () => {
+    const handler = vi.fn();
+    const stop = listenAppActions(handler);
+    useShortcutStore.setState({ locked: true });
+    dispatchAppAction("new-tab");
+    expect(handler).not.toHaveBeenCalled();
+    useShortcutStore.setState({ locked: false });
+    dispatchAppAction("new-tab");
+    expect(handler).toHaveBeenCalledWith("new-tab");
+    stop();
   });
 });

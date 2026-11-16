@@ -155,4 +155,24 @@ describe("agent forwarding decisions", () => {
       ).toEqual({});
     },
   );
+
+  it("lock_settings_default_and_clamp", async () => {
+    await useSettingsStore.getState().initSettings();
+    expect(useSettingsStore.getState().settings).toMatchObject({
+      lockAfterIdleMinutes: 0,
+      lockOnSystemLock: true,
+    });
+    mocks.entries = [
+      ["lockAfterIdleMinutes", 7],
+      ["lockOnSystemLock", "false"],
+    ];
+    await useSettingsStore.getState().initSettings();
+    expect(useSettingsStore.getState().settings).toMatchObject({
+      lockAfterIdleMinutes: 0,
+      lockOnSystemLock: false,
+    });
+    mocks.entries = [["lockAfterIdleMinutes", "15"]];
+    await useSettingsStore.getState().initSettings();
+    expect(useSettingsStore.getState().settings.lockAfterIdleMinutes).toBe(15);
+  });
 });

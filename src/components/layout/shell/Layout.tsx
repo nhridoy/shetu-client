@@ -12,6 +12,7 @@ import SettingsModal from "@/components/settings/modal/SettingsModal";
 import WorkspaceForm from "@/components/workspaces/forms/WorkspaceForm";
 import { useLayoutDragDrop } from "@/hooks/layout/useLayoutDragDrop";
 import { useWindowCloseGuard } from "@/hooks/layout/useWindowCloseGuard";
+import { useAppLock } from "@/hooks/useAppLock";
 import { useModal } from "@/hooks/useModal";
 import { useShortcut } from "@/hooks/useShortcut";
 import { autoStartOnUnlock } from "@/lib/forwarding/autoStart";
@@ -80,6 +81,7 @@ export default function Layout() {
       .then((ok) => ok && go());
 
   useWindowCloseGuard();
+  useAppLock();
 
   const workspaceModal = useModal();
   const presetModal = useModal();

@@ -3,9 +3,9 @@ import { isShellKey, isValidBinding, resolveMod } from "./binding";
 import { SHORTCUTS } from "./registry";
 
 describe("shortcut registry", () => {
-  it("registry_has_30_unique_ids_with_valid_defaults", () => {
-    expect(SHORTCUTS).toHaveLength(30);
-    expect(new Set(SHORTCUTS.map((s) => s.id)).size).toBe(30);
+  it("registry_has_31_unique_ids_with_valid_defaults", () => {
+    expect(SHORTCUTS).toHaveLength(31);
+    expect(new Set(SHORTCUTS.map((s) => s.id)).size).toBe(31);
     // Focus mode was removed and Toggle sidebar never did anything.
     const ids = SHORTCUTS.map((s) => s.id as string);
     expect(ids).not.toContain("terminal.focusMode");
@@ -33,6 +33,16 @@ describe("shortcut registry", () => {
       label: "Broadcast input",
       other: "ctrl+shift+b",
       mac: "shift+meta+b",
+      whileTyping: true,
+    });
+  });
+
+  it("lock shortcut is Ctrl+Shift+L, Shift+Cmd+L on macOS", () => {
+    expect(SHORTCUTS.find((d) => d.id === "app.lock")).toMatchObject({
+      context: "app",
+      label: "Lock Shetu",
+      other: "ctrl+shift+l",
+      mac: "shift+meta+l",
       whileTyping: true,
     });
   });

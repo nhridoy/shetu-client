@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { isTauriAvailable } from "@/lib/common/utils";
+import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 
 /** App-wide commands shared by the macOS menu bar and in-app shortcuts. */
 export type MenuActionId =
@@ -28,9 +29,11 @@ export function dispatchAppAction(id: MenuActionId): void {
   window.dispatchEvent(new CustomEvent(APP_ACTION_DOM_EVENT, { detail: id }));
 }
 
-export function listenAppActions(
-  handler: (id: MenuActionId) => void,
-): () => void {
+export function listenAppActions(run: (id: MenuActionId) => void): () => void {
+  // While app-locked, menu items (⌘T, ⌘K, ⌘,) must not act behind the lock screen.
+  const handler = (id: MenuActionId) => {
+    if (!useShortcutStore.getState().locked) run(id);
+  };
   const onDom = (event: Event) => {
     const id = (event as CustomEvent<unknown>).detail;
     if (isMenuActionId(id)) handler(id);
