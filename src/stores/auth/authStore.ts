@@ -103,6 +103,20 @@ function writeTokens(fn: () => Promise<void>, owner: number): Promise<void> {
   });
 }
 
+// Saved-password writes run one at a time, like tokens: sign-out's delete is ordered after a
+// save already running, and a save from a flow that no longer owns the session is dropped.
+let passwordQueue: Promise<void> = Promise.resolve();
+function serialPassword(fn: () => Promise<void>): Promise<void> {
+  const run = passwordQueue.then(fn);
+  passwordQueue = run.catch(() => {});
+  return run;
+}
+function savePasswordFor(password: string, owner: number): Promise<void> {
+  return serialPassword(async () => {
+    if (owner === sessionOwner) await savePassword(password);
+  });
+}
+
 // A keychain that can't save the refresh token still signs in for this run.
 function setAuthTokens(
   accessToken: string,
@@ -314,7 +328,7 @@ async function runTeardown(): Promise<string[]> {
     }
   };
   await attempt("lock", lockSession);
-  await attempt("saved password", deletePassword);
+  await attempt("saved password", () => serialPassword(deletePassword));
   // Drop the previous account's in-memory selection before a new account
   // can unlock; otherwise sync may target its stale vault ID once.
   await clearVaultSelection();
@@ -515,7 +529,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await persistTokens(pair, owner);
       ensureOwner(owner);
       if (!get().alwaysAsk) {
-        await savePassword(password);
+        await savePasswordFor(password, owner);
       }
       const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
       ensureOwner(owner);
@@ -577,7 +591,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await persistTokens(newTokens, owner);
       ensureOwner(owner);
       if (password && !get().alwaysAsk) {
-        await savePassword(password);
+        await savePasswordFor(password, owner);
       }
       const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
       ensureOwner(owner);
@@ -714,7 +728,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await persistTokens(tokens, owner);
         ensureOwner(owner);
         if (!get().alwaysAsk) {
-          await savePassword(password);
+          await savePasswordFor(password, owner);
         }
         const recoveryCode = await get().ensureRecoveryKit(res.keyring ?? null);
         ensureOwner(owner);
@@ -801,7 +815,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ isUnlocked: true, appLocked: false });
       if (!get().alwaysAsk) {
         try {
-          await savePassword(password);
+          await savePasswordFor(password, owner);
         } catch {
           /* best effort */
         }
@@ -817,6 +831,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           });
       }
     } catch (err) {
+      // A key derived for an unlock that didn't complete (wrong password, sign-out meanwhile)
+      // must not stay in memory while nothing is unlocked.
+      if (!get().isUnlocked || owner !== sessionOwner)
+        await lockSession().catch(() => {});
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });
       throw err;
@@ -911,7 +929,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     ensureOwner(owner);
     if (!get().alwaysAsk) {
       try {
-        await savePassword(newPassword);
+        await savePasswordFor(newPassword, owner);
       } catch {
         // best-effort keychain refresh
       }
@@ -1303,7 +1321,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await persistTokens(newTokens, owner);
       ensureOwner(owner);
       if (!get().alwaysAsk) {
-        await savePassword(password);
+        await savePasswordFor(password, owner);
       }
     } catch (err) {
       if (owner !== sessionOwner) return;
@@ -1384,7 +1402,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // "never remember" should forget: purge the saved entry so a later
       // toggle-off can't silently auto-unlock. Next unlock re-saves it.
       try {
-        await deletePassword();
+        await serialPassword(deletePassword);
       } catch {
         // best-effort purge; entry stays ignored while the flag is on
       }

@@ -113,6 +113,7 @@ import {
   loadRefreshToken,
   lockSession,
   setAuthTokens,
+  unwrapDek,
 } from "../../lib/crypto/crypto";
 import {
   loadOfflineIdentity,
@@ -936,5 +937,61 @@ describe("app lock", () => {
     expect(savePassword).not.toHaveBeenCalled();
     // Keys a late unwrap may have restored are wiped again.
     expect(vi.mocked(lockSession).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a key derived for an unlock that then fails after sign-out is wiped", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(lockSession).mockClear();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    let fail: (e: Error) => void = () => {};
+    vi.mocked(unwrapDek).mockImplementationOnce(
+      () => new Promise<void>((_, reject) => (fail = reject)),
+    );
+    const pending = useAuthStore.getState().unlock("pw");
+    await vi.waitFor(() => expect(unwrapDek).toHaveBeenCalled());
+    await useAuthStore.getState().logout();
+    const wipesAtSignOut = vi.mocked(lockSession).mock.calls.length;
+    fail(new Error("bad"));
+    await expect(pending).rejects.toThrow();
+    expect(vi.mocked(lockSession).mock.calls.length).toBeGreaterThan(
+      wipesAtSignOut,
+    );
+  });
+
+  it("a password save still running when sign-out deletes it never wins", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    const events: string[] = [];
+    let saved: () => void = () => {};
+    vi.mocked(savePassword).mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          saved = () => {
+            events.push("saved");
+            r();
+          };
+        }),
+    );
+    vi.mocked(deletePassword).mockImplementation(async () => {
+      events.push("deleted");
+    });
+    const pending = useAuthStore.getState().unlock("pw");
+    await vi.waitFor(() => expect(savePassword).toHaveBeenCalled());
+    const signOut = useAuthStore.getState().logout();
+    await new Promise((r) => setTimeout(r, 0));
+    saved();
+    await pending.catch(() => {});
+    await signOut;
+    // The keychain ends up empty: sign-out's delete lands after the save.
+    expect(events.at(-1)).toBe("deleted");
+    vi.mocked(deletePassword).mockImplementation(async () => {});
   });
 });

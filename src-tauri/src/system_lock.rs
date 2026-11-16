@@ -157,7 +157,10 @@ mod windows_events {
             WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)?;
             // Connected standby (Modern Standby) sends suspend only to windows registered for it.
             // Kept for the app's lifetime, like this thread, so it is never unregistered.
-            let _suspend = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);
+            if let Err(e) = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE) {
+                // Session-lock notifications still work; only connected-standby sleep is missed.
+                eprintln!("system lock: suspend notifications unavailable: {e}");
+            }
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 DispatchMessageW(&msg);
