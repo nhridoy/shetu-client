@@ -144,7 +144,9 @@ pub(crate) fn parse_xml(text: &str, origin: &str) -> Result<ImportPreview, Strin
                 let Some((name, values)) = keys.pop() else { continue };
                 // Sessions are keys with a Hostname somewhere under the top-level "Sessions" key.
                 let Some(root) = keys.iter().position(|(n, _)| n == "Sessions") else { continue };
-                if values.contains_key("Hostname") || values.contains_key("Protocol Name") {
+                // Same as the folder walk: SecureCRT's template and per-folder settings aren't sessions.
+                let template = name == "__FolderData__" || (name == "Default" && keys.len() == root + 1);
+                if !template && (values.contains_key("Hostname") || values.contains_key("Protocol Name")) {
                     let folder = keys[root + 1..].iter().map(|(n, _)| n.clone()).collect();
                     session(&name, folder, &values, 10, &mut out);
                 }
@@ -257,6 +259,16 @@ mod tests {
         assert_eq!(web.folder, vec!["Prod & Co".to_string()]);
         assert_eq!((web.port, web.user.as_deref()), (2222, Some("deploy")));
         assert!(host(&p, "root-one").folder.is_empty());
+    }
+
+    #[test]
+    fn xml_default_template_and_folder_data_ignored() {
+        let xml = r#"<VanDyke version="3.0"><key name="Sessions">
+            <key name="Default"><string name="Protocol Name">SSH2</string></key>
+            <key name="Prod"><key name="__FolderData__"><string name="Protocol Name">SSH2</string></key></key>
+        </key></VanDyke>"#;
+        let p = parse_xml(xml, "f").unwrap();
+        assert!(p.hosts.is_empty() && p.skipped.is_empty(), "{p:?}");
     }
 
     #[test]
