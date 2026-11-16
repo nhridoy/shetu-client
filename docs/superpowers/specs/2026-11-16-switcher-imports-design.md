@@ -72,8 +72,9 @@ Commands:
 - `import_detect() -> Vec<{ source, origin }>`: which sources have data in their usual place.
 - `import_preview(source, path: Option<String>) -> ImportPreview`: no path means the detected
   location.
-- `import_read_key(path) -> String`: only for key paths listed in the most recent preview
-  (an allowlist kept in Rust state). This replaces `ssh_config_read_key`. `.ppk` content goes
+- `import_read_key(source, path, key_path) -> String`: re-runs that source's preview and reads
+  the key only if it is listed there (stateless, like `ssh_config_read_key` today, which it
+  replaces). `.ppk` content goes
   through the existing `convert_ppk` before import.
 
 ### Sources
@@ -117,8 +118,7 @@ file locations or a picked file.
 
 ### Data and security
 
-- `import_read_key` reads only paths from the latest preview; the allowlist is replaced per
-  preview and cleared when the dialog closes.
+- `import_read_key` reads only keys the source's own preview lists (no stored allowlist).
 - Keys follow the existing import path (encrypted on device, synced). `.ppk` goes through
   `convert_ppk`.
 - Missing `user`: the host is created without a username (the existing username prompt asks on
@@ -145,9 +145,9 @@ file locations or a picked file.
 - **CSV:** RFC 4180 (quoted fields, header row) via the `csv` crate. Tags are joined with `;`
   on export, and `,` or `;` is accepted on import. Group paths are joined with `/`; a `/` inside
   a group name is a known limit (on import it nests). No `protocol` column on export.
-- **Key allowlist:** a single global set in Rust state, replaced by each preview (only the
-  latest preview's keys can be read) and cleared on dialog close. A picked file can name any
-  key path; that is the user's own choice and is shown in the preview before import.
+- **Key reads:** no stored allowlist. Each read re-runs the source preview and checks the key
+  is listed. A picked file can name any key path; that is the user's own choice and is shown in
+  the preview before import.
 - **Source step:** every source is always listed. Found ones show their origin; the rest offer
   only "Choose file…". ssh_config has no file option (as today).
 - **ssh_config:** behaviour and summary wording stay the same. Its tests move to the new model
