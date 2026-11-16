@@ -8,7 +8,31 @@ use yaml_rust2::{Yaml, YamlLoader};
 /// Profile types Tabby ships for local use; not worth listing as skipped.
 const BUILT_IN: [&str; 2] = ["local", "splash-tab"];
 
+/// Tabby configs never use anchors and nest only a few levels. Refusing aliases stops "billion
+/// laughs" copies; capping depth stops a deep `- - - …` file overflowing the stack while loading.
+fn check_shape(text: &str) -> Result<(), String> {
+    use yaml_rust2::parser::{Event, Parser};
+    let mut parser = Parser::new_from_str(text);
+    let mut depth = 0usize;
+    loop {
+        let (event, _) = parser.next_token().map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
+        match event {
+            Event::Alias(_) => return Err("This Tabby config uses YAML aliases, which aren't supported".into()),
+            Event::SequenceStart(..) | Event::MappingStart(..) => {
+                depth += 1;
+                if depth > 64 {
+                    return Err("This Tabby config is nested too deeply".into());
+                }
+            }
+            Event::SequenceEnd | Event::MappingEnd => depth = depth.saturating_sub(1),
+            Event::StreamEnd => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 pub(crate) fn parse(text: &str, origin: &str) -> Result<ImportPreview, String> {
+    check_shape(text)?;
     let docs = YamlLoader::load_from_str(text).map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
     let mut out = ImportPreview { source: "tabby".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() };
     let Some(doc) = docs.first() else { return Ok(out) };
@@ -148,6 +172,16 @@ groups:
         assert!(p.skipped.contains(&Skipped { name: "console".into(), reason: "serial profile".into() }));
         assert!(p.skipped.iter().all(|s| s.name != "zsh"));
         assert_eq!(p.hosts.len(), 4);
+    }
+
+    #[test]
+    fn anchor_bombs_and_deep_nesting_are_refused() {
+        let bomb = "a: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nprofiles: []\n";
+        assert!(parse(bomb, "f").is_err());
+        let deep = format!("{}x\n", "- ".repeat(20_000));
+        assert!(parse(&deep, "f").is_err());
+        // Ordinary nesting still loads.
+        assert!(parse(CONFIG, "f").is_ok());
     }
 
     #[test]

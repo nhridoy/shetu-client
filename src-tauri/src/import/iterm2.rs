@@ -79,8 +79,8 @@ pub(crate) fn parse_ssh_command(cmd: &str) -> Option<SshTarget> {
             'p' => target.port = value.parse().ok(),
             'l' => target.user = Some(value),
             'i' => target.key = Some(value),
-            // Only one hop is imported; a chain is left to the summary.
-            'J' if !value.contains(',') => target.jump = Some(value),
+            // A chain ("a,b") is kept as is; the import notes that it isn't supported.
+            'J' => target.jump = Some(value),
             _ => {}
         }
     }
@@ -127,6 +127,20 @@ pub(crate) fn parse_profiles(profiles: &[serde_json::Value], origin: &str) -> Im
                 .filter_map(|t| t.as_str().map(String::from))
                 .collect(),
         });
+    }
+    // `-J` names a host; link it to the profile in this import that connects there, if any.
+    let bare = |s: &str| {
+        let host = s.rsplit_once('@').map_or(s, |(_, h)| h);
+        host.rsplit_once(':').map_or(host, |(h, _)| h).to_ascii_lowercase()
+    };
+    let targets: Vec<(String, String, String)> =
+        out.hosts.iter().map(|h| (h.id.clone(), h.name.to_ascii_lowercase(), h.hostname.to_ascii_lowercase())).collect();
+    for host in &mut out.hosts {
+        let Some(jump) = host.jump.as_deref().filter(|j| !j.contains(',')) else { continue };
+        let wanted = bare(jump);
+        if let Some((id, _, _)) = targets.iter().find(|(id, name, hostname)| *id != host.id && (*name == wanted || *hostname == wanted)) {
+            host.jump = Some(id.clone());
+        }
     }
     out
 }
@@ -185,7 +199,8 @@ mod tests {
             Some(target(Some("root"), "host", None, None, None))
         );
         assert_eq!(parse_ssh_command("ssh -J bastion inner"), Some(target(None, "inner", None, None, Some("bastion"))));
-        assert_eq!(parse_ssh_command("ssh -J a,b inner"), Some(target(None, "inner", None, None, None)));
+        // A chain is kept so the summary can say it isn't supported.
+        assert_eq!(parse_ssh_command("ssh -J a,b inner"), Some(target(None, "inner", None, None, Some("a,b"))));
         assert_eq!(parse_ssh_command("/usr/bin/ssh -4tA h"), Some(target(None, "h", None, None, None)));
         assert_eq!(parse_ssh_command("bash"), None);
         assert_eq!(parse_ssh_command("ssh -p"), None);
@@ -209,6 +224,23 @@ mod tests {
         assert_eq!((web.name.as_str(), web.id.as_str(), web.hostname.as_str()), ("web", "g1", "10.0.0.4"));
         assert_eq!((web.port, web.user.as_deref()), (2222, Some("deploy")));
         assert_eq!(web.tags, vec!["prod".to_string(), "web".to_string()]);
+    }
+
+    #[test]
+    fn jump_links_to_a_profile_in_the_same_import() {
+        let p = parse_profiles(
+            &[
+                json!({"Name": "bastion", "Guid": "gb", "Custom Command": "Yes", "Command": "ssh ops@b.example.com"}),
+                json!({"Name": "inner", "Guid": "gi", "Custom Command": "Yes", "Command": "ssh -J ops@b.example.com:22 inner"}),
+                json!({"Name": "by-name", "Guid": "gn", "Custom Command": "Yes", "Command": "ssh -J bastion other"}),
+                json!({"Name": "elsewhere", "Guid": "ge", "Custom Command": "Yes", "Command": "ssh -J unknown x"}),
+            ],
+            "f",
+        );
+        let jump = |n: &str| p.hosts.iter().find(|h| h.name == n).unwrap().jump.clone();
+        assert_eq!(jump("inner").as_deref(), Some("gb"));
+        assert_eq!(jump("by-name").as_deref(), Some("gb"));
+        assert_eq!(jump("elsewhere").as_deref(), Some("unknown"));
     }
 
     #[test]

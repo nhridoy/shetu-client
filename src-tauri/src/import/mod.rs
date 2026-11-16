@@ -218,6 +218,12 @@ pub(crate) fn describe_key(path: &Path) -> ImportKey {
 }
 
 pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Result<ImportPreview, String> {
+    let mut preview = preview_raw(source, path, home)?;
+    unique_ids(&mut preview);
+    Ok(preview)
+}
+
+fn preview_raw(source: &str, path: Option<&Path>, home: &Path) -> Result<ImportPreview, String> {
     let file = |path: &Path| read_source_file(path).map(|text| (text, path.to_string_lossy().into_owned()));
     match (source, path) {
         ("ssh_config", _) => crate::ssh_config_import::to_preview(home),
@@ -236,6 +242,19 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
         ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
+    }
+}
+
+/// Two rows with one id would be created as one host (the second replacing the first):
+/// later duplicates get `#2`, `#3`, … (e.g. a profile in both iTerm2's prefs and DynamicProfiles).
+pub(crate) fn unique_ids(preview: &mut ImportPreview) {
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    for host in &mut preview.hosts {
+        let n = seen.entry(host.id.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            host.id = format!("{}#{n}", host.id);
+        }
     }
 }
 
@@ -438,6 +457,25 @@ mod tests {
         std::fs::write(&path, b"[Bookmarks]\r\nweb-caf\xE9=x \x80\r\n").unwrap();
         let text = read_source_file(&path).unwrap();
         assert!(text.contains("web-café=x €"), "{text:?}");
+    }
+
+    #[test]
+    fn duplicate_row_ids_are_made_unique() {
+        let host = |id: &str| ImportedHost {
+            id: id.into(),
+            name: "n".into(),
+            hostname: "h".into(),
+            port: 22,
+            user: None,
+            key: None,
+            jump: None,
+            folder: Vec::new(),
+            tags: Vec::new(),
+        };
+        let mut p = ImportPreview { source: "iterm2".into(), origin: "o".into(), hosts: vec![host("g"), host("g"), host("x"), host("g")], skipped: Vec::new() };
+        unique_ids(&mut p);
+        let ids: Vec<_> = p.hosts.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["g", "g#2", "x", "g#3"]);
     }
 
     #[test]
