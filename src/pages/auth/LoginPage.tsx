@@ -70,7 +70,9 @@ export default function LoginPage() {
             <span>
               {deletionNotice.kind === "deleted"
                 ? "This account has been deleted."
-                : noticeDate(deletionNotice.date)}
+                : deletionNotice.kind === "device_revoked"
+                  ? "This device was signed out from another device. Its Shetu data was erased."
+                  : noticeDate(deletionNotice.date)}
             </span>
             <button
               type="button"

@@ -1,6 +1,7 @@
 import { load } from "@tauri-apps/plugin-store";
 import { toast } from "sonner";
 import { create } from "zustand";
+import { reportDevice } from "@/lib/api/devices";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
@@ -150,23 +151,50 @@ async function runRevokedSession(): Promise<void> {
   await suspendServerSession();
   const userId = currentAccountId();
   if (!userId) return;
+  const deviceId = await getDeviceId().catch(() => undefined);
   let res: Awaited<ReturnType<typeof authApi.accountStatus>> | null;
   try {
-    res = await authApi.accountStatus(userId);
+    res = await authApi.accountStatus(userId, deviceId);
   } catch {
     return; // offline or server error: never wipe on doubt
   }
-  if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
+  const accountGone =
+    res?.status === "deletion_scheduled" || res?.status === "deleted";
+  if (!accountGone && res?.device_revoked !== true) return;
   // The account may have changed during the round-trip; don't wipe another one.
   if (currentAccountId() !== userId) return;
   const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
-    deletionNotice:
-      res.status === "deleted"
+    deletionNotice: !accountGone
+      ? { kind: "device_revoked" }
+      : res?.status === "deleted"
         ? { kind: "deleted" }
-        : { kind: "scheduled", date: res.deletion_scheduled_for ?? "" },
+        : { kind: "scheduled", date: res?.deletion_scheduled_for ?? "" },
   });
+}
+
+/**
+ * Before signing in on a device that still holds an account's local data, ask whether this
+ * device was signed out remotely; if so, erase it first (a sign-in would clear that flag).
+ * Offline or any error: keep the data.
+ */
+async function wipeIfRevoked(): Promise<boolean> {
+  const userId = useAuthStore.getState().localAccessAccountId;
+  if (!userId) return false;
+  let revoked = false;
+  try {
+    const res = await authApi.accountStatus(userId, await getDeviceId());
+    revoked = res?.device_revoked === true;
+  } catch {
+    return false;
+  }
+  if (!revoked || useAuthStore.getState().localAccessAccountId !== userId)
+    return false;
+  const failures = await resetDevice(teardownSession);
+  if (failures.length) console.warn("device reset incomplete:", failures);
+  useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
+  return true;
 }
 
 interface AuthState {
@@ -188,6 +216,7 @@ interface AuthState {
   deletionNotice:
     | { kind: "scheduled"; date: string }
     | { kind: "deleted" }
+    | { kind: "device_revoked" }
     | null;
   // Grace-period date of the account just signed into; sign-in is held until Keep or Sign out.
   pendingDeletion: string | null;
@@ -681,6 +710,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (email: string, password: string) => {
     set({ isLoading: true, error: null });
+    await wipeIfRevoked();
     let owner = await claimSession();
     try {
       const prelogin = await authApi.prelogin(email);
@@ -1162,6 +1192,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   oauthStartFlow: async (provider: string) => {
     set({ isLoading: true, error: null });
+    await wipeIfRevoked();
     let owner = await claimSession();
     try {
       const result = await startOAuthFlow(provider, await getDeviceId());
@@ -1275,6 +1306,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error("No pending OAuth setup");
     }
     set({ isLoading: true, error: null });
+    await wipeIfRevoked();
     let owner = await claimSession();
     try {
       const material = await generateAccountMaterial();
@@ -1409,6 +1441,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+// Each time the session reaches the server (sign-in or restore), tell it this device's name.
+useAuthStore.subscribe((s, prev) => {
+  if (s.serverAuthenticated && !prev.serverAuthenticated) void reportDevice();
+});
 
 // Any successful sign-in (password, OAuth, restore) supersedes the notice.
 useAuthStore.subscribe((s, prev) => {

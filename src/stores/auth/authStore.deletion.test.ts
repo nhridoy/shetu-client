@@ -120,7 +120,7 @@ describe("handleRevokedSession", () => {
       deletion_scheduled_for: "2026-12-13",
     });
     await handleRevokedSession();
-    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1", "dev-1");
     expect(resetDevice).toHaveBeenCalledTimes(1);
     expect(useAuthStore.getState().deletionNotice).toEqual({
       kind: "scheduled",
@@ -136,7 +136,7 @@ describe("handleRevokedSession", () => {
     expect(revokedListener).toBeTypeOf("function");
     revokedListener?.();
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
-    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1", "dev-1");
   });
 
   it("revoked_session_for_deleted_account_resets", async () => {
@@ -546,7 +546,7 @@ describe("restore with a revoked refresh token", () => {
       "auth-required",
     );
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
-    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1", "dev-1");
     expect(useAuthStore.getState().deletionNotice).toEqual({
       kind: "scheduled",
       date: "2026-12-13",
@@ -664,7 +664,7 @@ describe("restore with a revoked refresh token", () => {
       "auth-required",
     );
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
-    expect(authApi.accountStatus).toHaveBeenCalledWith("u1");
+    expect(authApi.accountStatus).toHaveBeenCalledWith("u1", "dev-1");
   });
 
   it("enrolled_launch_without_refresh_token_keeps_an_active_account", async () => {
