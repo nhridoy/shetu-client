@@ -265,6 +265,32 @@ fn history_apply_retention(
     Ok(expired + orphaned)
 }
 
+#[derive(serde::Serialize)]
+struct DeviceInfo {
+    name: String,
+    platform: &'static str,
+}
+
+/// The computer name as a device label: no control characters, at most 100 characters.
+fn clean_device_name(raw: &str) -> String {
+    raw.trim().chars().filter(|c| !c.is_control()).take(100).collect()
+}
+
+/// This computer's name and OS, shown in the account's devices list.
+#[tauri::command]
+fn device_info() -> DeviceInfo {
+    DeviceInfo {
+        name: clean_device_name(&gethostname::gethostname().to_string_lossy()),
+        platform: if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(windows) {
+            "windows"
+        } else {
+            "linux"
+        },
+    }
+}
+
 #[tauri::command]
 fn get_device_id(state: tauri::State<'_, AppState>) -> String {
     state.device_id.clone()
@@ -1122,6 +1148,20 @@ fn get_or_create_device_id() -> String {
 }
 
 #[cfg(test)]
+mod device_info_tests {
+    use super::*;
+
+    #[test]
+    fn device_info_platform_and_name_bounds() {
+        let info = device_info();
+        assert!(["linux", "macos", "windows"].contains(&info.platform), "{}", info.platform);
+        assert!(info.name.chars().count() <= 100);
+        assert!(!info.name.chars().any(char::is_control));
+        assert_eq!(clean_device_name(&format!(" {}\n", "x".repeat(150))), "x".repeat(100));
+    }
+}
+
+#[cfg(test)]
 mod lock_session_tests {
     use super::*;
 
@@ -1706,6 +1746,7 @@ pub fn run() {
             identities::identity_view,
             identities::identity_save,
             update::update_installation_kind,
+            device_info,
             get_device_id,
             host_inherit::inherited_host_defaults,
             history_start_attempt,

@@ -5395,6 +5395,7 @@ dependencies = [
  "data-encoding",
  "dirs 6.0.0",
  "futures",
+ "gethostname",
  "glob",
  "hkdf 0.12.4",
  "hmac 0.12.1",

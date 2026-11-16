@@ -240,15 +240,20 @@ export const authApi = {
     return apiFetch("DELETE", "/api/v1/me/deletion");
   },
 
-  async accountStatus(userId: string): Promise<{
+  async accountStatus(
+    userId: string,
+    deviceId?: string,
+  ): Promise<{
     status: "active" | "deletion_scheduled" | "deleted";
     deletion_scheduled_for?: string;
+    /** This device was signed out from another one: erase its local data. */
+    device_revoked?: boolean;
   }> {
     // Public: asked after a session is rejected, so send no (revoked) token.
     return apiFetch(
       "POST",
       "/api/v1/auth/account-status",
-      { user_id: userId },
+      deviceId ? { user_id: userId, device_id: deviceId } : { user_id: userId },
       { auth: false },
     );
   },
