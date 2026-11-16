@@ -1,7 +1,6 @@
 //! Read `~/.ssh/config` (with `Include`; `Match` blocks dropped) into plain host records.
 
-use crate::import::{describe_key, read_small_file, ImportKey as SshConfigKey};
-use serde::Serialize;
+use crate::import::{describe_key, ImportKey as SshConfigKey};
 use ssh2_config::{ParseRule, SshConfig};
 use std::collections::HashSet;
 use std::io::BufReader;
@@ -188,25 +187,6 @@ pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>, 
     Ok((hosts, match_files, scoped_files))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SshConfigHost {
-    alias: String,
-    hostname: String,
-    user: Option<String>,
-    port: u16,
-    proxy_jump: Option<String>,
-    key: Option<SshConfigKey>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SshConfigPreview {
-    hosts: Vec<SshConfigHost>,
-    ignored_match_files: Vec<String>,
-    ignored_scoped_include_files: Vec<String>,
-}
-
 const DEFAULT_KEYS: [&str; 6] = [
     "id_ed25519",
     "id_ecdsa",
@@ -224,22 +204,6 @@ fn pick_key(host: &ParsedHost, home: &Path) -> Option<SshConfigKey> {
             .or_else(|| host.identity_files.first().cloned())
     };
     found.map(|p| describe_key(&p))
-}
-
-pub(crate) fn preview(home: &Path) -> Result<SshConfigPreview, String> {
-    let (parsed, ignored_match_files, ignored_scoped_include_files) = parse_hosts(home)?;
-    let hosts = parsed
-        .iter()
-        .map(|h| SshConfigHost {
-            alias: h.alias.clone(),
-            hostname: h.hostname.clone(),
-            user: h.user.clone(),
-            port: h.port,
-            proxy_jump: h.proxy_jump.clone(),
-            key: pick_key(h, home),
-        })
-        .collect();
-    Ok(SshConfigPreview { hosts, ignored_match_files, ignored_scoped_include_files })
 }
 
 /// The ssh_config source in the shared import model.
@@ -275,33 +239,6 @@ pub(crate) fn to_preview(home: &Path) -> Result<crate::import::ImportPreview, St
         hosts,
         skipped,
     })
-}
-
-pub(crate) fn read_key(home: &Path, path: &str) -> Result<String, String> {
-    // Only files that parsed as private keys: never a general read-any-file command.
-    let listed = preview(home)?.hosts.iter().any(|h| {
-        h.key
-            .as_ref()
-            .is_some_and(|k| k.path == path && matches!(k.status, "ready" | "encrypted"))
-    });
-    if !listed {
-        return Err("This file isn't a key listed in your SSH config".into());
-    }
-    read_small_file(Path::new(path)).ok_or_else(|| "Could not read key file".to_string())
-}
-
-fn home() -> Result<PathBuf, String> {
-    dirs::home_dir().ok_or_else(|| "Could not find your home folder".to_string())
-}
-
-#[tauri::command]
-pub fn ssh_config_preview() -> Result<SshConfigPreview, String> {
-    preview(&home()?)
-}
-
-#[tauri::command]
-pub fn ssh_config_read_key(path: String) -> Result<String, String> {
-    read_key(&home()?, &path)
 }
 
 #[cfg(test)]
@@ -432,7 +369,7 @@ mod tests {
     }
 
     fn only_key(home: &Path) -> SshConfigKey {
-        let mut p = preview(home).unwrap();
+        let mut p = to_preview(home).unwrap();
         p.hosts.remove(0).key.unwrap()
     }
 
@@ -559,16 +496,16 @@ mod tests {
         let (pem, _) = key_pem(None);
         let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/work\n"), ("work", &pem)]);
         let k = only_key(&home);
-        assert_eq!(read_key(&home, &k.path).unwrap(), pem);
+        assert_eq!(crate::import::read_key_for("ssh_config", None, &home, &k.path).unwrap(), pem);
         let cfg = home.join(".ssh/config");
-        assert!(read_key(&home, cfg.to_str().unwrap()).is_err());
+        assert!(crate::import::read_key_for("ssh_config", None, &home, cfg.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn read_key_rejects_listed_non_key_file() {
         let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/junk\n"), ("junk", "not a key")]);
         let k = only_key(&home);
-        assert!(read_key(&home, &k.path).is_err());
+        assert!(crate::import::read_key_for("ssh_config", None, &home, &k.path).is_err());
     }
 
     #[test]
@@ -577,7 +514,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".ssh/somedir")).unwrap();
         let k = only_key(&home);
         assert_eq!(k.status, "unreadable");
-        assert!(read_key(&home, &k.path).is_err());
+        assert!(crate::import::read_key_for("ssh_config", None, &home, &k.path).is_err());
     }
 
     #[test]

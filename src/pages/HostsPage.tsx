@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import GroupForm from "@/components/hosts/forms/GroupForm";
 import HostForm, { type HostData } from "@/components/hosts/forms/HostForm";
-import SshConfigImportModal from "@/components/hosts/modals/SshConfigImportModal";
+import ImportModal from "@/components/hosts/modals/ImportModal";
 import HostsPanel from "@/components/hosts/panels/HostsPanel";
 import { useModal } from "@/hooks/useModal";
 import { useNewParam } from "@/hooks/useNewParam";
@@ -156,7 +156,7 @@ export default function HostsPage() {
       )}
 
       {importModal.open && (
-        <SshConfigImportModal groupId={openGroup} onClose={importModal.hide} />
+        <ImportModal groupId={openGroup} onClose={importModal.hide} />
       )}
 
       {panel?.kind === "group" && (!panel.id || editingGroup) && (

@@ -1753,8 +1753,6 @@ pub fn run() {
             keys::derive_public_key,
             keys::inspect_private_key,
             keys::convert_ppk,
-            ssh_config_import::ssh_config_preview,
-            ssh_config_import::ssh_config_read_key,
             import::import_detect,
             import::import_preview,
             import::import_read_key,

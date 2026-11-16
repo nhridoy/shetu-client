@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
@@ -7,29 +8,62 @@ import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import { extractError } from "@/lib/common/extractError";
 import {
+  type ImportPreview,
   type ImportSummary,
-  planSshImport,
-  runSshImport,
-  type SshConfigPreview,
-} from "@/lib/sshImport/sshImport";
+  planImport,
+  runImport,
+} from "@/lib/import/hostImport";
 import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore, VAULT_KIND_TEAM } from "@/stores/vault/vaultStore";
 
-export default function SshConfigImportModal({
+type SourceId = "ssh_config" | "putty" | "winscp" | "termius_csv";
+
+const SOURCES: {
+  id: SourceId;
+  label: string;
+  file?: { name: string; extensions: string[] };
+}[] = [
+  { id: "ssh_config", label: "SSH config" },
+  {
+    id: "putty",
+    label: "PuTTY",
+    file: { name: "PuTTY registry export", extensions: ["reg"] },
+  },
+  {
+    id: "winscp",
+    label: "WinSCP",
+    file: { name: "WinSCP.ini", extensions: ["ini"] },
+  },
+  {
+    id: "termius_csv",
+    label: "Termius (CSV)",
+    file: { name: "CSV", extensions: ["csv"] },
+  },
+];
+
+/** Import hosts from ssh_config or another SSH app; folders become groups. */
+export default function ImportModal({
   groupId,
   onClose,
 }: {
   groupId: string | null;
   onClose: () => void;
 }) {
-  const { hosts, createHost } = useHostStore();
+  const { hosts, groups, createHost, createGroup } = useHostStore();
   const { keys, importKey, fetchKeys } = useKeyStore();
   const { vaults, currentVaultId } = useVaultStore();
   const vault = vaults.find((v) => v.id === currentVaultId);
   const [keysReady, setKeysReady] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<SshConfigPreview | null>(null);
+  const [detected, setDetected] = useState<
+    { source: string; origin: string }[] | null
+  >(null);
+  const [chosen, setChosen] = useState<{
+    source: SourceId;
+    path: string | null;
+  } | null>(null);
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
   const [passphrases, setPassphrases] = useState<Record<string, string>>({});
@@ -58,22 +92,50 @@ export default function SshConfigImportModal({
   }, [fetchKeys, currentVaultId]);
 
   useEffect(() => {
-    invoke<SshConfigPreview>("ssh_config_preview")
-      .then(setPreview)
-      .catch((e) => setError(extractError(e, "Failed to read ~/.ssh/config")));
+    invoke<{ source: string; origin: string }[]>("import_detect")
+      .then(setDetected)
+      .catch(() => setDetected([]));
   }, []);
+
+  const choose = async (source: SourceId, path: string | null) => {
+    setChosen({ source, path });
+    setPreview(null);
+    setError(null);
+    setUnchecked(new Set());
+    setPassphrases({});
+    try {
+      setPreview(
+        await invoke<ImportPreview>("import_preview", { source, path }),
+      );
+    } catch (e) {
+      setError(extractError(e, "Couldn't read the sessions"));
+    }
+  };
+
+  const pickFile = async (source: (typeof SOURCES)[number]) => {
+    if (!source.file) return;
+    const path = await open({ multiple: false, filters: [source.file] });
+    if (typeof path === "string") await choose(source.id, path);
+  };
+
+  const back = () => {
+    setChosen(null);
+    setPreview(null);
+    setError(null);
+  };
 
   const rows = useMemo(
     () =>
       preview
-        ? planSshImport(
-            preview,
-            hosts.map((h) => h.name),
-          )
+        ? planImport(preview, {
+            rootGroupId: groupId,
+            groups,
+            hosts: hosts.map((h) => ({ name: h.name, groupId: h.groupId })),
+          })
         : [],
-    [preview, hosts],
+    [preview, hosts, groups, groupId],
   );
-  const selected = rows.filter((r) => !r.existing && !unchecked.has(r.alias));
+  const selected = rows.filter((r) => !r.existing && !unchecked.has(r.id));
   const vaultFingerprints = new Set(keys.map((k) => k.fingerprint));
   // Keys already in the vault are reused: no passphrase prompt, not counted.
   const isNewKey = (k: { fingerprint: string | null }) =>
@@ -98,10 +160,10 @@ export default function SshConfigImportModal({
     ),
   ).size;
 
-  const toggle = (alias: string) =>
+  const toggle = (id: string) =>
     setUnchecked((prev) => {
       const next = new Set(prev);
-      if (!next.delete(alias)) next.add(alias);
+      if (!next.delete(id)) next.add(id);
       return next;
     });
 
@@ -109,14 +171,25 @@ export default function SshConfigImportModal({
     setBusy(true);
     setError(null);
     try {
-      const summary = await runSshImport(
+      if (!chosen) return;
+      const summary = await runImport(
         rows.filter((r) => r.existing || selected.includes(r)),
         passphrases,
         {
           groupId,
+          source: chosen.source,
+          groups,
           existingKeys: keys,
           existingHosts: hosts,
-          readKey: (path) => invoke<string>("ssh_config_read_key", { path }),
+          readKey: (keyPath) =>
+            invoke<string>("import_read_key", {
+              source: chosen.source,
+              path: chosen.path,
+              keyPath,
+            }),
+          convertPpk: (text, passphrase) =>
+            invoke<string>("convert_ppk", { text, passphrase }),
+          createGroup: (g) => createGroup(g),
           importKey,
           createHost: (h) => createHost(h, { probeOs: false }),
           newId: () => crypto.randomUUID(),
@@ -148,39 +221,79 @@ export default function SshConfigImportModal({
         ))}
       </ul>
     );
+  } else if (!chosen) {
+    body = (
+      <ul className="space-y-2">
+        {SOURCES.map((source) => {
+          const found = detected?.find((d) => d.source === source.id);
+          return (
+            <li
+              key={source.id}
+              className="flex items-center gap-3 text-sm text-white"
+            >
+              <div className="flex-1 min-w-0">
+                <div>{source.label}</div>
+                <div className="text-xs text-dark-500 truncate">
+                  {found
+                    ? `Found: ${found.origin}`
+                    : source.file
+                      ? "Not found here; choose an exported file"
+                      : "Not found"}
+                </div>
+              </div>
+              {(found || source.id === "ssh_config") && (
+                <Button
+                  type="button"
+                  size="sm"
+                  aria-label={`Import from ${source.label}`}
+                  onClick={() => void choose(source.id, null)}
+                >
+                  Import
+                </Button>
+              )}
+              {source.file && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  aria-label={`Choose ${source.label} file`}
+                  onClick={() => void pickFile(source)}
+                >
+                  Choose file…
+                </Button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    );
   } else if (error && !preview) {
     body = <p className="text-sm text-red-500">{error}</p>;
   } else if (!preview) {
-    body = <p className="text-sm text-dark-500">Reading ~/.ssh/config...</p>;
+    body = <p className="text-sm text-dark-500">Reading sessions...</p>;
   } else if (rows.length === 0) {
     body = (
-      <p className="text-sm text-dark-500">No hosts found in ~/.ssh/config</p>
+      <div className="space-y-2">
+        <p className="text-sm text-dark-500">
+          No hosts found in {preview.origin}
+        </p>
+        <Skipped list={preview.skipped} />
+      </div>
     );
   } else {
     body = (
       <div className="space-y-4">
         {error && <p className="text-sm text-red-500">{error}</p>}
         {keysError && <p className="text-sm text-red-500">{keysError}</p>}
-        {preview.ignoredScopedIncludeFiles.length > 0 && (
-          <p className="text-sm text-amber-400">
-            Host blocks inside an Include under a Host entry aren't supported
-            and were ignored in: {preview.ignoredScopedIncludeFiles.join(", ")}
-          </p>
-        )}
-        {preview.ignoredMatchFiles.length > 0 && (
-          <p className="text-sm text-amber-400">
-            Match blocks aren't supported and were ignored in:{" "}
-            {preview.ignoredMatchFiles.join(", ")}
-          </p>
-        )}
+        <Skipped list={preview.skipped} />
         <ul className="space-y-2">
           {rows.map((r) => (
-            <li key={r.alias} className="flex items-start gap-3 text-sm">
+            <li key={r.id} className="flex items-start gap-3 text-sm">
               <Checkbox
                 aria-label={`Import ${r.alias}`}
-                checked={!r.existing && !unchecked.has(r.alias)}
+                checked={!r.existing && !unchecked.has(r.id)}
                 disabled={r.existing || busy}
-                onCheckedChange={() => toggle(r.alias)}
+                onCheckedChange={() => toggle(r.id)}
               />
               <div className="min-w-0">
                 <div className="text-white">
@@ -193,8 +306,14 @@ export default function SshConfigImportModal({
                   {r.user ? `${r.user}@` : ""}
                   {r.hostname}:{r.port}
                   {r.key && ` · ${r.key.fileName}`}
-                  {r.jumpAlias && ` · via ${r.jumpAlias}`}
+                  {r.jumpAlias &&
+                    ` · via ${rows.find((x) => x.id === r.jumpAlias)?.alias ?? r.jumpAlias}`}
                 </div>
+                {r.folder.length > 0 && (
+                  <div className="text-xs text-dark-400">
+                    Folder: {r.folder.join(" / ")}
+                  </div>
+                )}
                 {[r.keyNote, r.jumpNote].filter(Boolean).map((n) => (
                   <div key={n} className="text-xs text-amber-400">
                     {n}
@@ -225,7 +344,7 @@ export default function SshConfigImportModal({
   return (
     <Modal
       onClose={onClose}
-      title="Import from SSH config"
+      title="Import hosts"
       maxWidth="max-w-xl"
       hideClose={busy}
     >
@@ -242,6 +361,19 @@ export default function SshConfigImportModal({
           </Button>
         ) : (
           <>
+            {chosen && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Back"
+                onClick={back}
+                disabled={busy}
+                className="mr-auto"
+              >
+                Back
+              </Button>
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -251,18 +383,34 @@ export default function SshConfigImportModal({
             >
               Cancel
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={submit}
-              disabled={busy || !keysReady || selected.length === 0}
-            >
-              Import {selected.length} hosts and {keyCount} keys
-              {vault ? ` into ${vault.name}` : ""}
-            </Button>
+            {chosen && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={submit}
+                disabled={busy || !keysReady || selected.length === 0}
+              >
+                Import {selected.length} hosts and {keyCount} keys
+                {vault ? ` into ${vault.name}` : ""}
+              </Button>
+            )}
           </>
         )}
       </div>
     </Modal>
+  );
+}
+
+function Skipped({ list }: { list: { name: string; reason: string }[] }) {
+  if (list.length === 0) return null;
+  return (
+    <ul className="space-y-1 text-sm text-amber-400">
+      {list.map((s, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: names can repeat
+        <li key={i}>
+          {s.name}: {s.reason}
+        </li>
+      ))}
+    </ul>
   );
 }
