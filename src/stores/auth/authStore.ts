@@ -783,13 +783,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   unlock: async (password: string) => {
     set({ error: null });
+    // Sign-out during the awaits below must win: no keys restored, no password re-saved.
+    const owner = sessionOwner;
     try {
       const identity = await loadOfflineIdentity();
+      ensureOwner(owner);
       if (!identity || identity.profile.id !== get().localAccessAccountId) {
         throw new Error("This account is not enrolled for offline access");
       }
       await deriveKek(password, identity.salt_cl);
       await unwrapDek(identity.wrapped_keyring.dek_wrapped_by_kek);
+      if (owner !== sessionOwner) {
+        // The unwrap may have landed after sign-out wiped the session: wipe it again.
+        await lockSession().catch(() => {});
+        throw new SessionLost("The session changed.");
+      }
       set({ isUnlocked: true, appLocked: false });
       if (!get().alwaysAsk) {
         try {

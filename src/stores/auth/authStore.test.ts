@@ -109,6 +109,7 @@ import { AuthApiError, authApi } from "../../lib/api/auth";
 import { onSessionRevoked } from "../../lib/api/http";
 import {
   clearKeychain,
+  deriveKek,
   loadRefreshToken,
   lockSession,
   setAuthTokens,
@@ -912,5 +913,28 @@ describe("app lock", () => {
     await useAuthStore.getState().lockApp();
     await useAuthStore.getState().logout();
     expect(useAuthStore.getState().appLocked).toBe(false);
+  });
+
+  it("an unlock that finishes after sign-out relocks and saves nothing", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(lockSession).mockClear();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    let finish: () => void = () => {};
+    vi.mocked(deriveKek).mockImplementationOnce(
+      () => new Promise<void>((r) => (finish = r)),
+    );
+    const pending = useAuthStore.getState().unlock("pw");
+    await Promise.resolve();
+    await useAuthStore.getState().logout();
+    finish();
+    await expect(pending).rejects.toThrow();
+    expect(useAuthStore.getState().isUnlocked).toBe(false);
+    expect(savePassword).not.toHaveBeenCalled();
+    // Keys a late unwrap may have restored are wiped again.
+    expect(vi.mocked(lockSession).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });

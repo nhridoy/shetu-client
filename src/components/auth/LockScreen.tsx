@@ -27,11 +27,14 @@ export default function LockScreen() {
   // Why something the user tried (e.g. closing the window) didn't happen while locked.
   const [notice, setNotice] = useState<string | null>(null);
   const cover = useRef<HTMLDivElement>(null);
+  // Each lock is a new cycle; an unlock attempt from an earlier one must not touch this form.
+  const cycle = useRef(0);
   const field = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     useShortcutStore.setState({ locked: appLocked });
     if (!appLocked) return;
+    cycle.current++;
     // Toasts sit above everything and could show host names or file paths.
     toast.dismiss();
     const self = cover.current;
@@ -61,6 +64,7 @@ export default function LockScreen() {
       // Nothing typed here outlives the lock.
       setPassword("");
       setError(null);
+      setBusy(false);
       setConfirmSignOut(false);
       setNotice(null);
       for (const el of others) el.removeAttribute("inert");
@@ -76,19 +80,22 @@ export default function LockScreen() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const mine = cycle.current;
     setBusy(true);
     setError(null);
     try {
       await unlock(password);
-      setPassword("");
+      if (mine === cycle.current) setPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-      // The disabled Unlock button dropped focus; keep typing in the field.
-      setTimeout(() => field.current?.focus(), 0);
-      field.current?.focus();
+      if (mine === cycle.current)
+        setError(err instanceof Error ? err.message : String(err));
     }
+    // An attempt from an earlier lock leaves the current form alone.
+    if (mine !== cycle.current) return;
+    setBusy(false);
+    // The disabled Unlock button dropped focus; keep typing in the field.
+    setTimeout(() => field.current?.focus(), 0);
+    field.current?.focus();
   };
 
   return createPortal(

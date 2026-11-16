@@ -1122,6 +1122,29 @@ fn get_or_create_device_id() -> String {
 }
 
 #[cfg(test)]
+mod lock_session_tests {
+    use super::*;
+
+    #[test]
+    fn wipe_runs_even_when_the_mutex_is_poisoned() {
+        let mut keys = crypto::KeySession::new();
+        crypto::generate_account_material(&mut keys).unwrap();
+        let state = std::sync::Arc::new(CryptoState { session: std::sync::Mutex::new(keys) });
+        let poison = std::sync::Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.session.lock().unwrap();
+            panic!("poison the mutex");
+        })
+        .join();
+        assert!(state.session.is_poisoned());
+        wipe_session(&state);
+        let session = state.session.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!session.unlocked);
+        assert!(session.dek.iter().all(|b| *b == 0));
+    }
+}
+
+#[cfg(test)]
 mod shetu_identity_tests {
     use super::device_id_path;
     use std::path::{Path, PathBuf};
@@ -1569,9 +1592,14 @@ fn sign_challenge(nonce: String, state: tauri::State<'_, CryptoState>) -> Result
 
 #[tauri::command]
 fn lock_session(state: tauri::State<'_, CryptoState>) -> Result<(), String> {
-    let mut session = state.session.lock().map_err(|e| e.to_string())?;
-    crypto::lock(&mut session);
+    wipe_session(&state);
     Ok(())
+}
+
+/// Wipes the vault keys. A poisoned mutex (an earlier panic) must not leave them in memory.
+fn wipe_session(state: &CryptoState) {
+    let mut session = state.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    crypto::lock(&mut session);
 }
 
 #[tauri::command]

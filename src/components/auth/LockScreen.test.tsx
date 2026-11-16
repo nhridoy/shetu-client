@@ -256,4 +256,22 @@ describe("LockScreen", () => {
       "Unlock to save or discard your changes before closing.",
     );
   });
+
+  it("a new lock starts with a usable form even if the last unlock is still finishing", async () => {
+    let finish: () => void = () => {};
+    h.unlock.mockImplementation(() => {
+      useAuthStore.setState({ appLocked: false });
+      return new Promise<void>((r) => (finish = r));
+    });
+    render();
+    lock(true);
+    type("pw");
+    await act(async () => button("Unlock").click());
+    lock(true);
+    type("pw2");
+    expect(button("Unlock").disabled).toBe(false);
+    // The older attempt finishing later doesn't touch the new form.
+    await act(async () => finish());
+    expect(field().value).toBe("pw2");
+  });
 });

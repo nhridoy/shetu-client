@@ -108,10 +108,13 @@ mod windows_events {
     use tauri::{AppHandle, Emitter};
     use windows::core::w;
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Power::RegisterSuspendResumeNotification;
     use windows::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, MSG, PBT_APMSUSPEND,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, DEVICE_NOTIFY_WINDOW_HANDLE, MSG,
+        PBT_APMSUSPEND,
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
     };
 
@@ -152,6 +155,9 @@ mod windows_events {
                 None,
             )?;
             WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)?;
+            // Connected standby (Modern Standby) sends suspend only to windows registered for it.
+            // Kept for the app's lifetime, like this thread, so it is never unregistered.
+            let _suspend = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 DispatchMessageW(&msg);
