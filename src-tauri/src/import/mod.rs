@@ -112,8 +112,12 @@ pub(crate) fn read_key_bytes(path: &Path) -> Result<String, String> {
         return Err("Network key paths aren't read".into());
     }
     let text = String::from_utf8(read_limited(path, KEY_LIMIT)?).map_err(|_| "This file isn't a private key".to_string())?;
-    let is_key = text.trim_start().starts_with("PuTTY-User-Key-File-")
-        || matches!(russh::keys::decode_secret_key(&text, None), Ok(_) | Err(russh::keys::Error::KeyIsEncrypted));
+    let is_key = if text.trim_start().starts_with("PuTTY-User-Key-File-") {
+        // A whole PPK parses; an encrypted one stops only at the missing passphrase.
+        crate::keys::convert_ppk_inner(text.clone(), None).map_or_else(|e| e == "PPK_ENCRYPTED", |_| true)
+    } else {
+        matches!(russh::keys::decode_secret_key(&text, None), Ok(_) | Err(russh::keys::Error::KeyIsEncrypted))
+    };
     if is_key {
         Ok(text)
     } else {
@@ -380,6 +384,14 @@ mod tests {
         let ppk = dir.join("a.ppk");
         std::fs::write(&ppk, crate::keys::tests::ppk_fixture(2, Some("pw"))).unwrap();
         assert!(read_key_bytes(&ppk).is_ok());
+    }
+
+    #[test]
+    fn malformed_ppk_is_not_a_key() {
+        let dir = temp_dir();
+        let bad = dir.join("bad.ppk");
+        std::fs::write(&bad, "PuTTY-User-Key-File-3: ssh-ed25519\nnot really a key\n").unwrap();
+        assert!(read_key_bytes(&bad).is_err());
     }
 
     #[test]

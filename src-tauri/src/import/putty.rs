@@ -74,7 +74,22 @@ pub(crate) fn parse_reg(text: &str, origin: &str) -> ImportPreview {
 
 pub(crate) fn parse_sessions_dir(dir: &Path) -> ImportPreview {
     let mut out = empty(&dir.to_string_lossy());
-    let mut files: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // No folder just means PuTTY isn't used here.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
+        Err(e) => {
+            out.skipped.push(Skipped { name: dir.to_string_lossy().into_owned(), reason: format!("Couldn't list sessions: {e}") });
+            return out;
+        }
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => files.push(entry.path()),
+            Err(e) => out.skipped.push(Skipped { name: dir.to_string_lossy().into_owned(), reason: format!("Couldn't list a session: {e}") }),
+        }
+    }
     files.sort();
     for path in files {
         let Some(encoded) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
@@ -223,7 +238,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shetu-putty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("broken")).unwrap();
         let p = parse_sessions_dir(&dir);
-        assert!(p.skipped.iter().any(|s| s.name == "broken" && s.reason.contains("isn't a file")), "{p:?}");
+        // Unix opens the directory and finds it isn't a file; Windows can't open it at all.
+        assert!(
+            p.skipped.iter().any(|s| s.name == "broken" && (s.reason.contains("isn't a file") || s.reason.contains("Couldn't open"))),
+            "{p:?}"
+        );
+    }
+
+    #[test]
+    fn unlistable_sessions_folder_is_reported() {
+        let file = std::env::temp_dir().join(format!("shetu-putty-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "not a folder").unwrap();
+        let p = parse_sessions_dir(&file);
+        assert_eq!(p.skipped.len(), 1, "{p:?}");
+        // A missing folder just means PuTTY isn't here.
+        assert!(parse_sessions_dir(&file.with_extension("missing")).skipped.is_empty());
     }
 
     #[test]

@@ -88,17 +88,17 @@ fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&s
         }
     };
     let mut out = Vec::new();
-    let mut jumps = Vec::new();
+    let mut jumps = std::collections::HashSet::new();
     for row in rows.iter().filter(|r| in_subtree(r.group_id.clone())) {
         let payload = decrypt(row)?;
         if let Some(id) = payload["jumpHostId"].as_str() {
-            jumps.push(id.to_string());
+            jumps.insert(id.to_string());
         }
         out.push((build(row, &payload), false));
     }
     out.sort_by(|(a, _), (b, _)| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
     // Without its own block, a ProxyJump to an outside host wouldn't resolve: fail rather than skip.
-    for row in rows.iter().filter(|r| with_jumps && jumps.contains(&r.id) && !in_subtree(r.group_id.clone())) {
+    for row in rows.iter().filter(|r| with_jumps && !in_subtree(r.group_id.clone()) && jumps.contains(&r.id)) {
         let payload = decrypt(row)?;
         out.push((build(row, &payload), true));
     }
@@ -117,7 +117,12 @@ fn word(s: &str) -> String {
     }
 }
 
-fn ssh_config(hosts: &[(Exported, bool)]) -> String {
+/// ssh runs ProxyJump through a shell (as a generated ProxyCommand), so only plain names pass.
+fn safe_jump_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-@:".contains(c))
+}
+
+fn ssh_config(hosts: &[(Exported, bool)]) -> Result<String, String> {
     let mut out = String::from("# Exported from Shetu. Keys stay in your Shetu vault.\n");
     for (h, outside) in hosts {
         if *outside {
@@ -129,14 +134,30 @@ fn ssh_config(hosts: &[(Exported, bool)]) -> String {
         }
         out.push_str(&format!("  Port {}\n", h.port));
         if let Some(jump) = &h.jump {
-            out.push_str(&format!("  ProxyJump {}\n", word(jump)));
+            if !safe_jump_name(jump) {
+                return Err(format!(
+                    "Jump host \"{jump}\" can't be written as ProxyJump; rename it to letters, digits, . _ - @ : only"
+                ));
+            }
+            out.push_str(&format!("  ProxyJump {jump}\n"));
         }
         if let Some(key) = &h.key {
             let key: String = key.chars().filter(|c| !c.is_control()).collect();
             out.push_str(&format!("  # key: {key}\n"));
         }
     }
-    out
+    Ok(out)
+}
+
+/// A spreadsheet would run a cell starting with these as a formula; a leading ' keeps it text.
+pub(crate) const FORMULA_START: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+fn cell(s: &str) -> String {
+    if s.starts_with(FORMULA_START) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    }
 }
 
 fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
@@ -144,12 +165,12 @@ fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
     w.write_record(["label", "address", "port", "username", "group", "tags"]).map_err(|e| e.to_string())?;
     for (h, _) in hosts.iter().filter(|(_, outside)| !outside) {
         w.write_record([
-            h.name.as_str(),
-            h.address.as_str(),
-            &h.port.to_string(),
-            h.user.as_deref().unwrap_or(""),
-            &h.group.join("/"),
-            &h.tags.join(";"),
+            cell(&h.name),
+            cell(&h.address),
+            h.port.to_string(),
+            cell(h.user.as_deref().unwrap_or("")),
+            cell(&h.group.join("/")),
+            cell(&h.tags.join(";")),
         ])
         .map_err(|e| e.to_string())?;
     }
@@ -159,7 +180,7 @@ fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
 pub(crate) fn export(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>, format: &str) -> Result<String, String> {
     let hosts = hosts(db, crypto, vault_id, group_id, format == "ssh_config")?;
     match format {
-        "ssh_config" => Ok(ssh_config(&hosts)),
+        "ssh_config" => ssh_config(&hosts),
         "csv" => csv(&hosts),
         _ => Err("Unknown export format".into()),
     }
@@ -262,6 +283,24 @@ mod tests {
         let err = export(&db, &crypto, &vault, Some("Web"), "ssh_config").unwrap_err();
         assert!(err.contains("bastion"), "{err}");
         assert!(export(&db, &crypto, &vault, Some("Web"), "csv").is_ok());
+    }
+
+    #[test]
+    fn unsafe_jump_host_name_is_refused() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET name = 'b$(id)' WHERE id = 'bastion'", []).unwrap();
+        let err = export(&db, &crypto, &vault, None, "ssh_config").unwrap_err();
+        assert!(err.contains("b$(id)"), "{err}");
+    }
+
+    #[test]
+    fn csv_formula_cells_are_guarded_and_round_trip() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET name = '=1+2' WHERE id = 'lone'", []).unwrap();
+        let out = export(&db, &crypto, &vault, None, "csv").unwrap();
+        assert!(out.contains("'=1+2"), "{out}");
+        let back = crate::import::termius_csv::parse_csv(&out, "f").unwrap();
+        assert!(back.hosts.iter().any(|h| h.name == "=1+2"), "{back:?}");
     }
 
     #[test]

@@ -30,7 +30,16 @@ pub(crate) fn parse_csv(text: &str, origin: &str) -> Result<ImportPreview, Strin
     let mut out = ImportPreview { source: "termius_csv".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() };
     for (n, record) in reader.records().enumerate() {
         let record = record.map_err(|e| format!("Couldn't read the CSV: {e}"))?;
-        let field = |i: Option<usize>| i.and_then(|i| record.get(i)).map(str::trim).filter(|v| !v.is_empty());
+        // Undo the export's formula guard ('=x → =x); other leading quotes stay.
+        let field = |i: Option<usize>| {
+            i.and_then(|i| record.get(i))
+                .map(str::trim)
+                .map(|v| match v.strip_prefix('\'') {
+                    Some(rest) if rest.starts_with(crate::export::FORMULA_START) => rest,
+                    _ => v,
+                })
+                .filter(|v| !v.is_empty())
+        };
         let hostname = field(Some(address));
         let label = field(name).or(hostname).unwrap_or("").to_string();
         if record.iter().all(|v| v.trim().is_empty()) {
