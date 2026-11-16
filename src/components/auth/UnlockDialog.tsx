@@ -11,6 +11,8 @@ export default function UnlockDialog() {
   const isUnlocked = useAuthStore((s) => s.isUnlocked);
   const localAccessAccountId = useAuthStore((s) => s.localAccessAccountId);
   const unlockPending = useAuthStore((s) => s.unlockPending);
+  // An app lock has its own full-window screen.
+  const appLocked = useAuthStore((s) => s.appLocked);
   const unlock = useAuthStore((s) => s.unlock);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -35,7 +37,9 @@ export default function UnlockDialog() {
 
   return (
     <Modal
-      open={!!localAccessAccountId && !isUnlocked && !unlockPending}
+      open={
+        !!localAccessAccountId && !isUnlocked && !unlockPending && !appLocked
+      }
       onClose={() => {}}
       title="Unlock Shetu"
       hideClose

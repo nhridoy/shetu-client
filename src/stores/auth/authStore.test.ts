@@ -860,3 +860,57 @@ describe("authStore email verification", () => {
     expect(s.isInitialized).toBe(true);
   });
 });
+
+describe("app lock", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthStore.setState({
+      user,
+      localAccessAccountId: "u1",
+      isUnlocked: true,
+      appLocked: false,
+      serverAuthenticated: false,
+      alwaysAsk: false,
+      error: null,
+    });
+  });
+
+  it("lockApp_wipes_keys_and_locks", async () => {
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState()).toMatchObject({
+      isUnlocked: false,
+      appLocked: true,
+    });
+  });
+
+  it("lockApp_noop_when_not_unlocked", async () => {
+    useAuthStore.setState({ isUnlocked: false });
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().appLocked).toBe(false);
+    useAuthStore.setState({ isUnlocked: true, appLocked: true });
+    await useAuthStore.getState().lockApp();
+    expect(lockSession).not.toHaveBeenCalled();
+  });
+
+  it("unlock_clears_appLocked", async () => {
+    await useAuthStore.getState().lockApp();
+    vi.mocked(loadOfflineIdentity).mockResolvedValue({
+      profile: { id: "u1" },
+      salt_cl: "sc",
+      wrapped_keyring: { dek_wrapped_by_kek: "k" },
+    } as never);
+    await useAuthStore.getState().unlock("pw");
+    expect(useAuthStore.getState()).toMatchObject({
+      isUnlocked: true,
+      appLocked: false,
+    });
+  });
+
+  it("logout_clears_appLocked", async () => {
+    await useAuthStore.getState().lockApp();
+    await useAuthStore.getState().logout();
+    expect(useAuthStore.getState().appLocked).toBe(false);
+  });
+});

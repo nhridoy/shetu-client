@@ -3,6 +3,7 @@ import { type CSSProperties, useEffect } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router";
 import { Toaster } from "sonner";
 import AuthGuard from "@/components/auth/guard/AuthGuard";
+import LockScreen from "@/components/auth/LockScreen";
 import PendingDeletionDialog from "@/components/auth/PendingDeletionDialog";
 import UnlockDialog from "@/components/auth/UnlockDialog";
 import AgentForwardDialog from "@/components/connection/AgentForwardDialog";
@@ -118,6 +119,8 @@ function App() {
       <AgentForwardDialog />
       <UsernamePromptDialog />
       <SnippetVariablesDialog />
+      {/* Last, so it sits above every dialog. */}
+      <LockScreen />
       <UpdateNotification />
       <Toaster
         richColors

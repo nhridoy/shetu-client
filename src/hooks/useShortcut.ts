@@ -27,7 +27,7 @@ export function useShortcut(
   const def = DEFS.get(id);
   if (!def) throw new Error(`unknown shortcut ${id}`);
   const binding = useShortcutStore((s) => effectiveBinding(id, s));
-  const recording = useShortcutStore((s) => s.recording);
+  const recording = useShortcutStore((s) => s.recording || s.locked);
   // An app-wide key reused by the mounted view belongs to the view there.
   const shadowed = useShortcutStore(
     (s) =>

@@ -27,6 +27,8 @@ export interface ShortcutState {
   activeContext: ShortcutContext | null;
   /** The Keyboard tab is capturing keys: every shortcut pauses. */
   recording: boolean;
+  /** Shetu is app-locked: every shortcut pauses. */
+  locked: boolean;
   initShortcuts(): Promise<void>;
   setBinding(id: ShortcutId, binding: string): Promise<void>;
   resetBinding(id: ShortcutId): Promise<void>;
@@ -78,6 +80,7 @@ export const useShortcutStore = create<ShortcutState>((set, get) => {
     overrides: {},
     activeContext: null,
     recording: false,
+    locked: false,
 
     initShortcuts: async () => {
       try {

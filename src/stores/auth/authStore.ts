@@ -162,6 +162,8 @@ interface AuthState {
   serverAuthenticated: boolean;
   localAccessAccountId: string | null;
   isUnlocked: boolean;
+  /** Locked while running (idle, Lock now, system lock): keys wiped, lock screen shown. */
+  appLocked: boolean;
   unlockPending: boolean;
   isInitialized: boolean;
   isLoading: boolean;
@@ -186,6 +188,8 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   unlock: (password: string) => Promise<void>;
+  /** Wipes the vault keys and shows the lock screen; connections keep running. */
+  lockApp: () => Promise<void>;
   updateProfile: (data: {
     full_name?: string;
     email?: string;
@@ -321,6 +325,7 @@ async function runTeardown(): Promise<string[]> {
     serverAuthenticated: false,
     localAccessAccountId: null,
     isUnlocked: false,
+    appLocked: false,
     pendingOAuth: null,
     pendingVerificationEmail: null,
     pendingDeletion: null,
@@ -423,6 +428,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   serverAuthenticated: false,
   localAccessAccountId: null,
   isUnlocked: false,
+  appLocked: false,
   unlockPending: false,
   isInitialized: false,
   isLoading: false,
@@ -784,7 +790,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       await deriveKek(password, identity.salt_cl);
       await unwrapDek(identity.wrapped_keyring.dek_wrapped_by_kek);
-      set({ isUnlocked: true });
+      set({ isUnlocked: true, appLocked: false });
       if (!get().alwaysAsk) {
         try {
           await savePassword(password);
@@ -809,6 +815,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  lockApp: async () => {
+    const { isUnlocked, appLocked } = get();
+    if (!isUnlocked || appLocked) return;
+    // Set first, so a second trigger arriving meanwhile is a no-op.
+    set({ appLocked: true });
+    try {
+      await lockSession();
+    } finally {
+      set({ isUnlocked: false });
+    }
+  },
   updateProfile: async (data) => {
     const owner = sessionOwner;
     const user = get().user;
