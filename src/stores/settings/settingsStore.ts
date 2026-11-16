@@ -22,7 +22,13 @@ export interface AppSettings {
   sshAgentPath: string;
   /** Host id → whether this device allows agent forwarding to it. Device-local, never synced. */
   agentForwardingDecisions: Record<string, boolean>;
+  /** App lock after this many idle minutes; 0 = off. One of LOCK_IDLE_MINUTES. */
+  lockAfterIdleMinutes: number;
+  /** App lock when the computer sleeps or the OS screen locks. */
+  lockOnSystemLock: boolean;
 }
+
+export const LOCK_IDLE_MINUTES = [0, 1, 5, 15, 30, 60] as const;
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
@@ -39,6 +45,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   sshTerminalType: "xterm-256color",
   sshAgentPath: "",
   agentForwardingDecisions: {},
+  lockAfterIdleMinutes: 0,
+  lockOnSystemLock: true,
 };
 
 const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
@@ -80,6 +88,12 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
     merged.sshTerminalType = DEFAULT_SETTINGS.sshTerminalType;
   if (typeof merged.sshAgentPath !== "string")
     merged.sshAgentPath = DEFAULT_SETTINGS.sshAgentPath;
+  if (
+    !(LOCK_IDLE_MINUTES as readonly number[]).includes(
+      merged.lockAfterIdleMinutes,
+    )
+  )
+    merged.lockAfterIdleMinutes = DEFAULT_SETTINGS.lockAfterIdleMinutes;
   const decisions: unknown = merged.agentForwardingDecisions;
   merged.agentForwardingDecisions =
     decisions && typeof decisions === "object" && !Array.isArray(decisions)
@@ -97,7 +111,8 @@ function parseValue(key: string, value: unknown): unknown {
     key === "fontSize" ||
     key === "scrollback" ||
     key === "sshKeepaliveSecs" ||
-    key === "sshConnectTimeoutSecs"
+    key === "sshConnectTimeoutSecs" ||
+    key === "lockAfterIdleMinutes"
   ) {
     return typeof value === "number"
       ? value
@@ -106,7 +121,8 @@ function parseValue(key: string, value: unknown): unknown {
   if (
     key === "cursorBlink" ||
     key === "recordTerminalOutput" ||
-    key === "trustNewHosts"
+    key === "trustNewHosts" ||
+    key === "lockOnSystemLock"
   ) {
     return typeof value === "boolean" ? value : value === "true";
   }

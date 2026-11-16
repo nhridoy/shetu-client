@@ -1,4 +1,8 @@
-import { GearSixIcon, SignOutIcon } from "@phosphor-icons/react";
+import {
+  GearSixIcon,
+  LockSimpleIcon,
+  SignOutIcon,
+} from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router";
 import { Avatar } from "@/components/common/Avatar";
 import { SIDEBAR_ITEMS } from "@/components/layout/shell/sidebarItems";
@@ -21,7 +25,7 @@ export default function AppSidebar({
 }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { user, logout, lockApp } = useAuthStore();
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -102,6 +106,17 @@ export default function AppSidebar({
             </p>
             <p className="text-[11px] truncate text-dark-400">{user?.email}</p>
           </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => void lockApp()}
+            aria-label="Lock Shetu"
+            title="Lock Shetu"
+            className="shrink-0"
+          >
+            <LockSimpleIcon size={14} />
+          </Button>
           <Button
             type="button"
             variant="ghost"

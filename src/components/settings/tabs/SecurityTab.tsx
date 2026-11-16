@@ -18,6 +18,7 @@ import {
 } from "@/lib/schema/settings/profileFormSchema";
 import { useAuthStore } from "@/stores/auth/authStore";
 import type { SecurityTabProps } from "@/types/settings/types";
+import AppLockSettings from "./AppLockSettings";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 
 export default function SecurityTab({
@@ -109,6 +110,11 @@ export default function SecurityTab({
             {isLoading ? "Changing..." : "Change Password"}
           </Button>
         </form>
+      </div>
+
+      <div className="border-t border-dark-700 pt-6">
+        <h3 className="text-sm font-medium text-white mb-3">App Lock</h3>
+        <AppLockSettings />
       </div>
 
       <div className="border-t border-dark-700 pt-6">
