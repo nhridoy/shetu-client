@@ -5,6 +5,7 @@ pub(crate) mod ini;
 pub(crate) mod mobaxterm;
 pub(crate) mod putty;
 pub(crate) mod securecrt;
+pub(crate) mod tabby;
 pub(crate) mod termius_csv;
 pub(crate) mod winscp;
 
@@ -227,6 +228,8 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("mobaxterm", None) => mobaxterm::detected(home).ok_or_else(|| "No MobaXterm sessions found".into()),
         ("securecrt", Some(p)) => file(p).and_then(|(text, origin)| securecrt::parse_xml(&text, &origin)),
         ("securecrt", None) => securecrt::detected(home).ok_or_else(|| "No SecureCRT sessions found".into()),
+        ("tabby", Some(p)) => file(p).and_then(|(text, origin)| tabby::parse(&text, &origin)),
+        ("tabby", None) => tabby::detected().ok_or_else(|| "No Tabby SSH profiles found".into()),
         ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
         ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
@@ -271,6 +274,9 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     }
     if let Some(p) = securecrt::detected(home) {
         found.push(Detected { source: "securecrt".into(), origin: p.origin });
+    }
+    if let Some(p) = tabby::detected() {
+        found.push(Detected { source: "tabby".into(), origin: p.origin });
     }
     found
 }
