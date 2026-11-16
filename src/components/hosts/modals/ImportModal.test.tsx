@@ -398,4 +398,26 @@ describe("ImportModal", () => {
     expect(text()).toContain("from-putty");
     expect(text()).not.toContain("from-ssh-config");
   });
+
+  it("lists every source app, each with its own file type", async () => {
+    h.open.mockResolvedValue(null);
+    await mount(pv([]), () => {}, false);
+    for (const name of [
+      "SSH config",
+      "PuTTY",
+      "WinSCP",
+      "MobaXterm",
+      "SecureCRT",
+      "Tabby",
+      "iTerm2",
+      "Termius (CSV)",
+    ])
+      expect(text()).toContain(name);
+    await act(async () => byLabel("Choose iTerm2 file").click());
+    expect(h.open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: [{ name: "iTerm2 profiles", extensions: ["json"] }],
+      }),
+    );
+  });
 });

@@ -17,7 +17,15 @@ import { useHostStore } from "@/stores/hosts/hostStore";
 import { useKeyStore } from "@/stores/keys/keyStore";
 import { useVaultStore, VAULT_KIND_TEAM } from "@/stores/vault/vaultStore";
 
-type SourceId = "ssh_config" | "putty" | "winscp" | "termius_csv";
+type SourceId =
+  | "ssh_config"
+  | "putty"
+  | "winscp"
+  | "mobaxterm"
+  | "securecrt"
+  | "tabby"
+  | "iterm2"
+  | "termius_csv";
 
 const SOURCES: {
   id: SourceId;
@@ -34,6 +42,26 @@ const SOURCES: {
     id: "winscp",
     label: "WinSCP",
     file: { name: "WinSCP.ini", extensions: ["ini"] },
+  },
+  {
+    id: "mobaxterm",
+    label: "MobaXterm",
+    file: { name: "MobaXterm sessions", extensions: ["mxtsessions", "ini"] },
+  },
+  {
+    id: "securecrt",
+    label: "SecureCRT",
+    file: { name: "SecureCRT export", extensions: ["xml"] },
+  },
+  {
+    id: "tabby",
+    label: "Tabby",
+    file: { name: "Tabby config", extensions: ["yaml", "yml"] },
+  },
+  {
+    id: "iterm2",
+    label: "iTerm2",
+    file: { name: "iTerm2 profiles", extensions: ["json"] },
   },
   {
     id: "termius_csv",
