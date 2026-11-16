@@ -34,7 +34,7 @@ fn group_path(groups: &HashMap<String, (String, Option<String>)>, id: Option<&st
 
 /// The hosts to export: those in `group_id`'s subtree (all when `None`), sorted by group then
 /// name, plus (flagged `outside`) jump hosts they use from elsewhere in the vault.
-fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>) -> Result<Vec<(Exported, bool)>, String> {
+fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>, with_jumps: bool) -> Result<Vec<(Exported, bool)>, String> {
     let groups: HashMap<String, (String, Option<String>)> = db::list_sync_rows(db, Table::Groups, vault_id, false)?
         .into_iter()
         .map(|g| (g.id, (g.name.unwrap_or_default(), g.parent_id)))
@@ -97,10 +97,10 @@ fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&s
         out.push((build(row, &payload), false));
     }
     out.sort_by(|(a, _), (b, _)| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
-    for row in rows.iter().filter(|r| jumps.contains(&r.id) && !in_subtree(r.group_id.clone())) {
-        if let Ok(payload) = decrypt(row) {
-            out.push((build(row, &payload), true));
-        }
+    // Without its own block, a ProxyJump to an outside host wouldn't resolve: fail rather than skip.
+    for row in rows.iter().filter(|r| with_jumps && jumps.contains(&r.id) && !in_subtree(r.group_id.clone())) {
+        let payload = decrypt(row)?;
+        out.push((build(row, &payload), true));
     }
     Ok(out)
 }
@@ -157,7 +157,7 @@ fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
 }
 
 pub(crate) fn export(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>, format: &str) -> Result<String, String> {
-    let hosts = hosts(db, crypto, vault_id, group_id)?;
+    let hosts = hosts(db, crypto, vault_id, group_id, format == "ssh_config")?;
     match format {
         "ssh_config" => Ok(ssh_config(&hosts)),
         "csv" => csv(&hosts),
@@ -253,6 +253,15 @@ mod tests {
         assert!(out.contains("Host bastion\n  HostName b.example.com\n"), "{out}");
         // CSV stays scoped to the group.
         assert!(!export(&db, &crypto, &vault, Some("Web"), "csv").unwrap().contains("bastion"));
+    }
+
+    #[test]
+    fn undecryptable_outside_jump_host_fails_ssh_config_only() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET data = 'garbage' WHERE id = 'bastion'", []).unwrap();
+        let err = export(&db, &crypto, &vault, Some("Web"), "ssh_config").unwrap_err();
+        assert!(err.contains("bastion"), "{err}");
+        assert!(export(&db, &crypto, &vault, Some("Web"), "csv").is_ok());
     }
 
     #[test]
