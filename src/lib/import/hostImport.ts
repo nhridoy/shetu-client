@@ -88,6 +88,12 @@ const KEY_NOTES: Partial<Record<ImportKey["status"], string>> = {
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+/** Codes from `convert_ppk`, in words. */
+const PPK_ERRORS: Record<string, string> = {
+  PPK_BAD_PASSPHRASE: "Wrong passphrase; imported without a key",
+  PPK_ENCRYPTED: "No passphrase given; imported without a key",
+};
+
 /** The existing group a folder path resolves to below `root`; undefined if any part is new. */
 function resolveFolder(
   folder: string[],
@@ -253,7 +259,8 @@ export async function runImport(
       summary.keysImported++;
       keys.set(k.path, { keyId: id });
     } catch (e) {
-      keys.set(k.path, { problem: e instanceof Error ? e.message : String(e) });
+      const raw = e instanceof Error ? e.message : String(e);
+      keys.set(k.path, { problem: PPK_ERRORS[raw] ?? raw });
     }
   }
 

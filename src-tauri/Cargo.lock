@@ -5359,6 +5359,7 @@ dependencies = [
  "glob",
  "hkdf 0.12.4",
  "hmac 0.12.1",
+ "libc",
  "log",
  "portable-pty",
  "rand 0.10.2",

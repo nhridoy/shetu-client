@@ -78,7 +78,13 @@ pub(crate) fn parse_sessions_dir(dir: &Path) -> ImportPreview {
     files.sort();
     for path in files {
         let Some(encoded) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
-        let Ok(text) = super::read_source_file(&path) else { continue };
+        let text = match super::read_source_file(&path) {
+            Ok(text) => text,
+            Err(reason) => {
+                out.skipped.push(Skipped { name: percent_decode(&encoded), reason });
+                continue;
+            }
+        };
         let values = text
             .lines()
             .filter_map(|l| l.split_once('='))
@@ -210,6 +216,14 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let text = crate::import::read_source_file(&path).unwrap();
         assert_eq!(parse_reg(&text, "f"), parse_reg(REG, "f"));
+    }
+
+    #[test]
+    fn unreadable_session_file_is_listed() {
+        let dir = std::env::temp_dir().join(format!("shetu-putty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("broken")).unwrap();
+        let p = parse_sessions_dir(&dir);
+        assert!(p.skipped.iter().any(|s| s.name == "broken" && s.reason.contains("isn't a file")), "{p:?}");
     }
 
     #[test]

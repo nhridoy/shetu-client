@@ -52,6 +52,7 @@ ssh-key = { version = "=0.7.0-rc.11", features = ["getrandom"] }
 russh-sftp = "2.4"
 tokio-util = "0.7"
 futures = "0.3"
+libc = "0.2"
 csv = "1"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"

@@ -468,4 +468,28 @@ describe("folders, groups and other sources", () => {
       message: "Couldn't create group X; imported one level up",
     });
   });
+
+  it("ppk_error_codes_read_as_text", async () => {
+    const readKey = vi.fn(async () => "PuTTY-User-Key-File-3: ssh-ed25519");
+    const convertPpk = vi.fn(async () => {
+      throw "PPK_BAD_PASSPHRASE";
+    });
+    const { deps } = makeDeps({ readKey, convertPpk });
+    const rows = planImport(
+      preview(
+        [host("a", { key: key({ status: "encrypted", path: "/k/a.ppk" }) })],
+        "putty",
+      ),
+      ctx([]),
+    );
+    const s = await runImport(
+      rows,
+      { "/k/a.ppk": "nope" },
+      { ...deps, source: "putty" },
+    );
+    expect(s.problems).toContainEqual({
+      alias: "a",
+      message: "Wrong passphrase; imported without a key",
+    });
+  });
 });

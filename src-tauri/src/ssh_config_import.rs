@@ -200,7 +200,7 @@ fn pick_key(host: &ParsedHost, home: &Path) -> Option<SshConfigKey> {
     let found = if host.identity_files.is_empty() {
         DEFAULT_KEYS.iter().map(|n| home.join(".ssh").join(n)).find(|p| p.exists())
     } else {
-        host.identity_files.iter().find(|p| p.exists()).cloned()
+        host.identity_files.iter().find(|p| !crate::import::is_network_path(p) && p.exists()).cloned()
             .or_else(|| host.identity_files.first().cloned())
     };
     found.map(|p| describe_key(&p))

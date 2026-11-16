@@ -32,7 +32,9 @@ fn group_path(groups: &HashMap<String, (String, Option<String>)>, id: Option<&st
     path
 }
 
-fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>) -> Result<Vec<Exported>, String> {
+/// The hosts to export: those in `group_id`'s subtree (all when `None`), sorted by group then
+/// name, plus (flagged `outside`) jump hosts they use from elsewhere in the vault.
+fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>) -> Result<Vec<(Exported, bool)>, String> {
     let groups: HashMap<String, (String, Option<String>)> = db::list_sync_rows(db, Table::Groups, vault_id, false)?
         .into_iter()
         .map(|g| (g.id, (g.name.unwrap_or_default(), g.parent_id)))
@@ -54,45 +56,60 @@ fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&s
         }
         false
     };
-    let mut out = Vec::new();
-    for row in &rows {
-        if !in_subtree(row.group_id.clone()) {
-            continue;
-        }
-        let group = group_path(&groups, row.group_id.as_deref());
-        let payload: serde_json::Value = {
-            let session = crypto.session.lock().map_err(|e| e.to_string())?;
-            let Ok(plain) = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id) else { continue };
-            serde_json::from_str(&plain).unwrap_or_default()
-        };
+    let decrypt = |row: &db::SyncRow| -> Result<serde_json::Value, String> {
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id)
+            .ok()
+            .and_then(|plain| serde_json::from_str(&plain).ok())
+            // A silently shorter file would look complete; say which host is missing.
+            .ok_or_else(|| format!("Couldn't decrypt host {}", row.name.as_deref().unwrap_or(&row.id)))
+    };
+    let build = |row: &db::SyncRow, payload: &serde_json::Value| {
         let chain = host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
         let effective = host_inherit::resolve_with(
-            &payload,
+            payload,
             row.auth_type.as_deref().unwrap_or("password"),
             row.key_id.as_deref(),
             &chain,
             &|id| host_inherit::usable_identity(db, crypto, id, &row.vault_id),
         );
-        out.push(Exported {
+        Exported {
             name: row.name.clone().unwrap_or_default(),
             address: payload["address"].as_str().unwrap_or_default().to_string(),
             port: effective.port.0,
             user: effective.username.map(|(u, _)| u),
-            group,
+            group: group_path(&groups, row.group_id.as_deref()),
             tags: row.tags.as_deref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
             jump: payload["jumpHostId"].as_str().and_then(|id| names.get(id)).map(|n| n.to_string()),
             key: effective
                 .key_id
                 .and_then(|id| host_inherit::usable_key(db, &id, &row.vault_id))
                 .and_then(|k| k.name),
-        });
+        }
+    };
+    let mut out = Vec::new();
+    let mut jumps = Vec::new();
+    for row in rows.iter().filter(|r| in_subtree(r.group_id.clone())) {
+        let payload = decrypt(row)?;
+        if let Some(id) = payload["jumpHostId"].as_str() {
+            jumps.push(id.to_string());
+        }
+        out.push((build(row, &payload), false));
     }
-    out.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
+    out.sort_by(|(a, _), (b, _)| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
+    for row in rows.iter().filter(|r| jumps.contains(&r.id) && !in_subtree(r.group_id.clone())) {
+        if let Ok(payload) = decrypt(row) {
+            out.push((build(row, &payload), true));
+        }
+    }
     Ok(out)
 }
 
 /// A config word, quoted when it has spaces or quotes so `ssh` reads it as one argument.
 fn word(s: &str) -> String {
+    // Control characters (line breaks) would end the line and start a new, active directive.
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    let s = s.as_str();
     if s.is_empty() || s.contains(|c: char| c.is_whitespace() || c == '"') {
         format!("\"{}\"", s.replace('"', "\\\""))
     } else {
@@ -100,9 +117,12 @@ fn word(s: &str) -> String {
     }
 }
 
-fn ssh_config(hosts: &[Exported]) -> String {
+fn ssh_config(hosts: &[(Exported, bool)]) -> String {
     let mut out = String::from("# Exported from Shetu. Keys stay in your Shetu vault.\n");
-    for h in hosts {
+    for (h, outside) in hosts {
+        if *outside {
+            out.push_str("\n# Jump host from outside this group");
+        }
         out.push_str(&format!("\nHost {}\n  HostName {}\n", word(&h.name), word(&h.address)));
         if let Some(user) = &h.user {
             out.push_str(&format!("  User {}\n", word(user)));
@@ -112,16 +132,17 @@ fn ssh_config(hosts: &[Exported]) -> String {
             out.push_str(&format!("  ProxyJump {}\n", word(jump)));
         }
         if let Some(key) = &h.key {
+            let key: String = key.chars().filter(|c| !c.is_control()).collect();
             out.push_str(&format!("  # key: {key}\n"));
         }
     }
     out
 }
 
-fn csv(hosts: &[Exported]) -> Result<String, String> {
+fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
     let mut w = csv::Writer::from_writer(Vec::new());
     w.write_record(["label", "address", "port", "username", "group", "tags"]).map_err(|e| e.to_string())?;
-    for h in hosts {
+    for (h, _) in hosts.iter().filter(|(_, outside)| !outside) {
         w.write_record([
             h.name.as_str(),
             h.address.as_str(),
@@ -214,6 +235,36 @@ mod tests {
         let out = export(&db, &crypto, &vault, Some("s1"), "csv").unwrap();
         assert!(out.contains("1.1.1.1") && !out.contains("2.2.2.2"), "{out}");
         assert!(export(&db, &crypto, &vault, Some("gone"), "csv").is_err());
+    }
+
+    #[test]
+    fn export_fails_loudly_on_an_undecryptable_host() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET data = 'garbage' WHERE id = 'lone'", []).unwrap();
+        let err = export(&db, &crypto, &vault, None, "csv").unwrap_err();
+        assert!(err.contains("lone"), "{err}");
+    }
+
+    #[test]
+    fn export_keeps_jump_hosts_outside_the_group() {
+        let (db, crypto, vault) = vault();
+        let out = export(&db, &crypto, &vault, Some("Web"), "ssh_config").unwrap();
+        assert!(out.contains("ProxyJump bastion"), "{out}");
+        assert!(out.contains("Host bastion\n  HostName b.example.com\n"), "{out}");
+        // CSV stays scoped to the group.
+        assert!(!export(&db, &crypto, &vault, Some("Web"), "csv").unwrap().contains("bastion"));
+    }
+
+    #[test]
+    fn export_strips_line_breaks_from_every_value() {
+        let (db, crypto, vault) = vault();
+        let conn = db.conn.lock().unwrap();
+        conn.execute("UPDATE keys SET name = 'k\n  ProxyCommand evil' WHERE id = 'k1'", []).unwrap();
+        conn.execute("UPDATE hosts SET name = 'my\nweb' WHERE id = 'my web'", []).unwrap();
+        drop(conn);
+        let out = export(&db, &crypto, &vault, None, "ssh_config").unwrap();
+        assert!(!out.contains("\n  ProxyCommand"), "{out}");
+        assert!(!out.contains("Host my\n"), "{out}");
     }
 
     #[test]

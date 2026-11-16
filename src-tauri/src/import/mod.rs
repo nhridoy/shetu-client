@@ -63,14 +63,62 @@ const SOURCE_LIMIT: u64 = 5 * 1024 * 1024;
 
 /// Regular files up to `limit` only, so a FIFO, device or huge file can't hang or exhaust memory.
 fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Non-blocking, so opening a FIFO returns at once instead of waiting for a writer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    // Checked on the opened handle, so a path swapped after a check can't slip through.
+    let meta = file.metadata().map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err(format!("{} isn't a file", path.display()));
     }
+    let too_large = || format!("{} is too large ({} MB at most)", path.display(), limit.div_ceil(1024 * 1024));
     if meta.len() > limit {
-        return Err(format!("{} is too large ({} MB at most)", path.display(), limit.div_ceil(1024 * 1024)));
+        return Err(too_large());
     }
-    std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
+/// `\\host\share` (or, on Windows, any mix of `/` and `\\` that means the same).
+pub(crate) fn is_network_path_for(path: &str, windows: bool) -> bool {
+    if windows {
+        path.replace('/', "\\").starts_with(r"\\")
+    } else {
+        path.starts_with(r"\\")
+    }
+}
+
+/// Never touch these: on Windows, opening one sends the user's NTLM hash to that server.
+pub(crate) fn is_network_path(path: &Path) -> bool {
+    is_network_path_for(&path.to_string_lossy(), cfg!(windows))
+}
+
+/// A key file's text, read once and checked to be a private key (OpenSSH, PEM or `.ppk`).
+pub(crate) fn read_key_bytes(path: &Path) -> Result<String, String> {
+    if is_network_path(path) {
+        return Err("Network key paths aren't read".into());
+    }
+    let text = String::from_utf8(read_limited(path, KEY_LIMIT)?).map_err(|_| "This file isn't a private key".to_string())?;
+    let is_key = text.trim_start().starts_with("PuTTY-User-Key-File-")
+        || matches!(russh::keys::decode_secret_key(&text, None), Ok(_) | Err(russh::keys::Error::KeyIsEncrypted));
+    if is_key {
+        Ok(text)
+    } else {
+        Err("This file isn't a private key".into())
+    }
 }
 
 pub(crate) fn read_small_file(path: &Path) -> Option<String> {
@@ -104,9 +152,7 @@ pub(crate) fn describe_key(path: &Path) -> ImportKey {
         fingerprint: None,
         key_type: None,
     };
-    // Never touch a network path: on Windows, opening one sends the user's NTLM hash to that server.
-    let raw = key.path.as_str();
-    if raw.starts_with(r"\\") || (cfg!(windows) && raw.starts_with("//")) {
+    if is_network_path(path) {
         return key;
     }
     if !path.exists() {
@@ -173,7 +219,7 @@ pub(crate) fn read_key_for(source: &str, path: Option<&Path>, home: &Path, key_p
     if !listed {
         return Err("This file isn't a key listed in the import".into());
     }
-    read_small_file(Path::new(key_path)).ok_or_else(|| "Could not read key file".to_string())
+    read_key_bytes(Path::new(key_path))
 }
 
 fn home() -> Result<PathBuf, String> {
@@ -305,6 +351,35 @@ mod tests {
         // On Windows, touching a UNC path sends the user's NTLM hash to that server.
         let k = describe_key(Path::new(r"\\attacker.example\s\k.ppk"));
         assert_eq!(k.status, "unreadable");
+    }
+
+    #[test]
+    fn network_paths_after_separator_normalisation() {
+        assert!(is_network_path_for(r"\\host\s\k", false));
+        assert!(is_network_path_for(r"/\host\s\k", true));
+        assert!(is_network_path_for("//host/s/k", true));
+        assert!(!is_network_path_for("//etc/ssh/key", false));
+        assert!(!is_network_path_for(r"C:\keys\a.ppk", true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let dir = temp_dir();
+        let fifo = dir.join("pipe.reg");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        assert!(read_source_file(&fifo).is_err());
+    }
+
+    #[test]
+    fn key_bytes_are_validated_when_read() {
+        let dir = temp_dir();
+        let not_key = dir.join("notes.txt");
+        std::fs::write(&not_key, "just text").unwrap();
+        assert!(read_key_bytes(&not_key).is_err());
+        let ppk = dir.join("a.ppk");
+        std::fs::write(&ppk, crate::keys::tests::ppk_fixture(2, Some("pw"))).unwrap();
+        assert!(read_key_bytes(&ppk).is_ok());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
@@ -97,18 +97,24 @@ export default function ImportModal({
       .catch(() => setDetected([]));
   }, []);
 
+  // Only the latest preview request may set state; Back or another pick makes older ones stale.
+  const request = useRef(0);
   const choose = async (source: SourceId, path: string | null) => {
+    const mine = ++request.current;
     setChosen({ source, path });
     setPreview(null);
     setError(null);
     setUnchecked(new Set());
     setPassphrases({});
     try {
-      setPreview(
-        await invoke<ImportPreview>("import_preview", { source, path }),
-      );
+      const result = await invoke<ImportPreview>("import_preview", {
+        source,
+        path,
+      });
+      if (mine === request.current) setPreview(result);
     } catch (e) {
-      setError(extractError(e, "Couldn't read the sessions"));
+      if (mine === request.current)
+        setError(extractError(e, "Couldn't read the sessions"));
     }
   };
 
@@ -119,6 +125,7 @@ export default function ImportModal({
   };
 
   const back = () => {
+    request.current++;
     setChosen(null);
     setPreview(null);
     setError(null);

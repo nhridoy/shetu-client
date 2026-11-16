@@ -368,4 +368,34 @@ describe("ImportModal", () => {
     await mount(pv([host("a", key("ready"))]));
     expect(text()).toContain("/home/u/.ssh/id_ed25519");
   });
+
+  it("a slow preview from a source left with Back doesn't replace the next one", async () => {
+    h.detected = [
+      { source: "ssh_config", origin: "~/.ssh/config" },
+      { source: "putty", origin: "reg" },
+    ];
+    let finishFirst: (v: unknown) => void = () => {};
+    h.invoke.mockImplementation(
+      async (cmd: string, args?: { source?: string }) => {
+        if (cmd === "import_detect") return h.detected;
+        if (cmd === "import_preview")
+          return args?.source === "ssh_config"
+            ? new Promise((r) => (finishFirst = r))
+            : pv([host("from-putty")], [], "putty");
+        return "PRIVATE";
+      },
+    );
+    const root = createRoot(
+      document.body.appendChild(document.createElement("div")),
+    );
+    await act(async () =>
+      root.render(<ImportModal groupId="g1" onClose={() => {}} />),
+    );
+    await act(async () => byLabel("Import from SSH config").click());
+    await act(async () => byLabel("Back").click());
+    await act(async () => byLabel("Import from PuTTY").click());
+    await act(async () => finishFirst(pv([host("from-ssh-config")])));
+    expect(text()).toContain("from-putty");
+    expect(text()).not.toContain("from-ssh-config");
+  });
 });
