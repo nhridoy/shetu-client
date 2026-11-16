@@ -93,7 +93,8 @@ interface HostState {
     hostId: string,
   ) => Promise<{ password: string; privateKey: string; passphrase: string }>;
   getDecryptedGroup: (id: string) => Promise<Group | null>;
-  createGroup: (group: Partial<Group>) => Promise<void>;
+  /** The created group, or null on failure (the store's `error` says why). */
+  createGroup: (group: Partial<Group>) => Promise<Group | null>;
   updateGroup: (id: string, group: Partial<Group>) => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
   clearError: () => void;
@@ -657,7 +658,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     const vaultId = group.vaultId ?? useVaultStore.getState().currentVaultId;
     if (!vaultId) {
       set({ isLoading: false, error: "No vault selected" });
-      return;
+      return null;
     }
     set({ isLoading: true, error: null });
     try {
@@ -684,8 +685,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         createdAt: String(row.created_at),
       };
       set({ groups: [created, ...get().groups], isLoading: false });
+      return created;
     } catch (err) {
       set({ isLoading: false, error: errorMessage(err) });
+      return null;
     }
   },
 

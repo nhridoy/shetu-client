@@ -129,7 +129,7 @@ fn too_large() -> String {
     "Could not read PuTTY key: Argon2 parameters too large".into()
 }
 
-fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
+pub(crate) fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
     use russh::keys::ssh_key::Error;
     check_argon2_limits(&text)?;
     let passphrase = passphrase.filter(|p| !p.is_empty());
@@ -151,7 +151,7 @@ fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         convert_ppk_inner, derive_public_key, generate_ssh_key, generate_ssh_key_inner,
         inspect_private_key,
@@ -251,7 +251,7 @@ mod tests {
 
     // PPK fixtures are generated at test time (no puttygen available) following the
     // PuTTY format spec, from a fixed ed25519 seed, and validated by ssh-key's parser.
-    fn ppk_fixture(version: u8, passphrase: Option<&str>) -> String {
+    pub(crate) fn ppk_fixture(version: u8, passphrase: Option<&str>) -> String {
         ppk_fixture_seeded(version, passphrase, 5)
     }
 

@@ -1,0 +1,323 @@
+//! Host export as an ssh_config snippet or CSV. Never includes passwords, keys or TOTP secrets.
+
+use crate::db::{self, LocalDb, Table};
+use crate::host_inherit;
+use crate::CryptoState;
+use std::collections::HashMap;
+
+struct Exported {
+    name: String,
+    address: String,
+    port: u16,
+    user: Option<String>,
+    group: Vec<String>,
+    tags: Vec<String>,
+    jump: Option<String>,
+    key: Option<String>,
+}
+
+/// Group names from the root down to `id`, following `parent_id` (cycle- and depth-safe).
+fn group_path(groups: &HashMap<String, (String, Option<String>)>, id: Option<&str>) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut next = id.map(String::from);
+    while let Some(id) = next.take() {
+        if path.len() >= 32 {
+            break;
+        }
+        let Some((name, parent)) = groups.get(&id) else { break };
+        path.push(name.clone());
+        next = parent.clone();
+    }
+    path.reverse();
+    path
+}
+
+/// The hosts to export: those in `group_id`'s subtree (all when `None`), sorted by group then
+/// name, plus (flagged `outside`) jump hosts they use from elsewhere in the vault.
+fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>, with_jumps: bool) -> Result<Vec<(Exported, bool)>, String> {
+    let groups: HashMap<String, (String, Option<String>)> = db::list_sync_rows(db, Table::Groups, vault_id, false)?
+        .into_iter()
+        .map(|g| (g.id, (g.name.unwrap_or_default(), g.parent_id)))
+        .collect();
+    let rows = db::list_sync_rows(db, Table::Hosts, vault_id, false)?;
+    let names: HashMap<&str, &str> = rows.iter().map(|r| (r.id.as_str(), r.name.as_deref().unwrap_or(""))).collect();
+    if group_id.is_some_and(|id| !groups.contains_key(id)) {
+        return Err("That group no longer exists".into());
+    }
+    // In the subtree when `group_id` is on the host's parent chain (by id: names can repeat).
+    let in_subtree = |mut at: Option<String>| {
+        let Some(root) = group_id else { return true };
+        for _ in 0..32 {
+            match at {
+                Some(id) if id == root => return true,
+                Some(id) => at = groups.get(&id).and_then(|(_, parent)| parent.clone()),
+                None => return false,
+            }
+        }
+        false
+    };
+    let decrypt = |row: &db::SyncRow| -> Result<serde_json::Value, String> {
+        let session = crypto.session.lock().map_err(|e| e.to_string())?;
+        crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id)
+            .ok()
+            .and_then(|plain| serde_json::from_str(&plain).ok())
+            // A silently shorter file would look complete; say which host is missing.
+            .ok_or_else(|| format!("Couldn't decrypt host {}", row.name.as_deref().unwrap_or(&row.id)))
+    };
+    let build = |row: &db::SyncRow, payload: &serde_json::Value| {
+        let chain = host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
+        let effective = host_inherit::resolve_with(
+            payload,
+            row.auth_type.as_deref().unwrap_or("password"),
+            row.key_id.as_deref(),
+            &chain,
+            &|id| host_inherit::usable_identity(db, crypto, id, &row.vault_id),
+        );
+        Exported {
+            name: row.name.clone().unwrap_or_default(),
+            address: payload["address"].as_str().unwrap_or_default().to_string(),
+            port: effective.port.0,
+            user: effective.username.map(|(u, _)| u),
+            group: group_path(&groups, row.group_id.as_deref()),
+            tags: row.tags.as_deref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
+            jump: payload["jumpHostId"].as_str().and_then(|id| names.get(id)).map(|n| n.to_string()),
+            key: effective
+                .key_id
+                .and_then(|id| host_inherit::usable_key(db, &id, &row.vault_id))
+                .and_then(|k| k.name),
+        }
+    };
+    let mut out = Vec::new();
+    let mut jumps = std::collections::HashSet::new();
+    for row in rows.iter().filter(|r| in_subtree(r.group_id.clone())) {
+        let payload = decrypt(row)?;
+        if let Some(id) = payload["jumpHostId"].as_str() {
+            jumps.insert(id.to_string());
+        }
+        out.push((build(row, &payload), false));
+    }
+    out.sort_by(|(a, _), (b, _)| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
+    // Without its own block, a ProxyJump to an outside host wouldn't resolve: fail rather than skip.
+    for row in rows.iter().filter(|r| with_jumps && !in_subtree(r.group_id.clone()) && jumps.contains(&r.id)) {
+        let payload = decrypt(row)?;
+        out.push((build(row, &payload), true));
+    }
+    Ok(out)
+}
+
+/// A config word, quoted when it has spaces or quotes so `ssh` reads it as one argument.
+fn word(s: &str) -> String {
+    // Control characters (line breaks) would end the line and start a new, active directive.
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
+    let s = s.as_str();
+    if s.is_empty() || s.contains(|c: char| c.is_whitespace() || c == '"') {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// ssh runs ProxyJump through a shell (as a generated ProxyCommand), so only plain names pass.
+fn safe_jump_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-@:".contains(c))
+}
+
+fn ssh_config(hosts: &[(Exported, bool)]) -> Result<String, String> {
+    let mut out = String::from("# Exported from Shetu. Keys stay in your Shetu vault.\n");
+    for (h, outside) in hosts {
+        if *outside {
+            out.push_str("\n# Jump host from outside this group");
+        }
+        out.push_str(&format!("\nHost {}\n  HostName {}\n", word(&h.name), word(&h.address)));
+        if let Some(user) = &h.user {
+            out.push_str(&format!("  User {}\n", word(user)));
+        }
+        out.push_str(&format!("  Port {}\n", h.port));
+        if let Some(jump) = &h.jump {
+            if !safe_jump_name(jump) {
+                return Err(format!(
+                    "Jump host \"{jump}\" can't be written as ProxyJump; rename it to letters, digits, . _ - @ : only"
+                ));
+            }
+            out.push_str(&format!("  ProxyJump {jump}\n"));
+        }
+        if let Some(key) = &h.key {
+            let key: String = key.chars().filter(|c| !c.is_control()).collect();
+            out.push_str(&format!("  # key: {key}\n"));
+        }
+    }
+    Ok(out)
+}
+
+/// A spreadsheet would run a cell starting with these as a formula; a leading ' keeps it text.
+pub(crate) const FORMULA_START: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+fn cell(s: &str) -> String {
+    if s.starts_with(FORMULA_START) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    }
+}
+
+fn csv(hosts: &[(Exported, bool)]) -> Result<String, String> {
+    let mut w = csv::Writer::from_writer(Vec::new());
+    w.write_record(["label", "address", "port", "username", "group", "tags"]).map_err(|e| e.to_string())?;
+    for (h, _) in hosts.iter().filter(|(_, outside)| !outside) {
+        w.write_record([
+            cell(&h.name),
+            cell(&h.address),
+            h.port.to_string(),
+            cell(h.user.as_deref().unwrap_or("")),
+            cell(&h.group.join("/")),
+            cell(&h.tags.join(";")),
+        ])
+        .map_err(|e| e.to_string())?;
+    }
+    String::from_utf8(w.into_inner().map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+pub(crate) fn export(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&str>, format: &str) -> Result<String, String> {
+    let hosts = hosts(db, crypto, vault_id, group_id, format == "ssh_config")?;
+    match format {
+        "ssh_config" => ssh_config(&hosts),
+        "csv" => csv(&hosts),
+        _ => Err("Unknown export format".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn export_hosts(
+    vault_id: String,
+    group_id: Option<String>,
+    format: String,
+    db: tauri::State<'_, LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+) -> Result<String, String> {
+    export(&db, &crypto, &vault_id, group_id.as_deref(), &format)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh_route::tests::{fixture, group_with, host_in, key_row};
+    use serde_json::json;
+
+    fn vault() -> (LocalDb, CryptoState, String) {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "Prod", &vault, None, json!({"username": "deploy"}), false);
+        group_with(&db, &crypto, "Web", &vault, Some("Prod"), json!({}), false);
+        group_with(&db, &crypto, "Other", &vault, None, json!({}), false);
+        key_row(&db, &crypto, "k1", &vault);
+        host_in(&db, &crypto, "bastion", &vault, "password", None, Some("Prod"), json!({"address": "b.example.com", "port": 22, "password": "pw"}));
+        host_in(&db, &crypto, "my web", &vault, "key", Some("k1"), Some("Web"), json!({"address": "10.0.0.4", "port": 2222, "jumpHostId": "bastion"}));
+        host_in(&db, &crypto, "lone", &vault, "password", None, Some("Other"), json!({"address": "l.example.com", "username": "me"}));
+        db.conn.lock().unwrap().execute("UPDATE hosts SET tags = '[\"a\",\"b\"]' WHERE id = 'my web'", []).unwrap();
+        (db, crypto, vault)
+    }
+
+    #[test]
+    fn export_ssh_config_effective_values() {
+        let (db, crypto, vault) = vault();
+        let out = export(&db, &crypto, &vault, None, "ssh_config").unwrap();
+        assert!(out.contains("Host \"my web\"\n  HostName 10.0.0.4\n  User deploy\n  Port 2222\n  ProxyJump bastion\n  # key: k1\n"), "{out}");
+        assert!(out.contains("Host bastion\n  HostName b.example.com\n  User deploy\n  Port 22\n"), "{out}");
+        assert!(!out.contains("pw") && !out.contains("PRIVATE KEY") && !out.contains("password"), "{out}");
+    }
+
+    #[test]
+    fn export_csv_round_trips() {
+        let (db, crypto, vault) = vault();
+        let out = export(&db, &crypto, &vault, None, "csv").unwrap();
+        assert!(out.starts_with("label,address,port,username,group,tags\n"), "{out}");
+        let back = crate::import::termius_csv::parse_csv(&out, "export.csv").unwrap();
+        let web = back.hosts.iter().find(|h| h.name == "my web").unwrap();
+        assert_eq!((web.hostname.as_str(), web.port, web.user.as_deref()), ("10.0.0.4", 2222, Some("deploy")));
+        assert_eq!(web.folder, vec!["Prod".to_string(), "Web".to_string()]);
+        assert_eq!(web.tags, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(back.hosts.len(), 3);
+    }
+
+    #[test]
+    fn export_group_subtree_only() {
+        let (db, crypto, vault) = vault();
+        let out = export(&db, &crypto, &vault, Some("Prod"), "csv").unwrap();
+        assert!(out.contains("my web") && out.contains("bastion") && !out.contains("lone"), "{out}");
+    }
+
+    #[test]
+    fn export_group_by_id_not_name() {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "s1", &vault, None, json!({}), false);
+        group_with(&db, &crypto, "s2", &vault, None, json!({}), false);
+        db.conn.lock().unwrap().execute("UPDATE groups SET name = 'Servers'", []).unwrap();
+        host_in(&db, &crypto, "one", &vault, "password", None, Some("s1"), json!({"address": "1.1.1.1"}));
+        host_in(&db, &crypto, "two", &vault, "password", None, Some("s2"), json!({"address": "2.2.2.2"}));
+        let out = export(&db, &crypto, &vault, Some("s1"), "csv").unwrap();
+        assert!(out.contains("1.1.1.1") && !out.contains("2.2.2.2"), "{out}");
+        assert!(export(&db, &crypto, &vault, Some("gone"), "csv").is_err());
+    }
+
+    #[test]
+    fn export_fails_loudly_on_an_undecryptable_host() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET data = 'garbage' WHERE id = 'lone'", []).unwrap();
+        let err = export(&db, &crypto, &vault, None, "csv").unwrap_err();
+        assert!(err.contains("lone"), "{err}");
+    }
+
+    #[test]
+    fn export_keeps_jump_hosts_outside_the_group() {
+        let (db, crypto, vault) = vault();
+        let out = export(&db, &crypto, &vault, Some("Web"), "ssh_config").unwrap();
+        assert!(out.contains("ProxyJump bastion"), "{out}");
+        assert!(out.contains("Host bastion\n  HostName b.example.com\n"), "{out}");
+        // CSV stays scoped to the group.
+        assert!(!export(&db, &crypto, &vault, Some("Web"), "csv").unwrap().contains("bastion"));
+    }
+
+    #[test]
+    fn undecryptable_outside_jump_host_fails_ssh_config_only() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET data = 'garbage' WHERE id = 'bastion'", []).unwrap();
+        let err = export(&db, &crypto, &vault, Some("Web"), "ssh_config").unwrap_err();
+        assert!(err.contains("bastion"), "{err}");
+        assert!(export(&db, &crypto, &vault, Some("Web"), "csv").is_ok());
+    }
+
+    #[test]
+    fn unsafe_jump_host_name_is_refused() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET name = 'b$(id)' WHERE id = 'bastion'", []).unwrap();
+        let err = export(&db, &crypto, &vault, None, "ssh_config").unwrap_err();
+        assert!(err.contains("b$(id)"), "{err}");
+    }
+
+    #[test]
+    fn csv_formula_cells_are_guarded_and_round_trip() {
+        let (db, crypto, vault) = vault();
+        db.conn.lock().unwrap().execute("UPDATE hosts SET name = '=1+2' WHERE id = 'lone'", []).unwrap();
+        let out = export(&db, &crypto, &vault, None, "csv").unwrap();
+        assert!(out.contains("'=1+2"), "{out}");
+        let back = crate::import::termius_csv::parse_csv(&out, "f").unwrap();
+        assert!(back.hosts.iter().any(|h| h.name == "=1+2"), "{back:?}");
+    }
+
+    #[test]
+    fn export_strips_line_breaks_from_every_value() {
+        let (db, crypto, vault) = vault();
+        let conn = db.conn.lock().unwrap();
+        conn.execute("UPDATE keys SET name = 'k\n  ProxyCommand evil' WHERE id = 'k1'", []).unwrap();
+        conn.execute("UPDATE hosts SET name = 'my\nweb' WHERE id = 'my web'", []).unwrap();
+        drop(conn);
+        let out = export(&db, &crypto, &vault, None, "ssh_config").unwrap();
+        assert!(!out.contains("\n  ProxyCommand"), "{out}");
+        assert!(!out.contains("Host my\n"), "{out}");
+    }
+
+    #[test]
+    fn export_unknown_format_errors() {
+        let (db, crypto, vault) = vault();
+        assert!(export(&db, &crypto, &vault, None, "xml").is_err());
+    }
+}

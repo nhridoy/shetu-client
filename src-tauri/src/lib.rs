@@ -5,7 +5,9 @@ mod db;
 mod forwarding;
 mod git;
 mod host_inherit;
+mod export;
 mod identities;
+mod import;
 mod http;
 mod keys;
 mod logging;
@@ -1751,8 +1753,10 @@ pub fn run() {
             keys::derive_public_key,
             keys::inspect_private_key,
             keys::convert_ppk,
-            ssh_config_import::ssh_config_preview,
-            ssh_config_import::ssh_config_read_key,
+            import::import_detect,
+            import::import_preview,
+            import::import_read_key,
+            export::export_hosts,
             keys::generate_ssh_key,
             ssh::connect_saved,
             ssh::disconnect,

@@ -177,7 +177,7 @@ pub fn resolve_saved_route_as(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{crypto, db, CryptoState};
     use std::sync::Arc;
@@ -276,7 +276,7 @@ mod tests {
         bastion_task.abort();
     }
 
-    fn fixture() -> (db::LocalDb, CryptoState, String) {
+    pub(crate) fn fixture() -> (db::LocalDb, CryptoState, String) {
         let db = db::open(":memory:").unwrap();
         let mut keys = crypto::KeySession::new();
         crypto::generate_account_material(&mut keys).unwrap();
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn host_in(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, auth: &str, key_id: Option<&str>, group: Option<&str>, payload: serde_json::Value) {
+    pub(crate) fn host_in(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, auth: &str, key_id: Option<&str>, group: Option<&str>, payload: serde_json::Value) {
         let data = crypto::encrypt_secret(&payload.to_string(), "hosts", &crypto.session.lock().unwrap()).unwrap();
         db.conn.lock().unwrap().execute(
             "INSERT INTO hosts (id, vault_id, name, data, auth_type, key_id, group_id, created_at, updated_at) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z')",
@@ -434,7 +434,7 @@ mod tests {
         ).unwrap();
     }
 
-    fn group_with(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, parent: Option<&str>, payload: serde_json::Value, deleted: bool) {
+    pub(crate) fn group_with(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str, parent: Option<&str>, payload: serde_json::Value, deleted: bool) {
         let data = crypto::encrypt_secret(&payload.to_string(), "groups", &crypto.session.lock().unwrap()).unwrap();
         db.conn.lock().unwrap().execute(
             "INSERT INTO groups (id, vault_id, name, parent_id, data, created_at, updated_at, deleted_at) VALUES (?1, ?2, ?1, ?3, ?4, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z', ?5)",
@@ -444,7 +444,7 @@ mod tests {
 
     const PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret-key-body\n-----END OPENSSH PRIVATE KEY-----";
 
-    fn key_row(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str) {
+    pub(crate) fn key_row(db: &db::LocalDb, crypto: &CryptoState, id: &str, vault: &str) {
         let data = crypto::encrypt_secret(&serde_json::json!({"privateKey": PEM}).to_string(), "keys", &crypto.session.lock().unwrap()).unwrap();
         db.conn.lock().unwrap().execute(
             "INSERT INTO keys (id, vault_id, name, data, created_at, updated_at) VALUES (?1, ?2, ?1, ?3, '2026-10-02T00:00:00Z', '2026-10-02T00:00:00Z')",
