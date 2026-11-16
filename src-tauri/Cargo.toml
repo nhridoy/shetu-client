@@ -51,6 +51,7 @@ russh = { version = "0.62", default-features = false, features = ["ring", "rsa",
 ssh-key = { version = "=0.7.0-rc.11", features = ["getrandom"] }
 russh-sftp = "2.4"
 tokio-util = "0.7"
+futures = "0.3"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 log = "0.4"
@@ -62,7 +63,6 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
 rand10 = { package = "rand", version = "0.10" }
-futures = "0.3"
 tokio = { version = "1.53.1", features = ["test-util"] }
 # Test-only: hand-build .ppk fixtures (no puttygen available).
 aes = "0.9"
