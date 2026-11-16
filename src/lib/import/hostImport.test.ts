@@ -418,7 +418,8 @@ describe("folders, groups and other sources", () => {
     );
     const { deps, createHost } = makeDeps({ groupId: null });
     await runImport(rows, {}, { ...deps, source: "putty" });
-    expect(createHost.mock.calls[0][0].username).toBeUndefined();
+    // Empty, not missing: the store would default a missing username to root.
+    expect(createHost.mock.calls[0][0].username).toBe("");
   });
 
   it("tags_pass_through", async () => {

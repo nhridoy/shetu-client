@@ -21,6 +21,10 @@ fn site(encoded: &str, values: &HashMap<String, String>, out: &mut ImportPreview
     let mut parts: Vec<String> = path.split('/').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect();
     let Some(name) = parts.pop() else { return };
     let get = |k: &str| values.get(k).map(|v| percent_decode(v.trim())).filter(|v| !v.is_empty());
+    // Workspaces are saved as `<name>/0000` entries pointing at real sites.
+    if get("IsWorkspace").as_deref() == Some("1") {
+        return;
+    }
     // 0 SCP, 1 SFTP with SCP fallback, 2 SFTP; 5 FTP, 6 WebDAV, 7 S3.
     if !matches!(get("FSProtocol").as_deref(), None | Some("0" | "1" | "2")) {
         out.skipped.push(Skipped { name, reason: "FTP/WebDAV/S3 session".into() });
@@ -141,6 +145,14 @@ mod tests {
         let p = parse_ini(INI, "f");
         assert_eq!(host(&p, "inner").hostname, "10.1.0.5");
         assert!(p.skipped.iter().any(|s| s.name == "inner" && s.reason == "Tunnel host not imported"));
+    }
+
+    #[test]
+    fn ini_skips_workspaces() {
+        let text = "[Sessions\\Work/0000]\nHostName=10.0.0.4\nIsWorkspace=1\n[Sessions\\real]\nHostName=r\n";
+        let p = parse_ini(text, "f");
+        assert_eq!(p.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["real"]);
+        assert!(p.skipped.is_empty());
     }
 
     #[test]

@@ -104,6 +104,11 @@ pub(crate) fn describe_key(path: &Path) -> ImportKey {
         fingerprint: None,
         key_type: None,
     };
+    // Never touch a network path: on Windows, opening one sends the user's NTLM hash to that server.
+    let raw = key.path.as_str();
+    if raw.starts_with(r"\\") || (cfg!(windows) && raw.starts_with("//")) {
+        return key;
+    }
     if !path.exists() {
         key.status = "missing";
         return key;
@@ -177,7 +182,7 @@ fn home() -> Result<PathBuf, String> {
 
 /// Sources with data in their usual place on this device.
 #[tauri::command]
-pub fn import_detect() -> Vec<Detected> {
+pub async fn import_detect() -> Vec<Detected> {
     home().map(|h| detect(&h)).unwrap_or_default()
 }
 
@@ -195,14 +200,15 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     found
 }
 
+// async: file and registry reads stay off the main thread.
 #[tauri::command]
-pub fn import_preview(source: String, path: Option<String>) -> Result<ImportPreview, String> {
+pub async fn import_preview(source: String, path: Option<String>) -> Result<ImportPreview, String> {
     preview_for(&source, path.as_deref().map(Path::new), &home()?)
 }
 
 /// Reads a key file only if `source`'s own preview lists it: never a general read-any-file command.
 #[tauri::command]
-pub fn import_read_key(source: String, path: Option<String>, key_path: String) -> Result<String, String> {
+pub async fn import_read_key(source: String, path: Option<String>, key_path: String) -> Result<String, String> {
     read_key_for(&source, path.as_deref().map(Path::new), &home()?, &key_path)
 }
 
@@ -292,6 +298,13 @@ mod tests {
         assert_eq!(read_source_file(&path).unwrap(), "a=b");
         std::fs::write(&path, b"\xEF\xBB\xBFx=y").unwrap();
         assert_eq!(read_source_file(&path).unwrap(), "x=y");
+    }
+
+    #[test]
+    fn network_key_paths_are_never_opened() {
+        // On Windows, touching a UNC path sends the user's NTLM hash to that server.
+        let k = describe_key(Path::new(r"\\attacker.example\s\k.ppk"));
+        assert_eq!(k.status, "unreadable");
     }
 
     #[test]

@@ -305,7 +305,7 @@ export default function ImportModal({
                 <div className="text-xs text-dark-500">
                   {r.user ? `${r.user}@` : ""}
                   {r.hostname}:{r.port}
-                  {r.key && ` · ${r.key.fileName}`}
+                  {r.key && ` · ${r.key.path}`}
                   {r.jumpAlias &&
                     ` · via ${rows.find((x) => x.id === r.jumpAlias)?.alias ?? r.jumpAlias}`}
                 </div>

@@ -363,4 +363,9 @@ describe("ImportModal", () => {
     await act(async () => byLabel("Back").click());
     expect(text()).toContain("Termius (CSV)");
   });
+
+  it("shows each key's full path, so a key from anywhere is visible", async () => {
+    await mount(pv([host("a", key("ready"))]));
+    expect(text()).toContain("/home/u/.ssh/id_ed25519");
+  });
 });

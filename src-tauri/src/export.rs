@@ -39,15 +39,27 @@ fn hosts(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_id: Option<&s
         .collect();
     let rows = db::list_sync_rows(db, Table::Hosts, vault_id, false)?;
     let names: HashMap<&str, &str> = rows.iter().map(|r| (r.id.as_str(), r.name.as_deref().unwrap_or(""))).collect();
-    let root = group_id.and_then(|id| groups.get(id)).map(|_| group_path(&groups, group_id));
-    let mut out = Vec::new();
-    for row in &rows {
-        let group = group_path(&groups, row.group_id.as_deref());
-        if let Some(root) = &root {
-            if !group.starts_with(root) {
-                continue;
+    if group_id.is_some_and(|id| !groups.contains_key(id)) {
+        return Err("That group no longer exists".into());
+    }
+    // In the subtree when `group_id` is on the host's parent chain (by id: names can repeat).
+    let in_subtree = |mut at: Option<String>| {
+        let Some(root) = group_id else { return true };
+        for _ in 0..32 {
+            match at {
+                Some(id) if id == root => return true,
+                Some(id) => at = groups.get(&id).and_then(|(_, parent)| parent.clone()),
+                None => return false,
             }
         }
+        false
+    };
+    let mut out = Vec::new();
+    for row in &rows {
+        if !in_subtree(row.group_id.clone()) {
+            continue;
+        }
+        let group = group_path(&groups, row.group_id.as_deref());
         let payload: serde_json::Value = {
             let session = crypto.session.lock().map_err(|e| e.to_string())?;
             let Ok(plain) = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id) else { continue };
@@ -133,7 +145,7 @@ pub(crate) fn export(db: &LocalDb, crypto: &CryptoState, vault_id: &str, group_i
 }
 
 #[tauri::command]
-pub fn export_hosts(
+pub async fn export_hosts(
     vault_id: String,
     group_id: Option<String>,
     format: String,
@@ -189,6 +201,19 @@ mod tests {
         let (db, crypto, vault) = vault();
         let out = export(&db, &crypto, &vault, Some("Prod"), "csv").unwrap();
         assert!(out.contains("my web") && out.contains("bastion") && !out.contains("lone"), "{out}");
+    }
+
+    #[test]
+    fn export_group_by_id_not_name() {
+        let (db, crypto, vault) = fixture();
+        group_with(&db, &crypto, "s1", &vault, None, json!({}), false);
+        group_with(&db, &crypto, "s2", &vault, None, json!({}), false);
+        db.conn.lock().unwrap().execute("UPDATE groups SET name = 'Servers'", []).unwrap();
+        host_in(&db, &crypto, "one", &vault, "password", None, Some("s1"), json!({"address": "1.1.1.1"}));
+        host_in(&db, &crypto, "two", &vault, "password", None, Some("s2"), json!({"address": "2.2.2.2"}));
+        let out = export(&db, &crypto, &vault, Some("s1"), "csv").unwrap();
+        assert!(out.contains("1.1.1.1") && !out.contains("2.2.2.2"), "{out}");
+        assert!(export(&db, &crypto, &vault, Some("gone"), "csv").is_err());
     }
 
     #[test]

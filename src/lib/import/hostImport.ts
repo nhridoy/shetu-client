@@ -293,7 +293,8 @@ export async function runImport(
         address: r.hostname,
         port: r.port,
         // ssh_config keeps its old default; other apps leave it to the connect prompt.
-        username: r.user ?? (deps.source === "ssh_config" ? "root" : undefined),
+        // "" (not missing, which the store turns into root) means "ask when connecting".
+        username: r.user ?? (deps.source === "ssh_config" ? "root" : ""),
         authType: keyId ? "key" : "password",
         keyId,
         jumpHostId,
