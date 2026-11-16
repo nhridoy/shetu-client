@@ -3,6 +3,7 @@
 pub(crate) mod encoding;
 pub(crate) mod ini;
 pub(crate) mod putty;
+pub(crate) mod termius_csv;
 pub(crate) mod winscp;
 
 use serde::Serialize;
@@ -152,6 +153,8 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("putty", None) => putty::detected(home).ok_or_else(|| "No PuTTY sessions found".into()),
         ("winscp", Some(p)) => file(p).map(|(text, origin)| winscp::parse_ini(&text, &origin)),
         ("winscp", None) => winscp::detected().ok_or_else(|| "No WinSCP sites found".into()),
+        ("termius_csv", Some(p)) => file(p).and_then(|(text, origin)| termius_csv::parse_csv(&text, &origin)),
+        ("termius_csv", None) => Err("Choose a CSV file to import".into()),
         _ => Err("Unknown import source".into()),
     }
 }

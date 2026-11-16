@@ -5,6 +5,7 @@ mod db;
 mod forwarding;
 mod git;
 mod host_inherit;
+mod export;
 mod identities;
 mod import;
 mod http;
@@ -1757,6 +1758,7 @@ pub fn run() {
             import::import_detect,
             import::import_preview,
             import::import_read_key,
+            export::export_hosts,
             keys::generate_ssh_key,
             ssh::connect_saved,
             ssh::disconnect,
