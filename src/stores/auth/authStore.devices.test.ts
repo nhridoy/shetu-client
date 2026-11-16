@@ -65,11 +65,13 @@ vi.mock("../../lib/keychain/keychain", () => ({
   loadPassword: vi.fn(async () => null),
   savePassword: vi.fn(async () => {}),
 }));
+vi.mock("sonner", () => ({ toast: { warning: vi.fn() } }));
 vi.mock("@/lib/api/devices", () => ({ reportDevice: vi.fn(async () => {}) }));
 vi.mock("../../lib/common/device", () => ({
   getDeviceId: vi.fn(async () => "dev-1"),
 }));
 
+import { toast } from "sonner";
 import { resetDevice } from "@/lib/account/resetDevice";
 import { authApi } from "@/lib/api/auth";
 import { reportDevice } from "@/lib/api/devices";
@@ -162,5 +164,17 @@ describe("revoked devices", () => {
     expect(reportDevice).toHaveBeenCalledTimes(1);
     useAuthStore.setState({ serverAuthenticated: true });
     expect(reportDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("the wipe notice is still shown after the sign-in that follows it", () => {
+    useAuthStore.setState({
+      isAuthenticated: false,
+      deletionNotice: { kind: "device_revoked" },
+    });
+    useAuthStore.setState({ isAuthenticated: true });
+    expect(toast.warning).toHaveBeenCalledWith(
+      "This device was signed out from another device. Its Shetu data was erased.",
+    );
+    expect(useAuthStore.getState().deletionNotice).toBeNull();
   });
 });

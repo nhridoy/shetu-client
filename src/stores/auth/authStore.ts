@@ -1450,6 +1450,11 @@ useAuthStore.subscribe((s, prev) => {
 // Any successful sign-in (password, OAuth, restore) supersedes the notice.
 useAuthStore.subscribe((s, prev) => {
   if (s.isAuthenticated && !prev.isAuthenticated && s.deletionNotice) {
+    // A wipe just before this sign-in still needs explaining: the sign-in page is gone now.
+    if (s.deletionNotice.kind === "device_revoked")
+      toast.warning(
+        "This device was signed out from another device. Its Shetu data was erased.",
+      );
     useAuthStore.setState({ deletionNotice: null });
   }
 });
