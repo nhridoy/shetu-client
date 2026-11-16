@@ -25,7 +25,16 @@ export function usageMessage(hosts: number, groups: number): string {
     groups && plural(groups, "group"),
   ].filter(Boolean);
   if (parts.length === 0) return "";
-  return `Used by ${parts.join(" and ")}. They'll ask for a login when connecting.`;
+  // A host set to this identity is left without a login; a group's hosts fall through to a parent group.
+  const hostNote =
+    hosts > 0 &&
+    `${hosts > 1 ? "The hosts" : groups ? "The host" : "It"} will ask for a login when connecting`;
+  const groupHosts = hosts
+    ? `hosts in the group${groups > 1 ? "s" : ""}`
+    : `Hosts in ${groups > 1 ? "them" : "it"}`;
+  const groupNote =
+    groups > 0 && `${groupHosts} will use a parent group's login, or ask`;
+  return `Used by ${parts.join(" and ")}. ${[hostNote, groupNote].filter(Boolean).join("; ")}.`;
 }
 
 export default function IdentityList() {
@@ -64,8 +73,10 @@ export default function IdentityList() {
     const usage = await invoke<{ hosts: number; groups: number }>(
       "identity_usage",
       { identityId: identity.id, vaultId: identity.vaultId },
-    ).catch(() => ({ hosts: 0, groups: 0 }));
-    const warning = usageMessage(usage.hosts, usage.groups);
+    ).catch(() => null);
+    const warning = usage
+      ? usageMessage(usage.hosts, usage.groups)
+      : "Couldn't check what uses it; hosts or groups that do will lose this login.";
     setDeleting({
       identity,
       message: `Delete identity '${identity.name}'?${warning ? ` ${warning}` : ""}`,

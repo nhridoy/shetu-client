@@ -130,24 +130,28 @@ pub async fn auto_start_forwards(
         let session = crypto.session.lock().map_err(|e| e.to_string())?;
         storage::auto_start_candidates(&db, &session, &trigger)?
     };
-    let mut started = 0;
-    for candidate in candidates {
-        // Starts happen one by one: re-read each so one deleted or changed meanwhile is skipped.
-        let current = {
-            let session = crypto.session.lock().map_err(|e| e.to_string())?;
-            storage::get_live(&db, &session, &candidate.id)?
-        };
-        let Some(definition) = current.filter(|d| storage::still_wanted(d, &trigger)) else {
-            continue;
-        };
-        if !runtime::should_auto_start(&state.status(&definition.id)) {
-            continue;
+    let (db, crypto, ssh, state) = (&*db, &*crypto, &*ssh, &*state);
+    // All at once, so one slow or unreachable host doesn't hold up the rest.
+    let starts = candidates.into_iter().map(|candidate| {
+        let (owner, app, trigger) = (owner.clone(), &app, &trigger);
+        async move {
+            // Re-read each so one deleted or changed meanwhile is skipped.
+            let current = {
+                let session = crypto.session.lock().map_err(|e| e.to_string())?;
+                storage::get_live(db, &session, &candidate.id)?
+            };
+            let Some(definition) = current.filter(|d| storage::still_wanted(d, trigger)) else {
+                return Ok(false);
+            };
+            if !runtime::should_auto_start(&state.status(&definition.id)) {
+                return Ok(false);
+            }
+            Ok::<_, String>(state.start(definition, owner, db, crypto, app, ssh).await.is_ok())
         }
-        if state
-            .start(definition, owner.clone(), &db, &crypto, &app, &ssh)
-            .await
-            .is_ok()
-        {
+    });
+    let mut started = 0;
+    for result in futures::future::join_all(starts).await {
+        if result? {
             started += 1;
         }
     }
