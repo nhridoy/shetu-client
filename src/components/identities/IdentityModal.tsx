@@ -130,9 +130,10 @@ export default function IdentityModal({
         const ok = await store.updateIdentity(identity.id, {
           name: data.name,
           username: data.username,
-          password: remove.password ? null : data.password,
+          // A newly typed secret wins over "Remove saved".
+          password: data.password || (remove.password ? null : ""),
           keyId: data.keyId || null,
-          totpSecret: remove.totp ? null : data.totpSecret,
+          totpSecret: data.totpSecret || (remove.totp ? null : ""),
         });
         if (!ok) throw new Error(useIdentityStore.getState().error ?? "");
         onSaved(identity.id);

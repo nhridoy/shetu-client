@@ -228,10 +228,13 @@ describe("IdentityModal", () => {
 describe("IdentityList", () => {
   it("usage message pluralises and is empty when unused", () => {
     expect(usageMessage(3, 1)).toBe(
-      "Used by 3 hosts and 1 group. They'll ask for a login when connecting.",
+      "Used by 3 hosts and 1 group. The hosts will ask for a login when connecting; hosts in the group will use a parent group's login, or ask.",
     );
     expect(usageMessage(1, 0)).toBe(
-      "Used by 1 host. They'll ask for a login when connecting.",
+      "Used by 1 host. It will ask for a login when connecting.",
+    );
+    expect(usageMessage(0, 2)).toBe(
+      "Used by 2 groups. Hosts in them will use a parent group's login, or ask.",
     );
     expect(usageMessage(0, 0)).toBe("");
   });
@@ -248,9 +251,7 @@ describe("IdentityList", () => {
       identityId: "i1",
       vaultId: "v1",
     });
-    expect(text()).toContain(
-      "Used by 3 hosts and 1 group. They'll ask for a login when connecting.",
-    );
+    expect(text()).toContain("Used by 3 hosts and 1 group.");
     await act(async () => button("Delete")?.click());
     expect(deleteIdentity).toHaveBeenCalledWith("i1");
   });
@@ -275,5 +276,40 @@ describe("KeysPage", () => {
       expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
       expect(panel?.hidden).toBe(tab.getAttribute("aria-selected") !== "true");
     }
+  });
+
+  it("delete still warns when the usage check fails", async () => {
+    useIdentityStore.setState({ identities: [identity] });
+    h.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "identity_usage") throw new Error("locked");
+      return [];
+    });
+    await render(<IdentityList />);
+    await act(async () => button("Delete identity")?.click());
+    expect(text()).toContain(
+      "Couldn't check what uses it; hosts or groups that do will lose this login.",
+    );
+  });
+});
+
+describe("Remove saved", () => {
+  it("a secret typed after Remove saved is saved, not removed", async () => {
+    await render(
+      <IdentityModal
+        identity={identity}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    for (const b of [...document.querySelectorAll("button")].filter(
+      (x) => x.textContent?.trim() === "Remove saved",
+    ))
+      await act(async () => b.click());
+    await act(async () => setValue(input("password"), "new-pw"));
+    await act(async () => button("Save")?.click());
+    expect(updateIdentity).toHaveBeenCalledWith(
+      "i1",
+      expect.objectContaining({ password: "new-pw", totpSecret: null }),
+    );
   });
 });
