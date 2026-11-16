@@ -3,6 +3,7 @@
 pub(crate) mod encoding;
 pub(crate) mod ini;
 pub(crate) mod putty;
+pub(crate) mod winscp;
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -149,6 +150,8 @@ pub(crate) fn preview_for(source: &str, path: Option<&Path>, home: &Path) -> Res
         ("ssh_config", _) => crate::ssh_config_import::to_preview(home),
         ("putty", Some(p)) => file(p).map(|(text, origin)| putty::parse_reg(&text, &origin)),
         ("putty", None) => putty::detected(home).ok_or_else(|| "No PuTTY sessions found".into()),
+        ("winscp", Some(p)) => file(p).map(|(text, origin)| winscp::parse_ini(&text, &origin)),
+        ("winscp", None) => winscp::detected().ok_or_else(|| "No WinSCP sites found".into()),
         _ => Err("Unknown import source".into()),
     }
 }
@@ -182,6 +185,9 @@ pub(crate) fn detect(home: &Path) -> Vec<Detected> {
     }
     if let Some(p) = putty::detected(home) {
         found.push(Detected { source: "putty".into(), origin: p.origin });
+    }
+    if let Some(p) = winscp::detected() {
+        found.push(Detected { source: "winscp".into(), origin: p.origin });
     }
     found
 }
