@@ -101,7 +101,7 @@ pub(crate) fn parse_xml(text: &str, origin: &str) -> Result<ImportPreview, Strin
     let bad = |e: &dyn std::fmt::Display| format!("Couldn't read the SecureCRT export: {e}");
     let name_of = |e: &quick_xml::events::BytesStart| -> Result<String, String> {
         Ok(match e.try_get_attribute("name").map_err(|e| bad(&e))? {
-            Some(a) => a.unescape_value().map_err(|e| bad(&e))?.into_owned(),
+            Some(a) => a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| bad(&e))?.into_owned(),
             None => String::new(),
         })
     };
