@@ -49,6 +49,7 @@ const TOAST_THEME_VARS = {
 function App() {
   const restoreSession = useAuthStore((s) => s.restoreSession);
   const pendingRecoveryCode = useAuthStore((s) => s.pendingRecoveryCode);
+  const appLocked = useAuthStore((s) => s.appLocked);
   const pendingRecoveryContext = useAuthStore((s) => s.pendingRecoveryContext);
   const clearRecoveryCode = useAuthStore((s) => s.clearRecoveryCode);
   const initSettings = useSettingsStore((s) => s.initSettings);
@@ -122,12 +123,15 @@ function App() {
       {/* Last, so it sits above every dialog. */}
       <LockScreen />
       <UpdateNotification />
-      <Toaster
-        richColors
-        theme={isLightTheme(currentTheme) ? "light" : "dark"}
-        style={TOAST_THEME_VARS}
-        toastOptions={{ classNames: { description: "!text-dark-300" } }}
-      />
+      {/* Hidden while app-locked: a toast could show host names or file paths. */}
+      {!appLocked && (
+        <Toaster
+          richColors
+          theme={isLightTheme(currentTheme) ? "light" : "dark"}
+          style={TOAST_THEME_VARS}
+          toastOptions={{ classNames: { description: "!text-dark-300" } }}
+        />
+      )}
     </BrowserRouter>
   );
 }

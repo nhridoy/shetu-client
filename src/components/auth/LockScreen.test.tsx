@@ -3,7 +3,21 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => ({ unlock: vi.fn(), logout: vi.fn() }));
+const h = vi.hoisted(() => ({
+  unlock: vi.fn(),
+  logout: vi.fn(),
+  dismiss: vi.fn(),
+}));
+vi.mock("sonner", () => ({ toast: { dismiss: h.dismiss } }));
+vi.mock("@/components/layout/shell/TitleBar", () => ({
+  default: () => (
+    <div>
+      <button type="button" aria-label="Close window">
+        x
+      </button>
+    </div>
+  ),
+}));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(async () => ({ get: vi.fn(), set: vi.fn(), save: vi.fn() })),
 }));
@@ -125,6 +139,7 @@ describe("LockScreen", () => {
     render();
     lock(true);
     await act(async () => button("Sign out").click());
+    await act(async () => button("Sign out anyway").click());
     expect(h.logout).toHaveBeenCalled();
   });
 
@@ -172,5 +187,73 @@ describe("LockScreen", () => {
       '[aria-label="Shetu is locked"]',
     ) as HTMLElement;
     expect(cover.closest("[inert]")).toBeNull();
+  });
+
+  it("dismisses toasts and keeps the window controls usable", () => {
+    render();
+    lock(true);
+    expect(h.dismiss).toHaveBeenCalled();
+    const close = document.querySelector(
+      '[aria-label="Close window"]',
+    ) as HTMLElement;
+    expect(close).not.toBeNull();
+    expect(close.closest("[inert]")).toBeNull();
+  });
+
+  it("sign out asks first", async () => {
+    render();
+    lock(true);
+    await act(async () => button("Sign out").click());
+    expect(h.logout).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Unsaved changes and open sessions will be lost",
+    );
+    await act(async () => button("Cancel").click());
+    await act(async () => button("Sign out").click());
+    await act(async () => button("Sign out anyway").click());
+    expect(h.logout).toHaveBeenCalled();
+  });
+
+  it("a wrong password keeps the keyboard on the field", async () => {
+    h.unlock.mockRejectedValue(new Error("Wrong password"));
+    render();
+    lock(true);
+    type("nope");
+    await act(async () => button("Unlock").click());
+    expect(document.activeElement).toBe(field());
+    (document.activeElement as HTMLElement).blur();
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "x", bubbles: true }),
+      );
+    });
+    expect(document.activeElement).toBe(field());
+  });
+
+  it("forgets the typed password and returns focus after unlock", () => {
+    render();
+    const before = document.querySelector("#root button") as HTMLElement;
+    before.focus();
+    lock(true);
+    type("secret");
+    lock(false);
+    expect(document.activeElement).toBe(before);
+    lock(true);
+    expect(field().value).toBe("");
+  });
+
+  it("a blocked close is explained on the lock screen", () => {
+    render();
+    lock(true);
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("shetu:lock-notice", {
+          detail: "Unlock to save or discard your changes before closing.",
+        }),
+      );
+    });
+    expect(document.body.textContent).toContain(
+      "Unlock to save or discard your changes before closing.",
+    );
   });
 });
