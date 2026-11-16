@@ -5362,6 +5362,7 @@ dependencies = [
  "libc",
  "log",
  "portable-pty",
+ "quick-xml",
  "rand 0.10.2",
  "rand 0.8.7",
  "rand_core 0.6.4",
