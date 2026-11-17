@@ -7,6 +7,7 @@ import {
   type SecondFactorKind,
   twoFactorApi,
 } from "@/lib/api/twoFactor";
+import { onLiveSignal, startLive, stopLive } from "@/lib/live/live";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
@@ -449,6 +450,7 @@ function teardownSession(): Promise<string[]> {
 // Publishes signed-out first so the UI reacts at once; flows started meanwhile
 // wait in claimSession until the wipe is done, so it can't erase their work.
 async function runTeardown(): Promise<string[]> {
+  void stopLive().catch(() => {});
   endSecondFactor(new TwoFactorCancelled("Signed out."));
   const failures: string[] = [];
   const attempt = async (name: string, fn: () => Promise<unknown>) => {
@@ -1614,7 +1616,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 // Each time the session reaches the server (sign-in or restore), tell it this device's name.
 useAuthStore.subscribe((s, prev) => {
-  if (s.serverAuthenticated && !prev.serverAuthenticated) void reportDevice();
+  if (s.serverAuthenticated && !prev.serverAuthenticated) {
+    void reportDevice();
+    void startLive().catch(() => {});
+  }
 });
 
 // Any successful sign-in (password, OAuth, restore) supersedes the notice.
@@ -1627,4 +1632,14 @@ useAuthStore.subscribe((s, prev) => {
       );
     useAuthStore.setState({ deletionNotice: null });
   }
+});
+
+// Live signals act at once. A remote sign-out wipes even on the lock screen; an account change
+// (password, two-factor, deletion…) forces a token refresh so a revoked session shows now.
+onLiveSignal((kind) => {
+  if (kind === "device_revoked") void handleRevokedSession();
+  else if (kind === "account_changed")
+    void clearAccessToken()
+      .catch(() => {})
+      .then(() => useAuthStore.getState().retryServerSession());
 });
