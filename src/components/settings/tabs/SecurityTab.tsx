@@ -21,6 +21,7 @@ import type { SecurityTabProps } from "@/types/settings/types";
 import AppLockSettings from "./AppLockSettings";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 import DevicesSettings from "./DevicesSettings";
+import RecentActivity from "./RecentActivity";
 import TwoFactorSettings from "./TwoFactorSettings";
 
 export default function SecurityTab({
@@ -131,6 +132,15 @@ export default function SecurityTab({
         <div className="border-t border-dark-700 pt-6">
           <h3 className="text-sm font-medium text-white mb-3">Devices</h3>
           <DevicesSettings />
+        </div>
+      )}
+
+      {serverAuthenticated && (
+        <div className="border-t border-dark-700 pt-6">
+          <h3 className="text-sm font-medium text-white mb-3">
+            Recent activity
+          </h3>
+          <RecentActivity />
         </div>
       )}
 
