@@ -145,6 +145,7 @@ describe("two-factor sign-in", () => {
       deletionNotice: null,
       pendingDeletion: null,
       pendingTwoFactor: null,
+      pendingRecoveryCode: null,
       error: null,
       isLoading: false,
     });
@@ -269,5 +270,66 @@ describe("two-factor sign-in", () => {
     expect(s.pendingTwoFactor).toBeNull();
     expect(s.isAuthenticated).toBe(false);
     expect(twoFactorApi.verify).not.toHaveBeenCalled();
+  });
+
+  it("a stale first-factor answer never replaces the current code screen", async () => {
+    let lateA!: (e: unknown) => void;
+    vi.mocked(authApi.login).mockReturnValueOnce(
+      new Promise((_, reject) => {
+        lateA = reject;
+      }) as never,
+    );
+    const a = useAuthStore.getState().login("a@example.com", "pw");
+    await vi.waitFor(() => expect(authApi.login).toHaveBeenCalledTimes(1));
+    await useAuthStore.getState().logout();
+    vi.mocked(authApi.login).mockRejectedValueOnce(
+      new AuthApiError(401, {
+        code: "TWO_FACTOR_REQUIRED",
+        message: "m",
+        challenge: "chB",
+      }),
+    );
+    const b = useAuthStore.getState().login("a@example.com", "pw");
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().pendingTwoFactor?.challenge).toBe("chB"),
+    );
+    lateA(
+      new AuthApiError(401, {
+        code: "TWO_FACTOR_REQUIRED",
+        message: "m",
+        challenge: "chA",
+      }),
+    );
+    await a.catch(() => {});
+    expect(useAuthStore.getState().pendingTwoFactor?.challenge).toBe("chB");
+    useAuthStore.getState().cancelTwoFactor();
+    await b.catch(() => {});
+  });
+
+  it("a recovery overtaken by another sign-in does not resume", async () => {
+    vi.mocked(authApi.recoveryPrefetch).mockRejectedValueOnce(required());
+    // Settles while the other sign-in runs: handle it from the start.
+    const recovery = useAuthStore
+      .getState()
+      .recovery("code", "new-password")
+      .catch(() => {});
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().pendingTwoFactor?.path).toBe("recovery"),
+    );
+    vi.mocked(authApi.login).mockResolvedValueOnce(signedIn as never);
+    await useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+    vi.mocked(twoFactorApi.verify).mockResolvedValue({
+      two_factor_proof: "p",
+    } as never);
+    await useAuthStore
+      .getState()
+      .submitTwoFactor("123456", "totp")
+      .catch(() => {});
+    await recovery;
+    expect(authApi.recovery).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().pendingRecoveryCode).toBeNull();
   });
 });

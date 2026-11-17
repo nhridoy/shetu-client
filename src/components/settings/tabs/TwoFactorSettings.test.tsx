@@ -173,4 +173,32 @@ describe("TwoFactorSettings", () => {
     expect(text()).toContain("That code isn't right.");
     expect(button("Confirm")).toBeTruthy();
   });
+
+  it("an older status answer never overwrites a newer one", async () => {
+    let slow!: (v: unknown) => void;
+    api.status.mockResolvedValueOnce(on);
+    api.regenerateBackupCodes.mockResolvedValue({ backup_codes: codes });
+    await setup();
+    await click("New backup codes");
+    type("Code from your authenticator or a backup code", "123456");
+    await click("Confirm");
+    await act(async () => {
+      (document.querySelector("[role=checkbox]") as HTMLButtonElement).click();
+    });
+    // Done's refresh stays pending while two-factor is turned off.
+    api.status.mockReturnValueOnce(
+      new Promise((r) => {
+        slow = r;
+      }),
+    );
+    await click("Done");
+    api.disable.mockResolvedValue(undefined);
+    api.status.mockResolvedValueOnce(off);
+    await click("Turn off");
+    type("Code from your authenticator or a backup code", "abcd-efgh");
+    await click("Confirm");
+    expect(button("Turn on")).toBeTruthy();
+    await act(async () => slow(on));
+    expect(button("Turn on")).toBeTruthy();
+  });
 });

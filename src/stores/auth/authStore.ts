@@ -89,9 +89,11 @@ function ensureOwner(owner: number): void {
   if (owner !== sessionOwner) throw new SessionLost("The session changed.");
 }
 
-// A sign-in about to publish: older flows (retries included) stop.
+// A sign-in about to publish: older flows (retries included) stop, including one
+// waiting on its code screen.
 function takeOver(owner: number): number {
   ensureOwner(owner);
+  endSecondFactor(new SessionLost("The session changed."));
   return ++sessionOwner;
 }
 
@@ -242,9 +244,12 @@ let secondFactor: {
 function awaitSecondFactor<T>(
   path: TwoFactorPath,
   challenge: string,
+  owner: number,
 ): Promise<T> {
+  // A flow that lost the session must not replace a newer flow's code screen.
+  ensureOwner(owner);
   endSecondFactor(new TwoFactorCancelled("Signing in was cancelled."));
-  return new Promise<T>((resolve, reject) => {
+  const waited = new Promise<T>((resolve, reject) => {
     secondFactor = {
       path,
       challenge,
@@ -255,6 +260,10 @@ function awaitSecondFactor<T>(
       pendingTwoFactor: { path, challenge },
       isLoading: false,
     });
+  });
+  return waited.then((res) => {
+    ensureOwner(owner);
+    return res;
   });
 }
 
@@ -271,13 +280,14 @@ function endSecondFactor(reason: unknown): void {
 // the verified response, the same shape the call itself would have returned.
 async function withSecondFactor<T>(
   path: TwoFactorPath,
+  owner: number,
   call: () => Promise<T>,
 ): Promise<T> {
   try {
     return await call();
   } catch (err) {
     if (!isTwoFactorRequired(err)) throw err;
-    return awaitSecondFactor<T>(path, err.apiError.challenge as string);
+    return awaitSecondFactor<T>(path, err.apiError.challenge as string, owner);
   }
 }
 
@@ -850,7 +860,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       );
 
       const deviceId = await getDeviceId();
-      const res = await withSecondFactor<LoginResponse>("login", () =>
+      const res = await withSecondFactor<LoginResponse>("login", owner, () =>
         authApi.login({
           email,
           proof: proof.proof,
@@ -1117,7 +1127,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const prefetch = await withSecondFactor<
         RecoveryPrefetchResponse & { two_factor_proof?: string }
-      >("recovery", () => authApi.recoveryPrefetch(recoveryCode));
+      >("recovery", owner, () => authApi.recoveryPrefetch(recoveryCode));
 
       // 1. Unwrap the DEK with the recovery code (recovery-KEK = Argon2id(code, salt_cl))
       await recoveryUnwrapDek(
@@ -1171,7 +1181,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null,
       });
     } catch (err) {
-      if (err instanceof TwoFactorCancelled) throw err;
+      // A cancelled or overtaken recovery leaves the current screen's state alone.
+      if (err instanceof TwoFactorCancelled || owner !== sessionOwner)
+        throw err;
       const message =
         typeof err === "string"
           ? err
@@ -1181,7 +1193,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ error: message, isLoading: false });
       throw err;
     } finally {
-      set({ isLoading: false });
+      if (owner === sessionOwner) set({ isLoading: false });
     }
   },
 
@@ -1339,6 +1351,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const verified = await awaitSecondFactor<LoginResponse>(
           "oauth",
           result.challenge ?? "",
+          owner,
         );
         result = {
           dest: "success",

@@ -81,13 +81,22 @@ export default function TwoFactorForm() {
           Continue
         </Button>
         <div className="flex flex-col items-start gap-1 text-sm">
-          {kind !== "email" && (
+          {kind !== "backup" && (
             <button
               type="button"
               className="text-primary-400 hover:underline"
-              onClick={() => switchTo(kind === "totp" ? "backup" : "totp")}
+              onClick={() => switchTo("backup")}
             >
-              {kind === "totp" ? "Use a backup code" : "Use your authenticator"}
+              Use a backup code
+            </button>
+          )}
+          {kind !== "totp" && (
+            <button
+              type="button"
+              className="text-primary-400 hover:underline"
+              onClick={() => switchTo("totp")}
+            >
+              Use your authenticator
             </button>
           )}
           {pendingTwoFactor.path === "recovery" && kind !== "email" && (

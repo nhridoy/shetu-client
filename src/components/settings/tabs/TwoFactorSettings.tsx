@@ -2,7 +2,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import QRCode from "qrcode";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
@@ -59,12 +59,16 @@ export default function TwoFactorSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the latest status request may update the view; an older answer is stale.
+  const loads = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++loads.current;
     setLoadError(false);
     try {
-      setStatus(await twoFactorApi.status());
+      const next = await twoFactorApi.status();
+      if (mine === loads.current) setStatus(next);
     } catch {
-      setLoadError(true);
+      if (mine === loads.current) setLoadError(true);
     }
   }, []);
 

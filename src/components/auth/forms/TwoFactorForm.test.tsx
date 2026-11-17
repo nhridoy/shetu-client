@@ -111,6 +111,14 @@ describe("TwoFactorForm", () => {
     type("654321");
     await click("Continue");
     expect(store.submitTwoFactor).toHaveBeenCalledWith("654321", "email");
+    // A slow email must not trap the person: the other ways stay available.
+    await click("Use a backup code");
+    type("abcd-efgh");
+    await click("Continue");
+    expect(store.submitTwoFactor).toHaveBeenLastCalledWith(
+      "abcd-efgh",
+      "backup",
+    );
   });
 
   it("shows a wrong code and keeps the form", async () => {
