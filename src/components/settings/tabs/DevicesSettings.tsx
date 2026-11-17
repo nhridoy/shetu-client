@@ -6,7 +6,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { type DeviceView, devicesApi } from "@/lib/api/devices";
 import { formatRelativeTime } from "@/lib/format/relativeTime";
 
-const PLATFORMS: Record<string, string> = {
+export const PLATFORMS: Record<string, string> = {
   linux: "Linux",
   macos: "macOS",
   windows: "Windows",
