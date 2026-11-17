@@ -151,6 +151,7 @@ async function runRevokedSession(): Promise<void> {
   await suspendServerSession();
   const userId = currentAccountId();
   if (!userId) return;
+  const owner = sessionOwner;
   const deviceId = await getDeviceId().catch(() => undefined);
   let res: Awaited<ReturnType<typeof authApi.accountStatus>> | null;
   try {
@@ -161,8 +162,9 @@ async function runRevokedSession(): Promise<void> {
   const accountGone =
     res?.status === "deletion_scheduled" || res?.status === "deleted";
   if (!accountGone && res?.device_revoked !== true) return;
-  // The account may have changed during the round-trip; don't wipe another one.
-  if (currentAccountId() !== userId) return;
+  // The account or session may have changed during the round-trip (a sign-in
+  // meanwhile un-revokes the device); don't wipe what came after.
+  if (currentAccountId() !== userId || owner !== sessionOwner) return;
   const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
@@ -179,7 +181,7 @@ async function runRevokedSession(): Promise<void> {
  * device was signed out remotely; if so, erase it first (a sign-in would clear that flag).
  * Offline or any error: keep the data.
  */
-async function wipeIfRevoked(): Promise<boolean> {
+async function wipeIfRevoked(owner: number): Promise<boolean> {
   const userId = useAuthStore.getState().localAccessAccountId;
   if (!userId) return false;
   let revoked = false;
@@ -189,12 +191,29 @@ async function wipeIfRevoked(): Promise<boolean> {
   } catch {
     return false;
   }
-  if (!revoked || useAuthStore.getState().localAccessAccountId !== userId)
+  if (
+    !revoked ||
+    useAuthStore.getState().localAccessAccountId !== userId ||
+    owner !== sessionOwner
+  )
     return false;
   const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
   return true;
+}
+
+// Starts a sign-in: wipes a revoked device first, then claims the session. A sign-out
+// during the check stops the sign-in (SessionLost); the attempt's own wipe doesn't.
+async function claimSignIn(): Promise<number> {
+  const owner = sessionOwner;
+  if (await wipeIfRevoked(owner)) {
+    // The wipe's teardown cleared it; this sign-in is still running.
+    useAuthStore.setState({ isLoading: true });
+  } else {
+    ensureOwner(owner);
+  }
+  return claimSession();
 }
 
 interface AuthState {
@@ -710,8 +729,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (email: string, password: string) => {
     set({ isLoading: true, error: null });
-    await wipeIfRevoked();
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const prelogin = await authApi.prelogin(email);
 
@@ -1192,8 +1210,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   oauthStartFlow: async (provider: string) => {
     set({ isLoading: true, error: null });
-    await wipeIfRevoked();
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const result = await startOAuthFlow(provider, await getDeviceId());
 
@@ -1306,8 +1323,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error("No pending OAuth setup");
     }
     set({ isLoading: true, error: null });
-    await wipeIfRevoked();
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const material = await generateAccountMaterial();
       await deriveKek(password, material.salt_cl);

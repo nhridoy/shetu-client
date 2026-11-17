@@ -179,7 +179,7 @@ mod tests {
             None,
             "v1",
             "deploy@prod",
-            &json!({"username": "deploy", "password": "pw", "totpSecret": "GEZDGNBV"}),
+            &json!({"username": "deploy", "password": "s3cret!pw", "totpSecret": "GEZDGNBV"}),
             DEVICE,
         )
         .unwrap();
@@ -187,7 +187,7 @@ mod tests {
             (row.vault_id.as_str(), row.name.as_deref()),
             ("v1", Some("deploy@prod"))
         );
-        assert!(!row.data.contains("pw"));
+        assert!(!row.data.contains("s3cret!pw"));
         save(
             &db,
             &crypto,
@@ -209,7 +209,7 @@ mod tests {
             ("ops", None, true, false)
         );
         let text = serde_json::to_string(&v).unwrap();
-        assert!(!text.contains("pw") && !text.contains("GEZDGNBV"), "{text}");
+        assert!(!text.contains("s3cret!pw") && !text.contains("GEZDGNBV"), "{text}");
         let saved = db::get_sync_row(&db, db::Table::Identities, &row.id)
             .unwrap()
             .unwrap();

@@ -75,6 +75,7 @@ import { toast } from "sonner";
 import { resetDevice } from "@/lib/account/resetDevice";
 import { authApi } from "@/lib/api/auth";
 import { reportDevice } from "@/lib/api/devices";
+import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
 
 const user = {
@@ -176,5 +177,75 @@ describe("revoked devices", () => {
       "This device was signed out from another device. Its Shetu data was erased.",
     );
     expect(useAuthStore.getState().deletionNotice).toBeNull();
+  });
+});
+
+describe("revoked-device checks and newer sessions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resetDevice).mockResolvedValue([]);
+    useAuthStore.setState({
+      user,
+      tokens: null,
+      isAuthenticated: false,
+      serverAuthenticated: false,
+      localAccessAccountId: "u1",
+      deletionNotice: null,
+      isLoading: false,
+    });
+  });
+
+  it("a revoked answer that arrives after a new sign-in doesn't wipe it", async () => {
+    let answer!: (v: { status: string; device_revoked: boolean }) => void;
+    vi.mocked(authApi.accountStatus)
+      .mockImplementationOnce(() => new Promise((r) => (answer = r)) as never)
+      .mockResolvedValueOnce({ status: "active" });
+    const revoked = handleRevokedSession();
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
+    // The same account signs in again meanwhile (and takes the session over).
+    vi.mocked(startOAuthFlow).mockResolvedValue({
+      dest: "login",
+      accessToken: "a2",
+      refreshToken: "r2",
+    } as never);
+    await useAuthStore
+      .getState()
+      .oauthStartFlow("github")
+      .catch(() => {});
+    answer({ status: "active", device_revoked: true });
+    await revoked;
+    expect(resetDevice).not.toHaveBeenCalled();
+  });
+
+  it("a sign-out during the pre-sign-in check cancels the sign-in", async () => {
+    let answer!: (v: { status: string }) => void;
+    vi.mocked(authApi.accountStatus).mockImplementationOnce(
+      () => new Promise((r) => (answer = r)) as never,
+    );
+    vi.mocked(authApi.prelogin).mockRejectedValue(new Error("stop here"));
+    const signIn = useAuthStore.getState().login("a@example.com", "pw");
+    await vi.waitFor(() => expect(authApi.accountStatus).toHaveBeenCalled());
+    await useAuthStore.getState().logout();
+    answer({ status: "active" });
+    await expect(signIn).rejects.toThrow("The session changed.");
+    expect(authApi.prelogin).not.toHaveBeenCalled();
+  });
+
+  it("the sign-in stays pending after the revoked wipe", async () => {
+    vi.mocked(resetDevice).mockImplementation(async (teardown) => {
+      await teardown();
+      return [];
+    });
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "active",
+      device_revoked: true,
+    });
+    vi.mocked(authApi.prelogin).mockImplementation(
+      () => new Promise(() => {}) as never,
+    );
+    void useAuthStore.getState().login("a@example.com", "pw");
+    await vi.waitFor(() => expect(authApi.prelogin).toHaveBeenCalled());
+    expect(resetDevice).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().isLoading).toBe(true);
   });
 });
