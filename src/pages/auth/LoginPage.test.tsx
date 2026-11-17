@@ -9,6 +9,7 @@ const state = {
   deletionNotice: null as
     | { kind: "scheduled"; date: string }
     | { kind: "deleted" }
+    | { kind: "device_revoked" }
     | null,
 };
 
@@ -93,6 +94,14 @@ describe("LoginPage deletion notice", () => {
     setup();
     expect(document.body.textContent).toContain(
       "This account has been deleted.",
+    );
+  });
+
+  it("sign_in_shows_device_revoked_notice", () => {
+    state.deletionNotice = { kind: "device_revoked" };
+    setup();
+    expect(document.body.textContent).toContain(
+      "This device was signed out from another device. Its Shetu data was erased.",
     );
   });
 

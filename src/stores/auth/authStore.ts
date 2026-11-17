@@ -1,6 +1,7 @@
 import { load } from "@tauri-apps/plugin-store";
 import { toast } from "sonner";
 import { create } from "zustand";
+import { reportDevice } from "@/lib/api/devices";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
@@ -150,23 +151,72 @@ async function runRevokedSession(): Promise<void> {
   await suspendServerSession();
   const userId = currentAccountId();
   if (!userId) return;
+  const owner = sessionOwner;
+  const deviceId = await getDeviceId().catch(() => undefined);
   let res: Awaited<ReturnType<typeof authApi.accountStatus>> | null;
   try {
-    res = await authApi.accountStatus(userId);
+    res = await authApi.accountStatus(userId, deviceId);
   } catch {
     return; // offline or server error: never wipe on doubt
   }
-  if (res?.status !== "deletion_scheduled" && res?.status !== "deleted") return;
-  // The account may have changed during the round-trip; don't wipe another one.
-  if (currentAccountId() !== userId) return;
+  const accountGone =
+    res?.status === "deletion_scheduled" || res?.status === "deleted";
+  if (!accountGone && res?.device_revoked !== true) return;
+  // The account or session may have changed during the round-trip (a sign-in
+  // meanwhile un-revokes the device); don't wipe what came after.
+  if (currentAccountId() !== userId || owner !== sessionOwner) return;
   const failures = await resetDevice(teardownSession);
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
-    deletionNotice:
-      res.status === "deleted"
+    deletionNotice: !accountGone
+      ? { kind: "device_revoked" }
+      : res?.status === "deleted"
         ? { kind: "deleted" }
-        : { kind: "scheduled", date: res.deletion_scheduled_for ?? "" },
+        : { kind: "scheduled", date: res?.deletion_scheduled_for ?? "" },
   });
+}
+
+/**
+ * Before signing in on a device that still holds an account's local data, ask whether this
+ * device was signed out remotely; if so, erase it first (a sign-in would clear that flag).
+ * Offline or any error: keep the data.
+ */
+async function wipeIfRevoked(owner: number): Promise<number | null> {
+  const userId = useAuthStore.getState().localAccessAccountId;
+  if (!userId) return null;
+  let revoked = false;
+  try {
+    const res = await authApi.accountStatus(userId, await getDeviceId());
+    revoked = res?.device_revoked === true;
+  } catch {
+    return null;
+  }
+  if (
+    !revoked ||
+    useAuthStore.getState().localAccessAccountId !== userId ||
+    owner !== sessionOwner
+  )
+    return null;
+  let mine = sessionOwner;
+  const failures = await resetDevice(() => {
+    const run = teardownSession();
+    mine = sessionOwner;
+    return run;
+  });
+  if (failures.length) console.warn("device reset incomplete:", failures);
+  useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
+  return mine;
+}
+
+// Starts a sign-in: wipes a revoked device first, then claims the session. A sign-out
+// during the check or the wipe stops the sign-in (SessionLost); the attempt's own wipe doesn't.
+async function claimSignIn(): Promise<number> {
+  const start = sessionOwner;
+  const afterWipe = await wipeIfRevoked(start);
+  ensureOwner(afterWipe ?? start);
+  // A wipe's teardown cleared it; this sign-in is still running.
+  if (afterWipe !== null) useAuthStore.setState({ isLoading: true });
+  return claimSession();
 }
 
 interface AuthState {
@@ -188,6 +238,7 @@ interface AuthState {
   deletionNotice:
     | { kind: "scheduled"; date: string }
     | { kind: "deleted" }
+    | { kind: "device_revoked" }
     | null;
   // Grace-period date of the account just signed into; sign-in is held until Keep or Sign out.
   pendingDeletion: string | null;
@@ -681,7 +732,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (email: string, password: string) => {
     set({ isLoading: true, error: null });
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const prelogin = await authApi.prelogin(email);
 
@@ -1162,7 +1213,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   oauthStartFlow: async (provider: string) => {
     set({ isLoading: true, error: null });
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const result = await startOAuthFlow(provider, await getDeviceId());
 
@@ -1275,7 +1326,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error("No pending OAuth setup");
     }
     set({ isLoading: true, error: null });
-    let owner = await claimSession();
+    let owner = await claimSignIn();
     try {
       const material = await generateAccountMaterial();
       await deriveKek(password, material.salt_cl);
@@ -1410,9 +1461,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }));
 
+// Each time the session reaches the server (sign-in or restore), tell it this device's name.
+useAuthStore.subscribe((s, prev) => {
+  if (s.serverAuthenticated && !prev.serverAuthenticated) void reportDevice();
+});
+
 // Any successful sign-in (password, OAuth, restore) supersedes the notice.
 useAuthStore.subscribe((s, prev) => {
   if (s.isAuthenticated && !prev.isAuthenticated && s.deletionNotice) {
+    // A wipe just before this sign-in still needs explaining: the sign-in page is gone now.
+    if (s.deletionNotice.kind === "device_revoked")
+      toast.warning(
+        "This device was signed out from another device. Its Shetu data was erased.",
+      );
     useAuthStore.setState({ deletionNotice: null });
   }
 });

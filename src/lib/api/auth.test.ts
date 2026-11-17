@@ -186,4 +186,21 @@ describe("account deletion", () => {
       { auth: false },
     );
   });
+
+  it("accountStatus can ask about this device too", async () => {
+    mockHttpRequest.mockResolvedValue({
+      status: 200,
+      body: '{"data":{"status":"active","device_revoked":true}}',
+    });
+    await expect(authApi.accountStatus("u1", "d1")).resolves.toEqual({
+      status: "active",
+      device_revoked: true,
+    });
+    expect(mockHttpRequest).toHaveBeenLastCalledWith(
+      "POST",
+      "/api/v1/auth/account-status",
+      { user_id: "u1", device_id: "d1" },
+      { auth: false },
+    );
+  });
 });
