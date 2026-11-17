@@ -175,7 +175,7 @@ async function runRevokedSession(): Promise<void> {
   // The account or session may have changed during the round-trip (a sign-in
   // meanwhile un-revokes the device); don't wipe what came after.
   if (currentAccountId() !== userId || owner !== sessionOwner) return;
-  const failures = await resetDevice(teardownSession);
+  const failures = await resetDeviceSession();
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
     deletionNotice: !accountGone
@@ -443,6 +443,15 @@ function teardownSession(): Promise<string[]> {
   sessionOwner++;
   const run = runTeardown();
   // Settles only after every earlier teardown too, whichever finishes last.
+  teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
+  return run;
+}
+
+// A device reset clears settings and local storage after its session teardown: the whole reset
+// is part of the barrier sign-ins wait on, so a new session can't be cleared by it. A sign-in
+// that runs its own reset (wipeIfRevoked) has already awaited it, so it never waits on itself.
+function resetDeviceSession(): Promise<string[]> {
+  const run = resetDevice(teardownSession);
   teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
   return run;
 }
@@ -1561,7 +1570,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (err) {
       throw deletionRequestError(err);
     }
-    const failures = await resetDevice(teardownSession);
+    const failures = await resetDeviceSession();
     if (failures.length) console.warn("device reset incomplete:", failures);
     set({ deletionNotice: { kind: "scheduled", date } });
   },
@@ -1573,7 +1582,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (!(err instanceof AuthApiError && err.status === 410)) throw err;
       // Purged during the grace period.
       resumeAfterKeep = null;
-      const failures = await resetDevice(teardownSession);
+      const failures = await resetDeviceSession();
       if (failures.length) console.warn("device reset incomplete:", failures);
       set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
       return;
@@ -1664,7 +1673,7 @@ function wipeOnLiveRevoke(): Promise<void> {
   const run = (async () => {
     const userId = currentAccountId();
     if (!userId) return;
-    const failures = await resetDevice(teardownSession);
+    const failures = await resetDeviceSession();
     if (failures.length) console.warn("device reset incomplete:", failures);
     useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
   })().finally(() => {

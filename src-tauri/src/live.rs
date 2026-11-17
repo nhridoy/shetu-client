@@ -468,6 +468,42 @@ mod tests {
         assert_eq!(*order.lock().unwrap(), vec!["reset", "new"]);
     }
 
+    #[tokio::test]
+    async fn a_failed_replacement_leaves_the_app_disconnected() {
+        // The old stream is connected; its replacement never connects. The app must end up on
+        // "disconnected", not stuck on the old "connected".
+        let state = Arc::new(LiveState::default());
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let report = |gen: u64| {
+            let (state, statuses) = (state.clone(), statuses.clone());
+            move |s: LiveSignal| {
+                state.emit_if_current(gen, || statuses.lock().unwrap().push(s));
+            }
+        };
+        let (old_cancel, old) = state.restart_with(|| {});
+        let old_task = tokio::spawn(run_live(
+            || async { chunks(&["event: ready\ndata: {}\n\n"], true) },
+            report(old),
+            quick(),
+            old_cancel,
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let reset = statuses.clone();
+        let (new_cancel, new) =
+            state.restart_with(|| reset.lock().unwrap().push(LiveSignal::Disconnected));
+        let stopper = new_cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            stopper.cancel();
+        });
+        run_live(|| async { Opened::Network }, report(new), quick(), new_cancel).await;
+        old_task.await.unwrap();
+        assert_eq!(
+            *statuses.lock().unwrap(),
+            vec![LiveSignal::Connected, LiveSignal::Disconnected]
+        );
+    }
+
     #[test]
     fn a_restart_waits_for_an_emission_in_progress() {
         // The old stream passed the check and is emitting: its status must land before the new

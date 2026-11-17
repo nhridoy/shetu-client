@@ -252,14 +252,16 @@ describe("live signals", () => {
         private_key_wrapped_by_dek: "pk",
       },
     } as never);
-    await useAuthStore
+    // The sign-in waits for the first wipe's cleanup to finish before it starts.
+    const signIn = useAuthStore
       .getState()
       .login("a@example.com", "pw")
       .catch(() => {});
+    finishFirst();
+    await signIn;
     useAuthStore.setState({ user, localAccessAccountId: "u1" });
     live.signal?.("device_revoked");
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(2));
-    finishFirst();
   });
 
   it("revokes for the same session during its teardown join one wipe", async () => {
@@ -280,5 +282,30 @@ describe("live signals", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(resetDevice).toHaveBeenCalledTimes(1);
     release();
+  });
+
+  it("a sign-in waits for a remote wipe's whole cleanup", async () => {
+    useAuthStore.setState({ serverAuthenticated: true });
+    let finishCleanup!: () => void;
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      await teardown();
+      // Settings and local storage are cleared after the session teardown.
+      await new Promise<void>((r) => {
+        finishCleanup = r;
+      });
+      return [];
+    });
+    live.signal?.("device_revoked");
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+    vi.mocked(authApi.prelogin).mockRejectedValue(new Error("stop here"));
+    const signIn = useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(authApi.prelogin).not.toHaveBeenCalled();
+    finishCleanup();
+    await signIn;
+    expect(authApi.prelogin).toHaveBeenCalled();
   });
 });
