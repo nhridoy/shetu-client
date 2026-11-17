@@ -1655,17 +1655,23 @@ onLiveSignal((kind) => {
 // also depend on an account-status call that could fail (e.g. a flaky network on a stolen
 // laptop). Overlapping signals join one run.
 let liveWipe: Promise<void> | null = null;
+let liveWipeOwner = -1;
 function wipeOnLiveRevoke(): Promise<void> {
-  liveWipe ??= (async () => {
+  // Join a wipe only while it still belongs to this session: once its teardown ran, a revoke
+  // for a newer session needs its own.
+  if (liveWipe && liveWipeOwner === sessionOwner) return liveWipe;
+  liveWipeOwner = sessionOwner;
+  const run = (async () => {
     const userId = currentAccountId();
     if (!userId) return;
     const failures = await resetDevice(teardownSession);
     if (failures.length) console.warn("device reset incomplete:", failures);
     useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
   })().finally(() => {
-    liveWipe = null;
+    if (liveWipe === run) liveWipe = null;
   });
-  return liveWipe;
+  liveWipe = run;
+  return run;
 }
 
 async function recheckAccount(): Promise<void> {

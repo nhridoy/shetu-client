@@ -92,10 +92,9 @@ fn live_start(
             },
             move |signal| {
                 // A replaced task's late status would overwrite its successor's.
-                if !emitter.state::<live::LiveState>().is_current(generation) {
-                    return;
-                }
-                let _ = match signal {
+                let live_state = emitter.state::<live::LiveState>();
+                live_state.emit_if_current(generation, || {
+                    let _ = match signal {
                     live::LiveSignal::Connected => emitter.emit(live::STATUS_EVENT, "connected"),
                     live::LiveSignal::Disconnected => {
                         emitter.emit(live::STATUS_EVENT, "disconnected")
@@ -106,7 +105,8 @@ fn live_start(
                     live::LiveSignal::SessionExpired => {
                         emitter.emit(http::SESSION_REVOKED_EVENT, ())
                     }
-                };
+                    };
+                });
             },
             live::LiveTimings::default(),
             cancel,

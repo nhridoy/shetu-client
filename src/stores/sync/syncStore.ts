@@ -251,8 +251,9 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
         queued = true;
         return;
       }
-      const pending = [...inFlight.values()];
-      const pass = () => get().requestAll();
+      // Vault and team syncs both: either may have read the server before the change.
+      const pending = [...inFlight.values(), ...teamSyncInFlight.values()];
+      const pass = () => (stopped ? Promise.resolve() : get().requestAll());
       running = (
         pending.length ? Promise.allSettled(pending).then(pass) : pass()
       ).finally(() => {

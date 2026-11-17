@@ -13,6 +13,7 @@ vi.mock("@/lib/live/live", () => ({
   },
 }));
 vi.mock("../../lib/api/sync", () => ({ triggerSync: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => ({})) }));
 vi.mock("../../lib/db/db", () => ({ getOutbox: vi.fn(async () => []) }));
 vi.mock("../auth/authStore", () => ({
   useAuthStore: {
@@ -28,6 +29,7 @@ vi.mock("../vault/vaultStore", () => ({
   useVaultStore: { getState: () => ({ vaults: [] }) },
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import { triggerSync } from "../../lib/api/sync";
 import { useSyncStore } from "./syncStore";
 
@@ -131,5 +133,66 @@ describe("live sync", () => {
     finish();
     await vi.advanceTimersByTimeAsync(0);
     expect(requestAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("a signal waiting on an in-flight sync does nothing once stopped", async () => {
+    stop();
+    let finish!: (v: unknown) => void;
+    vi.mocked(triggerSync)
+      .mockReset()
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finish = r;
+        }) as never,
+      )
+      .mockResolvedValue({
+        pending: 0,
+        last_sync_at: null,
+        cursor: 1,
+      } as never);
+    const spy = vi.fn(realRequestAll);
+    useSyncStore.setState({ requestAll: spy } as never);
+    stop = useSyncStore.getState().start("v1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    live.signal?.("changed");
+    stop();
+    finish({ pending: 0, last_sync_at: null, cursor: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a change during a team sync gets a fresh team sync after it", async () => {
+    stop();
+    vi.mocked(triggerSync)
+      .mockReset()
+      .mockResolvedValue({
+        pending: 0,
+        last_sync_at: null,
+        cursor: 1,
+      } as never);
+    let finishTeam!: (v: unknown) => void;
+    vi.mocked(invoke)
+      .mockReset()
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            finishTeam = r;
+          }) as never,
+      )
+      .mockResolvedValue({} as never);
+    useSyncStore.setState({ requestAll: realRequestAll } as never);
+    stop = useSyncStore.getState().start("v1");
+    await vi.advanceTimersByTimeAsync(0);
+    const teamSyncs = () =>
+      vi.mocked(invoke).mock.calls.filter((c) => c[0] === "team_sync_now")
+        .length;
+    expect(teamSyncs()).toBe(1);
+    live.signal?.("changed");
+    // Let the signal's pass run while the first team sync is still going.
+    await vi.advanceTimersByTimeAsync(0);
+    finishTeam({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(teamSyncs()).toBe(2);
   });
 });

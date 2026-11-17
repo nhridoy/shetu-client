@@ -218,4 +218,31 @@ describe("live signals", () => {
       expect(useAuthStore.getState().pendingDeletion).toBe("2026-12-17"),
     );
   });
+
+  it("a revoke for a new session isn't absorbed by the previous wipe", async () => {
+    useAuthStore.setState({ serverAuthenticated: true });
+    let finishFirst!: () => void;
+    vi.mocked(resetDevice)
+      .mockImplementationOnce(async (teardown) => {
+        await teardown();
+        // Cleanup after teardown is still running while a new session starts.
+        await new Promise<void>((r) => {
+          finishFirst = r;
+        });
+        return [];
+      })
+      .mockResolvedValue([]);
+    live.signal?.("device_revoked");
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(finishFirst).toBeTypeOf("function"));
+    // A new session on this device, then the server revokes it too.
+    useAuthStore.setState({
+      user,
+      localAccessAccountId: "u1",
+      serverAuthenticated: true,
+    });
+    live.signal?.("device_revoked");
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(2));
+    finishFirst();
+  });
 });

@@ -198,38 +198,49 @@ pub async fn run_live<F, Fut>(
     }
 }
 
-/// The running stream's stop switch and generation: a replaced task finishes on its own time,
-/// and must not report status over its successor's.
+/// The running stream's stop switch and generation. Only the current stream may report status,
+/// and the check and the report happen under the same lock a restart takes, so a replaced
+/// stream can never report after its successor.
 #[derive(Default)]
 pub struct LiveState {
-    cancel: Mutex<Option<CancellationToken>>,
-    current: std::sync::atomic::AtomicU64,
+    inner: Mutex<LiveInner>,
     next: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Default)]
+struct LiveInner {
+    cancel: Option<CancellationToken>,
+    current: u64,
 }
 
 impl LiveState {
     /// Stops any running stream and returns a fresh switch and generation for the next one.
     pub fn restart(&self) -> (CancellationToken, u64) {
-        use std::sync::atomic::Ordering::SeqCst;
         let token = CancellationToken::new();
-        let generation = self.next.fetch_add(1, SeqCst) + 1;
-        self.current.store(generation, SeqCst);
-        if let Some(old) = self.cancel.lock().unwrap().replace(token.clone()) {
+        let generation = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(old) = inner.cancel.replace(token.clone()) {
             old.cancel();
         }
+        inner.current = generation;
         (token, generation)
     }
 
+    /// Stops the running stream. It stays current, so its own Disconnected still reaches the app.
     pub fn stop(&self) {
-        self.current.store(0, std::sync::atomic::Ordering::SeqCst);
-        if let Some(old) = self.cancel.lock().unwrap().take() {
+        if let Some(old) = self.inner.lock().unwrap().cancel.take() {
             old.cancel();
         }
     }
 
-    /// Whether `generation` is the running stream (only it may report status).
-    pub fn is_current(&self, generation: u64) -> bool {
-        self.current.load(std::sync::atomic::Ordering::SeqCst) == generation
+    /// Runs `emit` only if `generation` is the current stream; reports whether it ran.
+    pub fn emit_if_current(&self, generation: u64, emit: impl FnOnce()) -> bool {
+        let inner = self.inner.lock().unwrap();
+        if inner.current != generation {
+            return false;
+        }
+        emit();
+        true
     }
 }
 
@@ -417,15 +428,44 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_stream_is_not_current() {
+    fn stop_still_lets_the_stream_report_disconnected() {
         let state = LiveState::default();
-        let (_, first) = state.restart();
-        assert!(state.is_current(first));
-        let (_, second) = state.restart();
-        assert!(!state.is_current(first), "the replaced task must not report status");
-        assert!(state.is_current(second));
+        let (_, gen) = state.restart();
         state.stop();
-        assert!(!state.is_current(second));
+        assert!(
+            state.emit_if_current(gen, || {}),
+            "the stopped stream's own Disconnected must reach the app"
+        );
+    }
+
+    #[test]
+    fn a_replaced_stream_cannot_emit() {
+        let state = LiveState::default();
+        let (_, old) = state.restart();
+        let (_, new) = state.restart();
+        assert!(!state.emit_if_current(old, || {}));
+        assert!(state.emit_if_current(new, || {}));
+    }
+
+    #[test]
+    fn a_restart_waits_for_an_emission_in_progress() {
+        // The old stream passed the check and is emitting: its status must land before the new
+        // stream's, never after.
+        let state = Arc::new(LiveState::default());
+        let (_, old) = state.restart();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (s, o) = (state.clone(), order.clone());
+        let emitting = std::thread::spawn(move || {
+            s.emit_if_current(old, || {
+                std::thread::sleep(Duration::from_millis(50));
+                o.lock().unwrap().push("old");
+            })
+        });
+        std::thread::sleep(Duration::from_millis(10));
+        let (_, new) = state.restart();
+        state.emit_if_current(new, || order.lock().unwrap().push("new"));
+        emitting.join().unwrap();
+        assert_eq!(*order.lock().unwrap(), vec!["old", "new"]);
     }
 
     #[tokio::test]
