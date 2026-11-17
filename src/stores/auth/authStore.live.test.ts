@@ -186,4 +186,36 @@ describe("live signals", () => {
     useAuthStore.setState({ pendingDeletion: null });
     expect(live.start).toHaveBeenCalledTimes(1);
   });
+
+  it("device_revoked wipes even when the status check fails", async () => {
+    useAuthStore.setState({
+      serverAuthenticated: true,
+      appLocked: true,
+      isUnlocked: false,
+    });
+    vi.mocked(authApi.accountStatus).mockRejectedValue(new Error("offline"));
+    vi.mocked(resetDevice).mockImplementation(async (teardown) => {
+      await teardown();
+      return [];
+    });
+    live.signal?.("device_revoked");
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().deletionNotice).toEqual({
+        kind: "device_revoked",
+      }),
+    );
+  });
+
+  it("account_changed shows the deletion choice when deletion was scheduled", async () => {
+    useAuthStore.setState({ serverAuthenticated: true, pendingDeletion: null });
+    vi.mocked(authApi.me).mockResolvedValue({
+      ...user,
+      deletion_scheduled_for: "2026-12-17",
+    } as never);
+    live.signal?.("account_changed");
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().pendingDeletion).toBe("2026-12-17"),
+    );
+  });
 });

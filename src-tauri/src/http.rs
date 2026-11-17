@@ -187,6 +187,7 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+#[derive(Clone)]
 pub struct HttpClient {
     state: HttpState,
     refresh: Arc<dyn RefreshProvider>,
@@ -306,6 +307,17 @@ impl HttpClient {
     /// a 401 while holding a session refreshes once and retries, and a rejected refresh is
     /// `SessionExpired`. Any other status is returned for the caller to judge.
     pub async fn open_stream(&self, path: &str) -> Result<reqwest::Response, HttpErrorKind> {
+        self.open_stream_within(path, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    /// `open_stream` with a bound on waiting for the response headers: a proxy that accepts the
+    /// connection but never answers would otherwise hang the live loop forever.
+    pub async fn open_stream_within(
+        &self,
+        path: &str,
+        header_timeout: std::time::Duration,
+    ) -> Result<reqwest::Response, HttpErrorKind> {
         let url = format!(
             "{}/{}",
             self.state.base_url().trim_end_matches('/'),
@@ -323,10 +335,17 @@ impl HttpClient {
                 b = b.bearer_auth(t);
             }
             async move {
-                b.send().await.map_err(|e| {
-                    log::warn!("live: open failed: {e}");
-                    HttpErrorKind::Network
-                })
+                match tokio::time::timeout(header_timeout, b.send()).await {
+                    Ok(Ok(res)) => Ok(res),
+                    Ok(Err(e)) => {
+                        log::warn!("live: open failed: {e}");
+                        Err(HttpErrorKind::Network)
+                    }
+                    Err(_) => {
+                        log::warn!("live: no response from the server");
+                        Err(HttpErrorKind::Network)
+                    }
+                }
             }
         };
         let res = open(self.state.token()).await?;
@@ -377,16 +396,23 @@ impl HttpClient {
             return self.current_session();
         }
 
-        // Released even if this future is dropped mid-refresh (the live task can be cancelled),
-        // or every later 401 would wait on a refresh that never ends.
-        struct EndRefresh<'a>(&'a HttpState);
-        impl Drop for EndRefresh<'_> {
+        // The refresh runs as its own task: a caller dropped mid-way (the live task is cancelled
+        // on sign-out or restart) must not drop it, or a token the server already rotated is
+        // never saved and the next refresh replays the old one. The flag is released when the
+        // refresh itself ends.
+        struct EndRefresh(HttpState);
+        impl Drop for EndRefresh {
             fn drop(&mut self) {
                 self.0.end_refresh();
             }
         }
-        let _end = EndRefresh(&self.state);
-        self.do_refresh().await
+        let me = self.clone();
+        tokio::spawn(async move {
+            let _end = EndRefresh(me.state.clone());
+            me.do_refresh().await
+        })
+        .await
+        .unwrap_or(RefreshOutcome::Failed)
     }
 
     /// Reuse whatever session is current now: retry if one exists, else pass the 401 through.
@@ -813,28 +839,61 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_refresh_does_not_leave_refreshing_stuck() {
-        // The live task can be cancelled (sign-out, restart) while its refresh is in flight.
-        let (_hold, never) = std::sync::mpsc::channel::<()>();
-        let never = std::sync::Mutex::new(never);
+    async fn refresh_finishes_even_if_its_caller_is_dropped() {
+        // The live task can be cancelled (sign-out, restart) while its refresh is in flight. The
+        // server has already rotated the token by then: the new one must still be saved, or the
+        // next refresh replays the old one and the session is lost.
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
         let (url, _) = spawn_mock(move |path| {
             if path == "/api/v1/auth/refresh" {
-                let _ = never.lock().unwrap().recv();
-                (500, "{}".to_string())
+                let _ = go_rx.lock().unwrap().recv();
+                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
             } else {
                 (401, "{}".to_string())
             }
         });
         let state = HttpState::new(url);
         state.set_token(Some("a1".into()));
-        let client = HttpClient::new(state.clone(), mem_refresh(Some("r1")));
+        let refresh = mem_refresh(Some("r1"));
+        let client = HttpClient::new(state.clone(), refresh.clone());
         let dropped = tokio::time::timeout(
             std::time::Duration::from_millis(200),
             client.request("GET", "/api/v1/a", None, true),
         )
         .await;
         assert!(dropped.is_err(), "the request should still be waiting on its refresh");
-        assert!(!state.is_refreshing(), "a dropped refresh must release the flag");
+        go_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if !state.is_refreshing() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!state.is_refreshing(), "the refresh must finish and release the flag");
+        assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
+        assert_eq!(state.token().as_deref(), Some("a2"));
+    }
+
+    #[tokio::test]
+    async fn open_stream_gives_up_when_no_response_comes() {
+        // A proxy that accepts the connection but never answers must not hang the live loop.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                held.push(stream);
+            }
+        });
+        let client = HttpClient::new(HttpState::new(format!("http://{addr}")), mem_refresh(None));
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.open_stream_within("/api/v1/live", std::time::Duration::from_millis(100)),
+        )
+        .await
+        .expect("open_stream must time out by itself");
+        assert!(matches!(res, Err(HttpErrorKind::Network)));
     }
 
     #[tokio::test]

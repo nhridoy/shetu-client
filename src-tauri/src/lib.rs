@@ -69,7 +69,7 @@ fn live_start(
     http: tauri::State<'_, http::HttpState>,
     live_state: tauri::State<'_, live::LiveState>,
 ) {
-    let cancel = live_state.restart();
+    let (cancel, generation) = live_state.restart();
     let state = http.inner().clone();
     tauri::async_runtime::spawn(async move {
         let client = http::HttpClient::new(
@@ -91,6 +91,10 @@ fn live_start(
                 }
             },
             move |signal| {
+                // A replaced task's late status would overwrite its successor's.
+                if !emitter.state::<live::LiveState>().is_current(generation) {
+                    return;
+                }
                 let _ = match signal {
                     live::LiveSignal::Connected => emitter.emit(live::STATUS_EVENT, "connected"),
                     live::LiveSignal::Disconnected => {

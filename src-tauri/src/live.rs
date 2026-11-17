@@ -120,7 +120,11 @@ pub async fn run_live<F, Fut>(
     loop {
         let opened = tokio::select! {
             o = open() => o,
-            _ = cancel.cancelled() => return,
+            _ = cancel.cancelled() => {
+                // A quiet reopen keeps "connected" until it fails; stopping ends it too.
+                set_down(&mut connected);
+                return;
+            }
         };
         let mut stream = match opened {
             Opened::Stream(s) => s,
@@ -194,26 +198,38 @@ pub async fn run_live<F, Fut>(
     }
 }
 
-/// The running stream's stop switch.
+/// The running stream's stop switch and generation: a replaced task finishes on its own time,
+/// and must not report status over its successor's.
 #[derive(Default)]
 pub struct LiveState {
     cancel: Mutex<Option<CancellationToken>>,
+    current: std::sync::atomic::AtomicU64,
+    next: std::sync::atomic::AtomicU64,
 }
 
 impl LiveState {
-    /// Stops any running stream and returns a fresh switch for the next one.
-    pub fn restart(&self) -> CancellationToken {
+    /// Stops any running stream and returns a fresh switch and generation for the next one.
+    pub fn restart(&self) -> (CancellationToken, u64) {
+        use std::sync::atomic::Ordering::SeqCst;
         let token = CancellationToken::new();
+        let generation = self.next.fetch_add(1, SeqCst) + 1;
+        self.current.store(generation, SeqCst);
         if let Some(old) = self.cancel.lock().unwrap().replace(token.clone()) {
             old.cancel();
         }
-        token
+        (token, generation)
     }
 
     pub fn stop(&self) {
+        self.current.store(0, std::sync::atomic::Ordering::SeqCst);
         if let Some(old) = self.cancel.lock().unwrap().take() {
             old.cancel();
         }
+    }
+
+    /// Whether `generation` is the running stream (only it may report status).
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.current.load(std::sync::atomic::Ordering::SeqCst) == generation
     }
 }
 
@@ -351,6 +367,65 @@ mod tests {
         .await;
         assert!(opens < 10, "reopened {opens} times in 60 ms");
         assert!(got.contains(&LiveSignal::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn live_stop_during_quiet_reopen_reports_disconnected() {
+        let calls = Arc::new(Mutex::new(0usize));
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let cancel = CancellationToken::new();
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            stopper.cancel();
+        });
+        let (c, sink) = (calls.clone(), out.clone());
+        run_live(
+            move || {
+                let c = c.clone();
+                async move {
+                    let n = {
+                        let mut n = c.lock().unwrap();
+                        *n += 1;
+                        *n
+                    };
+                    if n == 1 {
+                        // Up long enough for a quiet reopen, then a clean close.
+                        Opened::Stream(Box::pin(
+                            futures::stream::iter(vec![Ok(b"event: ready\ndata: {}\n\n".to_vec())])
+                                .chain(
+                                    futures::stream::once(tokio::time::sleep(
+                                        Duration::from_millis(30),
+                                    ))
+                                    .filter_map(|_| async { None }),
+                                ),
+                        ))
+                    } else {
+                        futures::future::pending::<Opened>().await
+                    }
+                }
+            },
+            move |s| sink.lock().unwrap().push(s),
+            quick(),
+            cancel,
+        )
+        .await;
+        assert_eq!(
+            *out.lock().unwrap(),
+            vec![LiveSignal::Connected, LiveSignal::Disconnected]
+        );
+    }
+
+    #[test]
+    fn a_replaced_stream_is_not_current() {
+        let state = LiveState::default();
+        let (_, first) = state.restart();
+        assert!(state.is_current(first));
+        let (_, second) = state.restart();
+        assert!(!state.is_current(first), "the replaced task must not report status");
+        assert!(state.is_current(second));
+        state.stop();
+        assert!(!state.is_current(second));
     }
 
     #[tokio::test]

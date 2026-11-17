@@ -1647,10 +1647,44 @@ useAuthStore.subscribe((s, prev) => {
 // token, and look like theft to the server. A revoked session then surfaces through the usual
 // session-revoked path.
 onLiveSignal((kind) => {
-  if (kind === "device_revoked") void handleRevokedSession();
-  else if (kind === "account_changed")
-    void clearAccessToken()
-      .catch(() => {})
-      .then(() => authApi.me())
-      .catch(() => {});
+  if (kind === "device_revoked") void wipeOnLiveRevoke();
+  else if (kind === "account_changed") void recheckAccount();
 });
+
+// The server said so over the signed-in stream: that is the confirmation, so the wipe doesn't
+// also depend on an account-status call that could fail (e.g. a flaky network on a stolen
+// laptop). Overlapping signals join one run.
+let liveWipe: Promise<void> | null = null;
+function wipeOnLiveRevoke(): Promise<void> {
+  liveWipe ??= (async () => {
+    const userId = currentAccountId();
+    if (!userId) return;
+    const failures = await resetDevice(teardownSession);
+    if (failures.length) console.warn("device reset incomplete:", failures);
+    useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
+  })().finally(() => {
+    liveWipe = null;
+  });
+  return liveWipe;
+}
+
+async function recheckAccount(): Promise<void> {
+  try {
+    await clearAccessToken().catch(() => {});
+    const user = await authApi.me();
+    // Scheduled from another device: offer Keep / Sign out here too.
+    if (
+      user.deletion_scheduled_for &&
+      !useAuthStore.getState().pendingDeletion
+    ) {
+      const tokens = useAuthStore.getState().tokens;
+      if (tokens)
+        holdForDeletionChoice(user.deletion_scheduled_for, tokens, () =>
+          useAuthStore.getState().retryServerSession(),
+        );
+    }
+  } catch (err) {
+    // A revoked session already surfaced through the session-revoked path.
+    console.warn("account check after a live signal failed:", err);
+  }
+}

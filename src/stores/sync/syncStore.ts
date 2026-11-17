@@ -240,26 +240,39 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       period = next;
       timer = setInterval(tick, period);
     };
-    // A burst of signals runs one sync, plus one more if any arrived meanwhile.
+    // A burst of signals runs one sync, plus one more if any arrived meanwhile. A sync already in
+    // flight may have read the server before the change, so a signal waits for it and pulls again.
     let running: Promise<void> | null = null;
     let queued = false;
+    let stopped = false;
     const syncOnSignal = () => {
+      if (stopped) return;
       if (running) {
         queued = true;
         return;
       }
-      running = get()
-        .requestAll()
-        .finally(() => {
-          running = null;
-          if (queued) {
-            queued = false;
-            syncOnSignal();
-          }
-        });
+      const pending = [...inFlight.values()];
+      const pass = () => get().requestAll();
+      running = (
+        pending.length ? Promise.allSettled(pending).then(pass) : pass()
+      ).finally(() => {
+        running = null;
+        if (queued) {
+          queued = false;
+          syncOnSignal();
+        }
+      });
     };
     onChanged = syncOnSignal;
-    if (typeof window === "undefined") return () => {};
+    // Stops the poll and signal handling whether or not there is a window to listen on.
+    const stopScheduler = () => {
+      clearInterval(timer);
+      stopped = true;
+      applyLive = null;
+      onChanged = null;
+      if (activeVaultId === vaultId) activeVaultId = null;
+    };
+    if (typeof window === "undefined") return stopScheduler;
     const onMutation = (event: Event) => {
       const detail = (event as CustomEvent<{ vaultId?: string }>).detail;
       get().notifyLocalMutation(detail?.vaultId || activeVaultId || vaultId);
@@ -270,10 +283,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     return () => {
       window.removeEventListener("shetu:local-mutation", onMutation);
       window.removeEventListener("online", onOnline);
-      clearInterval(timer);
-      applyLive = null;
-      onChanged = null;
-      if (activeVaultId === vaultId) activeVaultId = null;
+      stopScheduler();
     };
   },
 }));

@@ -28,7 +28,10 @@ vi.mock("../vault/vaultStore", () => ({
   useVaultStore: { getState: () => ({ vaults: [] }) },
 }));
 
+import { triggerSync } from "../../lib/api/sync";
 import { useSyncStore } from "./syncStore";
+
+const realRequestAll = useSyncStore.getState().requestAll;
 
 describe("live sync", () => {
   let requestAll: ReturnType<typeof vi.fn>;
@@ -87,5 +90,46 @@ describe("live sync", () => {
     requestAll.mockClear();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(requestAll).toHaveBeenCalledTimes(0);
+  });
+
+  it("a change during an in-flight sync gets a fresh pull after it", async () => {
+    stop();
+    let finish!: (v: unknown) => void;
+    vi.mocked(triggerSync)
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finish = r;
+        }) as never,
+      )
+      .mockResolvedValue({
+        pending: 0,
+        last_sync_at: null,
+        cursor: 1,
+      } as never);
+    useSyncStore.setState({ requestAll: realRequestAll } as never);
+    stop = useSyncStore.getState().start("v1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSync).toHaveBeenCalledTimes(1);
+    // The pull in flight may already have read the server: the signal needs its own.
+    live.signal?.("changed");
+    finish({ pending: 0, last_sync_at: null, cursor: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("queued signal work stops with the scheduler", async () => {
+    let finish!: () => void;
+    requestAll.mockImplementation(
+      () =>
+        new Promise<void>((r) => {
+          finish = r;
+        }),
+    );
+    live.signal?.("changed");
+    live.signal?.("changed");
+    stop();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requestAll).toHaveBeenCalledTimes(1);
   });
 });
