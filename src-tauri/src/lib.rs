@@ -5,6 +5,7 @@ mod db;
 mod forwarding;
 mod git;
 mod host_inherit;
+mod live;
 mod export;
 mod identities;
 mod import;
@@ -58,6 +59,62 @@ pub struct CancelTokens {
 pub struct HistoryRecorderState {
     buffers: Mutex<HashMap<String, session_history::OutputBuffer>>,
     active: Mutex<std::collections::HashSet<String>>,
+}
+
+/// Opens (or reopens) the live stream for the current session. A running stream is replaced,
+/// so a stream that stopped (e.g. 403 during a scheduled deletion) restarts on the next session.
+#[tauri::command]
+fn live_start(
+    app: tauri::AppHandle,
+    http: tauri::State<'_, http::HttpState>,
+    live_state: tauri::State<'_, live::LiveState>,
+) {
+    let cancel = live_state.restart();
+    let state = http.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let client = http::HttpClient::new(
+            state,
+            Arc::new(http::KeyringRefreshProvider { app: app.clone() }),
+        );
+        let emitter = app.clone();
+        live::run_live(
+            || async {
+                match client.open_stream("/api/v1/live").await {
+                    Ok(res) if res.status().is_success() => live::Opened::Stream(Box::pin(
+                        futures::StreamExt::map(res.bytes_stream(), |chunk| {
+                            chunk.map(|b| b.to_vec()).map_err(|_| ())
+                        }),
+                    )),
+                    Ok(res) => live::Opened::Status(res.status().as_u16()),
+                    Err(http::HttpErrorKind::SessionExpired) => live::Opened::SessionExpired,
+                    Err(_) => live::Opened::Network,
+                }
+            },
+            move |signal| {
+                let _ = match signal {
+                    live::LiveSignal::Connected => emitter.emit(live::STATUS_EVENT, "connected"),
+                    live::LiveSignal::Disconnected => {
+                        emitter.emit(live::STATUS_EVENT, "disconnected")
+                    }
+                    live::LiveSignal::Event(kind) => {
+                        emitter.emit(live::SIGNAL_EVENT, serde_json::json!({ "kind": kind }))
+                    }
+                    live::LiveSignal::SessionExpired => {
+                        emitter.emit(http::SESSION_REVOKED_EVENT, ())
+                    }
+                };
+            },
+            live::LiveTimings::default(),
+            cancel,
+        )
+        .await;
+    });
+}
+
+/// Closes the live stream (sign-out, teardown).
+#[tauri::command]
+fn live_stop(live_state: tauri::State<'_, live::LiveState>) {
+    live_state.stop();
 }
 
 #[tauri::command]
@@ -1717,6 +1774,7 @@ pub fn run() {
             device_id: get_or_create_device_id(),
             api_url: Mutex::new(None),
         })
+        .manage(live::LiveState::default())
         .manage(CancelTokens {
             tokens: Mutex::new(HashMap::new()),
         })
@@ -1901,6 +1959,8 @@ pub fn run() {
             wrap_dek,
             sync::sync_now,
             http::http_request,
+            live_start,
+            live_stop,
             http::set_auth_tokens,
             http::clear_auth_tokens,
             http::clear_access_token,

@@ -302,6 +302,50 @@ impl HttpClient {
         }
     }
 
+    /// Opens the long-lived live stream (`GET path`) with the same session rules as `request`:
+    /// a 401 while holding a session refreshes once and retries, and a rejected refresh is
+    /// `SessionExpired`. Any other status is returned for the caller to judge.
+    pub async fn open_stream(&self, path: &str) -> Result<reqwest::Response, HttpErrorKind> {
+        let url = format!(
+            "{}/{}",
+            self.state.base_url().trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        // No overall timeout: the stream lasts the token's lifetime; the live loop watches for
+        // silence instead.
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|_| HttpErrorKind::Network)?;
+        let open = |token: Option<String>| {
+            let mut b = client.get(&url).header("Accept", "text/event-stream");
+            if let Some(t) = token {
+                b = b.bearer_auth(t);
+            }
+            async move {
+                b.send().await.map_err(|e| {
+                    log::warn!("live: open failed: {e}");
+                    HttpErrorKind::Network
+                })
+            }
+        };
+        let res = open(self.state.token()).await?;
+        if res.status().as_u16() != 401 || !self.has_session() {
+            return Ok(res);
+        }
+        match self.refresh_once().await {
+            RefreshOutcome::Ok => {
+                let retried = open(self.state.token()).await?;
+                if retried.status().as_u16() == 401 {
+                    return Err(HttpErrorKind::SessionExpired);
+                }
+                Ok(retried)
+            }
+            RefreshOutcome::Revoked => Err(HttpErrorKind::SessionExpired),
+            RefreshOutcome::Failed => Ok(res),
+        }
+    }
+
     /// A "session" exists when we hold an access token or a refresh token.
     /// Without one (login/recovery screens, fresh install), 401s are the
     /// server's own verdict (bad credentials, bad recovery code…) and must
@@ -759,6 +803,40 @@ pub(crate) mod tests {
         assert_eq!(state.token().as_deref(), Some("a2"));
         // original 401 + refresh + retry
         assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn open_stream_refreshes_once_on_401_and_retries() {
+        let originals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let o2 = originals.clone();
+        let (url, hits) = spawn_mock(move |path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+            } else if o2.fetch_add(1, Ordering::SeqCst) == 0 {
+                (401, "{}".to_string())
+            } else {
+                (200, "event: ready\n\n".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let client = HttpClient::new(state.clone(), mem_refresh(Some("r1")));
+        let res = client.open_stream("/api/v1/live").await.unwrap();
+        assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(state.token().as_deref(), Some("a2"));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn open_stream_rejected_refresh_is_session_expired() {
+        let (url, _) = spawn_mock(|_| (401, "{}".to_string()));
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let client = HttpClient::new(state, mem_refresh(Some("r1")));
+        assert!(matches!(
+            client.open_stream("/api/v1/live").await,
+            Err(HttpErrorKind::SessionExpired)
+        ));
     }
 
     /// Holds the refresh response until `during` has run: the user acts while a refresh is in flight.
