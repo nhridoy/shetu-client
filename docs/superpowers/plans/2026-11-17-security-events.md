@@ -20,7 +20,7 @@
 - Grouped kinds: `sign_in_failed`, `two_factor_failed`: same user + kind with `created_at` within the last hour → `count+1`, `last_at`, `ip` = latest, distinct IPs (cap 20) → `ip_count`.
 - Recording never fails or delays a request: errors are logged (`slog.Warn`), emails go in a goroutine via the existing sender.
 - Retention 90 days; account purge deletes events.
-- New device = valid UUID device id with no `devices` row for the user before this sign-in; an account with no `devices` rows at all → `sign_in`, no email. Invalid/empty device id → `sign_in`, no email.
+- New device = no `devices` row for this device id for the user before this sign-in; an account with no `devices` rows at all → `sign_in`, no email. Once the account has devices, an invalid/empty device id also counts as new (changed after review: otherwise the alert could be dodged).
 - Wrong two-factor code = verify refused with `errCodeInvalid` or `errCodeReused` (TOTP, backup or email code). Expired/used-up/locked challenges record nothing.
 - Email wording for `two_factor_failed` by path: login "Someone entered your password but not your two-factor code."; oauth "Someone signed in with Google/GitHub but not your two-factor code."; recovery "Someone used your recovery code but not your two-factor code." Every security email ends with "If this wasn't you, change your password and sign out your other devices in Shetu."
 - `recovery_used` detail "all devices signed out"; `two_factor_disabled` detail "email" when via the recovery email fallback.
@@ -81,7 +81,7 @@
   - `TestEvents_NewDeviceEmailsOnce`: second device → `sign_in_new_device` + email; same device again → `sign_in`, no email.
   - `TestEvents_FirstDeviceIsNotNew`: brand-new account's first sign-in → `sign_in`, no email.
   - `TestEvents_NewDeviceIsPerAccount`.
-  - `TestEvents_NoDeviceIdIsNeverNew`.
+  - `TestEvents_MissingDeviceIdOnAKnownAccountIsNew` (first sign-in without an id: `sign_in`, no email; once the account has devices: `sign_in_new_device` + email).
   - `TestEvents_OAuthSignInDetail`: callback and exchange record detail `google`.
   - `TestEvents_TwoFactorVerifyRecordsSignIn`: login challenge verified → one `sign_in` event (none at challenge time).
   - `TestEvents_FailedLoginGrouped`: 3 wrong proofs → one `sign_in_failed` row `count 3`, no email.

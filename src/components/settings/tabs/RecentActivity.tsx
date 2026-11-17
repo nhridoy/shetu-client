@@ -55,6 +55,8 @@ function eventDetail(e: SecurityEvent): string {
         ? ` (${e.count}× from ${e.ip_count} addresses)`
         : ` (${e.count}×)`;
   if (ip) parts.push(ip);
+  // The list runs by when each entry started; a grouped row also says when it last happened.
+  if (e.count > 1) parts.push(`latest ${formatRelativeTime(e.last_at)}`);
   return parts.join(" · ");
 }
 
@@ -121,12 +123,12 @@ export default function RecentActivity() {
                     {eventTitle(e)}
                     {e.current_device && <Badge>This device</Badge>}
                   </div>
-                  <div className="truncate text-xs text-dark-400">
+                  <div className="break-words text-xs text-dark-400">
                     {eventDetail(e)}
                   </div>
                 </div>
                 <span className="shrink-0 text-xs text-dark-500">
-                  {formatRelativeTime(e.count > 1 ? e.last_at : e.created_at)}
+                  {formatRelativeTime(e.created_at)}
                 </span>
               </li>
             );

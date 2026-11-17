@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/lib/api/securityEvents", () => ({ securityEventsApi: api }));
 
 import type { SecurityEvent } from "@/lib/api/securityEvents";
+import { formatRelativeTime } from "@/lib/format/relativeTime";
 import RecentActivity, { eventTitle } from "./RecentActivity";
 
 (
@@ -147,5 +148,26 @@ describe("RecentActivity", () => {
     });
     await act(async () => button("Retry")?.click());
     expect(text()).toContain("Password changed");
+  });
+
+  it("a grouped row keeps its start time and names the latest attempt", async () => {
+    const started = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const latest = new Date(Date.now() - 120_000).toISOString();
+    api.list.mockResolvedValue({
+      events: [
+        ev({
+          kind: "sign_in_failed",
+          count: 5,
+          ip_count: 2,
+          created_at: started,
+          last_at: latest,
+        }),
+      ],
+      next: null,
+    });
+    await setup();
+    // The list is ordered by when each entry started, so that is the time shown.
+    expect(text()).toContain(formatRelativeTime(started));
+    expect(text()).toContain(`latest ${formatRelativeTime(latest)}`);
   });
 });
