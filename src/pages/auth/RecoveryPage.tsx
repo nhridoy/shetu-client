@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router";
 import AuthLayout from "@/components/auth/AuthLayout";
+import TwoFactorForm from "@/components/auth/forms/TwoFactorForm";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -16,7 +17,8 @@ import { useAuthStore } from "@/stores/auth/authStore";
 
 export default function RecoveryPage() {
   const navigate = useNavigate();
-  const { recovery, isLoading, error, clearError } = useAuthStore();
+  const { recovery, isLoading, error, clearError, pendingTwoFactor } =
+    useAuthStore();
   const [success, setSuccess] = useState(false);
 
   const { control, handleSubmit } = useForm<RecoveryFormSchema>({
@@ -35,6 +37,10 @@ export default function RecoveryPage() {
       // error is shown via the store's error field
     }
   };
+
+  if (pendingTwoFactor?.path === "recovery") {
+    return <TwoFactorForm />;
+  }
 
   if (success) {
     return (

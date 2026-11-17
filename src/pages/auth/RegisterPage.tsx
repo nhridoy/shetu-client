@@ -6,6 +6,7 @@ import AuthLayout from "@/components/auth/AuthLayout";
 import EmailVerification from "@/components/auth/forms/EmailVerification";
 import OAuthLogin from "@/components/auth/forms/OAuthLogin";
 import ServerConfig from "@/components/auth/forms/ServerConfig";
+import TwoFactorForm from "@/components/auth/forms/TwoFactorForm";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -18,8 +19,14 @@ import {
 import { useAuthStore } from "@/stores/auth/authStore";
 
 export default function RegisterPage() {
-  const { register, isLoading, error, clearError, pendingVerificationEmail } =
-    useAuthStore();
+  const {
+    register,
+    isLoading,
+    error,
+    clearError,
+    pendingVerificationEmail,
+    pendingTwoFactor,
+  } = useAuthStore();
   const [password, setPassword] = useState("");
   const { control, handleSubmit } = useForm<RegisterFormSchema>({
     defaultValues: registerFormDefaultValues,
@@ -34,6 +41,11 @@ export default function RegisterPage() {
 
   if (pendingVerificationEmail) {
     return <EmailVerification password={password} />;
+  }
+
+  // Google/GitHub from here can sign in an existing two-factor account.
+  if (pendingTwoFactor && pendingTwoFactor.path !== "recovery") {
+    return <TwoFactorForm />;
   }
 
   return (

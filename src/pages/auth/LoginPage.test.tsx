@@ -11,6 +11,7 @@ const state = {
     | { kind: "deleted" }
     | { kind: "device_revoked" }
     | null,
+  pendingTwoFactor: null as { path: string; challenge: string } | null,
 };
 
 vi.mock("@/stores/auth/authStore", () => ({
@@ -22,7 +23,11 @@ vi.mock("@/stores/auth/authStore", () => ({
     pendingVerificationEmail: null,
     deletionNotice: state.deletionNotice,
     clearDeletionNotice,
+    pendingTwoFactor: state.pendingTwoFactor,
   }),
+}));
+vi.mock("@/components/auth/forms/TwoFactorForm", () => ({
+  default: () => <div>two-factor form</div>,
 }));
 vi.mock("@/components/auth/AuthLayout", () => ({
   default: ({ children }: { children: React.ReactNode }) => (
@@ -46,6 +51,7 @@ import LoginPage from "./LoginPage";
 const roots: Root[] = [];
 beforeEach(() => {
   state.deletionNotice = null;
+  state.pendingTwoFactor = null;
   clearDeletionNotice.mockReset();
 });
 afterEach(() => {
@@ -114,5 +120,18 @@ describe("LoginPage deletion notice", () => {
         ?.click(),
     );
     expect(clearDeletionNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the code form while a password or OAuth sign-in waits for it", () => {
+    state.pendingTwoFactor = { path: "oauth", challenge: "ch" };
+    setup();
+    expect(document.body.textContent).toContain("two-factor form");
+    expect(document.querySelector("form input[name=email]")).toBeNull();
+  });
+
+  it("keeps the sign-in form for a recovery challenge", () => {
+    state.pendingTwoFactor = { path: "recovery", challenge: "ch" };
+    setup();
+    expect(document.body.textContent).not.toContain("two-factor form");
   });
 });
