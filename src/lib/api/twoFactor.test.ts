@@ -96,3 +96,15 @@ describe("isTwoFactorRequired", () => {
     expect(isTwoFactorRequired(new Error("x"))).toBe(false);
   });
 });
+
+describe("unauthenticated calls", () => {
+  it("verify and email code never carry the session", async () => {
+    request.mockResolvedValue(ok(null, 204));
+    await twoFactorApi.verify("ch", "123456", "totp");
+    await twoFactorApi.sendEmailCode("ch");
+    expect(request.mock.calls.map((c) => c[3])).toEqual([
+      { auth: false },
+      { auth: false },
+    ]);
+  });
+});

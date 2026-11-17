@@ -91,7 +91,8 @@ keyring or wrapped key leaves the server, not only before tokens.
   sends none. The challenge carries what is needed to finish its path; the first-factor endpoint
   commits nothing else.
 - **Paths:**
-  - **Response shape:** login and recovery prefetch answer `401` with code `TWO_FACTOR_REQUIRED`,
+  - **Response shape:** login and recovery prefetch answer `403` (not 401: the app's HTTP layer
+    reads a 401 as an expired session) with code `TWO_FACTOR_REQUIRED`,
     the challenge in the error details, and a message an older client can show as is ("Enter
     your two-factor code. Update Shetu if you don't see a code field."). Older clients then fail
     closed with a readable error; no version detection.

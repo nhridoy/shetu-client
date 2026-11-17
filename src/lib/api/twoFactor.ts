@@ -34,10 +34,20 @@ export const twoFactorApi = {
     ),
   /** Turns a sign-in challenge and a code into the response the first factor would have given. */
   verify: <T>(challenge: string, code: string, kind: SecondFactorKind) =>
-    apiFetch<T>("POST", "/api/v1/auth/two-factor", { challenge, code, kind }),
+    apiFetch<T>(
+      "POST",
+      "/api/v1/auth/two-factor",
+      { challenge, code, kind },
+      { auth: false },
+    ),
   /** Recovery only: emails a code, the fallback when the authenticator is lost. */
   sendEmailCode: (challenge: string) =>
-    apiFetch<void>("POST", "/api/v1/auth/two-factor/email", { challenge }),
+    apiFetch<void>(
+      "POST",
+      "/api/v1/auth/two-factor/email",
+      { challenge },
+      { auth: false },
+    ),
 };
 
 /** A first factor that passed but needs the second: the error carries the challenge. */
