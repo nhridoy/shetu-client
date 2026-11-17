@@ -158,17 +158,32 @@ describe("live signals", () => {
     expect(useAuthStore.getState().appLocked).toBe(false);
   });
 
-  it("account_changed rechecks the session", async () => {
+  it("account_changed rechecks the session through the app's own refresh", async () => {
+    // A second refresh racing the HTTP layer's would present a rotated token: the server reads
+    // that as theft and signs out every device.
     const retry = vi.fn(async () => "connected" as const);
     useAuthStore.setState({
       serverAuthenticated: true,
       retryServerSession: retry,
     } as never);
+    vi.mocked(authApi.me).mockResolvedValue(user as never);
     live.signal?.("account_changed");
-    await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalledTimes(1));
     expect(clearAccessToken).toHaveBeenCalled();
     expect(
       vi.mocked(clearAccessToken).mock.invocationCallOrder[0],
-    ).toBeLessThan(retry.mock.invocationCallOrder[0]);
+    ).toBeLessThan(vi.mocked(authApi.me).mock.invocationCallOrder[0]);
+    expect(authApi.refresh).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("restarts live after Keep on a scheduled deletion", () => {
+    useAuthStore.setState({
+      serverAuthenticated: true,
+      pendingDeletion: "2026-12-13",
+    });
+    live.start.mockClear();
+    useAuthStore.setState({ pendingDeletion: null });
+    expect(live.start).toHaveBeenCalledTimes(1);
   });
 });

@@ -73,6 +73,8 @@ pub struct LiveTimings {
     pub unit: Duration,
     /// A stream up this long resets the backoff.
     pub stable_after: Duration,
+    /// A clean close after this long (token expiry) reopens at once; a shorter one backs off.
+    pub quiet_after: Duration,
 }
 
 impl Default for LiveTimings {
@@ -82,6 +84,7 @@ impl Default for LiveTimings {
             not_found_wait: Duration::from_secs(600),
             unit: Duration::from_secs(1),
             stable_after: Duration::from_secs(60),
+            quiet_after: Duration::from_secs(30),
         }
     }
 }
@@ -178,7 +181,9 @@ pub async fn run_live<F, Fut>(
         if started.elapsed() >= t.stable_after {
             attempt = 0;
         }
-        if clean_end && connected {
+        // A close after a long-lived stream is the planned one at token expiry: reopen at once.
+        // A stream closed right away (e.g. evicted) backs off instead of looping.
+        if clean_end && connected && started.elapsed() >= t.quiet_after {
             continue;
         }
         set_down(&mut connected);
@@ -242,6 +247,7 @@ mod tests {
             not_found_wait: Duration::from_millis(400),
             unit: Duration::from_millis(5),
             stable_after: Duration::from_secs(60),
+            quiet_after: Duration::from_millis(20),
         }
     }
 
@@ -311,18 +317,40 @@ mod tests {
     #[tokio::test]
     async fn live_clean_close_reconnects_quietly() {
         // The server ends the stream at token expiry; the app reconnects with no status flip.
-        let first = Opened::Stream(Box::pin(futures::stream::iter(vec![Ok(
-            b"event: ready\ndata: {}\n\n".to_vec(),
-        )])));
+        // Ends cleanly after living past `quiet_after`, like a close at token expiry.
+        let first = Opened::Stream(Box::pin(
+            futures::stream::iter(vec![Ok(b"event: ready\ndata: {}\n\n".to_vec())]).chain(
+                futures::stream::once(tokio::time::sleep(Duration::from_millis(30)))
+                    .filter_map(|_| async { None }),
+            ),
+        ));
         let (got, opens) = drive(
             vec![first, chunks(&["event: ready\ndata: {}\n\n"], true)],
-            Duration::from_millis(60),
+            Duration::from_millis(90),
         )
         .await;
         // One pair only: the final Disconnected comes from stopping. A flip during the
         // reconnect would add another Disconnected/Connected pair in between.
         assert_eq!(got, vec![LiveSignal::Connected, LiveSignal::Disconnected]);
         assert_eq!(opens, 2);
+    }
+
+    #[tokio::test]
+    async fn live_short_clean_close_backs_off() {
+        // A stream closed right after opening (e.g. evicted by an 11th app) must not reopen in a
+        // tight loop.
+        let short = || {
+            Opened::Stream(Box::pin(futures::stream::iter(vec![Ok(
+                b"event: ready\ndata: {}\n\n".to_vec(),
+            )])))
+        };
+        let (got, opens) = drive(
+            (0..50).map(|_| short()).collect(),
+            Duration::from_millis(60),
+        )
+        .await;
+        assert!(opens < 10, "reopened {opens} times in 60 ms");
+        assert!(got.contains(&LiveSignal::Disconnected));
     }
 
     #[tokio::test]

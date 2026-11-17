@@ -1619,6 +1619,13 @@ useAuthStore.subscribe((s, prev) => {
   if (s.serverAuthenticated && !prev.serverAuthenticated) {
     void reportDevice();
     void startLive().catch(() => {});
+  } else if (
+    s.serverAuthenticated &&
+    prev.pendingDeletion &&
+    !s.pendingDeletion
+  ) {
+    // Keep after a scheduled deletion: the stream stopped (403) while it was scheduled.
+    void startLive().catch(() => {});
   }
 });
 
@@ -1634,12 +1641,16 @@ useAuthStore.subscribe((s, prev) => {
   }
 });
 
-// Live signals act at once. A remote sign-out wipes even on the lock screen; an account change
-// (password, two-factor, deletion…) forces a token refresh so a revoked session shows now.
+// Live signals act at once. A remote sign-out wipes even on the lock screen. An account change
+// (password, two-factor, deletion…) drops the access token and makes one request, so the HTTP
+// layer does the only refresh: a second refresh from here could race it, present a rotated
+// token, and look like theft to the server. A revoked session then surfaces through the usual
+// session-revoked path.
 onLiveSignal((kind) => {
   if (kind === "device_revoked") void handleRevokedSession();
   else if (kind === "account_changed")
     void clearAccessToken()
       .catch(() => {})
-      .then(() => useAuthStore.getState().retryServerSession());
+      .then(() => authApi.me())
+      .catch(() => {});
 });

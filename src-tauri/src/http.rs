@@ -377,9 +377,16 @@ impl HttpClient {
             return self.current_session();
         }
 
-        let outcome = self.do_refresh().await;
-        self.state.end_refresh();
-        outcome
+        // Released even if this future is dropped mid-refresh (the live task can be cancelled),
+        // or every later 401 would wait on a refresh that never ends.
+        struct EndRefresh<'a>(&'a HttpState);
+        impl Drop for EndRefresh<'_> {
+            fn drop(&mut self) {
+                self.0.end_refresh();
+            }
+        }
+        let _end = EndRefresh(&self.state);
+        self.do_refresh().await
     }
 
     /// Reuse whatever session is current now: retry if one exists, else pass the 401 through.
@@ -803,6 +810,31 @@ pub(crate) mod tests {
         assert_eq!(state.token().as_deref(), Some("a2"));
         // original 401 + refresh + retry
         assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn dropped_refresh_does_not_leave_refreshing_stuck() {
+        // The live task can be cancelled (sign-out, restart) while its refresh is in flight.
+        let (_hold, never) = std::sync::mpsc::channel::<()>();
+        let never = std::sync::Mutex::new(never);
+        let (url, _) = spawn_mock(move |path| {
+            if path == "/api/v1/auth/refresh" {
+                let _ = never.lock().unwrap().recv();
+                (500, "{}".to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let client = HttpClient::new(state.clone(), mem_refresh(Some("r1")));
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            client.request("GET", "/api/v1/a", None, true),
+        )
+        .await;
+        assert!(dropped.is_err(), "the request should still be waiting on its refresh");
+        assert!(!state.is_refreshing(), "a dropped refresh must release the flag");
     }
 
     #[tokio::test]
