@@ -1154,7 +1154,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       );
       const signature = await signChallenge(prefetch.nonce);
 
-      // 6. Send to server
+      // 6. Send to server, unless another sign-in took the session meanwhile.
+      ensureOwner(owner);
       await authApi.recovery({
         recovery_code: recoveryCode,
         signature,
@@ -1174,6 +1175,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await enroll(cached.profile, prefetch.salt_cl, keyring, owner);
       }
 
+      // A session taken over during the reset must not show this recovery's code.
+      ensureOwner(owner);
       set({
         pendingRecoveryCode: newCode,
         pendingRecoveryContext: "recovery",

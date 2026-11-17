@@ -87,7 +87,7 @@ vi.mock("@/lib/api/twoFactor", async (orig) => ({
 
 import { AuthApiError, authApi } from "@/lib/api/auth";
 import { twoFactorApi } from "@/lib/api/twoFactor";
-import { setAuthTokens } from "../../lib/crypto/crypto";
+import { recoveryUnwrapDek, setAuthTokens } from "../../lib/crypto/crypto";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { useAuthStore } from "./authStore";
 
@@ -330,6 +330,61 @@ describe("two-factor sign-in", () => {
       .catch(() => {});
     await recovery;
     expect(authApi.recovery).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().pendingRecoveryCode).toBeNull();
+  });
+
+  const prefetched = {
+    nonce: "n",
+    email: "a@example.com",
+    kdf: { m: 1, t: 1, p: 1 },
+    server_salt: "ss",
+    salt_cl: "sc",
+    dek_wrapped_by_recovery: "rec",
+    private_key_wrapped_by_dek: "pk",
+  };
+  const signInElsewhere = () => {
+    vi.mocked(authApi.login).mockResolvedValueOnce(signedIn as never);
+    return useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+  };
+
+  it("a recovery overtaken during its key work never resets the password", async () => {
+    vi.mocked(authApi.recoveryPrefetch).mockResolvedValueOnce(prefetched);
+    let unwrap!: () => void;
+    vi.mocked(recoveryUnwrapDek).mockReturnValueOnce(
+      new Promise<void>((r) => {
+        unwrap = r;
+      }) as never,
+    );
+    const recovery = useAuthStore
+      .getState()
+      .recovery("code", "new-password")
+      .catch(() => {});
+    await vi.waitFor(() => expect(recoveryUnwrapDek).toHaveBeenCalled());
+    await signInElsewhere();
+    unwrap();
+    await recovery;
+    expect(authApi.recovery).not.toHaveBeenCalled();
+  });
+
+  it("a recovery overtaken while resetting publishes nothing", async () => {
+    vi.mocked(authApi.recoveryPrefetch).mockResolvedValueOnce(prefetched);
+    let reset!: () => void;
+    vi.mocked(authApi.recovery).mockReturnValueOnce(
+      new Promise<void>((r) => {
+        reset = r;
+      }) as never,
+    );
+    const recovery = useAuthStore
+      .getState()
+      .recovery("code", "new-password")
+      .catch(() => {});
+    await vi.waitFor(() => expect(authApi.recovery).toHaveBeenCalled());
+    await signInElsewhere();
+    reset();
+    await recovery;
     expect(useAuthStore.getState().pendingRecoveryCode).toBeNull();
   });
 });
