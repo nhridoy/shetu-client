@@ -22,15 +22,17 @@ export default function SyncStatus() {
   const lastSyncAt = useSyncStore((sync) => sync.lastSyncAt);
   const error = useSyncStore((sync) => sync.error);
   const retry = useSyncStore((sync) => sync.retry);
+  const live = useSyncStore((sync) => sync.live);
 
   if (!vaultId) return null;
   const pending = pendingCount > 0 ? ` (${pendingCount})` : "";
+  const label = live && state === "synced" ? "Live" : LABELS[state];
   const title =
     error ?? (lastSyncAt ? `Last synced ${lastSyncAt}` : "Sync saved data");
   return (
     <button
       type="button"
-      aria-label={`Sync status: ${LABELS[state]}${pending}. Sync now`}
+      aria-label={`Sync status: ${label}${pending}. Sync now`}
       aria-live="polite"
       title={title}
       onClick={async () => {
@@ -41,7 +43,7 @@ export default function SyncStatus() {
       }}
       className="rounded px-2 py-1 text-xs text-dark-300 hover:bg-dark-800 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500"
     >
-      {LABELS[state]}
+      {label}
       {pending}
     </button>
   );

@@ -7,6 +7,7 @@ import {
   type SecondFactorKind,
   twoFactorApi,
 } from "@/lib/api/twoFactor";
+import { onLiveSignal, startLive, stopLive } from "@/lib/live/live";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
@@ -174,7 +175,7 @@ async function runRevokedSession(): Promise<void> {
   // The account or session may have changed during the round-trip (a sign-in
   // meanwhile un-revokes the device); don't wipe what came after.
   if (currentAccountId() !== userId || owner !== sessionOwner) return;
-  const failures = await resetDevice(teardownSession);
+  const failures = await resetDeviceSession();
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({
     deletionNotice: !accountGone
@@ -207,7 +208,7 @@ async function wipeIfRevoked(owner: number): Promise<number | null> {
   )
     return null;
   let mine = sessionOwner;
-  const failures = await resetDevice(() => {
+  const failures = await resetDeviceSession(() => {
     const run = teardownSession();
     mine = sessionOwner;
     return run;
@@ -446,9 +447,21 @@ function teardownSession(): Promise<string[]> {
   return run;
 }
 
+// A device reset clears settings and local storage after its session teardown: the whole reset
+// is part of the barrier sign-ins wait on, so a new session can't be cleared by it. A sign-in
+// that runs its own reset (wipeIfRevoked) has already awaited it, so it never waits on itself.
+function resetDeviceSession(
+  teardown: () => Promise<string[]> = teardownSession,
+): Promise<string[]> {
+  const run = resetDevice(teardown);
+  teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
+  return run;
+}
+
 // Publishes signed-out first so the UI reacts at once; flows started meanwhile
 // wait in claimSession until the wipe is done, so it can't erase their work.
 async function runTeardown(): Promise<string[]> {
+  void stopLive().catch(() => {});
   endSecondFactor(new TwoFactorCancelled("Signed out."));
   const failures: string[] = [];
   const attempt = async (name: string, fn: () => Promise<unknown>) => {
@@ -1559,7 +1572,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (err) {
       throw deletionRequestError(err);
     }
-    const failures = await resetDevice(teardownSession);
+    const failures = await resetDeviceSession();
     if (failures.length) console.warn("device reset incomplete:", failures);
     set({ deletionNotice: { kind: "scheduled", date } });
   },
@@ -1571,7 +1584,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (!(err instanceof AuthApiError && err.status === 410)) throw err;
       // Purged during the grace period.
       resumeAfterKeep = null;
-      const failures = await resetDevice(teardownSession);
+      const failures = await resetDeviceSession();
       if (failures.length) console.warn("device reset incomplete:", failures);
       set({ pendingDeletion: null, deletionNotice: { kind: "deleted" } });
       return;
@@ -1614,7 +1627,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 // Each time the session reaches the server (sign-in or restore), tell it this device's name.
 useAuthStore.subscribe((s, prev) => {
-  if (s.serverAuthenticated && !prev.serverAuthenticated) void reportDevice();
+  if (s.serverAuthenticated && !prev.serverAuthenticated) {
+    void reportDevice();
+    void startLive().catch(() => {});
+  } else if (
+    s.serverAuthenticated &&
+    prev.pendingDeletion &&
+    !s.pendingDeletion
+  ) {
+    // Keep after a scheduled deletion: the stream stopped (403) while it was scheduled.
+    void startLive().catch(() => {});
+  }
 });
 
 // Any successful sign-in (password, OAuth, restore) supersedes the notice.
@@ -1628,3 +1651,79 @@ useAuthStore.subscribe((s, prev) => {
     useAuthStore.setState({ deletionNotice: null });
   }
 });
+
+// Live signals act at once. A remote sign-out wipes even on the lock screen. An account change
+// (password, two-factor, deletion…) drops the access token and makes one request, so the HTTP
+// layer does the only refresh: a second refresh from here could race it, present a rotated
+// token, and look like theft to the server. A revoked session then surfaces through the usual
+// session-revoked path.
+onLiveSignal((kind) => {
+  if (kind === "device_revoked") void wipeOnLiveRevoke();
+  else if (kind === "account_changed") queueAccountCheck();
+});
+
+// The server said so over the signed-in stream: that is the confirmation, so the wipe doesn't
+// also depend on an account-status call that could fail (e.g. a flaky network on a stolen
+// laptop). Overlapping signals join one run.
+let liveWipe: Promise<void> | null = null;
+let liveWipeOwner = -1;
+function wipeOnLiveRevoke(): Promise<void> {
+  // Join a wipe while it still belongs to this session. Its own teardown moves the counter on by
+  // one; a newer sign-in (which takes the session over) moves it further and gets its own wipe.
+  if (liveWipe && sessionOwner <= liveWipeOwner + 1) return liveWipe;
+  liveWipeOwner = sessionOwner;
+  const run = (async () => {
+    const userId = currentAccountId();
+    if (!userId) return;
+    const failures = await resetDeviceSession();
+    if (failures.length) console.warn("device reset incomplete:", failures);
+    useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
+  })().finally(() => {
+    if (liveWipe === run) liveWipe = null;
+  });
+  liveWipe = run;
+  return run;
+}
+
+// One check at a time: a second check would clear the access token again while the first one's
+// refresh is in flight, and both would fail. Signals that arrive meanwhile get one more check.
+let accountCheck: Promise<void> | null = null;
+let accountCheckQueued = false;
+function queueAccountCheck(): void {
+  if (accountCheck) {
+    accountCheckQueued = true;
+    return;
+  }
+  accountCheck = recheckAccount().finally(() => {
+    accountCheck = null;
+    if (accountCheckQueued) {
+      accountCheckQueued = false;
+      queueAccountCheck();
+    }
+  });
+}
+
+async function recheckAccount(): Promise<void> {
+  // An answer for a session that has since ended (or another account) must not act.
+  const owner = sessionOwner;
+  const accountId = currentAccountId();
+  try {
+    await clearAccessToken().catch(() => {});
+    const user = await authApi.me();
+    if (owner !== sessionOwner || currentAccountId() !== accountId) return;
+    // Scheduled from another device: offer Keep / Sign out here too.
+    if (
+      user.deletion_scheduled_for &&
+      !useAuthStore.getState().pendingDeletion
+    ) {
+      const tokens = useAuthStore.getState().tokens;
+      if (tokens)
+        holdForDeletionChoice(user.deletion_scheduled_for, tokens, () =>
+          useAuthStore.getState().retryServerSession(),
+        );
+    }
+  } catch (err) {
+    // A revoked session already surfaced through the session-revoked path.
+    console.warn("account check after a live signal failed:", err);
+  }
+}

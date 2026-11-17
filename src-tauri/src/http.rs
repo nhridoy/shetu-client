@@ -187,6 +187,7 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+#[derive(Clone)]
 pub struct HttpClient {
     state: HttpState,
     refresh: Arc<dyn RefreshProvider>,
@@ -302,6 +303,68 @@ impl HttpClient {
         }
     }
 
+    /// Opens the long-lived live stream (`GET path`) with the same session rules as `request`:
+    /// a 401 while holding a session refreshes once and retries, and a rejected refresh is
+    /// `SessionExpired`. Any other status is returned for the caller to judge.
+    pub async fn open_stream(&self, path: &str) -> Result<reqwest::Response, HttpErrorKind> {
+        self.open_stream_within(path, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    /// `open_stream` with a bound on waiting for the response headers: a proxy that accepts the
+    /// connection but never answers would otherwise hang the live loop forever.
+    pub async fn open_stream_within(
+        &self,
+        path: &str,
+        header_timeout: std::time::Duration,
+    ) -> Result<reqwest::Response, HttpErrorKind> {
+        let url = format!(
+            "{}/{}",
+            self.state.base_url().trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        // No overall timeout: the stream lasts the token's lifetime; the live loop watches for
+        // silence instead.
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|_| HttpErrorKind::Network)?;
+        let open = |token: Option<String>| {
+            let mut b = client.get(&url).header("Accept", "text/event-stream");
+            if let Some(t) = token {
+                b = b.bearer_auth(t);
+            }
+            async move {
+                match tokio::time::timeout(header_timeout, b.send()).await {
+                    Ok(Ok(res)) => Ok(res),
+                    Ok(Err(e)) => {
+                        log::warn!("live: open failed: {e}");
+                        Err(HttpErrorKind::Network)
+                    }
+                    Err(_) => {
+                        log::warn!("live: no response from the server");
+                        Err(HttpErrorKind::Network)
+                    }
+                }
+            }
+        };
+        let res = open(self.state.token()).await?;
+        if res.status().as_u16() != 401 || !self.has_session() {
+            return Ok(res);
+        }
+        match self.refresh_once().await {
+            RefreshOutcome::Ok => {
+                let retried = open(self.state.token()).await?;
+                if retried.status().as_u16() == 401 {
+                    return Err(HttpErrorKind::SessionExpired);
+                }
+                Ok(retried)
+            }
+            RefreshOutcome::Revoked => Err(HttpErrorKind::SessionExpired),
+            RefreshOutcome::Failed => Ok(res),
+        }
+    }
+
     /// A "session" exists when we hold an access token or a refresh token.
     /// Without one (login/recovery screens, fresh install), 401s are the
     /// server's own verdict (bad credentials, bad recovery code…) and must
@@ -333,9 +396,23 @@ impl HttpClient {
             return self.current_session();
         }
 
-        let outcome = self.do_refresh().await;
-        self.state.end_refresh();
-        outcome
+        // The refresh runs as its own task: a caller dropped mid-way (the live task is cancelled
+        // on sign-out or restart) must not drop it, or a token the server already rotated is
+        // never saved and the next refresh replays the old one. The flag is released when the
+        // refresh itself ends.
+        struct EndRefresh(HttpState);
+        impl Drop for EndRefresh {
+            fn drop(&mut self) {
+                self.0.end_refresh();
+            }
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let _end = EndRefresh(me.state.clone());
+            me.do_refresh().await
+        })
+        .await
+        .unwrap_or(RefreshOutcome::Failed)
     }
 
     /// Reuse whatever session is current now: retry if one exists, else pass the 401 through.
@@ -388,11 +465,22 @@ impl HttpClient {
         };
         // Held while storing so a sign-in or sign-out can't interleave with it.
         let mut access = self.state.access_token.lock().unwrap();
-        // Signed out or in while this was in flight (keychain cleared or replaced counts too):
-        // drop the result, store nothing, and reuse whatever session is current.
-        if self.state.generation() != generation
-            || self.refresh.get_refresh_token().as_deref() != Some(refresh_token.as_str())
-        {
+        // Signed out or in while this was in flight (keychain cleared or replaced): drop the
+        // result, store nothing, and reuse whatever session is current.
+        if self.refresh.get_refresh_token().as_deref() != Some(refresh_token.as_str()) {
+            drop(access);
+            return self.current_session();
+        }
+        // Only the session generation moved (the access token was cleared, e.g. to re-check the
+        // account): the server has already switched to the rotated refresh token, so keep it,
+        // or the next refresh replays the old one and looks like theft. No access token for the
+        // replaced generation.
+        if self.state.generation() != generation {
+            // Never after a sign-out, even one whose keychain delete failed and left the old
+            // token in place.
+            if let Some(new_refresh) = new_refresh.filter(|_| !self.state.signed_out.load(Ordering::SeqCst)) {
+                let _ = self.refresh.persist_rotated_token(&new_refresh);
+            }
             drop(access);
             return self.current_session();
         }
@@ -761,6 +849,98 @@ pub(crate) mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 
+    #[tokio::test]
+    async fn refresh_finishes_even_if_its_caller_is_dropped() {
+        // The live task can be cancelled (sign-out, restart) while its refresh is in flight. The
+        // server has already rotated the token by then: the new one must still be saved, or the
+        // next refresh replays the old one and the session is lost.
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
+        let (url, _) = spawn_mock(move |path| {
+            if path == "/api/v1/auth/refresh" {
+                let _ = go_rx.lock().unwrap().recv();
+                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+            } else {
+                (401, "{}".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let refresh = mem_refresh(Some("r1"));
+        let client = HttpClient::new(state.clone(), refresh.clone());
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            client.request("GET", "/api/v1/a", None, true),
+        )
+        .await;
+        assert!(dropped.is_err(), "the request should still be waiting on its refresh");
+        go_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if !state.is_refreshing() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!state.is_refreshing(), "the refresh must finish and release the flag");
+        assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
+        assert_eq!(state.token().as_deref(), Some("a2"));
+    }
+
+    #[tokio::test]
+    async fn open_stream_gives_up_when_no_response_comes() {
+        // A proxy that accepts the connection but never answers must not hang the live loop.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                held.push(stream);
+            }
+        });
+        let client = HttpClient::new(HttpState::new(format!("http://{addr}")), mem_refresh(None));
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.open_stream_within("/api/v1/live", std::time::Duration::from_millis(100)),
+        )
+        .await
+        .expect("open_stream must time out by itself");
+        assert!(matches!(res, Err(HttpErrorKind::Network)));
+    }
+
+    #[tokio::test]
+    async fn open_stream_refreshes_once_on_401_and_retries() {
+        let originals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let o2 = originals.clone();
+        let (url, hits) = spawn_mock(move |path| {
+            if path == "/api/v1/auth/refresh" {
+                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+            } else if o2.fetch_add(1, Ordering::SeqCst) == 0 {
+                (401, "{}".to_string())
+            } else {
+                (200, "event: ready\n\n".to_string())
+            }
+        });
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let client = HttpClient::new(state.clone(), mem_refresh(Some("r1")));
+        let res = client.open_stream("/api/v1/live").await.unwrap();
+        assert_eq!(res.status().as_u16(), 200);
+        assert_eq!(state.token().as_deref(), Some("a2"));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn open_stream_rejected_refresh_is_session_expired() {
+        let (url, _) = spawn_mock(|_| (401, "{}".to_string()));
+        let state = HttpState::new(url);
+        state.set_token(Some("a1".into()));
+        let client = HttpClient::new(state, mem_refresh(Some("r1")));
+        assert!(matches!(
+            client.open_stream("/api/v1/live").await,
+            Err(HttpErrorKind::SessionExpired)
+        ));
+    }
+
     /// Holds the refresh response until `during` has run: the user acts while a refresh is in flight.
     async fn refresh_in_flight(
         reply: (u16, &'static str),
@@ -793,10 +973,49 @@ pub(crate) mod tests {
 
     const ROTATED: &str = r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#;
 
+    /// A keychain whose delete fails: the stored refresh token stays.
+    struct DeleteFails;
+    impl RefreshProvider for DeleteFails {
+        fn get_refresh_token(&self) -> Option<String> {
+            None
+        }
+        fn persist_rotated_token(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn clear(&self) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_out_with_a_failed_delete_during_refresh_saves_nothing() {
+        // The old token survived the sign-out (delete failed), so the keychain check passes; the
+        // signed-out flag must still stop a rotated token from being saved after sign-out.
+        let (_, state, refresh) = refresh_in_flight((200, ROTATED), |state, _| {
+            let _ = state.clear_session(&DeleteFails);
+        })
+        .await;
+        assert!(refresh.persisted.lock().unwrap().is_empty());
+        assert_eq!(state.token(), None);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_access_token_during_refresh_keeps_the_rotated_token() {
+        // "Account changed" clears only the access token. The server has already rotated r1, so
+        // dropping r2 would make the next refresh replay r1 and look like theft.
+        let (_, state, refresh) =
+            refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
+        assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
+        assert_eq!(state.token(), None, "no access token for the replaced generation");
+    }
+
     #[tokio::test]
     async fn sign_out_during_refresh_stores_no_tokens() {
         let (res, state, refresh) =
-            refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
+            refresh_in_flight((200, ROTATED), |state, r| {
+                state.clear_session(r).unwrap();
+            })
+            .await;
         assert_eq!(state.token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");

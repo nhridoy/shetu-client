@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { onLiveSignal, onLiveStatus } from "@/lib/live/live";
 import { triggerSync } from "../../lib/api/sync";
 import { getOutbox } from "../../lib/db/db";
 import { useAuthStore } from "../auth/authStore";
@@ -24,6 +25,8 @@ interface SyncStore {
   pendingCount: number;
   lastSyncAt: string | null;
   error: string | null;
+  /** The live stream is up: changes arrive as signals, so the poll slows to 5 minutes. */
+  live: boolean;
   requestSync: (vaultId: string) => Promise<void>;
   retry: (vaultId: string) => Promise<void>;
   requestAll: () => Promise<void>;
@@ -122,11 +125,18 @@ function classifyFailure(error: unknown): SyncState {
   return "error";
 }
 
+const POLL_MS = 30_000;
+const LIVE_POLL_MS = 5 * 60_000;
+// Set while sync runs (unlocked); the stream itself follows the server session.
+let applyLive: ((live: boolean) => void) | null = null;
+let onChanged: (() => void) | null = null;
+
 export const useSyncStore = create<SyncStore>((set, get) => ({
   state: "local-only",
   pendingCount: 0,
   lastSyncAt: null,
   error: null,
+  live: false,
 
   requestSync: (vaultId) => {
     const existing = inFlight.get(vaultId);
@@ -218,7 +228,52 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   start: (vaultId) => {
     activeVaultId = vaultId;
     void get().requestAll();
-    if (typeof window === "undefined") return () => {};
+    // While live, changes arrive as signals; the poll is only a safety net.
+    let period = get().live ? LIVE_POLL_MS : POLL_MS;
+    const tick = () => void get().requestAll();
+    let timer = setInterval(tick, period);
+    applyLive = (live) => {
+      if (live) void get().requestAll();
+      const next = live ? LIVE_POLL_MS : POLL_MS;
+      if (next === period) return;
+      clearInterval(timer);
+      period = next;
+      timer = setInterval(tick, period);
+    };
+    // A burst of signals runs one sync, plus one more if any arrived meanwhile. A sync already in
+    // flight may have read the server before the change, so a signal waits for it and pulls again.
+    let running: Promise<void> | null = null;
+    let queued = false;
+    let stopped = false;
+    const syncOnSignal = () => {
+      if (stopped) return;
+      if (running) {
+        queued = true;
+        return;
+      }
+      // Vault and team syncs both: either may have read the server before the change.
+      const pending = [...inFlight.values(), ...teamSyncInFlight.values()];
+      const pass = () => (stopped ? Promise.resolve() : get().requestAll());
+      running = (
+        pending.length ? Promise.allSettled(pending).then(pass) : pass()
+      ).finally(() => {
+        running = null;
+        if (queued) {
+          queued = false;
+          syncOnSignal();
+        }
+      });
+    };
+    onChanged = syncOnSignal;
+    // Stops the poll and signal handling whether or not there is a window to listen on.
+    const stopScheduler = () => {
+      clearInterval(timer);
+      stopped = true;
+      applyLive = null;
+      onChanged = null;
+      if (activeVaultId === vaultId) activeVaultId = null;
+    };
+    if (typeof window === "undefined") return stopScheduler;
     const onMutation = (event: Event) => {
       const detail = (event as CustomEvent<{ vaultId?: string }>).detail;
       get().notifyLocalMutation(detail?.vaultId || activeVaultId || vaultId);
@@ -226,12 +281,20 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     const onOnline = () => void get().requestAll();
     window.addEventListener("shetu:local-mutation", onMutation);
     window.addEventListener("online", onOnline);
-    const interval = setInterval(() => void get().requestAll(), 30_000);
     return () => {
       window.removeEventListener("shetu:local-mutation", onMutation);
       window.removeEventListener("online", onOnline);
-      clearInterval(interval);
-      if (activeVaultId === vaultId) activeVaultId = null;
+      stopScheduler();
     };
   },
 }));
+
+// Registered at load so the live state is known even if the stream connected while locked.
+onLiveStatus((status) => {
+  const live = status === "connected";
+  useSyncStore.setState({ live });
+  applyLive?.(live);
+});
+onLiveSignal((kind) => {
+  if (kind === "changed") onChanged?.();
+});
