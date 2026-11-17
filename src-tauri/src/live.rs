@@ -512,13 +512,16 @@ mod tests {
         let (_, old) = state.restart();
         let order = Arc::new(Mutex::new(Vec::new()));
         let (s, o) = (state.clone(), order.clone());
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel();
         let emitting = std::thread::spawn(move || {
             s.emit_if_current(old, || {
+                inside_tx.send(()).unwrap();
                 std::thread::sleep(Duration::from_millis(50));
                 o.lock().unwrap().push("old");
             })
         });
-        std::thread::sleep(Duration::from_millis(10));
+        // Restart only once the old emission is under way, whatever the scheduling.
+        inside_rx.recv().unwrap();
         let (_, new) = state.restart();
         state.emit_if_current(new, || order.lock().unwrap().push("new"));
         emitting.join().unwrap();

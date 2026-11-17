@@ -308,4 +308,56 @@ describe("live signals", () => {
     await signIn;
     expect(authApi.prelogin).toHaveBeenCalled();
   });
+
+  it("a second sign-in waits for the cleanup of a wipe done before the first", async () => {
+    useAuthStore.setState({ serverAuthenticated: false });
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "active",
+      device_revoked: true,
+    });
+    let finishCleanup!: () => void;
+    vi.mocked(resetDevice).mockImplementationOnce(async (teardown) => {
+      await teardown();
+      await new Promise<void>((r) => {
+        finishCleanup = r;
+      });
+      return [];
+    });
+    vi.mocked(authApi.prelogin).mockRejectedValue(new Error("stop here"));
+    const first = useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+    const second = useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(authApi.prelogin).not.toHaveBeenCalled();
+    finishCleanup();
+    await Promise.all([first, second]);
+  });
+
+  it("an account check ignores its answer once the session changed", async () => {
+    useAuthStore.setState({ serverAuthenticated: true, pendingDeletion: null });
+    let answer!: (u: unknown) => void;
+    vi.mocked(authApi.me).mockReturnValueOnce(
+      new Promise((r) => {
+        answer = r;
+      }) as never,
+    );
+    live.signal?.("account_changed");
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalled());
+    // Sign out, and another account signs in, while the check is pending.
+    await useAuthStore.getState().logout();
+    useAuthStore.setState({
+      user: { ...user, id: "u2" },
+      localAccessAccountId: "u2",
+      tokens: { access_token: "b", refresh_token: "s" } as never,
+    });
+    answer({ ...user, deletion_scheduled_for: "2026-12-17" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useAuthStore.getState().pendingDeletion).toBeNull();
+  });
 });

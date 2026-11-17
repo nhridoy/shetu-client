@@ -208,7 +208,7 @@ async function wipeIfRevoked(owner: number): Promise<number | null> {
   )
     return null;
   let mine = sessionOwner;
-  const failures = await resetDevice(() => {
+  const failures = await resetDeviceSession(() => {
     const run = teardownSession();
     mine = sessionOwner;
     return run;
@@ -450,8 +450,10 @@ function teardownSession(): Promise<string[]> {
 // A device reset clears settings and local storage after its session teardown: the whole reset
 // is part of the barrier sign-ins wait on, so a new session can't be cleared by it. A sign-in
 // that runs its own reset (wipeIfRevoked) has already awaited it, so it never waits on itself.
-function resetDeviceSession(): Promise<string[]> {
-  const run = resetDevice(teardownSession);
+function resetDeviceSession(
+  teardown: () => Promise<string[]> = teardownSession,
+): Promise<string[]> {
+  const run = resetDevice(teardown);
   teardownRun = Promise.all([teardownRun, run.catch(() => {})]);
   return run;
 }
@@ -1684,9 +1686,13 @@ function wipeOnLiveRevoke(): Promise<void> {
 }
 
 async function recheckAccount(): Promise<void> {
+  // An answer for a session that has since ended (or another account) must not act.
+  const owner = sessionOwner;
+  const accountId = currentAccountId();
   try {
     await clearAccessToken().catch(() => {});
     const user = await authApi.me();
+    if (owner !== sessionOwner || currentAccountId() !== accountId) return;
     // Scheduled from another device: offer Keep / Sign out here too.
     if (
       user.deletion_scheduled_for &&

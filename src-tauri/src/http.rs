@@ -465,11 +465,20 @@ impl HttpClient {
         };
         // Held while storing so a sign-in or sign-out can't interleave with it.
         let mut access = self.state.access_token.lock().unwrap();
-        // Signed out or in while this was in flight (keychain cleared or replaced counts too):
-        // drop the result, store nothing, and reuse whatever session is current.
-        if self.state.generation() != generation
-            || self.refresh.get_refresh_token().as_deref() != Some(refresh_token.as_str())
-        {
+        // Signed out or in while this was in flight (keychain cleared or replaced): drop the
+        // result, store nothing, and reuse whatever session is current.
+        if self.refresh.get_refresh_token().as_deref() != Some(refresh_token.as_str()) {
+            drop(access);
+            return self.current_session();
+        }
+        // Only the session generation moved (the access token was cleared, e.g. to re-check the
+        // account): the server has already switched to the rotated refresh token, so keep it,
+        // or the next refresh replays the old one and looks like theft. No access token for the
+        // replaced generation.
+        if self.state.generation() != generation {
+            if let Some(new_refresh) = new_refresh {
+                let _ = self.refresh.persist_rotated_token(&new_refresh);
+            }
             drop(access);
             return self.current_session();
         }
@@ -963,9 +972,22 @@ pub(crate) mod tests {
     const ROTATED: &str = r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#;
 
     #[tokio::test]
+    async fn clearing_the_access_token_during_refresh_keeps_the_rotated_token() {
+        // "Account changed" clears only the access token. The server has already rotated r1, so
+        // dropping r2 would make the next refresh replay r1 and look like theft.
+        let (_, state, refresh) =
+            refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
+        assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
+        assert_eq!(state.token(), None, "no access token for the replaced generation");
+    }
+
+    #[tokio::test]
     async fn sign_out_during_refresh_stores_no_tokens() {
         let (res, state, refresh) =
-            refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
+            refresh_in_flight((200, ROTATED), |state, r| {
+                state.clear_session(r).unwrap();
+            })
+            .await;
         assert_eq!(state.token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
