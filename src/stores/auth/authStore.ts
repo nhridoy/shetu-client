@@ -181,38 +181,41 @@ async function runRevokedSession(): Promise<void> {
  * device was signed out remotely; if so, erase it first (a sign-in would clear that flag).
  * Offline or any error: keep the data.
  */
-async function wipeIfRevoked(owner: number): Promise<boolean> {
+async function wipeIfRevoked(owner: number): Promise<number | null> {
   const userId = useAuthStore.getState().localAccessAccountId;
-  if (!userId) return false;
+  if (!userId) return null;
   let revoked = false;
   try {
     const res = await authApi.accountStatus(userId, await getDeviceId());
     revoked = res?.device_revoked === true;
   } catch {
-    return false;
+    return null;
   }
   if (
     !revoked ||
     useAuthStore.getState().localAccessAccountId !== userId ||
     owner !== sessionOwner
   )
-    return false;
-  const failures = await resetDevice(teardownSession);
+    return null;
+  let mine = sessionOwner;
+  const failures = await resetDevice(() => {
+    const run = teardownSession();
+    mine = sessionOwner;
+    return run;
+  });
   if (failures.length) console.warn("device reset incomplete:", failures);
   useAuthStore.setState({ deletionNotice: { kind: "device_revoked" } });
-  return true;
+  return mine;
 }
 
 // Starts a sign-in: wipes a revoked device first, then claims the session. A sign-out
-// during the check stops the sign-in (SessionLost); the attempt's own wipe doesn't.
+// during the check or the wipe stops the sign-in (SessionLost); the attempt's own wipe doesn't.
 async function claimSignIn(): Promise<number> {
-  const owner = sessionOwner;
-  if (await wipeIfRevoked(owner)) {
-    // The wipe's teardown cleared it; this sign-in is still running.
-    useAuthStore.setState({ isLoading: true });
-  } else {
-    ensureOwner(owner);
-  }
+  const start = sessionOwner;
+  const afterWipe = await wipeIfRevoked(start);
+  ensureOwner(afterWipe ?? start);
+  // A wipe's teardown cleared it; this sign-in is still running.
+  if (afterWipe !== null) useAuthStore.setState({ isLoading: true });
   return claimSession();
 }
 

@@ -231,6 +231,24 @@ describe("revoked-device checks and newer sessions", () => {
     expect(authApi.prelogin).not.toHaveBeenCalled();
   });
 
+  it("a sign-out during the sign-in's own wipe cancels the sign-in", async () => {
+    vi.mocked(resetDevice).mockImplementation(async (teardown) => {
+      await teardown();
+      // The person signs out while the wipe is still finishing.
+      await useAuthStore.getState().logout();
+      return [];
+    });
+    vi.mocked(authApi.accountStatus).mockResolvedValue({
+      status: "active",
+      device_revoked: true,
+    });
+    vi.mocked(authApi.prelogin).mockRejectedValue(new Error("stop here"));
+    await expect(
+      useAuthStore.getState().login("a@example.com", "pw"),
+    ).rejects.toThrow("The session changed.");
+    expect(authApi.prelogin).not.toHaveBeenCalled();
+  });
+
   it("the sign-in stays pending after the revoked wipe", async () => {
     vi.mocked(resetDevice).mockImplementation(async (teardown) => {
       await teardown();
