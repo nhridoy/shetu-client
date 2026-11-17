@@ -7,6 +7,7 @@ import AuthLayout from "@/components/auth/AuthLayout";
 import EmailVerification from "@/components/auth/forms/EmailVerification";
 import OAuthLogin from "@/components/auth/forms/OAuthLogin";
 import ServerConfig from "@/components/auth/forms/ServerConfig";
+import TwoFactorForm from "@/components/auth/forms/TwoFactorForm";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { FormInput } from "@/components/ui/forms/FormInput";
@@ -35,6 +36,7 @@ export default function LoginPage() {
     pendingVerificationEmail,
     deletionNotice,
     clearDeletionNotice,
+    pendingTwoFactor,
   } = useAuthStore();
   const [password, setPassword] = useState("");
   const {
@@ -54,6 +56,10 @@ export default function LoginPage() {
 
   if (pendingVerificationEmail) {
     return <EmailVerification password={password} />;
+  }
+
+  if (pendingTwoFactor && pendingTwoFactor.path !== "recovery") {
+    return <TwoFactorForm />;
   }
 
   return (

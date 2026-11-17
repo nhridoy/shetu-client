@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { parseCallbackUrl } from "./oauth";
 
 describe("parseCallbackUrl", () => {
+  it("parses a two-factor callback", () => {
+    expect(
+      parseCallbackUrl(
+        "http://127.0.0.1:1421/oauth/callback?dest=two_factor&challenge=ch-1&user_id=u-1",
+      ),
+    ).toEqual({ dest: "two_factor", challenge: "ch-1", userId: "u-1" });
+    expect(
+      parseCallbackUrl(
+        "http://127.0.0.1:1421/oauth/callback?dest=two_factor&user_id=u-1",
+      ).dest,
+    ).toBe("error");
+  });
+
   it("parses a setup callback", () => {
     const result = parseCallbackUrl(
       "http://127.0.0.1:1421/oauth/callback?dest=setup&setup_code=abc123&user_id=u-1",

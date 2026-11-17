@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { authApi } from "../api/auth";
 
-export type OAuthDest = "setup" | "success" | "error";
+export type OAuthDest = "setup" | "success" | "two_factor" | "error";
 
 export interface OAuthCallbackResult {
   dest: OAuthDest;
@@ -10,6 +10,8 @@ export interface OAuthCallbackResult {
   userId?: string;
   accessToken?: string;
   refreshToken?: string;
+  /** dest two_factor: the challenge to verify with the code. */
+  challenge?: string;
   message?: string;
 }
 
@@ -46,6 +48,18 @@ export function parseCallbackUrl(rawUrl: string): OAuthCallbackResult {
       };
     }
     return { dest: "success", accessToken, refreshToken, userId };
+  }
+
+  if (dest === "two_factor") {
+    const challenge = url.searchParams.get("challenge");
+    const userId = url.searchParams.get("user_id");
+    if (!challenge || !userId) {
+      return {
+        dest: "error",
+        message: "OAuth two-factor callback is missing required parameters.",
+      };
+    }
+    return { dest: "two_factor", challenge, userId };
   }
 
   if (dest === "error") {

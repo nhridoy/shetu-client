@@ -55,6 +55,8 @@ export interface ApiError {
   message: string;
   requestId?: string;
   email?: string;
+  /** With TWO_FACTOR_REQUIRED: the challenge to send back with the code. */
+  challenge?: string;
 }
 
 export class AuthApiError extends Error {
@@ -71,7 +73,7 @@ export class AuthApiError extends Error {
 // tokens, refreshes on 401 (single-flight, one retry) and classifies
 // offline/rejected sessions. This layer only maps facade results onto the
 // AuthApiError shape the stores and forms consume.
-async function apiFetch<T>(
+export async function apiFetch<T>(
   method: string,
   path: string,
   body?: unknown,
@@ -339,6 +341,7 @@ export const authApi = {
     new_kdf: { m: number; t: number; p: number };
     new_server_salt: string;
     new_salt_cl: string;
+    two_factor_proof?: string;
   }): Promise<void> {
     return apiFetch("POST", "/api/v1/auth/recovery", params);
   },

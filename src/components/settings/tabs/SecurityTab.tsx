@@ -21,6 +21,7 @@ import type { SecurityTabProps } from "@/types/settings/types";
 import AppLockSettings from "./AppLockSettings";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 import DevicesSettings from "./DevicesSettings";
+import TwoFactorSettings from "./TwoFactorSettings";
 
 export default function SecurityTab({
   tabs,
@@ -118,6 +119,13 @@ export default function SecurityTab({
           </Button>
         </form>
       </div>
+
+      {serverAuthenticated && (
+        <div className="border-t border-dark-700 pt-6">
+          <h3 className="text-sm font-medium text-white mb-3">Two-factor</h3>
+          <TwoFactorSettings />
+        </div>
+      )}
 
       {serverAuthenticated && (
         <div className="border-t border-dark-700 pt-6">

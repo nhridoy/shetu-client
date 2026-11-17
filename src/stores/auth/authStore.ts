@@ -2,13 +2,20 @@ import { load } from "@tauri-apps/plugin-store";
 import { toast } from "sonner";
 import { create } from "zustand";
 import { reportDevice } from "@/lib/api/devices";
+import {
+  isTwoFactorRequired,
+  type SecondFactorKind,
+  twoFactorApi,
+} from "@/lib/api/twoFactor";
 import { resetDevice } from "../../lib/account/resetDevice";
 import {
   AuthApiError,
   authApi,
   getApiUrl,
   type KeyringRows,
+  type LoginResponse,
   loadApiUrl,
+  type RecoveryPrefetchResponse,
   type TokenPair,
   type User,
 } from "../../lib/api/auth";
@@ -82,9 +89,11 @@ function ensureOwner(owner: number): void {
   if (owner !== sessionOwner) throw new SessionLost("The session changed.");
 }
 
-// A sign-in about to publish: older flows (retries included) stop.
+// A sign-in about to publish: older flows (retries included) stop, including one
+// waiting on its code screen.
 function takeOver(owner: number): number {
   ensureOwner(owner);
+  endSecondFactor(new SessionLost("The session changed."));
   return ++sessionOwner;
 }
 
@@ -219,6 +228,69 @@ async function claimSignIn(): Promise<number> {
   return claimSession();
 }
 
+type TwoFactorPath = "login" | "oauth" | "recovery";
+
+/** The person left the code screen; the paused sign-in ends without an error message. */
+class TwoFactorCancelled extends Error {}
+
+// The one sign-in waiting for its second factor; submit or cancel settles it.
+let secondFactor: {
+  path: TwoFactorPath;
+  challenge: string;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+} | null = null;
+
+function awaitSecondFactor<T>(
+  path: TwoFactorPath,
+  challenge: string,
+  owner: number,
+): Promise<T> {
+  // A flow that lost the session must not replace a newer flow's code screen.
+  ensureOwner(owner);
+  endSecondFactor(new TwoFactorCancelled("Signing in was cancelled."));
+  const waited = new Promise<T>((resolve, reject) => {
+    secondFactor = {
+      path,
+      challenge,
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    };
+    useAuthStore.setState({
+      pendingTwoFactor: { path, challenge },
+      isLoading: false,
+    });
+  });
+  return waited.then((res) => {
+    ensureOwner(owner);
+    return res;
+  });
+}
+
+/** Rejects a waiting sign-in (cancel, sign-out, or a newer one). */
+function endSecondFactor(reason: unknown): void {
+  const waiting = secondFactor;
+  secondFactor = null;
+  if (useAuthStore.getState().pendingTwoFactor)
+    useAuthStore.setState({ pendingTwoFactor: null });
+  waiting?.reject(reason);
+}
+
+// A first-factor call whose TWO_FACTOR_REQUIRED answer waits for the code and then yields
+// the verified response, the same shape the call itself would have returned.
+async function withSecondFactor<T>(
+  path: TwoFactorPath,
+  owner: number,
+  call: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await call();
+  } catch (err) {
+    if (!isTwoFactorRequired(err)) throw err;
+    return awaitSecondFactor<T>(path, err.apiError.challenge as string, owner);
+  }
+}
+
 interface AuthState {
   user: User | null;
   tokens: TokenPair | null;
@@ -234,6 +306,8 @@ interface AuthState {
   error: string | null;
   pendingOAuth: { provider: string; setupCode: string; userId: string } | null;
   pendingVerificationEmail: string | null;
+  /** A sign-in paused for its second factor; the page shows the code form. */
+  pendingTwoFactor: { path: TwoFactorPath; challenge: string } | null;
   alwaysAsk: boolean;
   deletionNotice:
     | { kind: "scheduled"; date: string }
@@ -278,6 +352,11 @@ interface AuthState {
   verifyEmail: (email: string, otp: string, password?: string) => Promise<void>;
   resendVerification: (email: string) => Promise<void>;
   clearPendingVerification: () => void;
+  /** Checks the code; on success the paused sign-in continues. */
+  submitTwoFactor: (code: string, kind: SecondFactorKind) => Promise<void>;
+  /** Recovery only: emails a code when the authenticator is lost. */
+  sendTwoFactorEmail: () => Promise<void>;
+  cancelTwoFactor: () => void;
   ensureRecoveryKit: (
     existingKeyring?: KeyringRows | null,
   ) => Promise<string | null>;
@@ -370,6 +449,7 @@ function teardownSession(): Promise<string[]> {
 // Publishes signed-out first so the UI reacts at once; flows started meanwhile
 // wait in claimSession until the wipe is done, so it can't erase their work.
 async function runTeardown(): Promise<string[]> {
+  endSecondFactor(new TwoFactorCancelled("Signed out."));
   const failures: string[] = [];
   const attempt = async (name: string, fn: () => Promise<unknown>) => {
     try {
@@ -503,6 +583,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   pendingRecoveryEmail: null,
   pendingOAuth: null,
   pendingVerificationEmail: null,
+  pendingTwoFactor: null,
   alwaysAsk: false,
   deletionNotice: null,
   pendingDeletion: null,
@@ -684,6 +765,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   clearPendingVerification: () => set({ pendingVerificationEmail: null }),
 
+  submitTwoFactor: async (code: string, kind: SecondFactorKind) => {
+    const waiting = secondFactor;
+    if (!waiting) throw new Error("Start signing in again.");
+    let res: unknown;
+    try {
+      res = await twoFactorApi.verify(waiting.challenge, code, kind);
+    } catch (err) {
+      if (secondFactor !== waiting) return; // cancelled meanwhile
+      if (
+        err instanceof AuthApiError &&
+        err.apiError.code === "TWO_FACTOR_EXPIRED"
+      ) {
+        endSecondFactor(err);
+        return;
+      }
+      throw err;
+    }
+    // A cancelled or replaced sign-in ignores a late answer.
+    if (secondFactor !== waiting) return;
+    secondFactor = null;
+    set({ pendingTwoFactor: null, isLoading: true });
+    waiting.resolve(res);
+  },
+
+  sendTwoFactorEmail: async () => {
+    const waiting = secondFactor;
+    if (waiting?.path !== "recovery")
+      throw new Error("An email code is only for account recovery.");
+    await twoFactorApi.sendEmailCode(waiting.challenge);
+  },
+
+  cancelTwoFactor: () => {
+    endSecondFactor(new TwoFactorCancelled("Signing in was cancelled."));
+    set({ isLoading: false, error: null });
+  },
+
   // Recovery kits are created at the first authenticated moment (see
   // register): this attaches one if the account has none yet. Best-effort —
   // failures self-heal on the next successful auth, and a kit that already
@@ -742,13 +859,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         prelogin.nonce,
       );
 
-      const res = await authApi.login({
-        email,
-        proof: proof.proof,
-        nonce: prelogin.nonce,
-        device_id: await getDeviceId(),
-        client_pubkey: "",
-      });
+      const deviceId = await getDeviceId();
+      const res = await withSecondFactor<LoginResponse>("login", owner, () =>
+        authApi.login({
+          email,
+          proof: proof.proof,
+          nonce: prelogin.nonce,
+          device_id: deviceId,
+          client_pubkey: "",
+        }),
+      );
 
       const newTokens = {
         access_token: res.access_token,
@@ -810,6 +930,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await finish(false);
     } catch (err) {
       if (owner !== sessionOwner) return;
+      if (err instanceof TwoFactorCancelled) {
+        set({ isLoading: false });
+        throw err;
+      }
       if (
         err instanceof AuthApiError &&
         err.apiError.code === "VERIFICATION_REQUIRED"
@@ -1001,7 +1125,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true, error: null });
     const owner = await claimSession();
     try {
-      const prefetch = await authApi.recoveryPrefetch(recoveryCode);
+      const prefetch = await withSecondFactor<
+        RecoveryPrefetchResponse & { two_factor_proof?: string }
+      >("recovery", owner, () => authApi.recoveryPrefetch(recoveryCode));
 
       // 1. Unwrap the DEK with the recovery code (recovery-KEK = Argon2id(code, salt_cl))
       await recoveryUnwrapDek(
@@ -1028,7 +1154,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       );
       const signature = await signChallenge(prefetch.nonce);
 
-      // 6. Send to server
+      // 6. Send to server, unless another sign-in took the session meanwhile.
+      ensureOwner(owner);
       await authApi.recovery({
         recovery_code: recoveryCode,
         signature,
@@ -1040,6 +1167,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         new_kdf: { m: 32768, t: 2, p: 1 },
         new_server_salt: prefetch.server_salt,
         new_salt_cl: prefetch.salt_cl,
+        two_factor_proof: prefetch.two_factor_proof,
       });
 
       const cached = await loadOfflineIdentity();
@@ -1047,6 +1175,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await enroll(cached.profile, prefetch.salt_cl, keyring, owner);
       }
 
+      // A session taken over during the reset must not show this recovery's code.
+      ensureOwner(owner);
       set({
         pendingRecoveryCode: newCode,
         pendingRecoveryContext: "recovery",
@@ -1054,6 +1184,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null,
       });
     } catch (err) {
+      // A cancelled or overtaken recovery leaves the current screen's state alone.
+      if (err instanceof TwoFactorCancelled || owner !== sessionOwner)
+        throw err;
       const message =
         typeof err === "string"
           ? err
@@ -1063,7 +1196,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ error: message, isLoading: false });
       throw err;
     } finally {
-      set({ isLoading: false });
+      if (owner === sessionOwner) set({ isLoading: false });
     }
   },
 
@@ -1215,7 +1348,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true, error: null });
     let owner = await claimSignIn();
     try {
-      const result = await startOAuthFlow(provider, await getDeviceId());
+      let result = await startOAuthFlow(provider, await getDeviceId());
+
+      if (result.dest === "two_factor") {
+        const verified = await awaitSecondFactor<LoginResponse>(
+          "oauth",
+          result.challenge ?? "",
+          owner,
+        );
+        result = {
+          dest: "success",
+          accessToken: verified.access_token,
+          refreshToken: verified.refresh_token,
+          userId: verified.user.id,
+        };
+      }
 
       if (result.dest === "error") {
         throw new Error(result.message ?? "OAuth sign-in failed");
@@ -1301,6 +1448,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return { needsSetup: false };
     } catch (err) {
       if (owner !== sessionOwner) return { needsSetup: false };
+      if (err instanceof TwoFactorCancelled) {
+        set({ isLoading: false });
+        throw err;
+      }
       const message =
         typeof err === "string"
           ? err
