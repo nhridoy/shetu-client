@@ -476,7 +476,9 @@ impl HttpClient {
         // or the next refresh replays the old one and looks like theft. No access token for the
         // replaced generation.
         if self.state.generation() != generation {
-            if let Some(new_refresh) = new_refresh {
+            // Never after a sign-out, even one whose keychain delete failed and left the old
+            // token in place.
+            if let Some(new_refresh) = new_refresh.filter(|_| !self.state.signed_out.load(Ordering::SeqCst)) {
                 let _ = self.refresh.persist_rotated_token(&new_refresh);
             }
             drop(access);
@@ -970,6 +972,32 @@ pub(crate) mod tests {
     }
 
     const ROTATED: &str = r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#;
+
+    /// A keychain whose delete fails: the stored refresh token stays.
+    struct DeleteFails;
+    impl RefreshProvider for DeleteFails {
+        fn get_refresh_token(&self) -> Option<String> {
+            None
+        }
+        fn persist_rotated_token(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn clear(&self) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_out_with_a_failed_delete_during_refresh_saves_nothing() {
+        // The old token survived the sign-out (delete failed), so the keychain check passes; the
+        // signed-out flag must still stop a rotated token from being saved after sign-out.
+        let (_, state, refresh) = refresh_in_flight((200, ROTATED), |state, _| {
+            let _ = state.clear_session(&DeleteFails);
+        })
+        .await;
+        assert!(refresh.persisted.lock().unwrap().is_empty());
+        assert_eq!(state.token(), None);
+    }
 
     #[tokio::test]
     async fn clearing_the_access_token_during_refresh_keeps_the_rotated_token() {
