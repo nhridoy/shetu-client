@@ -360,4 +360,33 @@ describe("live signals", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(useAuthStore.getState().pendingDeletion).toBeNull();
   });
+
+  it("account checks run one at a time, with one more for signals that came meanwhile", async () => {
+    useAuthStore.setState({ serverAuthenticated: true, pendingDeletion: null });
+    let answer!: (u: unknown) => void;
+    vi.mocked(authApi.me)
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          answer = r;
+        }) as never,
+      )
+      .mockResolvedValue({
+        ...user,
+        deletion_scheduled_for: "2026-12-17",
+      } as never);
+    live.signal?.("account_changed");
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalledTimes(1));
+    // A second (and third) change while the first check's refresh is still in flight.
+    live.signal?.("account_changed");
+    live.signal?.("account_changed");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(clearAccessToken).toHaveBeenCalledTimes(1);
+    answer(user);
+    await vi.waitFor(() => expect(authApi.me).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(useAuthStore.getState().pendingDeletion).toBe("2026-12-17"),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(authApi.me).toHaveBeenCalledTimes(2);
+  });
 });

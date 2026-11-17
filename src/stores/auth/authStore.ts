@@ -1659,7 +1659,7 @@ useAuthStore.subscribe((s, prev) => {
 // session-revoked path.
 onLiveSignal((kind) => {
   if (kind === "device_revoked") void wipeOnLiveRevoke();
-  else if (kind === "account_changed") void recheckAccount();
+  else if (kind === "account_changed") queueAccountCheck();
 });
 
 // The server said so over the signed-in stream: that is the confirmation, so the wipe doesn't
@@ -1683,6 +1683,24 @@ function wipeOnLiveRevoke(): Promise<void> {
   });
   liveWipe = run;
   return run;
+}
+
+// One check at a time: a second check would clear the access token again while the first one's
+// refresh is in flight, and both would fail. Signals that arrive meanwhile get one more check.
+let accountCheck: Promise<void> | null = null;
+let accountCheckQueued = false;
+function queueAccountCheck(): void {
+  if (accountCheck) {
+    accountCheckQueued = true;
+    return;
+  }
+  accountCheck = recheckAccount().finally(() => {
+    accountCheck = null;
+    if (accountCheckQueued) {
+      accountCheckQueued = false;
+      queueAccountCheck();
+    }
+  });
 }
 
 async function recheckAccount(): Promise<void> {
