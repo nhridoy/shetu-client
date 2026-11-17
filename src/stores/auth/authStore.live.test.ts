@@ -235,14 +235,50 @@ describe("live signals", () => {
     live.signal?.("device_revoked");
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(finishFirst).toBeTypeOf("function"));
-    // A new session on this device, then the server revokes it too.
-    useAuthStore.setState({
-      user,
-      localAccessAccountId: "u1",
-      serverAuthenticated: true,
+    // A real new sign-in on this device (it takes the session over), then the server revokes it.
+    vi.mocked(authApi.prelogin).mockResolvedValue({
+      nonce: "n",
+      kdf: { m: 1, t: 1, p: 1 },
+      server_salt: "ss",
+      salt_cl: "sc",
     });
+    vi.mocked(authApi.login).mockResolvedValue({
+      access_token: "a2",
+      refresh_token: "r2",
+      user,
+      keyring: {
+        dek_wrapped_by_kek: "kek",
+        dek_wrapped_by_recovery: "rec",
+        private_key_wrapped_by_dek: "pk",
+      },
+    } as never);
+    await useAuthStore
+      .getState()
+      .login("a@example.com", "pw")
+      .catch(() => {});
+    useAuthStore.setState({ user, localAccessAccountId: "u1" });
     live.signal?.("device_revoked");
     await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(2));
     finishFirst();
+  });
+
+  it("revokes for the same session during its teardown join one wipe", async () => {
+    useAuthStore.setState({ serverAuthenticated: true });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.mocked(resetDevice).mockImplementation(async (teardown) => {
+      const running = teardown(); // the session counter moves on at once
+      await gate;
+      await running;
+      return [];
+    });
+    live.signal?.("device_revoked");
+    await vi.waitFor(() => expect(resetDevice).toHaveBeenCalledTimes(1));
+    live.signal?.("device_revoked");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resetDevice).toHaveBeenCalledTimes(1);
+    release();
   });
 });

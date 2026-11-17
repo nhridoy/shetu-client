@@ -69,7 +69,10 @@ fn live_start(
     http: tauri::State<'_, http::HttpState>,
     live_state: tauri::State<'_, live::LiveState>,
 ) {
-    let (cancel, generation) = live_state.restart();
+    let reset_app = app.clone();
+    let (cancel, generation) = live_state.restart_with(|| {
+        let _ = reset_app.emit(live::STATUS_EVENT, "disconnected");
+    });
     let state = http.inner().clone();
     tauri::async_runtime::spawn(async move {
         let client = http::HttpClient::new(

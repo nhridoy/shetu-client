@@ -1657,9 +1657,9 @@ onLiveSignal((kind) => {
 let liveWipe: Promise<void> | null = null;
 let liveWipeOwner = -1;
 function wipeOnLiveRevoke(): Promise<void> {
-  // Join a wipe only while it still belongs to this session: once its teardown ran, a revoke
-  // for a newer session needs its own.
-  if (liveWipe && liveWipeOwner === sessionOwner) return liveWipe;
+  // Join a wipe while it still belongs to this session. Its own teardown moves the counter on by
+  // one; a newer sign-in (which takes the session over) moves it further and gets its own wipe.
+  if (liveWipe && sessionOwner <= liveWipeOwner + 1) return liveWipe;
   liveWipeOwner = sessionOwner;
   const run = (async () => {
     const userId = currentAccountId();

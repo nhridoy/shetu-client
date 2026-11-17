@@ -216,6 +216,13 @@ struct LiveInner {
 impl LiveState {
     /// Stops any running stream and returns a fresh switch and generation for the next one.
     pub fn restart(&self) -> (CancellationToken, u64) {
+        self.restart_with(|| {})
+    }
+
+    /// `restart`, running `reset` under the lock once the new generation is current: the old
+    /// stream can no longer report, and the new one can't report before `reset` (e.g. a
+    /// "disconnected" status, so a replacement that never connects doesn't leave "Live" showing).
+    pub fn restart_with(&self, reset: impl FnOnce()) -> (CancellationToken, u64) {
         let token = CancellationToken::new();
         let generation = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let mut inner = self.inner.lock().unwrap();
@@ -223,6 +230,7 @@ impl LiveState {
             old.cancel();
         }
         inner.current = generation;
+        reset();
         (token, generation)
     }
 
@@ -445,6 +453,19 @@ mod tests {
         let (_, new) = state.restart();
         assert!(!state.emit_if_current(old, || {}));
         assert!(state.emit_if_current(new, || {}));
+    }
+
+    #[test]
+    fn a_replacement_resets_status_before_the_new_stream_reports() {
+        // An old stream that was connected is replaced; the new one might never connect, so the
+        // app must not keep showing "Live" from the old one.
+        let state = LiveState::default();
+        let (_, old) = state.restart_with(|| {});
+        let order = Mutex::new(Vec::new());
+        let (_, new) = state.restart_with(|| order.lock().unwrap().push("reset"));
+        assert!(!state.emit_if_current(old, || order.lock().unwrap().push("old")));
+        state.emit_if_current(new, || order.lock().unwrap().push("new"));
+        assert_eq!(*order.lock().unwrap(), vec!["reset", "new"]);
     }
 
     #[test]
