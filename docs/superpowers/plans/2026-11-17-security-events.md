@@ -141,7 +141,7 @@
 **Interfaces:**
 - Consumes: Task 4.
 - Produces: `eventTitle(e: SecurityEvent): string` (exported for tests) and the `RecentActivity` component, wired into `SecurityTab` under its own "Recent activity" heading only when `serverAuthenticated`, after Devices.
-- Row: icon (`WarningIcon` for `sign_in_failed`/`two_factor_failed`, otherwise `ShieldCheckIcon`, from `@phosphor-icons/react`), title, detail line (device name + platform label as `DevicesSettings` formats it, IP, grouped suffix), relative time via `formatRelativeTime` (of `last_at` for grouped rows), "This device" badge when `current_device`.
+- Row: icon (`WarningIcon` for `sign_in_failed`/`two_factor_failed`, otherwise `ShieldCheckIcon`, from `@phosphor-icons/react`), title, detail line (device name + platform label as `DevicesSettings` formats it, IP, grouped suffix), relative time via `formatRelativeTime` of `created_at` (the list's order), and for grouped rows "latest <relative last_at>" in the detail line, "This device" badge when `current_device`.
 - [ ] **Step 1: Failing tests:** titles for every kind (table in the spec) incl. `· Google`; unknown kind "Account activity"; grouped suffix with and without addresses; "Show more" appends the next page and disappears when `next` is null; empty and error (Retry) states; the top hint line.
 - [ ] **Step 2:** `npx vitest run src/components/settings/tabs/RecentActivity.test.tsx` → FAIL.
 - [ ] **Step 3:** implement.
