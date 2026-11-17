@@ -122,8 +122,8 @@ only devices signed in now.
     - oauth: "Someone signed in with Google/GitHub but not your two-factor code."
     - recovery: "Someone used your recovery code but not your two-factor code."
 - **New device:** a device id with no `devices` row for the account before this sign-in records
-  it. Sign-ins without a valid device id (older clients) count as `sign_in`, never as new, and
-  send no email.
+  it. Once the account has devices, a sign-in without a valid device id (an older app, or someone
+  leaving it out) also counts as new and emails: leaving the id out must not dodge the alert.
   - An account's first-ever device (no `devices` rows at all, e.g. right after sign-up or the
     first Google/GitHub sign-in) records `sign_in` and sends no email (my call): every new user
     would otherwise get an alarming alert.
@@ -204,4 +204,5 @@ only devices signed in now.
 - Recovery: `recovery_used` (IP, "all devices signed out"), no recovery-tagged sign-in.
 - Page size 50, max 100.
 - Two-factor notice emails move onto the new helper (same wording).
-- Older clients without a device id never trigger a "new device" email.
+- A sign-in without a device id on an account that has devices counts as a new device (changed
+  after review: otherwise the alert could be dodged).
