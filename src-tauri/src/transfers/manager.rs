@@ -238,7 +238,8 @@ pub fn same_endpoint(recorded: &HostRef, actual: &HostRef) -> bool {
 }
 
 /// Applies a run's result and releases its ownership in one step, and only if it is still the
-/// job's current run, so a replacement run can't start in between or be overwritten.
+/// job's current run, so a replacement run can't start in between or be overwritten. Also
+/// returns the job when it was cancelled, so the run can delete its `.part`.
 pub fn complete_run(
     tokens: &Mutex<RunTokens>,
     queue: &Mutex<Queue>,
@@ -246,10 +247,10 @@ pub fn complete_run(
     run: u64,
     end: RunEnd,
     now: i64,
-) -> Option<TransferJob> {
+) -> (Option<TransferJob>, Option<TransferJob>) {
     let mut tokens = tokens.lock().unwrap_or_else(|p| p.into_inner());
     if !tokens.is_current(id, run) {
-        return None;
+        return (None, None);
     }
     let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
     let changed = match end {
@@ -262,8 +263,13 @@ pub fn complete_run(
         },
         RunEnd::Finished(result) => q.finish(id, result, now).cloned(),
     };
+    // Decided before the run lets go, so "Clear done" can't take the row it needs first.
+    let cleanup = q
+        .get(id)
+        .filter(|j| j.status == JobStatus::Cancelled)
+        .cloned();
     tokens.finish(id, run);
-    changed
+    (changed, cleanup)
 }
 
 /// Adds freshly built jobs unless a wipe ran since `since`. Runs under the queue lock, which
@@ -894,14 +900,8 @@ async fn run_job(inner: Arc<Inner>, id: String, run: u64, token: CancellationTok
     if matches!(end, RunEnd::Finished(Err(JobError::Connection(_)))) {
         inner.drop_owned(used.unwrap_or_default()).await;
     }
-    let changed = complete_run(&inner.tokens, &inner.queue, &id, run, end, now_ms());
-
-    let cancelled = inner
-        .queue()
-        .get(&id)
-        .filter(|j| j.status == JobStatus::Cancelled)
-        .cloned();
-    if let Some(job) = cancelled {
+    let (changed, cleanup) = complete_run(&inner.tokens, &inner.queue, &id, run, end, now_ms());
+    if let Some(job) = cleanup {
         inner.remove_part(&job).await;
     }
     if let Some(job) = changed {
@@ -1236,13 +1236,19 @@ mod tests {
         )]);
         let (old, _) = tokens.lock().unwrap().start("a");
         let (new, _) = tokens.lock().unwrap().start("a");
-        assert!(complete_run(&tokens, &queue, "a", old, RunEnd::Finished(Ok(())), 0).is_none());
+        assert!(
+            complete_run(&tokens, &queue, "a", old, RunEnd::Finished(Ok(())), 0)
+                .0
+                .is_none()
+        );
         assert_eq!(
             queue.lock().unwrap().get("a").unwrap().status,
             JobStatus::Active
         );
         assert!(tokens.lock().unwrap().is_running("a"));
-        let done = complete_run(&tokens, &queue, "a", new, RunEnd::Finished(Ok(())), 0).unwrap();
+        let done = complete_run(&tokens, &queue, "a", new, RunEnd::Finished(Ok(())), 0)
+            .0
+            .unwrap();
         assert_eq!(done.status, JobStatus::Done);
         assert!(!tokens.lock().unwrap().is_running("a"));
     }
@@ -1265,6 +1271,7 @@ mod tests {
             RunEnd::Finished(Err(JobError::Stopped)),
             0
         )
+        .0
         .is_none());
         assert_eq!(
             queue.lock().unwrap().get("a").unwrap().status,
@@ -1281,7 +1288,9 @@ mod tests {
             JobStatus::Active,
         )]);
         let (run, _) = tokens.lock().unwrap().start("a");
-        let j = complete_run(&tokens, &queue, "a", run, RunEnd::Wait(WaitReason::Host), 0).unwrap();
+        let j = complete_run(&tokens, &queue, "a", run, RunEnd::Wait(WaitReason::Host), 0)
+            .0
+            .unwrap();
         assert_eq!(
             (j.status, j.wait_reason),
             (JobStatus::Waiting, Some(WaitReason::Host))
@@ -1458,6 +1467,44 @@ mod tests {
             may_use_pane_session(&job, &quick),
             "quick-connect has no other way in"
         );
+    }
+
+    #[test]
+    fn cancelled_run_hands_back_its_cleanup_before_release() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Queued,
+        )]);
+        let (run, _) = activate(&tokens, &queue, "a").unwrap();
+        cancel_job(&tokens, &queue, "a");
+        let (_, cleanup) = complete_run(
+            &tokens,
+            &queue,
+            "a",
+            run,
+            RunEnd::Finished(Err(JobError::Stopped)),
+            0,
+        );
+        // "Clear done" can now remove the row; the run already holds what it must delete.
+        queue
+            .lock()
+            .unwrap()
+            .clear_finished(|id| tokens.lock().unwrap().is_running(id));
+        assert!(queue.lock().unwrap().get("a").is_none());
+        assert_eq!(cleanup.map(|j| j.part_path), Some(part_path("/l/a", "a")));
+    }
+
+    #[test]
+    fn finished_run_has_no_cleanup() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Queued,
+        )]);
+        let (run, _) = activate(&tokens, &queue, "a").unwrap();
+        let (_, cleanup) = complete_run(&tokens, &queue, "a", run, RunEnd::Finished(Ok(())), 0);
+        assert!(cleanup.is_none());
     }
 
     #[test]
