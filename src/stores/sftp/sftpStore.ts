@@ -69,21 +69,26 @@ function startTransferListener(
   apply: (jobs: TransferJob[]) => void,
   reset: () => void,
 ): Promise<boolean> {
+  const unlisten: (() => void)[] = [];
   transferListener ??= (async () => {
     // Events that arrive while the first list loads are newer than it: replay them after.
     let pending: TransferJob[][] | null = [];
     let wipedMeanwhile = false;
-    await onTransfersChanged((jobs) => {
-      if (pending) pending.push(jobs);
-      else apply(jobs);
-    });
-    await onTransfersReset(() => {
-      if (pending) {
-        pending = [];
-        wipedMeanwhile = true;
-      }
-      reset();
-    });
+    unlisten.push(
+      await onTransfersChanged((jobs) => {
+        if (pending) pending.push(jobs);
+        else apply(jobs);
+      }),
+    );
+    unlisten.push(
+      await onTransfersReset(() => {
+        if (pending) {
+          pending = [];
+          wipedMeanwhile = true;
+        }
+        reset();
+      }),
+    );
     const listed = await listTransfers();
     const snapshot = wipedMeanwhile ? [] : listed;
     apply(snapshot);
@@ -100,7 +105,8 @@ function startTransferListener(
     }
     return true;
   })().catch((e) => {
-    // Never blocks connecting; the next call tries again.
+    // Never blocks connecting; the next call tries again with fresh listeners.
+    for (const off of unlisten) off();
     transferListener = null;
     console.warn("transfers: could not load the queue", e);
     return false;

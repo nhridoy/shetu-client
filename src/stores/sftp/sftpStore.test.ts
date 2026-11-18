@@ -128,6 +128,17 @@ describe("sftpStore transfers mirror", () => {
     expect(mocks.toast).not.toHaveBeenCalled();
   });
 
+  it("removes its listeners when loading the queue fails", async () => {
+    const offChanged = vi.fn();
+    const offReset = vi.fn();
+    mocks.onTransfersChanged.mockResolvedValueOnce(offChanged);
+    mocks.onTransfersReset.mockResolvedValueOnce(offReset);
+    mocks.listTransfers.mockRejectedValueOnce(new Error("no queue"));
+    expect(await useSftpStore.getState().ensureTransferListener()).toBe(false);
+    expect(offChanged).toHaveBeenCalledTimes(1);
+    expect(offReset).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a listener that couldn't start", async () => {
     mocks.onTransfersChanged.mockRejectedValueOnce(new Error("no IPC"));
     expect(await useSftpStore.getState().ensureTransferListener()).toBe(false);

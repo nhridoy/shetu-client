@@ -422,6 +422,33 @@ describe("transferFiles with the transfer manager", () => {
     expect(results.map((r) => r.action)).toEqual(["moved", "moved"]);
   });
 
+  it("replaces an existing file when moving within one remote pane", async () => {
+    const calls: string[] = [];
+    const pane = {
+      ...remote,
+      listFiles: vi.fn(async () => [mkfile("a.txt", "/r/sub/a.txt")]),
+      removeFile: vi.fn(async (p: string) => {
+        calls.push(`rm ${p}`);
+      }),
+      moveFile: vi.fn(async (from: string, to: string) => {
+        calls.push(`mv ${from} ${to}`);
+      }),
+    } as unknown as FileProvider;
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: new Map([["/r/a.txt", { action: "replace" as const }]]),
+    });
+    expect(calls).toEqual(["rm /r/sub/a.txt", "mv /r/a.txt /r/sub/a.txt"]);
+    expect(results[0]).toEqual({
+      file: expect.objectContaining({ path: "/r/a.txt" }),
+      action: "moved",
+    });
+  });
+
   it("reports failed jobs as errors", async () => {
     const run = start();
     await settle({

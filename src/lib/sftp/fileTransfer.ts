@@ -449,12 +449,25 @@ export async function transferFiles(
         overrides,
         existingNames,
       );
-      for (const [i, { file, destFilePath, skip }] of roots.entries()) {
+      for (const [
+        i,
+        { file, destFilePath, skip, replace },
+      ] of roots.entries()) {
         let result: TransferFileResult;
         if (skip) {
           result = { file, action: "skipped" };
         } else {
           try {
+            // SFTP rename refuses an existing target: an approved Replace removes the old file
+            // first. shortcut: Replace onto an existing folder isn't merged (the rename fails
+            // and is reported); merge would move children one by one.
+            if (
+              replace &&
+              file.type !== "directory" &&
+              existingNames.has(fileNameFromPath(destFilePath))
+            ) {
+              await source.removeFile(destFilePath);
+            }
             await source.moveFile(file.path, destFilePath);
             result = { file, action: "moved" };
           } catch (err) {
