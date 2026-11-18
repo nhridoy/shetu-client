@@ -72,6 +72,55 @@ impl SftpSessions {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// The host a session is connected to, and its SFTP handle.
+    pub fn session_info(&self, id: &str) -> Option<(crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let s = map.get(id)?;
+        Some((
+            crate::transfers::model::HostRef {
+                host_id: s.host_id.clone(),
+                host: s.host.clone(),
+                port: s.port,
+                username: s.username.clone(),
+            },
+            Arc::clone(&s.sftp),
+        ))
+    }
+
+    /// An open session to `host`, trying `prefer` first. Saved hosts match on host id + user,
+    /// quick-connect hosts on address, port and user.
+    pub fn find_matching(
+        &self,
+        host: &crate::transfers::model::HostRef,
+        prefer: Option<&str>,
+    ) -> Option<(String, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let fits = |s: &SftpSession| {
+            let open = s.ssh_handle.as_ref().is_none_or(|h| !h.is_closed());
+            let same = match &host.host_id {
+                Some(id) => s.host_id.as_ref() == Some(id) && s.username == host.username,
+                None => s.host == host.host && s.port == host.port && s.username == host.username,
+            };
+            open && same
+        };
+        prefer
+            .and_then(|id| map.get_key_value(id))
+            .filter(|(_, s)| fits(s))
+            .or_else(|| map.iter().find(|(_, s)| fits(s)))
+            .map(|(id, s)| (id.clone(), Arc::clone(&s.sftp)))
+    }
+
+    /// Closes and forgets a session (and its SSH connection when we opened it).
+    pub async fn disconnect(&self, session_id: &str) {
+        let session = self.sessions.lock().ok().and_then(|mut m| m.remove(session_id));
+        if let Some(session) = session {
+            let _ = session.sftp.close().await;
+            if session.created_ourselves {
+                drop(session.ssh_handle);
+            }
+        }
+    }
 }
 
 async fn open_sftp_from_handle(
@@ -175,12 +224,25 @@ pub async fn sftp_connect_saved(
     session_id: String,
     host_id: String,
     username: Option<String>,
-    db: tauri::State<'_, crate::db::LocalDb>,
-    crypto: tauri::State<'_, crate::CryptoState>,
-    ssh_sessions: tauri::State<'_, crate::ssh::SshSessions>,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
     app_handle: tauri::AppHandle,
 ) -> Result<SftpConnectResult, String> {
+    connect_saved_session(&app_handle, session_id, host_id, username).await
+}
+
+/// Opens (or reuses) the SFTP session `session_id` to a saved host. Also used by the transfer
+/// manager to reconnect in the background; prompts go through the app-wide dialogs.
+pub async fn connect_saved_session(
+    app: &tauri::AppHandle,
+    session_id: String,
+    host_id: String,
+    username: Option<String>,
+) -> Result<SftpConnectResult, String> {
+    use tauri::Manager;
+    let app_handle = app.clone();
+    let db = app.state::<crate::db::LocalDb>();
+    let crypto = app.state::<crate::CryptoState>();
+    let ssh_sessions = app.state::<crate::ssh::SshSessions>();
+    let sftp_sessions = app.state::<SftpSessions>();
     let route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let config = &route.target;
 
@@ -257,16 +319,7 @@ pub async fn sftp_disconnect(
     session_id: String,
     sftp_sessions: tauri::State<'_, SftpSessions>,
 ) -> Result<(), String> {
-    let session = {
-        let mut sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(&session_id)
-    };
-    if let Some(session) = session {
-        let _ = session.sftp.close().await;
-        if session.created_ourselves {
-            drop(session.ssh_handle);
-        }
-    }
+    sftp_sessions.disconnect(&session_id).await;
     Ok(())
 }
 

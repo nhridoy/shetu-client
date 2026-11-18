@@ -380,8 +380,10 @@ fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
 fn wipe_local_data(
     db: tauri::State<'_, db::LocalDb>,
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
+    transfers: tauri::State<'_, transfers::manager::TransferManager>,
 ) -> Result<(), String> {
     forwarding.stop_all();
+    transfers.wipe();
     db::wipe_all(&db)
 }
 
@@ -1763,6 +1765,7 @@ pub fn run() {
             );
             let db_path = data_dir.join(db::DB_FILE_NAME);
             app.manage(db::open(&db_path.display().to_string())?);
+            app.manage(transfers::manager::TransferManager::new(app.handle().clone()));
 
             let handle = app.handle().clone();
             app.listen("main-ready", move |_| {
@@ -1924,6 +1927,14 @@ pub fn run() {
             sftp::sftp_server_copy,
             sftp::sftp_search,
             sftp::sftp_cancel_transfer,
+            transfers::manager::transfer_enqueue,
+            transfers::manager::transfer_list,
+            transfers::manager::transfer_pause,
+            transfers::manager::transfer_resume,
+            transfers::manager::transfer_resume_all,
+            transfers::manager::transfer_retry,
+            transfers::manager::transfer_cancel,
+            transfers::manager::transfer_clear_finished,
             oauth::bind_oauth_listener,
             oauth::await_oauth_callback,
             oauth::cancel_oauth_listener,
