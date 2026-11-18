@@ -438,6 +438,7 @@ describe("transferFiles with the transfer manager", () => {
     opts: {
       listed?: FileItem[];
       rmImpl?: (p: string) => Promise<void>;
+      delImpl?: (p: string) => Promise<void>;
       isDir?: (p: string) => boolean;
       exists?: (p: string) => boolean;
     } = {},
@@ -457,6 +458,10 @@ describe("transferFiles with the transfer manager", () => {
         await moveImpl(from, to);
       }),
       isDirectory: vi.fn(async (p: string) => opts.isDir?.(p) ?? false),
+      delete: vi.fn(async (p: string, recursive?: boolean) => {
+        calls.push(`del ${p} recursive=${recursive}`);
+        await opts.delImpl?.(p);
+      }),
       exists: vi.fn(async (p: string) => opts.exists?.(p) ?? false),
     } as unknown as FileProvider;
     return { pane, calls };
@@ -481,7 +486,7 @@ describe("transferFiles with the transfer manager", () => {
     expect(calls).toEqual([
       `mv /r/sub/a.txt ${backup}`,
       "mv /r/a.txt /r/sub/a.txt",
-      `rm ${backup}`,
+      `del ${backup} recursive=false`,
     ]);
     expect(results[0].action).toBe("moved");
     expect(results[0].error).toBeUndefined();
@@ -555,7 +560,7 @@ describe("transferFiles with the transfer manager", () => {
   it("warns when the leftover backup can't be removed", async () => {
     toastMock.warning.mockClear();
     const { pane, calls } = samePane(async () => {}, {
-      rmImpl: async () => {
+      delImpl: async () => {
         throw new Error("gone");
       },
     });
@@ -567,16 +572,37 @@ describe("transferFiles with the transfer manager", () => {
     );
   });
 
-  it("never deletes a backup that turned out to be a folder", async () => {
+  it("never deletes a folder that took the backup's place", async () => {
     toastMock.warning.mockClear();
+    // A folder appears at the backup path after the move: only a non-recursive delete may run,
+    // and the server refuses it for a folder with contents.
     const { pane, calls } = samePane(async () => {}, {
-      isDir: (p) => p.includes(".shetu-replace-"),
+      isDir: () => false,
+      delImpl: async () => {
+        throw new Error("rmdir: Failure");
+      },
     });
     await moveA(pane);
-    expect(calls.some((c) => c.startsWith("rm "))).toBe(false);
+    expect(calls.filter((c) => c.startsWith("rm "))).toEqual([]);
+    expect(calls.filter((c) => c.startsWith("del "))).toEqual([
+      `del ${backupOf(calls)} recursive=false`,
+    ]);
     expect(toastMock.warning).toHaveBeenCalledWith(
       expect.stringContaining(backupOf(calls)),
     );
+  });
+
+  it("doesn't rely on a type check that can fail", async () => {
+    // isDirectory reports false when its stat fails; cleanup must not depend on it.
+    const { pane, calls } = samePane(async () => {}, {
+      isDir: () => {
+        throw new Error("stat failed");
+      },
+    });
+    const results = await moveA(pane);
+    expect(results[0].error).toBeUndefined();
+    expect(calls.filter((c) => c.startsWith("rm "))).toEqual([]);
+    expect(calls.at(-1)).toBe(`del ${backupOf(calls)} recursive=false`);
   });
 
   it("moves plainly when the approved target is already gone", async () => {

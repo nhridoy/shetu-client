@@ -10,6 +10,7 @@ import {
   readLocalFileBytes,
   writeLocalFileBytes,
 } from "@/lib/sftp/localFs";
+import type { RemoteFileProvider } from "@/lib/sftp/remoteFs";
 import {
   enqueueTransfers,
   isSettled,
@@ -383,7 +384,7 @@ export interface TransferOptions {
 }
 
 /**
- * Renames `from` onto `to`. With `replacing`, the old `to` is set aside and only deleted once the
+ * Renames `from` onto `to` on one remote pane. With `replacing`, the old `to` is set aside and only deleted once the
  * new file is in place; on any failure it is put back, or the error says where it is kept.
  */
 async function moveReplacing(
@@ -415,14 +416,14 @@ async function moveReplacing(
     }
     throw err;
   }
-  // A backup that is a folder (the target changed meanwhile) is never deleted.
-  const isFolder = await provider.isDirectory(backup).catch(() => true);
-  const cleaned =
-    !isFolder &&
-    (await provider.removeFile(backup).then(
+  // Non-recursive delete: the server removes a file (or an empty folder) but refuses a folder
+  // with contents, so whatever took the backup's place meanwhile is never wiped.
+  const cleaned = await (provider as unknown as RemoteFileProvider)
+    .delete(backup, false)
+    .then(
       () => true,
       () => false,
-    ));
+    );
   if (!cleaned) {
     toast.warning(`Moved, but the previous version is still at ${backup}`);
   }
