@@ -30,6 +30,7 @@ mod system_lock;
 mod team_keys;
 mod team_sync;
 mod totp;
+mod transfers;
 mod update;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
