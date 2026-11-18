@@ -60,6 +60,7 @@ pub fn build_job(
         error: None,
         created_at: now,
         speed: 0.0,
+        expect_dest: None,
     }
 }
 

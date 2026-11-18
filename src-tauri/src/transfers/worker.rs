@@ -239,6 +239,27 @@ impl Ctx<'_> {
     }
 }
 
+/// Moves the finished `.part` into place, first checking that the destination is still what the
+/// job expects (if it says) so a changed server copy is never overwritten.
+async fn publish(dst: &Side, job: &TransferJob) -> Result<String, JobError> {
+    if job.expect_dest.is_some() {
+        let actual = match io::stat(dst, &job.dest.path).await {
+            Ok(found) => Some(found),
+            Err(JobError::Operation(_)) => None,
+            Err(e) => return Err(e),
+        };
+        check_expected_dest(job.expect_dest, actual)?;
+    }
+    io::finish(
+        dst,
+        &job.part_path,
+        &job.dest.path,
+        job.replace,
+        job.src_mtime,
+    )
+    .await
+}
+
 /// Runs one transfer and reports how it ended. Publishing is not raced against Pause/Cancel:
 /// once it starts, its real outcome is what the actor records.
 pub async fn run(
@@ -263,15 +284,7 @@ pub async fn run(
     };
     let stopped = Err(finished(Err(JobError::Stopped)));
     let end = match until_stopped(&token, ctx.prepare(src, dest, &token), stopped).await {
-        Ok(dst) => match io::finish(
-            &dst,
-            &job.part_path,
-            &job.dest.path,
-            job.replace,
-            job.src_mtime,
-        )
-        .await
-        {
+        Ok(dst) => match publish(&dst, &job).await {
             Ok(landed) => RunEnd::Finished {
                 result: Ok(()),
                 landed: (landed != job.dest.path).then_some(landed),

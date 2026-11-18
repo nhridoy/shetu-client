@@ -73,6 +73,10 @@ pub struct TransferJob {
     pub created_at: i64,
     #[serde(default)]
     pub speed: f64,
+    /// The destination's (size, mtime) that must still hold when publishing; a mismatch fails
+    /// the job with `DEST_CHANGED` instead of overwriting.
+    #[serde(default)]
+    pub expect_dest: Option<(u64, i64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +91,18 @@ pub enum JobError {
 pub enum ErrorClass {
     Connection,
     Operation,
+}
+
+pub const DEST_CHANGED: &str = "conflict: the server copy changed";
+
+pub fn check_expected_dest(
+    expect: Option<(u64, i64)>,
+    actual: Option<(u64, i64)>,
+) -> Result<(), JobError> {
+    match expect {
+        Some(expected) if actual != Some(expected) => Err(JobError::Operation(DEST_CHANGED.into())),
+        _ => Ok(()),
+    }
 }
 
 pub fn part_path(dest: &str, id: &str) -> String {
@@ -161,6 +177,20 @@ mod tests {
     use super::*;
     use russh_sftp::client::error::Error as SftpError;
     use russh_sftp::protocol::{Status, StatusCode};
+
+    #[test]
+    fn expected_dest_rules() {
+        assert!(check_expected_dest(None, None).is_ok());
+        assert!(check_expected_dest(Some((10, 5)), Some((10, 5))).is_ok());
+        assert_eq!(
+            check_expected_dest(Some((10, 5)), Some((11, 5))),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+        assert_eq!(
+            check_expected_dest(Some((10, 5)), None),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+    }
 
     #[test]
     fn part_path_uses_first_8_chars_of_id() {

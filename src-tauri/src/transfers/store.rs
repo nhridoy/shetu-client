@@ -142,6 +142,24 @@ mod tests {
     }
 
     #[test]
+    fn rows_saved_before_expect_dest_still_load() {
+        let db = db();
+        let mut json = serde_json::to_value(test_job("old", JobStatus::Paused)).unwrap();
+        json.as_object_mut().unwrap().remove("expectDest");
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO transfer_jobs (id, created_at, data) VALUES ('old', 0, ?1)",
+                [json.to_string()],
+            )
+            .unwrap();
+        let loaded = load_jobs(&db).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].expect_dest, None);
+    }
+
+    #[test]
     fn bad_row_is_skipped_and_removed() {
         let db = db();
         db.conn
