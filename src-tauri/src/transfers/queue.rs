@@ -482,7 +482,7 @@ mod tests {
         q.set_waiting("a", WaitReason::Host);
         assert_eq!(q.waiting_for(WaitReason::Host), vec!["a".to_string()]);
         assert_eq!(q.get("a").unwrap().attempt, 0);
-        assert!(q.startable().contains(&"a".to_string()) == false);
+        assert!(!q.startable().contains(&"a".to_string()));
         assert!(q.wake("a"));
         assert_eq!(st(&q, "a"), Queued);
     }

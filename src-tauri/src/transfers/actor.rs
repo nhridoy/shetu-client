@@ -95,11 +95,14 @@ struct Run {
     held: Vec<String>,
 }
 
+/// The panes a job was queued from (source, destination), tried first for reuse.
+pub type PreferPair = (Option<String>, Option<String>);
+
 pub struct State {
     queue: Queue,
     runs: HashMap<String, Run>,
     next_run: u64,
-    prefer: HashMap<String, (Option<String>, Option<String>)>,
+    prefer: HashMap<String, PreferPair>,
     owned: HashMap<String, Instant>,
     last_saved: HashMap<String, i64>,
     epoch: u64,
@@ -178,7 +181,7 @@ impl State {
     pub fn enqueue<S>(
         &mut self,
         jobs: Vec<TransferJob>,
-        prefer: Vec<(String, (Option<String>, Option<String>))>,
+        prefer: Vec<(String, PreferPair)>,
         epoch: u64,
     ) -> Result<Vec<Effect<S>>, String> {
         if epoch != self.epoch {

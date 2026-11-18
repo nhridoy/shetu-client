@@ -6,3 +6,4 @@ pub mod store;
 pub mod io;
 pub mod manager;
 pub mod actor;
+pub mod worker;

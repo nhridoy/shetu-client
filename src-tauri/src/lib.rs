@@ -377,13 +377,14 @@ fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn wipe_local_data(
+async fn wipe_local_data(
     db: tauri::State<'_, db::LocalDb>,
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     transfers: tauri::State<'_, transfers::manager::TransferManager>,
 ) -> Result<(), String> {
     forwarding.stop_all();
-    transfers.wipe();
+    // Waits until the queue has dropped everything, so nothing is saved back after the wipe.
+    transfers.wipe().await;
     db::wipe_all(&db)
 }
 
