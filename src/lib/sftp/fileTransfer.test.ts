@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TransferJob } from "@/lib/sftp/transfers";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
-import { parentPath, resolveTransferPaths } from "./fileTransfer";
+import {
+  type FileProvider,
+  parentPath,
+  resolveTransferPaths,
+  transferFiles,
+} from "./fileTransfer";
 
 const mkdir = (name: string, path: string): FileItem => ({
   name,
@@ -235,5 +242,153 @@ describe("parentPath", () => {
 
   it("returns root for a bare root path", () => {
     expect(parentPath("/")).toBe("/");
+  });
+});
+
+const transferMocks = vi.hoisted(() => ({
+  enqueueTransfers: vi.fn(),
+}));
+vi.mock("@/lib/sftp/transfers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/sftp/transfers")>()),
+  enqueueTransfers: transferMocks.enqueueTransfers,
+}));
+
+describe("transferFiles with the transfer manager", () => {
+  const job = (id: string, patch: Partial<TransferJob> = {}): TransferJob => ({
+    id,
+    kind: "download",
+    src: { path: `/r/${id}`, host: null },
+    dest: { path: `/l/${id}`, host: null },
+    replace: false,
+    partPath: `/l/${id}.x.part`,
+    srcSize: 1,
+    srcMtime: 0,
+    status: "queued",
+    transferred: 0,
+    attempt: 0,
+    nextRetryAt: null,
+    waitReason: null,
+    error: null,
+    createdAt: 0,
+    speed: 0,
+    ...patch,
+  });
+
+  const remote = {
+    type: "remote" as const,
+    id: "pane-1",
+    getSessionId: () => "sess-1",
+    listFiles: vi.fn(async () => [mkfile("a.txt", "/l/a.txt")]),
+    listFilesRecursive: vi.fn(async () => []),
+    isDirectory: vi.fn(async () => false),
+  } as unknown as FileProvider;
+  const local = {
+    type: "local" as const,
+    id: "local",
+    listFiles: vi.fn(async () => [mkfile("a.txt", "/l/a.txt")]),
+    mkdirAll: vi.fn(async () => {}),
+  } as unknown as FileProvider;
+
+  const files = [mkfile("a.txt", "/r/a.txt"), mkfile("b.txt", "/r/b.txt")];
+
+  beforeEach(() => {
+    useSftpStore.setState({ transfers: [] });
+    transferMocks.enqueueTransfers.mockReset();
+    transferMocks.enqueueTransfers.mockImplementation(async () => {
+      const jobs = [job("j1"), job("j2")];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      return jobs;
+    });
+  });
+
+  const start = () =>
+    transferFiles({
+      source: remote,
+      dest: local,
+      files,
+      destPath: "/l",
+      mode: "copy",
+      overrides: new Map([["/r/a.txt", { action: "replace" as const }]]),
+    });
+
+  const settle = async (patches: Record<string, Partial<TransferJob>>) => {
+    await vi.waitFor(() =>
+      expect(transferMocks.enqueueTransfers).toHaveBeenCalled(),
+    );
+    useSftpStore
+      .getState()
+      .applyTransferChanges(
+        Object.entries(patches).map(([id, p]) => job(id, p)),
+      );
+  };
+
+  it("enqueues every remote file in one call with replace flags", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "done" } });
+    await run;
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledTimes(1);
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledWith([
+      {
+        kind: "download",
+        srcPath: "/r/a.txt",
+        destPath: "/l/a.txt",
+        srcSessionId: "sess-1",
+        destSessionId: undefined,
+        replace: true,
+      },
+      {
+        kind: "download",
+        srcPath: "/r/b.txt",
+        destPath: "/l/b.txt",
+        srcSessionId: "sess-1",
+        destSessionId: undefined,
+        replace: false,
+      },
+    ]);
+  });
+
+  it("resolves when jobs finish", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "done" } });
+    const results = await run;
+    expect(results.map((r) => r.action)).toEqual(["copied", "copied"]);
+  });
+
+  it("resolves_when_job_paused", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "paused" } });
+    const results = await run;
+    expect(results.map((r) => r.action)).toEqual(["copied", "waiting"]);
+  });
+
+  it("treats_host_wait_as_handed_off", async () => {
+    const run = start();
+    let resolved = false;
+    void run.then(() => {
+      resolved = true;
+    });
+    await settle({
+      j1: { status: "done" },
+      j2: { status: "waiting", waitReason: "retry" },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false);
+    useSftpStore
+      .getState()
+      .applyTransferChanges([
+        job("j2", { status: "waiting", waitReason: "host" }),
+      ]);
+    const results = await run;
+    expect(results[1].action).toBe("waiting");
+  });
+
+  it("reports failed jobs as errors", async () => {
+    const run = start();
+    await settle({
+      j1: { status: "done" },
+      j2: { status: "failed", error: "denied" },
+    });
+    const results = await run;
+    expect(results[1].error).toBe("denied");
   });
 });

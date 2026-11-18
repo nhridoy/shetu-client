@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 pub const CHANGED_EVENT: &str = "transfers://changed";
+pub const RESET_EVENT: &str = "transfers://reset";
 const OWNED_PREFIX: &str = "transfers:";
 const OWNED_IDLE: Duration = Duration::from_secs(30);
 const PROGRESS_EMIT_MS: i64 = 250;
@@ -188,6 +189,7 @@ impl TransferManager {
             .unwrap_or_else(|p| p.into_inner())
             .clear();
         let _ = store::clear_jobs(&self.inner.app.state::<crate::db::LocalDb>());
+        let _ = self.inner.app.emit(RESET_EVENT, ());
     }
 }
 

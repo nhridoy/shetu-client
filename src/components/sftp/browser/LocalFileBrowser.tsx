@@ -116,7 +116,7 @@ export default function LocalFileBrowser({
   const setPendingFileDrop = useSftpStore((s) => s.setPendingFileDrop);
   const activeTransfers = useSftpStore(
     (s) =>
-      s.transfers.filter((t) => t.status === "pending" || t.status === "active")
+      s.transfers.filter((t) => t.status === "queued" || t.status === "active")
         .length,
   );
   const scanning = useSftpStore((s) => s.transferScanning);

@@ -11,20 +11,6 @@ export interface FileItem {
   isHidden: boolean;
 }
 
-export interface TransferItem {
-  id: string;
-  fileName: string;
-  localPath?: string;
-  remotePath?: string;
-  direction: "upload" | "download";
-  status: "pending" | "active" | "complete" | "error";
-  progress: number;
-  size: number;
-  transferred: number;
-  speed?: number;
-  error?: string;
-}
-
 export type FileSortField =
   | "name"
   | "size"

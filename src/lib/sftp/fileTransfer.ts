@@ -10,7 +10,12 @@ import {
   readLocalFileBytes,
   writeLocalFileBytes,
 } from "@/lib/sftp/localFs";
-import type { TransferItem } from "@/stores/sftp/sftpStore";
+import {
+  enqueueTransfers,
+  isSettled,
+  type TransferJob,
+  type TransferKind,
+} from "@/lib/sftp/transfers";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -34,25 +39,6 @@ export interface FileProvider {
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   mkdirAll(paths: string[]): Promise<void>;
-  upload?(
-    localPath: string,
-    remotePath: string,
-    onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void>;
-  download?(
-    remotePath: string,
-    localPath: string,
-    onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void>;
-  serverCopy?(
-    srcSessionId: string,
-    srcPath: string,
-    destPath: string,
-    totalBytes: number,
-    transferId?: string,
-  ): Promise<void>;
 }
 
 export class LocalFileProvider implements FileProvider {
@@ -211,6 +197,8 @@ export interface TransferPathEntry {
   relativePath: string;
   destFilePath: string;
   skip: boolean;
+  /** The user approved replacing what's at the destination (this entry or its root folder). */
+  replace: boolean;
 }
 
 /**
@@ -235,6 +223,7 @@ export function resolveTransferPaths(
   // through to the copy auto-rename).
   const nameMap = new Map<string, string>();
   const skippedRoots = new Set<string>();
+  const replacedRoots = new Set<string>();
   for (const item of expandedFiles) {
     const rootName = item.relativePath.split(/[/\\]/)[0];
     if (item.relativePath !== rootName) continue;
@@ -248,6 +237,7 @@ export function resolveTransferPaths(
     if (override?.action === "replace") {
       // Explicit overwrite — keep the name
       resolved = rootName;
+      replacedRoots.add(rootName);
     } else if (override?.action === "auto") {
       resolved = generateAutoName(rootName, names);
     } else if (override?.action === "rename" && override.newName) {
@@ -280,40 +270,82 @@ export function resolveTransferPaths(
       segs.push(generateAutoName(leaf, names));
       const renamed = segs.join("/");
       destFilePath = joinPath(destPath, renamed);
-      return { file, relativePath: renamed, destFilePath, skip: false };
+      return {
+        file,
+        relativePath: renamed,
+        destFilePath,
+        skip: false,
+        replace: false,
+      };
     }
 
-    return { file, relativePath: remapped, destFilePath, skip: skipped };
+    return {
+      file,
+      relativePath: remapped,
+      destFilePath,
+      skip: skipped,
+      replace: replacedRoots.has(rootName),
+    };
   });
 }
 
-function determineDirection(
+/** Which manager job moves a file between these providers; null for this computer to itself. */
+function transferKind(
   source: FileProvider,
   dest: FileProvider,
-): "upload" | "download" | "copy" {
+): TransferKind | null {
   if (source.type === "remote" && dest.type === "local") return "download";
   if (source.type === "local" && dest.type === "remote") return "upload";
-  return "copy";
+  if (source.type === "remote" && dest.type === "remote") return "serverCopy";
+  return null;
+}
+
+function sessionIdOf(provider: FileProvider): string | undefined {
+  if (provider.type !== "remote") return undefined;
+  return (provider as unknown as { getSessionId(): string }).getSessionId();
 }
 
 const MAX_CONCURRENT = 3;
 
 export interface TransferFileResult {
   file: FileItem;
-  action: "moved" | "copied" | "skipped";
+  /** "waiting": handed to the transfer queue but not finished (paused or waiting for a host). */
+  action: "moved" | "copied" | "skipped" | "waiting";
   error?: string;
 }
 
-// Force a transfer to "complete". Rust upload/download/serverCopy emit
-// progress events, but a 0-byte file produces no events, leaving the item
-// stuck at "pending"/"active" forever. Call this after the op returns.
-function finalizeTransfer(transferId: string, size: number): void {
-  useSftpStore.getState().updateTransfer(transferId, {
-    status: "complete",
-    progress: 1,
-    transferred: size,
-    size,
+/** Resolves once every job has settled (see `isSettled`), with each job's settled state. */
+function waitForSettled(ids: string[]): Promise<TransferJob[]> {
+  const seen = new Map<string, TransferJob>();
+  return new Promise((resolve) => {
+    let unsubscribe: (() => void) | undefined;
+    const check = (jobs: TransferJob[]) => {
+      for (const job of jobs) {
+        if (ids.includes(job.id) && isSettled(job)) seen.set(job.id, job);
+      }
+      if (seen.size < ids.length) return false;
+      unsubscribe?.();
+      resolve(ids.map((id) => seen.get(id) as TransferJob));
+      return true;
+    };
+    if (check(useSftpStore.getState().transfers)) return;
+    unsubscribe = useSftpStore.subscribe((state) => {
+      check(state.transfers);
+    });
   });
+}
+
+function resultFor(file: FileItem, job: TransferJob): TransferFileResult {
+  switch (job.status) {
+    case "done":
+      return { file, action: "copied" };
+    case "failed":
+      return { file, action: "copied", error: job.error ?? "Transfer failed" };
+    case "cancelled":
+      return { file, action: "copied", error: "Cancelled" };
+    default:
+      return { file, action: "waiting" };
+  }
 }
 
 export interface TransferOptions {
@@ -338,94 +370,6 @@ export interface TransferOptions {
   ) => void;
 }
 
-async function transferSingleFile(
-  source: FileProvider,
-  dest: FileProvider,
-  file: FileItem,
-  destFilePath: string,
-  sessionId?: string,
-): Promise<TransferFileResult> {
-  const direction = determineDirection(source, dest);
-
-  // Create TransferItem for this file
-  const transferId = crypto.randomUUID();
-  const transferItem: TransferItem = {
-    id: transferId,
-    fileName: file.name,
-    localPath: source.type === "local" ? file.path : undefined,
-    remotePath: dest.type === "remote" ? destFilePath : undefined,
-    direction,
-    status: "pending",
-    progress: 0,
-    size: file.size,
-    transferred: 0,
-    sessionId,
-  };
-
-  // Dynamically import store to avoid circular dependency
-  const { useSftpStore } = await import("@/stores/sftp/sftpStore");
-  useSftpStore.getState().addTransfer(transferItem);
-
-  try {
-    if (source.type === "local" && dest.type === "local") {
-      // Local→Local: use native fs (instant, no progress events)
-      await dest.copyFile(file.path, destFilePath);
-      finalizeTransfer(transferId, file.size);
-      return { file, action: "copied" };
-    }
-
-    if (source.type === "local" && dest.type === "remote" && dest.upload) {
-      // Local→Remote: stream via Rust upload
-      await dest.upload(file.path, destFilePath, undefined, transferId);
-      finalizeTransfer(transferId, file.size);
-      return { file, action: "copied" };
-    }
-
-    if (source.type === "remote" && dest.type === "local" && source.download) {
-      // Remote→Local: stream via Rust download
-      await source.download(file.path, destFilePath, undefined, transferId);
-      finalizeTransfer(transferId, file.size);
-      return { file, action: "copied" };
-    }
-
-    if (source.type === "remote" && dest.type === "remote") {
-      // Remote→Remote: direct server-side streaming (no temp file, no JS memory)
-      if (
-        "serverCopy" in source &&
-        typeof source.serverCopy === "function" &&
-        "getSessionId" in dest
-      ) {
-        const destWithSession = dest as { getSessionId: () => string };
-        await source.serverCopy(
-          destWithSession.getSessionId(),
-          file.path,
-          destFilePath,
-          file.size,
-          transferId,
-        );
-        finalizeTransfer(transferId, file.size);
-        return { file, action: "copied" };
-      }
-      // Fallback shouldn't happen with valid providers
-      throw new Error(
-        "Server-to-server copy not supported between these providers",
-      );
-    }
-
-    // Fallback: shouldn't reach here with valid providers
-    const data = await source.readFile(file.path);
-    await dest.writeFile(destFilePath, data);
-    finalizeTransfer(transferId, file.size);
-    return { file, action: "copied" };
-  } catch (err) {
-    useSftpStore.getState().updateTransfer(transferId, {
-      status: "error",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    throw err;
-  }
-}
-
 export async function transferFiles(
   options: TransferOptions,
 ): Promise<TransferFileResult[]> {
@@ -435,7 +379,6 @@ export async function transferFiles(
     files,
     destPath,
     mode,
-    sessionId,
     overrides,
     onFileStart,
     onFileComplete,
@@ -534,9 +477,10 @@ export async function transferFiles(
     const transfers: {
       file: FileItem;
       destFilePath: string;
+      replace: boolean;
     }[] = [];
 
-    for (const { file, skip, destFilePath } of resolvedEntries) {
+    for (const { file, skip, destFilePath, replace } of resolvedEntries) {
       // Skip directories - they're already created
       if (file.type === "directory") continue;
 
@@ -559,7 +503,33 @@ export async function transferFiles(
         continue;
       }
 
-      transfers.push({ file, destFilePath });
+      transfers.push({ file, destFilePath, replace });
+    }
+
+    const kind = transferKind(source, dest);
+    if (kind && transfers.length > 0) {
+      // Remote transfers go to the Rust transfer queue (resume, retries, 3 at a time).
+      transfers.forEach((t, i) => {
+        onFileStart?.(t.file, i);
+      });
+      const jobs = await enqueueTransfers(
+        transfers.map((t) => ({
+          kind,
+          srcPath: t.file.path,
+          destPath: t.destFilePath,
+          srcSessionId: sessionIdOf(source),
+          destSessionId: sessionIdOf(dest),
+          replace: t.replace,
+        })),
+      );
+      useSftpStore.getState().setTransferScanning(false);
+      const settled = await waitForSettled(jobs.map((j) => j.id));
+      settled.forEach((job, i) => {
+        const result = resultFor(transfers[i].file, job);
+        results.push(result);
+        onFileComplete?.(transfers[i].file, i, result);
+      });
+      transfers.length = 0;
     }
 
     // Process transfers in parallel batches
@@ -570,8 +540,8 @@ export async function transferFiles(
           const globalIdx = i + batchIdx;
           onFileStart?.(t.file, globalIdx);
 
-          // Same-provider local move: instant, no TransferItem. Cross-volume
-          // moves copy then delete the source instead of rename.
+          // Same-provider local move: instant. Cross-volume moves copy then
+          // delete the source instead of rename.
           if (localMove) {
             if (sameVolumeMove) {
               await source.moveFile(t.file.path, t.destFilePath);
@@ -582,13 +552,9 @@ export async function transferFiles(
             return { file: t.file, action: "moved" as const };
           }
 
-          return transferSingleFile(
-            source,
-            dest,
-            t.file,
-            t.destFilePath,
-            sessionId,
-          );
+          // This computer to itself: native copy, no queue.
+          await dest.copyFile(t.file.path, t.destFilePath);
+          return { file: t.file, action: "copied" as const };
         }),
       );
 
@@ -631,24 +597,33 @@ export async function transferFiles(
 
     // Show summary toast
     const errors = results.filter((r) => r.error);
-    const successes = results.filter((r) => !r.error && r.action !== "skipped");
-    const skipped = results.filter((r) => r.action === "skipped");
+    const successes = results.filter(
+      (r) => !r.error && r.action !== "skipped" && r.action !== "waiting",
+    );
+    const waiting = results.filter((r) => r.action === "waiting");
+    const waitingNote = waiting.length > 0 ? `, ${waiting.length} waiting` : "";
 
-    if (errors.length === 0 && successes.length > 0) {
+    if (errors.length === 0 && waiting.length > 0) {
+      toast(
+        successes.length > 0
+          ? `Transferred ${successes.length} files${waitingNote}`
+          : `${waiting.length} waiting`,
+      );
+    } else if (errors.length === 0 && successes.length > 0) {
       const count = successes.length;
       const verb = mode === "move" ? "Moved" : "Copied";
       const name = count === 1 ? successes[0].file.name : `${count} files`;
       toast.success(`${verb} ${name}`);
-    } else if (errors.length > 0 && successes.length === 0) {
+    } else if (
+      errors.length > 0 &&
+      successes.length === 0 &&
+      waiting.length === 0
+    ) {
       toast.error(`Failed to transfer: ${errors[0].error || "Unknown error"}`);
     } else if (errors.length > 0) {
       toast.warning(
-        `Transferred ${successes.length} files, ${errors.length} failed`,
+        `Transferred ${successes.length} files, ${errors.length} failed${waitingNote}`,
       );
-    }
-
-    if (skipped.length > 0 && successes.length === 0 && errors.length === 0) {
-      // All skipped — no toast
     }
 
     return results;

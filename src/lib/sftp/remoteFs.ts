@@ -24,18 +24,6 @@ export interface RemoteFileProvider {
   readlink(path: string): Promise<string>;
   stat(path: string): Promise<FileItem>;
   search(path: string, query: string): Promise<FileItem[]>;
-  download(
-    remotePath: string,
-    localPath: string,
-    onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void>;
-  upload(
-    localPath: string,
-    remotePath: string,
-    onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void>;
 }
 
 interface SftpEntry {
@@ -297,59 +285,5 @@ export class RemoteFileProviderImpl implements RemoteFileProvider {
       query,
     });
     return entries.map(sftpEntryToFileItem);
-  }
-
-  async download(
-    remotePath: string,
-    localPath: string,
-    _onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void> {
-    const invoke = await this.getInvoke();
-    const id = transferId ?? crypto.randomUUID();
-
-    await invoke("sftp_download", {
-      sessionId: this.sessionId,
-      remotePath,
-      localPath,
-      transferId: id,
-    });
-  }
-
-  async upload(
-    localPath: string,
-    remotePath: string,
-    _onProgress?: ProgressCallback,
-    transferId?: string,
-  ): Promise<void> {
-    const invoke = await this.getInvoke();
-    const id = transferId ?? crypto.randomUUID();
-
-    await invoke("sftp_upload", {
-      sessionId: this.sessionId,
-      localPath,
-      remotePath,
-      transferId: id,
-    });
-  }
-
-  async serverCopy(
-    destSessionId: string,
-    srcPath: string,
-    destPath: string,
-    totalBytes: number,
-    transferId?: string,
-  ): Promise<void> {
-    const invoke = await this.getInvoke();
-    const id = transferId ?? crypto.randomUUID();
-
-    await invoke("sftp_server_copy", {
-      srcSessionId: this.sessionId,
-      srcPath,
-      destSessionId,
-      destPath,
-      totalBytes,
-      transferId: id,
-    });
   }
 }

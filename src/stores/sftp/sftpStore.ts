@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 import { create } from "zustand";
 import {
   type DropSide,
@@ -10,6 +10,14 @@ import {
   sideToDirection,
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
+import {
+  clearFinishedTransfers,
+  listTransfers,
+  onTransfersChanged,
+  onTransfersReset,
+  resumeAllTransfers,
+  type TransferJob,
+} from "@/lib/sftp/transfers";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export interface SftpConnectionState {
@@ -40,16 +48,6 @@ interface SshConfig {
   passphrase?: string;
 }
 
-interface SftpTransferProgress {
-  session_id: string;
-  transfer_id: string;
-  transfer_type: string;
-  path: string;
-  bytes_transferred: number;
-  total_bytes: number;
-  speed: number;
-}
-
 const initialConnectionState: SftpConnectionState = {
   sessionId: null,
   hostId: null,
@@ -61,40 +59,33 @@ const initialConnectionState: SftpConnectionState = {
   error: null,
 };
 
-let progressUnlisten: (() => void) | null = null;
+let transferListener: Promise<void> | null = null;
 
-async function ensureProgressListener(
-  get: () => SftpState,
-  set: (partial: Partial<SftpState>) => void,
-) {
-  if (progressUnlisten) return;
-
-  progressUnlisten = await listen<SftpTransferProgress>(
-    "sftp-transfer-progress",
-    (event) => {
-      const { transfer_id, bytes_transferred, total_bytes, speed } =
-        event.payload;
-      const state = get();
-      const transfer = state.transfers.find((t) => t.id === transfer_id);
-      if (!transfer) return;
-
-      const completed = bytes_transferred >= total_bytes;
-      set({
-        transfers: state.transfers.map((t) =>
-          t.id === transfer_id
-            ? {
-                ...t,
-                transferred: bytes_transferred,
-                size: total_bytes,
-                progress: total_bytes > 0 ? bytes_transferred / total_bytes : 0,
-                speed,
-                status: completed ? "complete" : "active",
-              }
-            : t,
-        ),
+/** Loads the manager's queue once and mirrors its changes; offers Resume all after a restart. */
+function startTransferListener(
+  apply: (jobs: TransferJob[]) => void,
+  reset: () => void,
+): Promise<void> {
+  transferListener ??= (async () => {
+    await onTransfersChanged(apply);
+    await onTransfersReset(reset);
+    const jobs = await listTransfers();
+    apply(jobs);
+    const paused = jobs.filter((j) => j.status === "paused").length;
+    if (paused > 0) {
+      toast(`${paused} transfer${paused === 1 ? "" : "s"} paused`, {
+        action: {
+          label: "Resume all",
+          onClick: () => void resumeAllTransfers(),
+        },
       });
-    },
-  );
+    }
+  })().catch((e) => {
+    // Never blocks connecting; the next call tries again.
+    transferListener = null;
+    console.warn("transfers: could not load the queue", e);
+  });
+  return transferListener;
 }
 
 export interface SftpLeafNode {
@@ -141,21 +132,6 @@ export interface PendingFileDrop {
   sourcePaneId?: string;
 }
 
-export interface TransferItem {
-  id: string;
-  fileName: string;
-  localPath?: string;
-  remotePath?: string;
-  direction: "upload" | "download" | "copy";
-  status: "pending" | "active" | "complete" | "error";
-  progress: number;
-  size: number;
-  transferred: number;
-  speed?: number;
-  error?: string;
-  sessionId?: string;
-}
-
 export interface SftpErrorState {
   lastError: string | null;
   errorType: "connection" | "operation" | "transfer" | null;
@@ -167,7 +143,7 @@ interface SftpState {
   focusedPaneId: string | null;
   fileDragState: FileDragState | null;
   pendingFileDrop: PendingFileDrop | null;
-  transfers: TransferItem[];
+  transfers: TransferJob[];
   transferScanning: boolean;
   clipboard: {
     paths: string[];
@@ -202,11 +178,10 @@ interface SftpState {
   ) => void;
   disconnectPane: (paneId: string) => void;
   setPaneSizes: (splitId: string, sizes: number[]) => void;
-  addTransfer: (transfer: TransferItem) => void;
+  /** Upserts jobs from the transfer manager, by id. */
+  applyTransferChanges: (jobs: TransferJob[]) => void;
   setTransferScanning: (scanning: boolean) => void;
-  updateTransfer: (id: string, data: Partial<TransferItem>) => void;
-  removeTransfer: (id: string) => void;
-  clearCompletedTransfers: () => void;
+  clearCompletedTransfers: () => Promise<void>;
   setClipboard: (
     sourceId: string,
     paths: string[],
@@ -431,19 +406,22 @@ export const useSftpStore = create<SftpState>((set, get) => ({
     set({ root: apply(root) });
   },
 
-  addTransfer: (transfer) =>
-    set((s) => ({ transfers: [...s.transfers, transfer] })),
+  applyTransferChanges: (jobs) =>
+    set((s) => {
+      const byId = new Map(jobs.map((j) => [j.id, j]));
+      const kept = s.transfers.map((t) => byId.get(t.id) ?? t);
+      const known = new Set(s.transfers.map((t) => t.id));
+      return { transfers: [...kept, ...jobs.filter((j) => !known.has(j.id))] };
+    }),
   setTransferScanning: (scanning) => set({ transferScanning: scanning }),
-  updateTransfer: (id, data) =>
+  clearCompletedTransfers: async () => {
+    await clearFinishedTransfers();
     set((s) => ({
-      transfers: s.transfers.map((t) => (t.id === id ? { ...t, ...data } : t)),
-    })),
-  removeTransfer: (id) =>
-    set((s) => ({ transfers: s.transfers.filter((t) => t.id !== id) })),
-  clearCompletedTransfers: () =>
-    set((s) => ({
-      transfers: s.transfers.filter((t) => t.status !== "complete"),
-    })),
+      transfers: s.transfers.filter(
+        (t) => t.status !== "done" && t.status !== "cancelled",
+      ),
+    }));
+  },
   setClipboard: (sourceId, paths, mode, sourceDirect) =>
     set({ clipboard: { paths, sourceId, sourceDirect }, clipboardMode: mode }),
   clearClipboard: () => set({ clipboard: null, clipboardMode: null }),
@@ -457,9 +435,10 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   setError: (error, type) =>
     set({ errorState: { lastError: error, errorType: type } }),
   clearError: () => set({ errorState: { ...initialErrorState } }),
-  ensureTransferListener: async () => {
-    await ensureProgressListener(get, set);
-  },
+  ensureTransferListener: () =>
+    startTransferListener(get().applyTransferChanges, () =>
+      set({ transfers: [] }),
+    ),
 
   connectSftp: async (hostId: string) => {
     set({
@@ -488,7 +467,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
           error: null,
         },
       });
-      await ensureProgressListener(get, set);
+      await get().ensureTransferListener();
     } catch (err) {
       set({
         sftpConnection: {
@@ -527,7 +506,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
           error: null,
         },
       });
-      await ensureProgressListener(get, set);
+      await get().ensureTransferListener();
     } catch (err) {
       set({
         sftpConnection: {
@@ -548,10 +527,6 @@ export const useSftpStore = create<SftpState>((set, get) => ({
       } catch {
         // best-effort disconnect
       }
-    }
-    if (progressUnlisten) {
-      progressUnlisten();
-      progressUnlisten = null;
     }
     set({ sftpConnection: { ...initialConnectionState } });
   },

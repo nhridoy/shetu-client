@@ -32,6 +32,7 @@ import TerminalPage from "@/pages/TerminalPage";
 import WorkspacesPage from "@/pages/WorkspacesPage";
 import { useAuthStore } from "@/stores/auth/authStore";
 import { useSettingsStore } from "@/stores/settings/settingsStore";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useShortcutStore } from "@/stores/shortcuts/shortcutStore";
 import { useShellStore } from "@/stores/terminal/shellStore";
 import { isLightTheme, useThemeStore } from "@/stores/themeStore";
@@ -78,6 +79,12 @@ function App() {
   useEffect(() => {
     void notifyIfPreviousCrash();
   }, []);
+
+  // The transfer queue lives in Rust; mirror it (and offer Resume all) once unlocked.
+  const unlocked = useAuthStore((s) => s.isUnlocked && !s.appLocked);
+  useEffect(() => {
+    if (unlocked) void useSftpStore.getState().ensureTransferListener();
+  }, [unlocked]);
 
   return (
     <BrowserRouter>

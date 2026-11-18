@@ -118,7 +118,7 @@ export default function FileBrowser({
   const sortDirection = paneState?.sortDirection ?? "asc";
   const activeTransfers = useSftpStore(
     (s) =>
-      s.transfers.filter((t) => t.status === "pending" || t.status === "active")
+      s.transfers.filter((t) => t.status === "queued" || t.status === "active")
         .length,
   );
   const scanning = useSftpStore((s) => s.transferScanning);
