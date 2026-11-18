@@ -383,10 +383,12 @@ async fn wipe_local_data(
     db: tauri::State<'_, db::LocalDb>,
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     transfers: tauri::State<'_, transfers::manager::TransferManager>,
+    edits: tauri::State<'_, edits::manager::EditManager>,
 ) -> Result<(), String> {
     forwarding.stop_all();
     // Waits until the queue has dropped everything, so nothing is saved back after the wipe.
     transfers.wipe().await;
+    edits.wipe().await;
     db::wipe_all(&db)
 }
 
@@ -1769,6 +1771,7 @@ pub fn run() {
             let db_path = data_dir.join(db::DB_FILE_NAME);
             app.manage(db::open(&db_path.display().to_string())?);
             app.manage(transfers::manager::TransferManager::new(app.handle().clone()));
+            app.manage(edits::manager::EditManager::new(app.handle().clone()));
 
             let handle = app.handle().clone();
             app.listen("main-ready", move |_| {
@@ -1927,6 +1930,11 @@ pub fn run() {
             sftp::sftp_readlink,
             sftp::sftp_search,
             local_list::local_list_recursive,
+            edits::manager::edit_open,
+            edits::manager::edit_list,
+            edits::manager::edit_stop,
+            edits::manager::edit_resolve,
+            edits::manager::edit_upload_now,
             transfers::manager::transfer_enqueue,
             transfers::manager::transfer_list,
             transfers::manager::transfer_pause,

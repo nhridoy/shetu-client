@@ -176,6 +176,21 @@ impl EditState {
         }
     }
 
+    /// A save while the edit's connection is gone: kept as unsent with an error, never taken
+    /// for a conflict.
+    pub fn saved_offline(&mut self, id: &str, local: (u64, i64)) -> Vec<EditEffect> {
+        let Some(e) = self.get_mut(id) else {
+            return Vec::new();
+        };
+        if e.status == EditStatus::NotUploaded || local == e.last_local {
+            return Vec::new();
+        }
+        e.last_local = local;
+        e.unsent = true;
+        e.error = Some("Connection closed — reopen the pane, then Upload".into());
+        vec![EditEffect::Changed]
+    }
+
     pub fn enqueued(&mut self, id: &str, job_id: String) {
         if let Some(e) = self.get_mut(id) {
             e.job = Some(job_id);
@@ -595,6 +610,21 @@ mod tests {
         let fx = s.wipe();
         assert_eq!(fx.iter().filter(|f| matches!(f, Remove { .. })).count(), 2);
         assert!(s.list().is_empty());
+    }
+
+    #[test]
+    fn a_save_without_a_connection_is_unsent_not_a_conflict() {
+        let mut s = opened();
+        let fx = s.saved_offline("e", (12, 200));
+        assert!(!fx
+            .iter()
+            .any(|f| matches!(f, Conflict { .. } | Upload { .. })));
+        let e = s.get("e").unwrap();
+        assert_eq!(
+            (e.status, e.unsent, e.last_local),
+            (EditStatus::Watching, true, (12, 200))
+        );
+        assert!(e.error.as_deref().unwrap().contains("Connection closed"));
     }
 
     #[test]
