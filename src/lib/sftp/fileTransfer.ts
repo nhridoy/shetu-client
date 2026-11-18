@@ -382,6 +382,25 @@ export interface TransferOptions {
   ) => void;
 }
 
+/** Renames `from` onto `to`; with `replacing`, keeps the old `to` as a backup until it worked. */
+async function moveReplacing(
+  provider: FileProvider,
+  from: string,
+  to: string,
+  replacing: boolean,
+): Promise<void> {
+  if (!replacing) return provider.moveFile(from, to);
+  const backup = `${to}.${crypto.randomUUID().slice(0, 8)}.replaced`;
+  await provider.moveFile(to, backup);
+  try {
+    await provider.moveFile(from, to);
+  } catch (err) {
+    await provider.moveFile(backup, to).catch(() => {});
+    throw err;
+  }
+  await provider.removeFile(backup).catch(() => {});
+}
+
 /** One toast for the whole batch. */
 function showSummary(
   results: TransferFileResult[],
@@ -454,21 +473,20 @@ export async function transferFiles(
         { file, destFilePath, skip, replace },
       ] of roots.entries()) {
         let result: TransferFileResult;
-        if (skip) {
+        if (skip || destFilePath === file.path) {
+          // Pasting a cut file back into its own folder is a no-op, never a delete.
           result = { file, action: "skipped" };
         } else {
           try {
-            // SFTP rename refuses an existing target: an approved Replace removes the old file
-            // first. shortcut: Replace onto an existing folder isn't merged (the rename fails
-            // and is reported); merge would move children one by one.
-            if (
+            // SFTP rename refuses an existing target. An approved Replace moves the old file
+            // aside first and only deletes it once the new one is in place.
+            // shortcut: Replace onto an existing folder isn't merged (the rename fails and is
+            // reported); merge would move children one by one.
+            const replacing =
               replace &&
               file.type !== "directory" &&
-              existingNames.has(fileNameFromPath(destFilePath))
-            ) {
-              await source.removeFile(destFilePath);
-            }
-            await source.moveFile(file.path, destFilePath);
+              existingNames.has(fileNameFromPath(destFilePath));
+            await moveReplacing(source, file.path, destFilePath, replacing);
             result = { file, action: "moved" };
           } catch (err) {
             result = {

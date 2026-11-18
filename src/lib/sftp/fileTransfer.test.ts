@@ -422,7 +422,9 @@ describe("transferFiles with the transfer manager", () => {
     expect(results.map((r) => r.action)).toEqual(["moved", "moved"]);
   });
 
-  it("replaces an existing file when moving within one remote pane", async () => {
+  const samePane = (
+    moveImpl: (from: string, to: string) => Promise<void> = async () => {},
+  ) => {
     const calls: string[] = [];
     const pane = {
       ...remote,
@@ -432,21 +434,69 @@ describe("transferFiles with the transfer manager", () => {
       }),
       moveFile: vi.fn(async (from: string, to: string) => {
         calls.push(`mv ${from} ${to}`);
+        await moveImpl(from, to);
       }),
     } as unknown as FileProvider;
+    return { pane, calls };
+  };
+  const replaceA = new Map([["/r/a.txt", { action: "replace" as const }]]);
+  const backupOf = (calls: string[]) =>
+    calls[0].replace("mv /r/sub/a.txt ", "");
+
+  it("replaces an existing file when moving within one remote pane", async () => {
+    const { pane, calls } = samePane();
     const results = await transferFiles({
       source: pane,
       dest: pane,
       files: [mkfile("a.txt", "/r/a.txt")],
       destPath: "/r/sub",
       mode: "move",
-      overrides: new Map([["/r/a.txt", { action: "replace" as const }]]),
+      overrides: replaceA,
     });
-    expect(calls).toEqual(["rm /r/sub/a.txt", "mv /r/a.txt /r/sub/a.txt"]);
-    expect(results[0]).toEqual({
-      file: expect.objectContaining({ path: "/r/a.txt" }),
-      action: "moved",
+    const backup = backupOf(calls);
+    expect(backup).toMatch(/^\/r\/sub\/a\.txt\..+$/);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      "mv /r/a.txt /r/sub/a.txt",
+      `rm ${backup}`,
+    ]);
+    expect(results[0].action).toBe("moved");
+    expect(results[0].error).toBeUndefined();
+  });
+
+  it("restores the old file when the replacing move fails", async () => {
+    const { pane, calls } = samePane(async (from) => {
+      if (from === "/r/a.txt") throw new Error("connection lost");
     });
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: replaceA,
+    });
+    const backup = backupOf(calls);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      "mv /r/a.txt /r/sub/a.txt",
+      `mv ${backup} /r/sub/a.txt`,
+    ]);
+    expect(results[0].error).toBe("connection lost");
+  });
+
+  it("leaves a file alone when it is moved onto itself", async () => {
+    const { pane, calls } = samePane();
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/sub/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: new Map([["/r/sub/a.txt", { action: "replace" as const }]]),
+    });
+    expect(calls).toEqual([]);
+    expect(results[0].action).toBe("skipped");
   });
 
   it("reports failed jobs as errors", async () => {
