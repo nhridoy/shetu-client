@@ -6,6 +6,7 @@ mod forwarding;
 mod git;
 mod host_inherit;
 mod live;
+mod local_list;
 mod export;
 mod identities;
 mod import;
@@ -1924,6 +1925,7 @@ pub fn run() {
             sftp::sftp_symlink,
             sftp::sftp_readlink,
             sftp::sftp_search,
+            local_list::local_list_recursive,
             transfers::manager::transfer_enqueue,
             transfers::manager::transfer_list,
             transfers::manager::transfer_pause,
