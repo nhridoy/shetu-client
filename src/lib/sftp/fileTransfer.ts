@@ -315,22 +315,34 @@ export interface TransferFileResult {
 }
 
 /** Resolves once every job has settled (see `isSettled`), with each job's settled state. */
-function waitForSettled(ids: string[]): Promise<TransferJob[]> {
+function waitForSettled(jobs: TransferJob[]): Promise<TransferJob[]> {
+  const ids = jobs.map((j) => j.id);
   const seen = new Map<string, TransferJob>();
+  const resets = useSftpStore.getState().transferResets;
   return new Promise((resolve) => {
     let unsubscribe: (() => void) | undefined;
-    const check = (jobs: TransferJob[]) => {
-      for (const job of jobs) {
+    const check = (state: {
+      transfers: TransferJob[];
+      transferResets: number;
+    }) => {
+      for (const job of state.transfers) {
         if (ids.includes(job.id) && isSettled(job)) seen.set(job.id, job);
+      }
+      // A wipe removed the queue: whatever hadn't settled is cancelled.
+      if (state.transferResets !== resets) {
+        for (const job of jobs) {
+          if (!seen.has(job.id))
+            seen.set(job.id, { ...job, status: "cancelled" });
+        }
       }
       if (seen.size < ids.length) return false;
       unsubscribe?.();
       resolve(ids.map((id) => seen.get(id) as TransferJob));
       return true;
     };
-    if (check(useSftpStore.getState().transfers)) return;
+    if (check(useSftpStore.getState())) return;
     unsubscribe = useSftpStore.subscribe((state) => {
-      check(state.transfers);
+      check(state);
     });
   });
 }
@@ -370,6 +382,42 @@ export interface TransferOptions {
   ) => void;
 }
 
+/** One toast for the whole batch. */
+function showSummary(
+  results: TransferFileResult[],
+  mode: "move" | "copy",
+): void {
+  const errors = results.filter((r) => r.error);
+  const successes = results.filter(
+    (r) => !r.error && r.action !== "skipped" && r.action !== "waiting",
+  );
+  const waiting = results.filter((r) => r.action === "waiting");
+  const waitingNote = waiting.length > 0 ? `, ${waiting.length} waiting` : "";
+
+  if (errors.length === 0 && waiting.length > 0) {
+    toast(
+      successes.length > 0
+        ? `Transferred ${successes.length} files${waitingNote}`
+        : `${waiting.length} waiting`,
+    );
+  } else if (errors.length === 0 && successes.length > 0) {
+    const count = successes.length;
+    const verb = mode === "move" ? "Moved" : "Copied";
+    const name = count === 1 ? successes[0].file.name : `${count} files`;
+    toast.success(`${verb} ${name}`);
+  } else if (
+    errors.length > 0 &&
+    successes.length === 0 &&
+    waiting.length === 0
+  ) {
+    toast.error(`Failed to transfer: ${errors[0].error || "Unknown error"}`);
+  } else if (errors.length > 0) {
+    toast.warning(
+      `Transferred ${successes.length} files, ${errors.length} failed${waitingNote}`,
+    );
+  }
+}
+
 export async function transferFiles(
   options: TransferOptions,
 ): Promise<TransferFileResult[]> {
@@ -391,6 +439,38 @@ export async function transferFiles(
     const existingNames = new Set(
       (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
     );
+
+    // Moving within one remote pane is a rename: whole files and folders, no copy.
+    if (isSameProvider && source.type === "remote" && mode === "move") {
+      const roots = resolveTransferPaths(
+        files.map((file) => ({ file, relativePath: file.name })),
+        destPath,
+        mode,
+        overrides,
+        existingNames,
+      );
+      for (const [i, { file, destFilePath, skip }] of roots.entries()) {
+        let result: TransferFileResult;
+        if (skip) {
+          result = { file, action: "skipped" };
+        } else {
+          try {
+            await source.moveFile(file.path, destFilePath);
+            result = { file, action: "moved" };
+          } catch (err) {
+            result = {
+              file,
+              action: "moved",
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+        results.push(result);
+        onFileComplete?.(file, i, result);
+      }
+      showSummary(results, mode);
+      return results;
+    }
 
     // A same-provider local move can only use rename() when both sides are on
     // the same volume; otherwise it must copy each file then delete the source
@@ -509,6 +589,10 @@ export async function transferFiles(
     const kind = transferKind(source, dest);
     if (kind && transfers.length > 0) {
       // Remote transfers go to the Rust transfer queue (resume, retries, 3 at a time).
+      // Without the listener no job change would arrive and this would wait forever.
+      if (!(await useSftpStore.getState().ensureTransferListener())) {
+        throw new Error("The transfer queue isn't available. Try again.");
+      }
       transfers.forEach((t, i) => {
         onFileStart?.(t.file, i);
       });
@@ -523,7 +607,7 @@ export async function transferFiles(
         })),
       );
       useSftpStore.getState().setTransferScanning(false);
-      const settled = await waitForSettled(jobs.map((j) => j.id));
+      const settled = await waitForSettled(jobs);
       settled.forEach((job, i) => {
         const result = resultFor(transfers[i].file, job);
         results.push(result);
@@ -595,37 +679,7 @@ export async function transferFiles(
       }
     }
 
-    // Show summary toast
-    const errors = results.filter((r) => r.error);
-    const successes = results.filter(
-      (r) => !r.error && r.action !== "skipped" && r.action !== "waiting",
-    );
-    const waiting = results.filter((r) => r.action === "waiting");
-    const waitingNote = waiting.length > 0 ? `, ${waiting.length} waiting` : "";
-
-    if (errors.length === 0 && waiting.length > 0) {
-      toast(
-        successes.length > 0
-          ? `Transferred ${successes.length} files${waitingNote}`
-          : `${waiting.length} waiting`,
-      );
-    } else if (errors.length === 0 && successes.length > 0) {
-      const count = successes.length;
-      const verb = mode === "move" ? "Moved" : "Copied";
-      const name = count === 1 ? successes[0].file.name : `${count} files`;
-      toast.success(`${verb} ${name}`);
-    } else if (
-      errors.length > 0 &&
-      successes.length === 0 &&
-      waiting.length === 0
-    ) {
-      toast.error(`Failed to transfer: ${errors[0].error || "Unknown error"}`);
-    } else if (errors.length > 0) {
-      toast.warning(
-        `Transferred ${successes.length} files, ${errors.length} failed${waitingNote}`,
-      );
-    }
-
+    showSummary(results, mode);
     return results;
   } finally {
     useSftpStore.getState().setTransferScanning(false);

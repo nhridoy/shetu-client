@@ -134,6 +134,9 @@ impl RunTokens {
             self.map.remove(id);
         }
     }
+    pub fn is_current(&self, id: &str, run: u64) -> bool {
+        self.map.get(id).is_some_and(|(r, _)| *r == run)
+    }
     pub fn is_running(&self, id: &str) -> bool {
         self.map.contains_key(id)
     }
@@ -201,6 +204,65 @@ impl ConnectLocks {
     }
 }
 
+/// The saved queue at startup. A load error keeps the rows on disk (and starts empty) instead
+/// of rewriting the table with nothing.
+pub fn restore_saved(
+    db: &crate::db::LocalDb,
+    load: impl Fn(&crate::db::LocalDb) -> Result<Vec<TransferJob>, String>,
+) -> Queue {
+    match load(db) {
+        Ok(jobs) => {
+            let queue = Queue::restore(jobs);
+            let _ = store::clear_jobs(db);
+            for job in queue.all() {
+                let _ = store::save_job(db, job);
+            }
+            queue
+        }
+        Err(e) => {
+            log::warn!("transfers: could not load the saved queue: {e}");
+            Queue::default()
+        }
+    }
+}
+
+/// The session a job reached is the machine it was queued for (a saved host may have been
+/// edited since).
+pub fn same_endpoint(recorded: &HostRef, actual: &HostRef) -> bool {
+    recorded.host == actual.host
+        && recorded.port == actual.port
+        && recorded.username == actual.username
+}
+
+/// Applies a run's result and releases its ownership in one step, and only if it is still the
+/// job's current run, so a replacement run can't start in between or be overwritten.
+pub fn complete_run(
+    tokens: &Mutex<RunTokens>,
+    queue: &Mutex<Queue>,
+    id: &str,
+    run: u64,
+    end: RunEnd,
+    now: i64,
+) -> Option<TransferJob> {
+    let mut tokens = tokens.lock().unwrap_or_else(|p| p.into_inner());
+    if !tokens.is_current(id, run) {
+        return None;
+    }
+    let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
+    let changed = match end {
+        RunEnd::Wait(reason) => match q.get(id) {
+            Some(j) if j.status == JobStatus::Active => {
+                q.set_waiting(id, reason);
+                q.get(id).cloned()
+            }
+            _ => None,
+        },
+        RunEnd::Finished(result) => q.finish(id, result, now).cloned(),
+    };
+    tokens.finish(id, run);
+    changed
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -211,7 +273,7 @@ enum Acquire {
     Fail(JobError),
 }
 
-enum RunEnd {
+pub enum RunEnd {
     Finished(Result<(), JobError>),
     Wait(WaitReason),
 }
@@ -224,7 +286,9 @@ struct Inner {
     /// Session each job was queued from (src, dest); memory only.
     prefer: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
     /// Manager-opened sessions in use by running jobs.
-    running: Mutex<HashMap<String, Vec<String>>>,
+    running: Mutex<HashMap<String, (u64, Vec<String>)>>,
+    /// Bumped by a wipe; an enqueue that started before it doesn't commit.
+    epoch: std::sync::atomic::AtomicU64,
     /// Manager-opened session id → last time a job used it.
     owned: Mutex<HashMap<String, Instant>>,
     notify: Notify,
@@ -238,12 +302,7 @@ pub struct TransferManager {
 impl TransferManager {
     /// Loads the saved queue (unfinished jobs come back paused) and starts the loop.
     pub fn new(app: tauri::AppHandle) -> TransferManager {
-        let db = app.state::<crate::db::LocalDb>();
-        let queue = Queue::restore(store::load_jobs(&db).unwrap_or_default());
-        let _ = store::clear_jobs(&db);
-        for job in queue.all() {
-            let _ = store::save_job(&db, job);
-        }
+        let queue = restore_saved(&app.state::<crate::db::LocalDb>(), store::load_jobs);
         let inner = Arc::new(Inner {
             app: app.clone(),
             queue: Mutex::new(queue),
@@ -251,6 +310,7 @@ impl TransferManager {
             connect_locks: ConnectLocks::default(),
             prefer: Mutex::default(),
             running: Mutex::default(),
+            epoch: std::sync::atomic::AtomicU64::new(0),
             owned: Mutex::default(),
             notify: Notify::new(),
         });
@@ -260,6 +320,9 @@ impl TransferManager {
 
     /// Sign-out / device wipe: stop everything and forget the queue (`.part` files stay).
     pub fn wipe(&self) {
+        self.inner
+            .epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner
             .tokens
             .lock()
@@ -363,8 +426,11 @@ impl Inner {
                 .collect()
         };
         let mut runs = Vec::new();
+        let start: Vec<String> = start
+            .into_iter()
+            .filter(|id| self.queue().mark_active(id))
+            .collect();
         for id in &start {
-            self.queue().mark_active(id);
             // The token exists before the task does, so a pause or cancel can't slip past it.
             runs.push(
                 self.tokens
@@ -397,8 +463,7 @@ impl Inner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .values()
-            .flatten()
-            .cloned()
+            .flat_map(|(_, sids)| sids.iter().cloned())
             .collect();
         let idle: Vec<String> = {
             let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
@@ -421,13 +486,31 @@ impl Inner {
     }
 
     /// A side for one end of a job: this computer, an open session, or a fresh connection.
+    /// A session for `host`, unless it now points somewhere else (the saved host was edited
+    /// after the job was queued): the file must not go to a machine the user didn't pick.
+    fn ready(
+        &self,
+        host: &HostRef,
+        sid: String,
+        sftp: Arc<russh_sftp::client::SftpSession>,
+    ) -> Acquire {
+        let actual = self.sessions().session_info(&sid).map(|(h, _)| h);
+        if actual.is_some_and(|a| !same_endpoint(host, &a)) {
+            return Acquire::Fail(JobError::Operation(format!(
+                "{} now points to a different address than when this transfer was queued",
+                host.host
+            )));
+        }
+        let owned = sid.starts_with(OWNED_PREFIX).then_some(sid);
+        Acquire::Ready(Side::Sftp(sftp), owned)
+    }
+
     async fn acquire(&self, endpoint: &Endpoint, prefer: Option<&str>) -> Acquire {
         let Some(host) = &endpoint.host else {
             return Acquire::Ready(Side::Local, None);
         };
         if let Some((sid, sftp)) = self.sessions().find_matching(host, prefer) {
-            let owned = sid.starts_with(OWNED_PREFIX).then_some(sid);
-            return Acquire::Ready(Side::Sftp(sftp), owned);
+            return self.ready(host, sid, sftp);
         }
         let Some(host_id) = &host.host_id else {
             return Acquire::Wait(WaitReason::Host);
@@ -439,8 +522,7 @@ impl Inner {
         // Jobs to the same host share one connect (and one prompt); later ones reuse it.
         let _turn = self.connect_locks.lock(&sid).await;
         if let Some((sid, sftp)) = self.sessions().find_matching(host, prefer) {
-            let owned = sid.starts_with(OWNED_PREFIX).then_some(sid);
-            return Acquire::Ready(Side::Sftp(sftp), owned);
+            return self.ready(host, sid, sftp);
         }
         let connected = crate::sftp::connect_saved_session(
             &self.app,
@@ -456,7 +538,7 @@ impl Inner {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(sid.clone(), Instant::now());
-                    Acquire::Ready(Side::Sftp(sftp), Some(sid))
+                    self.ready(host, sid, sftp)
                 }
                 None => Acquire::Fail(JobError::Connection("connect: session closed".into())),
             },
@@ -467,7 +549,18 @@ impl Inner {
         }
     }
 
-    async fn run(&self, job: &TransferJob, stop: &CancellationToken) -> RunEnd {
+    /// Marks manager-owned sessions as in use by this run, so the idle closer leaves them alone.
+    fn hold(&self, id: &str, run: u64, sid: Option<String>) {
+        let mut running = self.running.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = running
+            .entry(id.to_string())
+            .or_insert_with(|| (run, Vec::new()));
+        if entry.0 == run {
+            entry.1.extend(sid);
+        }
+    }
+
+    async fn run(&self, job: &TransferJob, stop: &CancellationToken, run: u64) -> RunEnd {
         let (prefer_src, prefer_dest) = self
             .prefer
             .lock()
@@ -475,10 +568,9 @@ impl Inner {
             .get(&job.id)
             .cloned()
             .unwrap_or_default();
-        let mut used = Vec::new();
         let src = match self.acquire(&job.src, prefer_src.as_deref()).await {
             Acquire::Ready(side, owned) => {
-                used.extend(owned);
+                self.hold(&job.id, run, owned);
                 side
             }
             Acquire::Wait(r) => return RunEnd::Wait(r),
@@ -486,16 +578,12 @@ impl Inner {
         };
         let dst = match self.acquire(&job.dest, prefer_dest.as_deref()).await {
             Acquire::Ready(side, owned) => {
-                used.extend(owned);
+                self.hold(&job.id, run, owned);
                 side
             }
             Acquire::Wait(r) => return RunEnd::Wait(r),
             Acquire::Fail(e) => return RunEnd::Finished(Err(e)),
         };
-        self.running
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(job.id.clone(), used);
         RunEnd::Finished(self.copy_job(job, &src, &dst, stop).await)
     }
 
@@ -511,7 +599,9 @@ impl Inner {
         let part_len = io::part_len(dst, &job.part_path).await?;
         let offset = offset_for(job.kind, part_len, snapshot, current);
         if current != snapshot {
-            // The source changed: start over against its new size and time.
+            // The source changed: drop the old part first, so a crash after saving the new
+            // snapshot can't pair it with bytes from the previous version.
+            io::remove_part(dst, &job.part_path).await;
             let updated = {
                 let mut q = self.queue();
                 q.get_mut(&job.id).map(|j| {
@@ -607,33 +697,17 @@ async fn run_job(inner: Arc<Inner>, id: String, run: u64, token: CancellationTok
         .filter(|j| j.status == JobStatus::Active)
         .cloned();
     let end = match job {
-        Some(job) => until_stopped(&token, inner.run(&job, &token)).await,
+        Some(job) => until_stopped(&token, inner.run(&job, &token, run)).await,
         None => RunEnd::Finished(Err(JobError::Stopped)),
     };
-    inner
-        .tokens
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .finish(&id, run);
-    inner
-        .running
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&id);
-
-    let changed = {
-        let mut q = inner.queue();
-        match end {
-            RunEnd::Wait(reason) => match q.get(&id) {
-                Some(j) if j.status == JobStatus::Active => {
-                    q.set_waiting(&id, reason);
-                    q.get(&id).cloned()
-                }
-                _ => None,
-            },
-            RunEnd::Finished(result) => q.finish(&id, result, now_ms()).cloned(),
+    {
+        let mut running = inner.running.lock().unwrap_or_else(|p| p.into_inner());
+        if running.get(&id).is_some_and(|(r, _)| *r == run) {
+            running.remove(&id);
         }
-    };
+    }
+    let changed = complete_run(&inner.tokens, &inner.queue, &id, run, end, now_ms());
+
     let cancelled = inner
         .queue()
         .get(&id)
@@ -663,6 +737,7 @@ pub async fn transfer_enqueue(
     manager: Mgr<'_>,
 ) -> Result<Vec<TransferJob>, String> {
     let inner = &manager.inner;
+    let epoch = inner.epoch.load(std::sync::atomic::Ordering::SeqCst);
     let now = now_ms();
     let mut built = Vec::new();
     let mut prefer = Vec::new();
@@ -694,6 +769,9 @@ pub async fn transfer_enqueue(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .extend(prefer);
+    if inner.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+        return Err("Signed out while queueing; nothing was queued".into());
+    }
     inner.queue().enqueue(built.clone());
     inner.changed(built.clone());
     inner.notify.notify_one();
@@ -947,6 +1025,114 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    fn qmutex(jobs: Vec<TransferJob>) -> Mutex<Queue> {
+        let mut q = Queue::default();
+        q.enqueue(jobs);
+        Mutex::new(q)
+    }
+
+    #[test]
+    fn old_run_result_is_ignored_after_a_replacement() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Active,
+        )]);
+        let (old, _) = tokens.lock().unwrap().start("a");
+        let (new, _) = tokens.lock().unwrap().start("a");
+        assert!(complete_run(&tokens, &queue, "a", old, RunEnd::Finished(Ok(())), 0).is_none());
+        assert_eq!(
+            queue.lock().unwrap().get("a").unwrap().status,
+            JobStatus::Active
+        );
+        assert!(tokens.lock().unwrap().is_running("a"));
+        let done = complete_run(&tokens, &queue, "a", new, RunEnd::Finished(Ok(())), 0).unwrap();
+        assert_eq!(done.status, JobStatus::Done);
+        assert!(!tokens.lock().unwrap().is_running("a"));
+    }
+
+    #[test]
+    fn paused_then_resumed_run_ends_queued_and_released() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Active,
+        )]);
+        let (run, _) = tokens.lock().unwrap().start("a");
+        queue.lock().unwrap().pause("a");
+        queue.lock().unwrap().resume("a");
+        assert!(complete_run(
+            &tokens,
+            &queue,
+            "a",
+            run,
+            RunEnd::Finished(Err(JobError::Stopped)),
+            0
+        )
+        .is_none());
+        assert_eq!(
+            queue.lock().unwrap().get("a").unwrap().status,
+            JobStatus::Queued
+        );
+        assert!(!tokens.lock().unwrap().is_running("a"));
+    }
+
+    #[test]
+    fn wait_applies_only_to_an_active_job() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Active,
+        )]);
+        let (run, _) = tokens.lock().unwrap().start("a");
+        let j = complete_run(&tokens, &queue, "a", run, RunEnd::Wait(WaitReason::Host), 0).unwrap();
+        assert_eq!(
+            (j.status, j.wait_reason),
+            (JobStatus::Waiting, Some(WaitReason::Host))
+        );
+    }
+
+    #[test]
+    fn restore_saved_keeps_rows_when_load_fails() {
+        let db = crate::db::open(":memory:").unwrap();
+        store::save_job(
+            &db,
+            &crate::transfers::queue::test_job("a", JobStatus::Active),
+        )
+        .unwrap();
+        let q = restore_saved(&db, |_| Err("disk I/O error".into()));
+        assert!(q.all().is_empty());
+        assert_eq!(
+            store::load_jobs(&db).unwrap().len(),
+            1,
+            "rows survive a failed load"
+        );
+        let q = restore_saved(&db, store::load_jobs);
+        assert_eq!(q.get("a").unwrap().status, JobStatus::Paused);
+        assert_eq!(store::load_jobs(&db).unwrap()[0].status, JobStatus::Paused);
+    }
+
+    #[test]
+    fn edited_saved_host_is_a_different_endpoint() {
+        let recorded = host();
+        assert!(same_endpoint(&recorded, &host()));
+        let moved = HostRef {
+            host: "new.example.com".into(),
+            ..host()
+        };
+        assert!(!same_endpoint(&recorded, &moved));
+        let other_port = HostRef {
+            port: 2222,
+            ..host()
+        };
+        assert!(!same_endpoint(&recorded, &other_port));
+        let other_user = HostRef {
+            username: "root".into(),
+            ..host()
+        };
+        assert!(!same_endpoint(&recorded, &other_user));
     }
 
     #[test]

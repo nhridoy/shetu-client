@@ -5,7 +5,9 @@ const mocks = vi.hoisted(() => ({
   listTransfers: vi.fn(),
   clearFinishedTransfers: vi.fn(async () => {}),
   resumeAllTransfers: vi.fn(async () => {}),
-  onTransfersChanged: vi.fn(async () => () => {}),
+  onTransfersChanged: vi.fn(
+    async (_cb: (jobs: TransferJob[]) => void) => () => {},
+  ),
   onTransfersReset: vi.fn(async (_cb: () => void) => () => {}),
   toast: vi.fn(),
 }));
@@ -90,6 +92,45 @@ describe("sftpStore transfers mirror", () => {
     const reset = mocks.onTransfersReset.mock.calls[0][0];
     reset();
     expect(useSftpStore.getState().transfers).toEqual([]);
+  });
+
+  it("keeps events that arrive while the first list is loading", async () => {
+    let resolveList: (jobs: TransferJob[]) => void = () => {};
+    mocks.listTransfers.mockReturnValue(
+      new Promise<TransferJob[]>((r) => {
+        resolveList = r;
+      }),
+    );
+    const ready = useSftpStore.getState().ensureTransferListener();
+    await vi.waitFor(() => expect(mocks.listTransfers).toHaveBeenCalled());
+    const changed = mocks.onTransfersChanged.mock.calls[0][0] as (
+      jobs: TransferJob[],
+    ) => void;
+    changed([job("a", { status: "done" })]);
+    resolveList([job("a", { status: "active" })]);
+    expect(await ready).toBe(true);
+    expect(useSftpStore.getState().transfers[0].status).toBe("done");
+  });
+
+  it("drops a first list that a wipe made stale", async () => {
+    let resolveList: (jobs: TransferJob[]) => void = () => {};
+    mocks.listTransfers.mockReturnValue(
+      new Promise<TransferJob[]>((r) => {
+        resolveList = r;
+      }),
+    );
+    const ready = useSftpStore.getState().ensureTransferListener();
+    await vi.waitFor(() => expect(mocks.listTransfers).toHaveBeenCalled());
+    mocks.onTransfersReset.mock.calls[0][0]();
+    resolveList([job("a", { status: "paused" })]);
+    await ready;
+    expect(useSftpStore.getState().transfers).toEqual([]);
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("reports a listener that couldn't start", async () => {
+    mocks.onTransfersChanged.mockRejectedValueOnce(new Error("no IPC"));
+    expect(await useSftpStore.getState().ensureTransferListener()).toBe(false);
   });
 
   it("clearCompletedTransfers keeps unfinished jobs", async () => {

@@ -247,10 +247,16 @@ describe("parentPath", () => {
 
 const transferMocks = vi.hoisted(() => ({
   enqueueTransfers: vi.fn(),
+  onTransfersChanged: vi.fn(async () => () => {}),
+  onTransfersReset: vi.fn(async () => () => {}),
+  listTransfers: vi.fn(async () => []),
 }));
 vi.mock("@/lib/sftp/transfers", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/sftp/transfers")>()),
   enqueueTransfers: transferMocks.enqueueTransfers,
+  onTransfersChanged: transferMocks.onTransfersChanged,
+  onTransfersReset: transferMocks.onTransfersReset,
+  listTransfers: transferMocks.listTransfers,
 }));
 
 describe("transferFiles with the transfer manager", () => {
@@ -382,6 +388,40 @@ describe("transferFiles with the transfer manager", () => {
     expect(results[1].action).toBe("waiting");
   });
 
+  it("settles waiters as cancelled when the queue is wiped", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" } });
+    useSftpStore.getState().resetTransfers();
+    const results = await run;
+    expect(results[1].error).toBe("Cancelled");
+  });
+
+  it("renames within the same remote pane instead of copying", async () => {
+    const moveFile = vi.fn(async () => {});
+    const mkdirAll = vi.fn(async () => {});
+    const pane = {
+      ...remote,
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => {
+        throw new Error("a rename doesn't need a listing");
+      }),
+      moveFile,
+      mkdirAll,
+    } as unknown as FileProvider;
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt"), mkdir("d", "/r/d")],
+      destPath: "/r/sub",
+      mode: "move",
+    });
+    expect(moveFile).toHaveBeenCalledWith("/r/a.txt", "/r/sub/a.txt");
+    expect(moveFile).toHaveBeenCalledWith("/r/d", "/r/sub/d");
+    expect(mkdirAll).not.toHaveBeenCalled();
+    expect(transferMocks.enqueueTransfers).not.toHaveBeenCalled();
+    expect(results.map((r) => r.action)).toEqual(["moved", "moved"]);
+  });
+
   it("reports failed jobs as errors", async () => {
     const run = start();
     await settle({
@@ -390,5 +430,41 @@ describe("transferFiles with the transfer manager", () => {
     });
     const results = await run;
     expect(results[1].error).toBe("denied");
+  });
+});
+
+describe("transferFiles without a transfer listener", () => {
+  it("fails instead of waiting forever", async () => {
+    vi.resetModules();
+    const transfers = await import("@/lib/sftp/transfers");
+    vi.mocked(transfers.onTransfersChanged).mockRejectedValueOnce(
+      new Error("no IPC"),
+    );
+    const { transferFiles: fresh } = await import("./fileTransfer");
+    const enqueue = vi.mocked(transfers.enqueueTransfers);
+    enqueue.mockClear();
+    const remote = {
+      type: "remote" as const,
+      id: "pane-1",
+      getSessionId: () => "sess-1",
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => []),
+    } as unknown as FileProvider;
+    const local = {
+      type: "local" as const,
+      id: "local",
+      listFiles: vi.fn(async () => []),
+      mkdirAll: vi.fn(async () => {}),
+    } as unknown as FileProvider;
+    await expect(
+      fresh({
+        source: remote,
+        dest: local,
+        files: [mkfile("a.txt", "/r/a.txt")],
+        destPath: "/l",
+        mode: "copy",
+      }),
+    ).rejects.toThrow("transfer queue");
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });

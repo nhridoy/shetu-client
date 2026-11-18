@@ -48,12 +48,15 @@ impl Queue {
             .collect()
     }
 
-    pub fn mark_active(&mut self, id: &str) {
-        if let Some(j) = self.get_mut(id) {
-            j.status = JobStatus::Active;
-            j.wait_reason = None;
-            j.next_retry_at = None;
-        }
+    /// Queued → Active. False when the job was paused or cancelled meanwhile.
+    pub fn mark_active(&mut self, id: &str) -> bool {
+        let Some(j) = self.get_mut(id).filter(|j| j.status == JobStatus::Queued) else {
+            return false;
+        };
+        j.status = JobStatus::Active;
+        j.wait_reason = None;
+        j.next_retry_at = None;
+        true
     }
 
     /// Waiting for an unlock or a host: no attempt is used up.
@@ -258,6 +261,18 @@ mod tests {
     }
     fn st(q: &Queue, id: &str) -> JobStatus {
         q.get(id).unwrap().status
+    }
+
+    #[test]
+    fn mark_active_only_from_queued() {
+        let mut q = q(&[("p", Paused), ("c", Cancelled), ("q", Queued)]);
+        assert!(!q.mark_active("p"));
+        assert!(!q.mark_active("c"));
+        assert!(q.mark_active("q"));
+        assert_eq!(
+            (st(&q, "p"), st(&q, "c"), st(&q, "q")),
+            (Paused, Cancelled, Active)
+        );
     }
 
     #[test]

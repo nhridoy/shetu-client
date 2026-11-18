@@ -59,19 +59,37 @@ const initialConnectionState: SftpConnectionState = {
   error: null,
 };
 
-let transferListener: Promise<void> | null = null;
+let transferListener: Promise<boolean> | null = null;
 
-/** Loads the manager's queue once and mirrors its changes; offers Resume all after a restart. */
+/**
+ * Loads the manager's queue once and mirrors its changes; offers Resume all after a restart.
+ * Resolves false (and retries on the next call) when the listener couldn't start.
+ */
 function startTransferListener(
   apply: (jobs: TransferJob[]) => void,
   reset: () => void,
-): Promise<void> {
+): Promise<boolean> {
   transferListener ??= (async () => {
-    await onTransfersChanged(apply);
-    await onTransfersReset(reset);
-    const jobs = await listTransfers();
-    apply(jobs);
-    const paused = jobs.filter((j) => j.status === "paused").length;
+    // Events that arrive while the first list loads are newer than it: replay them after.
+    let pending: TransferJob[][] | null = [];
+    let wipedMeanwhile = false;
+    await onTransfersChanged((jobs) => {
+      if (pending) pending.push(jobs);
+      else apply(jobs);
+    });
+    await onTransfersReset(() => {
+      if (pending) {
+        pending = [];
+        wipedMeanwhile = true;
+      }
+      reset();
+    });
+    const listed = await listTransfers();
+    const snapshot = wipedMeanwhile ? [] : listed;
+    apply(snapshot);
+    for (const batch of pending ?? []) apply(batch);
+    pending = null;
+    const paused = snapshot.filter((j) => j.status === "paused").length;
     if (paused > 0) {
       toast(`${paused} transfer${paused === 1 ? "" : "s"} paused`, {
         action: {
@@ -80,10 +98,12 @@ function startTransferListener(
         },
       });
     }
+    return true;
   })().catch((e) => {
     // Never blocks connecting; the next call tries again.
     transferListener = null;
     console.warn("transfers: could not load the queue", e);
+    return false;
   });
   return transferListener;
 }
@@ -192,7 +212,11 @@ interface SftpState {
   requestRefresh: (paneId: string) => void;
   setError: (error: string | null, type: SftpErrorState["errorType"]) => void;
   clearError: () => void;
-  ensureTransferListener: () => Promise<void>;
+  /** True once the queue is mirrored; false if the listener couldn't start. */
+  ensureTransferListener: () => Promise<boolean>;
+  /** Times the queue was wiped; pending waiters treat their jobs as cancelled. */
+  transferResets: number;
+  resetTransfers: () => void;
   connectSftp: (hostId: string) => Promise<void>;
   connectSftpDirect: (config: SshConfig) => Promise<void>;
   disconnectSftp: () => Promise<void>;
@@ -225,6 +249,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   pendingFileDrop: null,
   transfers: [],
   transferScanning: false,
+  transferResets: 0,
   clipboard: null,
   clipboardMode: null,
   refreshRequests: {},
@@ -406,6 +431,8 @@ export const useSftpStore = create<SftpState>((set, get) => ({
     set({ root: apply(root) });
   },
 
+  resetTransfers: () =>
+    set((s) => ({ transfers: [], transferResets: s.transferResets + 1 })),
   applyTransferChanges: (jobs) =>
     set((s) => {
       const byId = new Map(jobs.map((j) => [j.id, j]));
@@ -436,9 +463,7 @@ export const useSftpStore = create<SftpState>((set, get) => ({
     set({ errorState: { lastError: error, errorType: type } }),
   clearError: () => set({ errorState: { ...initialErrorState } }),
   ensureTransferListener: () =>
-    startTransferListener(get().applyTransferChanges, () =>
-      set({ transfers: [] }),
-    ),
+    startTransferListener(get().applyTransferChanges, get().resetTransfers),
 
   connectSftp: async (hostId: string) => {
     set({

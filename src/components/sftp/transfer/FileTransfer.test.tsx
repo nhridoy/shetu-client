@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TransferJob } from "@/lib/sftp/transfers";
 
@@ -46,13 +46,22 @@ const job = (id: string, patch: Partial<TransferJob> = {}): TransferJob => ({
   ...patch,
 });
 
+const roots: Root[] = [];
+
 function render(jobs: TransferJob[]) {
+  unmountAll();
   useSftpStore.setState({ transfers: jobs });
   const root = createRoot(
     document.body.appendChild(document.createElement("div")),
   );
+  roots.push(root);
   act(() => root.render(<FileTransfer />));
   return root;
+}
+
+function unmountAll() {
+  for (const root of roots.splice(0)) act(() => root.unmount());
+  document.body.innerHTML = "";
 }
 
 const text = () => document.body.textContent ?? "";
@@ -72,7 +81,7 @@ beforeEach(() => {
   for (const a of Object.values(actions)) a.mockClear();
 });
 afterEach(() => {
-  document.body.innerHTML = "";
+  unmountAll();
   vi.useRealTimers();
 });
 
@@ -120,15 +129,12 @@ describe("FileTransfer panel", () => {
     render([job("p", { status: "paused" })]);
     expect(buttons()).toEqual(expect.arrayContaining(["Resume", "Cancel"]));
     expect(buttons()).not.toContain("Pause");
-    document.body.innerHTML = "";
 
     render([job("f", { status: "failed" })]);
     expect(buttons()).toEqual(expect.arrayContaining(["Retry", "Cancel"]));
-    document.body.innerHTML = "";
 
     render([job("a", { status: "active" })]);
     expect(buttons()).toEqual(expect.arrayContaining(["Pause", "Cancel"]));
-    document.body.innerHTML = "";
 
     render([job("d", { status: "done" })]);
     expect(buttons()).not.toContain("Cancel");
@@ -138,7 +144,6 @@ describe("FileTransfer panel", () => {
   it("Resume all appears only with a paused job and calls resumeAllTransfers", () => {
     render([job("a", { status: "active" })]);
     expect(buttons()).not.toContain("Resume all");
-    document.body.innerHTML = "";
 
     render([job("p", { status: "paused" })]);
     click("Resume all");
@@ -151,12 +156,10 @@ describe("FileTransfer panel", () => {
     expect(actions.pauseTransfer).toHaveBeenCalledWith("a");
     click("Cancel");
     expect(actions.cancelTransfer).toHaveBeenCalledWith("a");
-    document.body.innerHTML = "";
 
     render([job("f", { status: "failed" })]);
     click("Retry");
     expect(actions.retryTransfer).toHaveBeenCalledWith("f");
-    document.body.innerHTML = "";
 
     render([job("p", { status: "paused" })]);
     click("Resume");
