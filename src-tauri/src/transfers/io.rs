@@ -221,7 +221,17 @@ pub async fn copy(
 
 /// Moves the finished `.part` into place and returns where it landed. Without an approved
 /// replace, a destination that appeared meanwhile keeps its file and this one gets a free name.
-pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result<String, JobError> {
+pub async fn finish(
+    dst: &Side,
+    part: &str,
+    dest: &str,
+    replace: bool,
+    mtime: i64,
+) -> Result<String, JobError> {
+    // The `.part` gets the source's time before it is published; the rename keeps it.
+    if mtime > 0 {
+        set_mtime(dst, part, mtime).await;
+    }
     if !replace && matches!(dst, Side::Local) {
         return publish_local_new(part, dest).await;
     }
@@ -252,6 +262,38 @@ pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result
         }
     }
     Ok(target)
+}
+
+/// Sets a file's modified (and accessed) time to `mtime` seconds. Best effort: some servers
+/// refuse `setstat`; the copy is still good, so this only logs.
+async fn set_mtime(side: &Side, path: &str, mtime: i64) {
+    match side {
+        Side::Local => {
+            let path = path.to_string();
+            let result = tokio::task::spawn_blocking(move || {
+                let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime as u64);
+                let times = std::fs::FileTimes::new().set_modified(at).set_accessed(at);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)?
+                    .set_times(times)
+            })
+            .await;
+            if let Ok(Err(e)) = result {
+                log::warn!("transfers: could not keep the modified time: {e}");
+            }
+        }
+        Side::Sftp(s) => {
+            let attrs = russh_sftp::protocol::FileAttributes {
+                mtime: Some(mtime as u32),
+                atime: Some(mtime as u32),
+                ..russh_sftp::protocol::FileAttributes::empty()
+            };
+            if let Err(e) = s.set_metadata(path, attrs).await {
+                log::warn!("transfers: could not keep the modified time: {e}");
+            }
+        }
+    }
 }
 
 /// Publishes without ever replacing. A hard link fails atomically if the name is taken (even by
@@ -419,7 +461,7 @@ mod tests {
         .unwrap();
         assert_eq!(seen.last(), Some(&100));
         assert_eq!(
-            finish(&Side::Local, &part, &dest, false).await.unwrap(),
+            finish(&Side::Local, &part, &dest, false, 0).await.unwrap(),
             dest
         );
         assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -448,7 +490,7 @@ mod tests {
         .await
         .unwrap();
         assert!(first.unwrap() > 40, "progress counts the resumed bytes too");
-        finish(&Side::Local, &part, &dest, false).await.unwrap();
+        finish(&Side::Local, &part, &dest, false, 0).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
     }
 
@@ -490,7 +532,7 @@ mod tests {
         let (part, dest) = (d.path("a.txt.x.part"), d.path("a.txt"));
         std::fs::write(&dest, b"mine").unwrap();
         std::fs::write(&part, b"new").unwrap();
-        let landed = finish(&Side::Local, &part, &dest, false).await.unwrap();
+        let landed = finish(&Side::Local, &part, &dest, false, 0).await.unwrap();
         assert_eq!(landed, d.path("a (copy).txt"));
         assert_eq!(std::fs::read(&dest).unwrap(), b"mine");
         assert_eq!(std::fs::read(&landed).unwrap(), b"new");
@@ -503,7 +545,7 @@ mod tests {
         std::fs::write(&dest, b"old").unwrap();
         std::fs::write(&part, b"new").unwrap();
         assert_eq!(
-            finish(&Side::Local, &part, &dest, true).await.unwrap(),
+            finish(&Side::Local, &part, &dest, true, 0).await.unwrap(),
             dest
         );
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
@@ -565,7 +607,7 @@ mod tests {
         let d = Dir::new("noplace");
         let dest = d.path("a.txt");
         // The part is missing, so the move can't happen: the reserved name must not linger.
-        let r = finish(&Side::Local, &d.path("missing.part"), &dest, false).await;
+        let r = finish(&Side::Local, &d.path("missing.part"), &dest, false, 0).await;
         assert!(r.is_err());
         assert!(!std::path::Path::new(&dest).exists());
     }
@@ -576,7 +618,7 @@ mod tests {
         let (part, dest) = (d.path("a.txt.x.part"), d.path("a.txt"));
         std::fs::write(&part, b"new").unwrap();
         assert_eq!(
-            finish(&Side::Local, &part, &dest, false).await.unwrap(),
+            finish(&Side::Local, &part, &dest, false, 0).await.unwrap(),
             dest
         );
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
@@ -625,6 +667,51 @@ mod tests {
         assert!(links_unsupported(&Error::from(ErrorKind::PermissionDenied)));
         assert!(!links_unsupported(&Error::from(ErrorKind::StorageFull)));
         assert!(!links_unsupported(&Error::other("I/O error")));
+    }
+
+    #[tokio::test]
+    async fn published_file_keeps_the_source_mtime() {
+        let d = Dir::new("mtime");
+        let (src, _) = source(&d);
+        let (part, dest) = (d.path("out.part"), d.path("out.bin"));
+        copy(
+            &Side::Local,
+            &src,
+            &Side::Local,
+            &part,
+            0,
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        finish(&Side::Local, &part, &dest, false, 1_600_000_000)
+            .await
+            .unwrap();
+        assert_eq!(stat(&Side::Local, &dest).await.unwrap().1, 1_600_000_000);
+    }
+
+    #[tokio::test]
+    async fn replace_publish_keeps_the_source_mtime() {
+        let d = Dir::new("mtime-r");
+        let (src, _) = source(&d);
+        let (part, dest) = (d.path("out.part"), d.path("out.bin"));
+        std::fs::write(&dest, b"old").unwrap();
+        copy(
+            &Side::Local,
+            &src,
+            &Side::Local,
+            &part,
+            0,
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        finish(&Side::Local, &part, &dest, true, 1_600_000_000)
+            .await
+            .unwrap();
+        assert_eq!(stat(&Side::Local, &dest).await.unwrap().1, 1_600_000_000);
     }
 
     #[tokio::test]

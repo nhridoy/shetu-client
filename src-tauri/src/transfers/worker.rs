@@ -263,7 +263,15 @@ pub async fn run(
     };
     let stopped = Err(finished(Err(JobError::Stopped)));
     let end = match until_stopped(&token, ctx.prepare(src, dest, &token), stopped).await {
-        Ok(dst) => match io::finish(&dst, &job.part_path, &job.dest.path, job.replace).await {
+        Ok(dst) => match io::finish(
+            &dst,
+            &job.part_path,
+            &job.dest.path,
+            job.replace,
+            job.src_mtime,
+        )
+        .await
+        {
             Ok(landed) => RunEnd::Finished {
                 result: Ok(()),
                 landed: (landed != job.dest.path).then_some(landed),
