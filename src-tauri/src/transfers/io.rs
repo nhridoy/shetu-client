@@ -223,9 +223,7 @@ pub async fn copy(
 /// replace, a destination that appeared meanwhile keeps its file and this one gets a free name.
 pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result<String, JobError> {
     if !replace && matches!(dst, Side::Local) {
-        if let Some(landed) = publish_local_new(part, dest).await? {
-            return Ok(landed);
-        }
+        return publish_local_new(part, dest).await;
     }
     let mut target = dest.to_string();
     if !replace {
@@ -256,29 +254,33 @@ pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result
     Ok(target)
 }
 
-/// Publishes without ever replacing: a hard link fails if the name is taken (even if a file
-/// appeared a moment ago), and then the next free name is tried. `None` when this filesystem
-/// can't hard-link; the caller falls back to check-then-rename.
-async fn publish_local_new(part: &str, dest: &str) -> Result<Option<String>, JobError> {
+/// Publishes without ever replacing. The name is first reserved with an exclusive create
+/// (atomic on every filesystem, so a file that appeared a moment ago makes it fail and the next
+/// free name is tried), then the `.part` is moved onto that placeholder of ours.
+async fn publish_local_new(part: &str, dest: &str) -> Result<String, JobError> {
     let mut tried = std::collections::HashSet::new();
     let mut target = dest.to_string();
     loop {
-        match tokio::fs::hard_link(part, &target).await {
-            Ok(()) => {
-                // The data is in place under `target`; a leftover `.part` is only clutter.
-                let _ = tokio::fs::remove_file(part).await;
-                return Ok(Some(target));
-            }
+        let reserved = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .await;
+        match reserved {
+            Ok(_) => break,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 tried.insert(target.clone());
                 target = free_name(dest, |p| tried.contains(p));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(io_err("publish", e));
-            }
-            Err(_) => return Ok(None),
+            Err(e) => return Err(io_err("publish", e)),
         }
     }
+    if let Err(e) = tokio::fs::rename(part, &target).await {
+        // Don't leave our empty placeholder behind under the user's file name.
+        let _ = tokio::fs::remove_file(&target).await;
+        return Err(io_err("rename", e));
+    }
+    Ok(target)
 }
 
 /// Deletes a `.part` that must not survive (a stale resume). Already missing is fine; any
@@ -495,6 +497,29 @@ mod tests {
         std::fs::create_dir_all(format!("{stuck}/inside")).unwrap();
         assert!(discard_part(&Side::Local, &stuck).await.is_err());
         assert!(std::path::Path::new(&stuck).exists());
+    }
+
+    #[tokio::test]
+    async fn failed_publish_leaves_no_placeholder() {
+        let d = Dir::new("noplace");
+        let dest = d.path("a.txt");
+        // The part is missing, so the move can't happen: the reserved name must not linger.
+        let r = finish(&Side::Local, &d.path("missing.part"), &dest, false).await;
+        assert!(r.is_err());
+        assert!(!std::path::Path::new(&dest).exists());
+    }
+
+    #[tokio::test]
+    async fn publish_new_reserves_the_name_before_moving() {
+        let d = Dir::new("reserve");
+        let (part, dest) = (d.path("a.txt.x.part"), d.path("a.txt"));
+        std::fs::write(&part, b"new").unwrap();
+        assert_eq!(
+            finish(&Side::Local, &part, &dest, false).await.unwrap(),
+            dest
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!std::path::Path::new(&part).exists());
     }
 
     #[tokio::test]

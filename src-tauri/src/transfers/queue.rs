@@ -76,11 +76,16 @@ impl Queue {
         result: Result<(), JobError>,
         now: i64,
     ) -> Option<&TransferJob> {
-        // A run that already published its file is done even if Pause arrived meanwhile.
+        // A run that published its file is done whatever arrived meanwhile (Pause, Resume,
+        // Cancel): the file is in place. The caller checks it is still the job's current run.
         let published = result.is_ok();
         let j = self.jobs.iter_mut().find(|j| {
             j.id == id
-                && (j.status == JobStatus::Active || (published && j.status == JobStatus::Paused))
+                && if published {
+                    j.status != JobStatus::Done
+                } else {
+                    j.status == JobStatus::Active
+                }
         })?;
         j.speed = 0.0;
         match result {
@@ -166,15 +171,19 @@ impl Queue {
         Some(j.clone())
     }
 
-    pub fn clear_finished(&mut self) -> Vec<String> {
+    /// Removes done and cancelled rows, except those `keep` names (a live run still needs a
+    /// cancelled row to clean up its `.part`).
+    pub fn clear_finished(&mut self, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        let gone = |j: &TransferJob| {
+            matches!(j.status, JobStatus::Done | JobStatus::Cancelled) && !keep(&j.id)
+        };
         let removed = self
             .jobs
             .iter()
-            .filter(|j| matches!(j.status, JobStatus::Done | JobStatus::Cancelled))
+            .filter(|j| gone(j))
             .map(|j| j.id.clone())
             .collect();
-        self.jobs
-            .retain(|j| !matches!(j.status, JobStatus::Done | JobStatus::Cancelled));
+        self.jobs.retain(|j| !gone(j));
         removed
     }
 
@@ -352,8 +361,26 @@ mod tests {
     fn finish_after_cancel_keeps_cancelled() {
         let mut q = q(&[("a", Active)]);
         assert!(q.cancel("a").is_some());
-        assert!(q.finish("a", Ok(()), 0).is_none());
+        assert!(q.finish("a", Err(JobError::Stopped), 0).is_none());
         assert_eq!(st(&q, "a"), Cancelled);
+    }
+
+    #[test]
+    fn a_published_file_is_done_whatever_came_meanwhile() {
+        // The rename already landed the file: Cancel, or Pause then Resume, can't undo that.
+        for interleave in ["cancel", "pause+resume"] {
+            let mut q = q(&[("a", Active)]);
+            if interleave == "cancel" {
+                q.cancel("a");
+            } else {
+                q.pause("a");
+                q.resume("a");
+            }
+            let j = q.finish("a", Ok(()), 0).unwrap();
+            assert_eq!(j.status, Done, "after {interleave}");
+        }
+        let mut q = q(&[("a", Done)]);
+        assert!(q.finish("a", Ok(()), 0).is_none(), "already done");
     }
 
     #[test]
@@ -435,10 +462,18 @@ mod tests {
     #[test]
     fn clear_finished_removes_done_and_cancelled_only() {
         let mut q = q(&[("d", Done), ("c", Cancelled), ("f", Failed), ("p", Paused)]);
-        let mut removed = q.clear_finished();
+        let mut removed = q.clear_finished(|_| false);
         removed.sort();
         assert_eq!(removed, vec!["c".to_string(), "d".to_string()]);
         assert_eq!(q.all().len(), 2);
+    }
+
+    #[test]
+    fn clear_finished_keeps_rows_a_live_run_still_needs() {
+        let mut q = q(&[("c", Cancelled), ("d", Done)]);
+        let removed = q.clear_finished(|id| id == "c");
+        assert_eq!(removed, vec!["d".to_string()]);
+        assert_eq!(st(&q, "c"), Cancelled);
     }
 
     #[test]

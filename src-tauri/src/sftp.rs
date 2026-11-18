@@ -105,6 +105,25 @@ impl SftpSessions {
             })
     }
 
+    /// The session `id` if its connection is still open, with the host it is connected to.
+    pub fn get_open(
+        &self,
+        id: &str,
+    ) -> Option<(String, crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let s = map.get(id)?;
+        if s.ssh_handle.as_ref().is_some_and(|h| h.is_closed()) {
+            return None;
+        }
+        let host = crate::transfers::model::HostRef {
+            host_id: s.host_id.clone(),
+            host: s.host.clone(),
+            port: s.port,
+            username: s.username.clone(),
+        };
+        Some((id.to_string(), host, Arc::clone(&s.sftp)))
+    }
+
     /// Closes and forgets a session (and its SSH connection when we opened it).
     pub async fn disconnect(&self, session_id: &str) {
         if let Some(session) = self.take(session_id) {

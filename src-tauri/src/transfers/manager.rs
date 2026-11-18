@@ -382,6 +382,21 @@ pub fn cancel_job(
     Some((job, running))
 }
 
+/// Whether a run may use a pane's session. After a failed attempt, a saved host's retries use
+/// only the manager's own connection: the pane's may be the dead one.
+/// The session id the manager uses for its own connection to a saved host.
+fn owned_sid(host: &HostRef) -> Option<String> {
+    Some(format!(
+        "{OWNED_PREFIX}{}:{}",
+        host.host_id.as_ref()?,
+        host.username
+    ))
+}
+
+pub fn may_use_pane_session(job: &TransferJob, host: &HostRef) -> bool {
+    job.attempt == 0 || host.host_id.is_none()
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -614,9 +629,14 @@ impl Inner {
     }
 
     /// An open session to `host`; a manager-owned one is marked used in the same step.
-    fn reuse(&self, host: &HostRef, prefer: Option<&str>) -> Option<Acquire> {
+    fn reuse(&self, host: &HostRef, prefer: Option<&str>, pane_ok: bool) -> Option<Acquire> {
         let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
-        let (sid, actual, sftp) = self.sessions().find_matching(host, prefer)?;
+        let (sid, actual, sftp) = if pane_ok {
+            self.sessions().find_matching(host, prefer)?
+        } else {
+            let sid = owned_sid(host)?;
+            self.sessions().get_open(&sid)?
+        };
         if owned.is_owned(&sid) {
             owned.touch(&sid, Instant::now());
         }
@@ -624,11 +644,11 @@ impl Inner {
         Some(self.ready(host, sid, Some(&actual), sftp))
     }
 
-    async fn acquire(&self, endpoint: &Endpoint, prefer: Option<&str>) -> Acquire {
+    async fn acquire(&self, endpoint: &Endpoint, prefer: Option<&str>, pane_ok: bool) -> Acquire {
         let Some(host) = &endpoint.host else {
             return Acquire::Ready(Side::Local, None);
         };
-        if let Some(found) = self.reuse(host, prefer) {
+        if let Some(found) = self.reuse(host, prefer, pane_ok) {
             return found;
         }
         let Some(host_id) = &host.host_id else {
@@ -638,9 +658,10 @@ impl Inner {
             return Acquire::Wait(WaitReason::Unlock);
         }
         let sid = format!("{OWNED_PREFIX}{host_id}:{}", host.username);
+        debug_assert_eq!(Some(&sid), owned_sid(host).as_ref());
         // Jobs to the same host share one connect (and one prompt); later ones reuse it.
         let _turn = self.connect_locks.lock(&sid).await;
-        if let Some(found) = self.reuse(host, prefer) {
+        if let Some(found) = self.reuse(host, prefer, pane_ok) {
             return found;
         }
         let connected = crate::sftp::connect_saved_session(
@@ -696,7 +717,17 @@ impl Inner {
             .get(&job.id)
             .cloned()
             .unwrap_or_default();
-        let src = match self.acquire(&job.src, prefer_src.as_deref()).await {
+        let src = match self
+            .acquire(
+                &job.src,
+                prefer_src.as_deref(),
+                job.src
+                    .host
+                    .as_ref()
+                    .is_none_or(|h| may_use_pane_session(job, h)),
+            )
+            .await
+        {
             Acquire::Ready(side, owned) => {
                 self.hold(&job.id, run, owned);
                 side
@@ -704,7 +735,17 @@ impl Inner {
             Acquire::Wait(r) => return Err(RunEnd::Wait(r)),
             Acquire::Fail(e) => return Err(RunEnd::Finished(Err(e))),
         };
-        let dst = match self.acquire(&job.dest, prefer_dest.as_deref()).await {
+        let dst = match self
+            .acquire(
+                &job.dest,
+                prefer_dest.as_deref(),
+                job.dest
+                    .host
+                    .as_ref()
+                    .is_none_or(|h| may_use_pane_session(job, h)),
+            )
+            .await
+        {
             Acquire::Ready(side, owned) => {
                 self.hold(&job.id, run, owned);
                 side
@@ -998,7 +1039,17 @@ pub fn transfer_cancel(id: String, manager: Mgr<'_>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn transfer_clear_finished(manager: Mgr<'_>) -> Result<(), String> {
-    let removed = manager.inner.queue().clear_finished();
+    let removed = {
+        let tokens = manager
+            .inner
+            .tokens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        manager
+            .inner
+            .queue()
+            .clear_finished(|id| tokens.is_running(id))
+    };
     store::delete_jobs(&manager.inner.app.state::<crate::db::LocalDb>(), &removed)
 }
 
@@ -1390,6 +1441,23 @@ mod tests {
             5,
         );
         assert_eq!((j.status, j.error), (JobStatus::Queued, None));
+    }
+
+    #[test]
+    fn retries_to_a_saved_host_skip_pane_sessions() {
+        let mut job = crate::transfers::queue::test_job("a", JobStatus::Active);
+        let saved = host();
+        let quick = HostRef {
+            host_id: None,
+            ..host()
+        };
+        assert!(may_use_pane_session(&job, &saved));
+        job.attempt = 1;
+        assert!(!may_use_pane_session(&job, &saved));
+        assert!(
+            may_use_pane_session(&job, &quick),
+            "quick-connect has no other way in"
+        );
     }
 
     #[test]
