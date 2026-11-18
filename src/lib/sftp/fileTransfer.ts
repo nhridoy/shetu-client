@@ -499,14 +499,21 @@ export async function transferFiles(
   const isSameProvider = source.id === dest.id;
   useSftpStore.getState().setTransferScanning(true);
   try {
-    const existingNames = new Set(
-      (await dest.listFiles(destPath).catch(() => [])).map((f) => f.name),
-    );
+    const listing = await dest.listFiles(destPath).catch(() => []);
+    const existingNames = new Set(listing.map((f) => f.name));
 
     // Moving within one remote pane is a rename: whole files and folders, no copy.
-    if (isSameProvider && source.type === "remote" && mode === "move") {
-      // What is really there; resolveTransferPaths also reserves the names it hands out.
-      const listedNames = new Set(existingNames);
+    // Same pane = same SFTP session; two panes on one host are a copy, as before.
+    const samePane =
+      isSameProvider &&
+      source.type === "remote" &&
+      sessionIdOf(source) === sessionIdOf(dest);
+    if (samePane && mode === "move") {
+      // Files really there; resolveTransferPaths also reserves the names it hands out. A
+      // folder in the way is never set aside: its rename fails and is reported.
+      const listedFiles = new Set(
+        listing.filter((f) => f.type !== "directory").map((f) => f.name),
+      );
       const roots = resolveTransferPaths(
         files.map((file) => ({ file, relativePath: file.name })),
         destPath,
@@ -531,7 +538,7 @@ export async function transferFiles(
             const replacing =
               replace &&
               file.type !== "directory" &&
-              listedNames.has(fileNameFromPath(destFilePath));
+              listedFiles.has(fileNameFromPath(destFilePath));
             await moveReplacing(source, file.path, destFilePath, replacing);
             result = { file, action: "moved" };
           } catch (err) {

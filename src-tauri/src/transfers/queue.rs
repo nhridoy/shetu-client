@@ -76,10 +76,12 @@ impl Queue {
         result: Result<(), JobError>,
         now: i64,
     ) -> Option<&TransferJob> {
-        let j = self
-            .jobs
-            .iter_mut()
-            .find(|j| j.id == id && j.status == JobStatus::Active)?;
+        // A run that already published its file is done even if Pause arrived meanwhile.
+        let published = result.is_ok();
+        let j = self.jobs.iter_mut().find(|j| {
+            j.id == id
+                && (j.status == JobStatus::Active || (published && j.status == JobStatus::Paused))
+        })?;
         j.speed = 0.0;
         match result {
             Ok(()) => {
@@ -335,6 +337,15 @@ mod tests {
         assert!(q.pause("a"));
         assert!(q.finish("a", Err(JobError::Stopped), 0).is_none());
         assert_eq!(st(&q, "a"), Paused);
+    }
+
+    #[test]
+    fn pause_during_publish_still_ends_done() {
+        // The file was already moved into place when Pause arrived: the job is done.
+        let mut q = q(&[("a", Active)]);
+        q.pause("a");
+        let j = q.finish("a", Ok(()), 0).unwrap();
+        assert_eq!(j.status, Done);
     }
 
     #[test]

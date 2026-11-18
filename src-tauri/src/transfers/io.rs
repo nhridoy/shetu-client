@@ -222,6 +222,11 @@ pub async fn copy(
 /// Moves the finished `.part` into place and returns where it landed. Without an approved
 /// replace, a destination that appeared meanwhile keeps its file and this one gets a free name.
 pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result<String, JobError> {
+    if !replace && matches!(dst, Side::Local) {
+        if let Some(landed) = publish_local_new(part, dest).await? {
+            return Ok(landed);
+        }
+    }
     let mut target = dest.to_string();
     if !replace {
         let mut tried = std::collections::HashSet::new();
@@ -249,6 +254,31 @@ pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result
         }
     }
     Ok(target)
+}
+
+/// Publishes without ever replacing: a hard link fails if the name is taken (even if a file
+/// appeared a moment ago), and then the next free name is tried. `None` when this filesystem
+/// can't hard-link; the caller falls back to check-then-rename.
+async fn publish_local_new(part: &str, dest: &str) -> Result<Option<String>, JobError> {
+    let mut tried = std::collections::HashSet::new();
+    let mut target = dest.to_string();
+    loop {
+        match tokio::fs::hard_link(part, &target).await {
+            Ok(()) => {
+                // The data is in place under `target`; a leftover `.part` is only clutter.
+                let _ = tokio::fs::remove_file(part).await;
+                return Ok(Some(target));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                tried.insert(target.clone());
+                target = free_name(dest, |p| tried.contains(p));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(io_err("publish", e));
+            }
+            Err(_) => return Ok(None),
+        }
+    }
 }
 
 /// Deletes a `.part` that must not survive (a stale resume). Already missing is fine; any

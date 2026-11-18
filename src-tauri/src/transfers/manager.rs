@@ -153,13 +153,14 @@ impl RunTokens {
 }
 
 /// Ends a run as soon as its token fires, wherever it is (connecting, a hung request, renaming).
-async fn until_stopped(
+async fn until_stopped<T>(
     stop: &CancellationToken,
-    run: impl std::future::Future<Output = RunEnd>,
-) -> RunEnd {
+    run: impl std::future::Future<Output = T>,
+    stopped: T,
+) -> T {
     tokio::select! {
         biased;
-        _ = stop.cancelled() => RunEnd::Finished(Err(JobError::Stopped)),
+        _ = stop.cancelled() => stopped,
         end = run => end,
     }
 }
@@ -174,6 +175,8 @@ pub fn job_for_stat(
 ) -> TransferJob {
     match stat {
         Ok(snapshot) => build_job(new, src_host, dest_host, snapshot, now),
+        // Not reachable right now: queue it; the run stats again and retries like any drop.
+        Err(JobError::Connection(_)) => build_job(new, src_host, dest_host, (0, 0), now),
         Err(e) => {
             let mut job = build_job(new, src_host, dest_host, (0, 0), now);
             let msg = match e {
@@ -316,6 +319,10 @@ impl OwnedSessions {
     pub fn touch(&mut self, sid: &str, now: Instant) {
         self.0.insert(sid.to_string(), now);
     }
+    /// Stops tracking a session; true if it was tracked.
+    pub fn forget(&mut self, sid: &str) -> bool {
+        self.0.remove(sid).is_some()
+    }
     pub fn is_owned(&self, sid: &str) -> bool {
         self.0.contains_key(sid)
     }
@@ -340,6 +347,39 @@ impl OwnedSessions {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+/// Queued → Active plus its run token, in one step under the tokens lock (which `cancel_job`
+/// also takes), so a cancel either stops the start or reaches the started run.
+pub fn activate(
+    tokens: &Mutex<RunTokens>,
+    queue: &Mutex<Queue>,
+    id: &str,
+) -> Option<(u64, CancellationToken)> {
+    let mut tokens = tokens.lock().unwrap_or_else(|p| p.into_inner());
+    if tokens.is_running(id)
+        || !queue
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .mark_active(id)
+    {
+        return None;
+    }
+    Some(tokens.start(id))
+}
+
+/// Cancels a job; also signals its run if one is live. Returns the job and whether a run owns
+/// it (the run then deletes the `.part` once it lets go of the file).
+pub fn cancel_job(
+    tokens: &Mutex<RunTokens>,
+    queue: &Mutex<Queue>,
+    id: &str,
+) -> Option<(TransferJob, bool)> {
+    let tokens = tokens.lock().unwrap_or_else(|p| p.into_inner());
+    let job = queue.lock().unwrap_or_else(|p| p.into_inner()).cancel(id)?;
+    let running = tokens.is_running(id);
+    tokens.cancel(id);
+    Some((job, running))
 }
 
 fn now_ms() -> i64 {
@@ -492,27 +532,15 @@ impl Inner {
         self.close_idle_owned().await;
 
         // A job whose previous run hasn't let go yet waits for the next pass.
-        let start: Vec<String> = {
-            let tokens = self.tokens.lock().unwrap_or_else(|p| p.into_inner());
-            self.queue()
-                .startable()
-                .into_iter()
-                .filter(|id| !tokens.is_running(id))
-                .collect()
-        };
+        let mut start = Vec::new();
         let mut runs = Vec::new();
-        let start: Vec<String> = start
-            .into_iter()
-            .filter(|id| self.queue().mark_active(id))
-            .collect();
-        for id in &start {
-            // The token exists before the task does, so a pause or cancel can't slip past it.
-            runs.push(
-                self.tokens
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .start(id),
-            );
+        // Collect first: a lock in the `for` expression would live through the loop body.
+        let candidates = self.queue().startable();
+        for id in candidates {
+            if let Some(run) = activate(&self.tokens, &self.queue, &id) {
+                start.push(id);
+                runs.push(run);
+            }
         }
         self.changed_ids(&start);
         for (id, (run, token)) in start.into_iter().zip(runs) {
@@ -530,6 +558,19 @@ impl Inner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .is_empty()
+    }
+
+    async fn drop_owned(&self, sids: Vec<String>) {
+        let closing: Vec<crate::sftp::SftpSession> = {
+            let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+            sids.iter()
+                .filter(|sid| owned.forget(sid))
+                .filter_map(|sid| self.sessions().take(sid))
+                .collect()
+        };
+        for session in closing {
+            crate::sftp::close_session(session).await;
+        }
     }
 
     async fn close_idle_owned(&self) {
@@ -640,7 +681,14 @@ impl Inner {
         }
     }
 
-    async fn run(&self, job: &TransferJob, stop: &CancellationToken, run: u64) -> RunEnd {
+    /// Connects both ends and copies into the `.part`. `Ok` hands back the destination, ready
+    /// to publish; publishing runs outside the stop race (see `run_job`).
+    async fn run(
+        &self,
+        job: &TransferJob,
+        stop: &CancellationToken,
+        run: u64,
+    ) -> Result<Side, RunEnd> {
         let (prefer_src, prefer_dest) = self
             .prefer
             .lock()
@@ -653,18 +701,33 @@ impl Inner {
                 self.hold(&job.id, run, owned);
                 side
             }
-            Acquire::Wait(r) => return RunEnd::Wait(r),
-            Acquire::Fail(e) => return RunEnd::Finished(Err(e)),
+            Acquire::Wait(r) => return Err(RunEnd::Wait(r)),
+            Acquire::Fail(e) => return Err(RunEnd::Finished(Err(e))),
         };
         let dst = match self.acquire(&job.dest, prefer_dest.as_deref()).await {
             Acquire::Ready(side, owned) => {
                 self.hold(&job.id, run, owned);
                 side
             }
-            Acquire::Wait(r) => return RunEnd::Wait(r),
-            Acquire::Fail(e) => return RunEnd::Finished(Err(e)),
+            Acquire::Wait(r) => return Err(RunEnd::Wait(r)),
+            Acquire::Fail(e) => return Err(RunEnd::Finished(Err(e))),
         };
-        RunEnd::Finished(self.copy_job(job, &src, &dst, stop).await)
+        match self.copy_job(job, &src, &dst, stop).await {
+            Ok(()) => Ok(dst),
+            Err(e) => Err(RunEnd::Finished(Err(e))),
+        }
+    }
+
+    /// Moves the finished `.part` into place. Never raced against Pause/Cancel: once started,
+    /// its real outcome is what gets recorded.
+    async fn publish(&self, job: &TransferJob, dst: &Side) -> Result<(), JobError> {
+        let landed = io::finish(dst, &job.part_path, &job.dest.path, job.replace).await?;
+        if landed != job.dest.path {
+            if let Some(j) = self.queue().get_mut(&job.id) {
+                j.dest.path = landed;
+            }
+        }
+        Ok(())
     }
 
     async fn copy_job(
@@ -735,12 +798,6 @@ impl Inner {
         if stop.is_cancelled() {
             return Err(JobError::Stopped);
         }
-        let landed = io::finish(dst, &job.part_path, &job.dest.path, job.replace).await?;
-        if landed != job.dest.path {
-            if let Some(j) = self.queue().get_mut(&job.id) {
-                j.dest.path = landed;
-            }
-        }
         Ok(())
     }
 
@@ -776,15 +833,25 @@ async fn run_job(inner: Arc<Inner>, id: String, run: u64, token: CancellationTok
         .get(&id)
         .filter(|j| j.status == JobStatus::Active)
         .cloned();
+    let stopped = Err(RunEnd::Finished(Err(JobError::Stopped)));
     let end = match job {
-        Some(job) => until_stopped(&token, inner.run(&job, &token, run)).await,
+        Some(job) => match until_stopped(&token, inner.run(&job, &token, run), stopped).await {
+            Ok(dst) => RunEnd::Finished(inner.publish(&job, &dst).await),
+            Err(end) => end,
+        },
         None => RunEnd::Finished(Err(JobError::Stopped)),
     };
-    {
+    let used = {
         let mut running = inner.running.lock().unwrap_or_else(|p| p.into_inner());
-        if running.get(&id).is_some_and(|(r, _)| *r == run) {
-            running.remove(&id);
+        match running.get(&id) {
+            Some((r, _)) if *r == run => running.remove(&id).map(|(_, sids)| sids),
+            _ => None,
         }
+    };
+    // A connection error on a manager-opened session (say the server closed just the SFTP
+    // channel) must not be reused: drop it so the next attempt reconnects.
+    if matches!(end, RunEnd::Finished(Err(JobError::Connection(_)))) {
+        inner.drop_owned(used.unwrap_or_default()).await;
     }
     let changed = complete_run(&inner.tokens, &inner.queue, &id, run, end, now_ms());
 
@@ -911,31 +978,18 @@ pub fn transfer_retry(id: String, manager: Mgr<'_>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn transfer_cancel(id: String, manager: Mgr<'_>) -> Result<(), String> {
-    let was_active = manager
-        .inner
-        .queue()
-        .get(&id)
-        .is_some_and(|j| j.status == JobStatus::Active);
-    let Some(job) = manager.inner.queue().cancel(&id) else {
+    let inner = &manager.inner;
+    let Some((job, running)) = cancel_job(&inner.tokens, &inner.queue, &id) else {
         return Ok(());
     };
-    manager
-        .inner
+    inner
         .prefer
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&id);
-    if was_active {
-        // The running task deletes the `.part` once it has let go of the file.
-        manager
-            .inner
-            .tokens
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .cancel(&id);
-    } else {
-        let inner = Arc::clone(&manager.inner);
-        let job = job.clone();
+    // A live run deletes the `.part` once it has let go of the file.
+    if !running {
+        let inner = Arc::clone(inner);
         tauri::async_runtime::spawn(async move { inner.remove_part(&job).await });
     }
     apply(&manager, vec![id]);
@@ -1069,7 +1123,12 @@ mod tests {
     async fn stop_ends_a_hung_run() {
         let stop = CancellationToken::new();
         stop.cancel();
-        let end = until_stopped(&stop, std::future::pending::<RunEnd>()).await;
+        let end = until_stopped(
+            &stop,
+            std::future::pending::<RunEnd>(),
+            RunEnd::Finished(Err(JobError::Stopped)),
+        )
+        .await;
         assert!(matches!(end, RunEnd::Finished(Err(JobError::Stopped))));
     }
 
@@ -1288,6 +1347,49 @@ mod tests {
         assert_eq!(retired, vec!["transfers:a".to_string()]);
         assert!(!owned.is_owned("transfers:a"));
         assert!(owned.is_owned("transfers:b") && owned.is_owned("transfers:c"));
+    }
+
+    #[test]
+    fn cancel_before_activation_stops_the_start() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Queued,
+        )]);
+        let (job, running) = cancel_job(&tokens, &queue, "a").unwrap();
+        assert_eq!((job.status, running), (JobStatus::Cancelled, false));
+        assert!(activate(&tokens, &queue, "a").is_none());
+        assert!(!tokens.lock().unwrap().is_running("a"));
+    }
+
+    #[test]
+    fn cancel_after_activation_signals_the_run() {
+        let tokens = Mutex::new(RunTokens::default());
+        let queue = qmutex(vec![crate::transfers::queue::test_job(
+            "a",
+            JobStatus::Queued,
+        )]);
+        let (_, token) = activate(&tokens, &queue, "a").unwrap();
+        assert_eq!(
+            queue.lock().unwrap().get("a").unwrap().status,
+            JobStatus::Active
+        );
+        let (_, running) = cancel_job(&tokens, &queue, "a").unwrap();
+        assert!(running);
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn unreachable_source_at_queue_time_is_retried_not_failed() {
+        let new = new_job(JobKind::Download);
+        let j = job_for_stat(
+            &new,
+            Some(host()),
+            None,
+            Err(JobError::Connection("stat: Timeout".into())),
+            5,
+        );
+        assert_eq!((j.status, j.error), (JobStatus::Queued, None));
     }
 
     #[test]

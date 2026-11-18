@@ -687,6 +687,51 @@ describe("transferFiles with the transfer manager", () => {
     );
   });
 
+  it("doesn't set a folder aside to make room for a file", async () => {
+    const { pane, calls } = samePane(async () => {}, {
+      listed: [mkdir("a.txt", "/r/sub/a.txt")],
+    });
+    await moveA(pane);
+    expect(calls).toEqual(["mv /r/a.txt /r/sub/a.txt"]);
+  });
+
+  it("copies between two panes on the same host instead of renaming", async () => {
+    const moveFile = vi.fn(async () => {});
+    const paneA = {
+      ...remote,
+      id: "host-1",
+      getSessionId: () => "sess-a",
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => []),
+      moveFile,
+      mkdirAll: vi.fn(async () => {}),
+    } as unknown as FileProvider;
+    const paneB = {
+      ...(paneA as object),
+      getSessionId: () => "sess-b",
+    } as unknown as FileProvider;
+    transferMocks.enqueueTransfers.mockImplementationOnce(async () => {
+      const jobs = [job("j1", { kind: "serverCopy", status: "done" })];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      return jobs;
+    });
+    await transferFiles({
+      source: paneA,
+      dest: paneB,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+    });
+    expect(moveFile).not.toHaveBeenCalled();
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledWith([
+      expect.objectContaining({
+        kind: "serverCopy",
+        srcSessionId: "sess-a",
+        destSessionId: "sess-b",
+      }),
+    ]);
+  });
+
   it("leaves a file alone when it is moved onto itself", async () => {
     const { pane, calls } = samePane();
     const results = await transferFiles({

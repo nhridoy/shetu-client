@@ -139,6 +139,24 @@ describe("sftpStore transfers mirror", () => {
     expect(offReset).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores updates from before a wipe that lands while listeners register", async () => {
+    let onReset: (() => void) | undefined;
+    mocks.onTransfersReset.mockImplementationOnce(async (cb: () => void) => {
+      onReset = cb;
+      return () => {};
+    });
+    mocks.onTransfersChanged.mockImplementationOnce(
+      async (cb: (jobs: TransferJob[]) => void) => {
+        cb([job("a", { status: "active" })]); // an update right after registering
+        onReset?.(); // then the queue is wiped
+        return () => {};
+      },
+    );
+    mocks.listTransfers.mockResolvedValueOnce([]);
+    await useSftpStore.getState().ensureTransferListener();
+    expect(useSftpStore.getState().transfers).toEqual([]);
+  });
+
   it("reports a listener that couldn't start", async () => {
     mocks.onTransfersChanged.mockRejectedValueOnce(new Error("no IPC"));
     expect(await useSftpStore.getState().ensureTransferListener()).toBe(false);

@@ -74,12 +74,7 @@ function startTransferListener(
     // Events that arrive while the first list loads are newer than it: replay them after.
     let pending: TransferJob[][] | null = [];
     let wipedMeanwhile = false;
-    unlisten.push(
-      await onTransfersChanged((jobs) => {
-        if (pending) pending.push(jobs);
-        else apply(jobs);
-      }),
-    );
+    // Reset first: a wipe after any buffered update must be seen, or the update replays.
     unlisten.push(
       await onTransfersReset(() => {
         if (pending) {
@@ -87,6 +82,12 @@ function startTransferListener(
           wipedMeanwhile = true;
         }
         reset();
+      }),
+    );
+    unlisten.push(
+      await onTransfersChanged((jobs) => {
+        if (pending) pending.push(jobs);
+        else apply(jobs);
       }),
     );
     const listed = await listTransfers();

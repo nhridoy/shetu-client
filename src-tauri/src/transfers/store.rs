@@ -29,7 +29,8 @@ pub fn delete_jobs(db: &LocalDb, ids: &[String]) -> Result<(), String> {
 /// Oldest first. Rows that no longer parse are dropped.
 pub fn load_jobs(db: &LocalDb) -> Result<Vec<TransferJob>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String)> = conn
+    // Read the payload as any SQLite value: one non-text row must not fail the whole load.
+    let rows: Vec<(String, rusqlite::types::Value)> = conn
         .prepare("SELECT id, data FROM transfer_jobs ORDER BY created_at, rowid")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -38,9 +39,13 @@ pub fn load_jobs(db: &LocalDb) -> Result<Vec<TransferJob>, String> {
         .map_err(|e| format!("load transfers: {e}"))?;
     let mut jobs = Vec::new();
     for (id, data) in rows {
-        match serde_json::from_str::<TransferJob>(&data) {
-            Ok(job) => jobs.push(job),
-            Err(_) => {
+        let parsed = match data {
+            rusqlite::types::Value::Text(text) => serde_json::from_str::<TransferJob>(&text).ok(),
+            _ => None,
+        };
+        match parsed {
+            Some(job) => jobs.push(job),
+            None => {
                 conn.execute("DELETE FROM transfer_jobs WHERE id = ?1", [&id])
                     .map_err(|e| format!("delete transfer: {e}"))?;
             }
@@ -108,6 +113,32 @@ mod tests {
         assert_eq!(load_jobs(&db).unwrap().len(), 2);
         clear_jobs(&db).unwrap();
         assert!(load_jobs(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn binary_row_is_skipped_and_the_rest_load() {
+        let db = db();
+        save_job(&db, &test_job("good", JobStatus::Paused)).unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO transfer_jobs (id, created_at, data) VALUES ('blob', 0, X'FF')",
+                [],
+            )
+            .unwrap();
+        let loaded = load_jobs(&db).unwrap();
+        assert_eq!(
+            loaded.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(),
+            vec!["good"]
+        );
+        let count: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM transfer_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
