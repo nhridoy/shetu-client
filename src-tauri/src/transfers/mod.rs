@@ -5,3 +5,4 @@ pub mod queue;
 pub mod store;
 pub mod io;
 pub mod manager;
+pub mod actor;
