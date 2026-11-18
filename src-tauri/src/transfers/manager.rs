@@ -131,7 +131,7 @@ pub enum Msg {
     ResumeAll,
     Retry(String),
     Cancel(String),
-    ClearFinished(oneshot::Sender<()>),
+    ClearFinished(oneshot::Sender<Result<(), String>>),
     Wipe(oneshot::Sender<()>),
     Lookup {
         id: String,
@@ -250,11 +250,22 @@ async fn run_loop(
         };
         // `None` is the tick (the loop's own sender keeps the channel open).
         let mut effects = match msg {
+            // Answered only once their effects are applied: the caller then sees the table
+            // already cleared (wipe) or the delete's outcome (clear).
+            Some(Msg::Wipe(reply)) => {
+                let _ = apply(&app, &tx, &locks, state.wipe());
+                let _ = reply.send(());
+                Vec::new()
+            }
+            Some(Msg::ClearFinished(reply)) => {
+                let _ = reply.send(apply(&app, &tx, &locks, state.clear_finished()));
+                Vec::new()
+            }
             Some(msg) => handle(&mut state, msg, &mut env),
             None => Vec::new(),
         };
         effects.extend(state.tick(now_ms(), Instant::now(), &mut env));
-        apply(&app, &tx, &locks, effects);
+        let _ = apply(&app, &tx, &locks, effects);
         for session in env.taken.drain(..) {
             tauri::async_runtime::spawn(crate::sftp::close_session(session));
         }
@@ -290,17 +301,8 @@ fn handle(state: &mut State, msg: Msg, env: &mut AppEnv) -> Vec<Effect<Arc<SftpS
         Msg::ResumeAll => state.resume_all(),
         Msg::Retry(id) => state.retry(&id),
         Msg::Cancel(id) => state.cancel(&id),
-        Msg::ClearFinished(reply) => {
-            let effects = state.clear_finished();
-            let _ = reply.send(());
-            effects
-        }
-        Msg::Wipe(reply) => {
-            let effects = state.wipe();
-            // Applied before answering, so the table is empty when the caller goes on.
-            let _ = reply.send(());
-            effects
-        }
+        // Handled in the loop: they answer after their effects are applied.
+        Msg::ClearFinished(_) | Msg::Wipe(_) => Vec::new(),
         Msg::Lookup {
             id,
             run,
@@ -323,13 +325,16 @@ fn handle(state: &mut State, msg: Msg, env: &mut AppEnv) -> Vec<Effect<Arc<SftpS
     }
 }
 
+/// Carries out the actor's decisions. Returns the first failed delete, so "Clear done" can
+/// report it.
 fn apply(
     app: &tauri::AppHandle,
     tx: &mpsc::UnboundedSender<Msg>,
     locks: &Arc<ConnectLocks>,
     effects: Vec<Effect<Arc<SftpSession>>>,
-) {
+) -> Result<(), String> {
     let db = app.state::<crate::db::LocalDb>();
+    let mut outcome = Ok(());
     for effect in effects {
         match effect {
             Effect::Changed(jobs) => {
@@ -349,6 +354,7 @@ fn apply(
             Effect::Delete(ids) => {
                 if let Err(e) = store::delete_jobs(&db, &ids) {
                     log::warn!("transfers: {e}");
+                    outcome = outcome.and(Err(e));
                 }
             }
             Effect::Reset => {
@@ -356,18 +362,35 @@ fn apply(
                 let _ = app.emit(RESET_EVENT, ());
             }
             Effect::Start(start) => {
-                tauri::async_runtime::spawn(worker::run(
+                let (id, run) = (start.job.id.clone(), start.run);
+                let task = tauri::async_runtime::spawn(worker::run(
                     app.clone(),
                     tx.clone(),
                     Arc::clone(locks),
                     start,
                 ));
+                // A transfer task that panics never reports; report for it, so the job fails
+                // instead of staying Active forever.
+                let tx = tx.clone();
+                tauri::async_runtime::spawn(async move {
+                    if task.await.is_err() {
+                        let result = Err(JobError::Operation(
+                            "The transfer stopped unexpectedly".into(),
+                        ));
+                        let end = RunEnd::Finished {
+                            result,
+                            landed: None,
+                        };
+                        let _ = tx.send(Msg::Ended { id, run, end });
+                    }
+                });
             }
             Effect::RemovePart(job) => {
                 tauri::async_runtime::spawn(worker::remove_part(app.clone(), job));
             }
         }
     }
+    outcome
 }
 
 type Mgr<'a> = tauri::State<'a, TransferManager>;
@@ -453,7 +476,7 @@ pub fn transfer_cancel(id: String, manager: Mgr<'_>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn transfer_clear_finished(manager: Mgr<'_>) -> Result<(), String> {
-    manager.ask(Msg::ClearFinished).await
+    manager.ask(Msg::ClearFinished).await?
 }
 
 #[cfg(test)]

@@ -341,12 +341,16 @@ impl State {
             }
         }
 
-        let held: std::collections::HashSet<&String> =
-            self.runs.values().flat_map(|r| &r.held).collect();
+        // A session in use is never idle; its idle time counts from when the last run lets go.
+        for sid in self.runs.values().flat_map(|r| &r.held) {
+            if let Some(at) = self.owned.get_mut(sid) {
+                *at = now;
+            }
+        }
         let idle: Vec<String> = self
             .owned
             .iter()
-            .filter(|(sid, at)| !held.contains(sid) && now.duration_since(**at) >= OWNED_IDLE)
+            .filter(|(_, at)| now.duration_since(**at) >= OWNED_IDLE)
             .map(|(sid, _)| sid.clone())
             .collect();
         for sid in idle {
@@ -918,6 +922,27 @@ mod tests {
             vec!["transfers:h1:me".to_string()],
             "idle once released"
         );
+    }
+
+    #[test]
+    fn a_session_held_through_a_long_run_stays_open_right_after() {
+        let mut env = FakeEnv::default();
+        let mut state = state_with(vec![download("a")]);
+        let t0 = Instant::now();
+        let s = start_one(&mut state, &mut env);
+        env.sessions.push(("transfers:h1:me".into(), saved()));
+        state.lookup::<String>("a", s.run, End::Src, Some("transfers:h1:me"), t0, &mut env);
+        // A two-minute transfer: ticks keep running while it holds the session.
+        state.tick(0, t0 + Duration::from_secs(60), &mut env);
+        state.tick(0, t0 + Duration::from_secs(120), &mut env);
+        state.ended("a", s.run, ok(), 0, &mut env);
+        state.tick(0, t0 + Duration::from_secs(121), &mut env);
+        assert!(
+            env.taken.is_empty(),
+            "idle time counts from release, not from hand-out"
+        );
+        state.tick(0, t0 + Duration::from_secs(151), &mut env);
+        assert_eq!(env.taken, vec!["transfers:h1:me".to_string()]);
     }
 
     #[test]
