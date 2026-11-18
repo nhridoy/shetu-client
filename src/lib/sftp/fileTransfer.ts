@@ -316,10 +316,12 @@ export interface TransferFileResult {
 }
 
 /** Resolves once every job has settled (see `isSettled`), with each job's settled state. */
-function waitForSettled(jobs: TransferJob[]): Promise<TransferJob[]> {
+function waitForSettled(
+  jobs: TransferJob[],
+  resets: number,
+): Promise<TransferJob[]> {
   const ids = jobs.map((j) => j.id);
   const seen = new Map<string, TransferJob>();
-  const resets = useSftpStore.getState().transferResets;
   return new Promise((resolve) => {
     let unsubscribe: (() => void) | undefined;
     const check = (state: {
@@ -383,6 +385,19 @@ export interface TransferOptions {
   ) => void;
 }
 
+/** A failed replace that left the old file at a backup path the user must be told about. */
+class BackupKeptError extends Error {}
+
+async function isMissing(
+  provider: FileProvider,
+  path: string,
+): Promise<boolean> {
+  return (provider as unknown as RemoteFileProvider).stat(path).then(
+    () => false,
+    (e) => /no such file/i.test(e instanceof Error ? e.message : String(e)),
+  );
+}
+
 /**
  * Renames `from` onto `to` on one remote pane. With `replacing`, the old `to` is set aside and only deleted once the
  * new file is in place; on any failure it is put back, or the error says where it is kept.
@@ -403,16 +418,17 @@ async function moveReplacing(
     await provider.moveFile(to, backup);
     await provider.moveFile(from, to);
   } catch (err) {
-    // A rename's reply can be lost after the server applied it: look for the old file.
-    if (await provider.exists(backup).catch(() => true)) {
-      const restored = await provider.moveFile(backup, to).then(
-        () => true,
-        () => false,
+    // A rename's reply can be lost after the server applied it: try to put the old file back.
+    const restored = await provider.moveFile(backup, to).then(
+      () => true,
+      () => false,
+    );
+    // Only a confirmed "no such file" means the old file never left `to`.
+    if (!restored && !(await isMissing(provider, backup))) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new BackupKeptError(
+        `${message}. The previous file is kept at ${backup}`,
       );
-      if (!restored) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`${message}. The previous file is kept at ${backup}`);
-      }
     }
     throw err;
   }
@@ -519,6 +535,10 @@ export async function transferFiles(
             await moveReplacing(source, file.path, destFilePath, replacing);
             result = { file, action: "moved" };
           } catch (err) {
+            // The batch summary shows one error at most; a kept backup path must never be lost.
+            if (err instanceof BackupKeptError) {
+              toast.error(err.message, { duration: Number.POSITIVE_INFINITY });
+            }
             result = {
               file,
               action: "moved",
@@ -657,6 +677,8 @@ export async function transferFiles(
       transfers.forEach((t, i) => {
         onFileStart?.(t.file, i);
       });
+      // A wipe can land while the enqueue is still being answered: count from before it.
+      const resetsBefore = useSftpStore.getState().transferResets;
       const jobs = await enqueueTransfers(
         transfers.map((t) => ({
           kind,
@@ -668,7 +690,7 @@ export async function transferFiles(
         })),
       );
       useSftpStore.getState().setTransferScanning(false);
-      const settled = await waitForSettled(jobs);
+      const settled = await waitForSettled(jobs, resetsBefore);
       settled.forEach((job, i) => {
         const result = resultFor(transfers[i].file, job);
         results.push(result);

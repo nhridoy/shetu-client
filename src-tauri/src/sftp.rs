@@ -80,7 +80,7 @@ impl SftpSessions {
         &self,
         host: &crate::transfers::model::HostRef,
         prefer: Option<&str>,
-    ) -> Option<(String, Arc<RusshSftp>)> {
+    ) -> Option<(String, crate::transfers::model::HostRef, Arc<RusshSftp>)> {
         let map = self.sessions.lock().ok()?;
         let fits = |s: &SftpSession| {
             let open = s.ssh_handle.as_ref().is_none_or(|h| !h.is_closed());
@@ -94,18 +94,34 @@ impl SftpSessions {
             .and_then(|id| map.get_key_value(id))
             .filter(|(_, s)| fits(s))
             .or_else(|| map.iter().find(|(_, s)| fits(s)))
-            .map(|(id, s)| (id.clone(), Arc::clone(&s.sftp)))
+            .map(|(id, s)| {
+                let found = crate::transfers::model::HostRef {
+                    host_id: s.host_id.clone(),
+                    host: s.host.clone(),
+                    port: s.port,
+                    username: s.username.clone(),
+                };
+                (id.clone(), found, Arc::clone(&s.sftp))
+            })
     }
 
     /// Closes and forgets a session (and its SSH connection when we opened it).
     pub async fn disconnect(&self, session_id: &str) {
-        let session = self.sessions.lock().ok().and_then(|mut m| m.remove(session_id));
-        if let Some(session) = session {
-            let _ = session.sftp.close().await;
-            if session.created_ourselves {
-                drop(session.ssh_handle);
-            }
+        if let Some(session) = self.take(session_id) {
+            close_session(session).await;
         }
+    }
+
+    /// Forgets a session at once, so no one can look it up; close it with `close_session`.
+    pub fn take(&self, session_id: &str) -> Option<SftpSession> {
+        self.sessions.lock().ok().and_then(|mut m| m.remove(session_id))
+    }
+}
+
+pub async fn close_session(session: SftpSession) {
+    let _ = session.sftp.close().await;
+    if session.created_ourselves {
+        drop(session.ssh_handle);
     }
 }
 

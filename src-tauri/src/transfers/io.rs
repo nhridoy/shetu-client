@@ -251,6 +251,21 @@ pub async fn finish(dst: &Side, part: &str, dest: &str, replace: bool) -> Result
     Ok(target)
 }
 
+/// Deletes a `.part` that must not survive (a stale resume). Already missing is fine; any
+/// other failure is returned.
+pub async fn discard_part(side: &Side, part: &str) -> Result<(), JobError> {
+    match side {
+        Side::Local => match tokio::fs::remove_file(part).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_err("remove part", e)),
+            _ => Ok(()),
+        },
+        Side::Sftp(s) => match s.remove_file(part).await {
+            Err(e) if !is_sftp_not_found(&e) => Err(sftp_err("remove part", e)),
+            _ => Ok(()),
+        },
+    }
+}
+
 /// Best effort: a missing file or a dropped connection is ignored.
 pub async fn remove_part(side: &Side, part: &str) {
     match side {
@@ -432,6 +447,24 @@ mod tests {
         assert_eq!(size, 100);
         assert!(mtime > 1_600_000_000);
         assert_eq!(part_len(&Side::Local, &d.path("none")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn discard_part_reports_failures_but_not_missing() {
+        let d = Dir::new("discard");
+        assert_eq!(
+            discard_part(&Side::Local, &d.path("none.part")).await,
+            Ok(())
+        );
+        let part = d.path("o.part");
+        std::fs::write(&part, b"x").unwrap();
+        assert_eq!(discard_part(&Side::Local, &part).await, Ok(()));
+        assert!(!std::path::Path::new(&part).exists());
+        // Something that can't be removed as a file.
+        let stuck = d.path("stuck.part");
+        std::fs::create_dir_all(format!("{stuck}/inside")).unwrap();
+        assert!(discard_part(&Side::Local, &stuck).await.is_err());
+        assert!(std::path::Path::new(&stuck).exists());
     }
 
     #[tokio::test]

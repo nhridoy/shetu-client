@@ -263,6 +263,85 @@ pub fn complete_run(
     changed
 }
 
+/// Adds freshly built jobs unless a wipe ran since `since`. Runs under the queue lock, which
+/// `wipe_queue` also holds, so a wipe can't slip between the check and the commit.
+pub fn commit_enqueue(
+    queue: &Mutex<Queue>,
+    epoch: &std::sync::atomic::AtomicU64,
+    since: u64,
+    jobs: Vec<TransferJob>,
+    on_commit: impl FnOnce(&[TransferJob]),
+) -> Result<(), String> {
+    let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
+    if epoch.load(std::sync::atomic::Ordering::SeqCst) != since {
+        return Err("Signed out while queueing; nothing was queued".into());
+    }
+    q.enqueue(jobs.clone());
+    on_commit(&jobs);
+    Ok(())
+}
+
+/// Forgets the queue and bumps the epoch in one step under the queue lock.
+pub fn wipe_queue(
+    queue: &Mutex<Queue>,
+    epoch: &std::sync::atomic::AtomicU64,
+    on_wipe: impl FnOnce(),
+) {
+    let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
+    epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    q.forget_all();
+    on_wipe();
+}
+
+/// The session must describe the machine the job was queued for. No description (the session
+/// went away or was replaced meanwhile) is not good enough either.
+pub fn check_endpoint(recorded: &HostRef, actual: Option<&HostRef>) -> Result<(), JobError> {
+    match actual {
+        None => Err(JobError::Connection("connect: session closed".into())),
+        Some(a) if !same_endpoint(recorded, a) => Err(JobError::Operation(format!(
+            "{} now points to a different address than when this transfer was queued",
+            recorded.host
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
+/// When each manager-opened session was last used. Lookups that reuse a session and the idle
+/// closer both go through this (under one lock), so a session can't be closed after a job
+/// picked it up.
+#[derive(Default)]
+pub struct OwnedSessions(HashMap<String, Instant>);
+
+impl OwnedSessions {
+    pub fn touch(&mut self, sid: &str, now: Instant) {
+        self.0.insert(sid.to_string(), now);
+    }
+    pub fn is_owned(&self, sid: &str) -> bool {
+        self.0.contains_key(sid)
+    }
+    /// Sessions unused for `idle` and not in `in_use`; they are forgotten here.
+    pub fn retire_idle(&mut self, in_use: &[String], now: Instant, idle: Duration) -> Vec<String> {
+        for sid in in_use {
+            if let Some(at) = self.0.get_mut(sid) {
+                *at = now;
+            }
+        }
+        let retired: Vec<String> = self
+            .0
+            .iter()
+            .filter(|(_, at)| now.duration_since(**at) >= idle)
+            .map(|(sid, _)| sid.clone())
+            .collect();
+        for sid in &retired {
+            self.0.remove(sid);
+        }
+        retired
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -290,7 +369,7 @@ struct Inner {
     /// Bumped by a wipe; an enqueue that started before it doesn't commit.
     epoch: std::sync::atomic::AtomicU64,
     /// Manager-opened session id → last time a job used it.
-    owned: Mutex<HashMap<String, Instant>>,
+    owned: Mutex<OwnedSessions>,
     notify: Notify,
 }
 
@@ -320,26 +399,22 @@ impl TransferManager {
 
     /// Sign-out / device wipe: stop everything and forget the queue (`.part` files stay).
     pub fn wipe(&self) {
-        self.inner
-            .epoch
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner
+        let inner = &self.inner;
+        inner
             .tokens
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .cancel_all();
-        self.inner
-            .queue
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .forget_all();
-        self.inner
-            .prefer
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        let _ = store::clear_jobs(&self.inner.app.state::<crate::db::LocalDb>());
-        let _ = self.inner.app.emit(RESET_EVENT, ());
+        // Under the queue lock, like an enqueue's commit, so the two can't interleave.
+        wipe_queue(&inner.queue, &inner.epoch, || {
+            inner
+                .prefer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            let _ = store::clear_jobs(&inner.app.state::<crate::db::LocalDb>());
+        });
+        let _ = inner.app.emit(RESET_EVENT, ());
     }
 }
 
@@ -458,30 +533,25 @@ impl Inner {
     }
 
     async fn close_idle_owned(&self) {
-        let in_use: Vec<String> = self
-            .running
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .flat_map(|(_, sids)| sids.iter().cloned())
-            .collect();
-        let idle: Vec<String> = {
+        // Retired sessions leave the map while `owned` is locked, so a lookup that reuses a
+        // session (also under `owned`) either refreshed it first or no longer finds it.
+        let closing: Vec<crate::sftp::SftpSession> = {
             let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
-            for id in &in_use {
-                owned.insert(id.clone(), Instant::now());
-            }
-            let idle: Vec<String> = owned
-                .iter()
-                .filter(|(_, at)| at.elapsed() >= OWNED_IDLE)
-                .map(|(id, _)| id.clone())
+            let in_use: Vec<String> = self
+                .running
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .flat_map(|(_, sids)| sids.iter().cloned())
                 .collect();
-            for id in &idle {
-                owned.remove(id);
-            }
-            idle
+            owned
+                .retire_idle(&in_use, Instant::now(), OWNED_IDLE)
+                .iter()
+                .filter_map(|sid| self.sessions().take(sid))
+                .collect()
         };
-        for id in idle {
-            self.sessions().disconnect(&id).await;
+        for session in closing {
+            crate::sftp::close_session(session).await;
         }
     }
 
@@ -492,25 +562,33 @@ impl Inner {
         &self,
         host: &HostRef,
         sid: String,
+        actual: Option<&HostRef>,
         sftp: Arc<russh_sftp::client::SftpSession>,
     ) -> Acquire {
-        let actual = self.sessions().session_info(&sid).map(|(h, _)| h);
-        if actual.is_some_and(|a| !same_endpoint(host, &a)) {
-            return Acquire::Fail(JobError::Operation(format!(
-                "{} now points to a different address than when this transfer was queued",
-                host.host
-            )));
+        if let Err(e) = check_endpoint(host, actual) {
+            return Acquire::Fail(e);
         }
         let owned = sid.starts_with(OWNED_PREFIX).then_some(sid);
         Acquire::Ready(Side::Sftp(sftp), owned)
+    }
+
+    /// An open session to `host`; a manager-owned one is marked used in the same step.
+    fn reuse(&self, host: &HostRef, prefer: Option<&str>) -> Option<Acquire> {
+        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+        let (sid, actual, sftp) = self.sessions().find_matching(host, prefer)?;
+        if owned.is_owned(&sid) {
+            owned.touch(&sid, Instant::now());
+        }
+        drop(owned);
+        Some(self.ready(host, sid, Some(&actual), sftp))
     }
 
     async fn acquire(&self, endpoint: &Endpoint, prefer: Option<&str>) -> Acquire {
         let Some(host) = &endpoint.host else {
             return Acquire::Ready(Side::Local, None);
         };
-        if let Some((sid, sftp)) = self.sessions().find_matching(host, prefer) {
-            return self.ready(host, sid, sftp);
+        if let Some(found) = self.reuse(host, prefer) {
+            return found;
         }
         let Some(host_id) = &host.host_id else {
             return Acquire::Wait(WaitReason::Host);
@@ -521,8 +599,8 @@ impl Inner {
         let sid = format!("{OWNED_PREFIX}{host_id}:{}", host.username);
         // Jobs to the same host share one connect (and one prompt); later ones reuse it.
         let _turn = self.connect_locks.lock(&sid).await;
-        if let Some((sid, sftp)) = self.sessions().find_matching(host, prefer) {
-            return self.ready(host, sid, sftp);
+        if let Some(found) = self.reuse(host, prefer) {
+            return found;
         }
         let connected = crate::sftp::connect_saved_session(
             &self.app,
@@ -532,16 +610,18 @@ impl Inner {
         )
         .await;
         match connected {
-            Ok(_) => match self.sessions().session_info(&sid) {
-                Some((_, sftp)) => {
-                    self.owned
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .insert(sid.clone(), Instant::now());
-                    self.ready(host, sid, sftp)
+            Ok(_) => {
+                // Description and handle come from one lookup, so they belong together.
+                let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+                match self.sessions().session_info(&sid) {
+                    Some((actual, sftp)) => {
+                        owned.touch(&sid, Instant::now());
+                        drop(owned);
+                        self.ready(host, sid, Some(&actual), sftp)
+                    }
+                    None => Acquire::Fail(JobError::Connection("connect: session closed".into())),
                 }
-                None => Acquire::Fail(JobError::Connection("connect: session closed".into())),
-            },
+            }
             Err(e) => Acquire::Fail(match connect_error_class(&e) {
                 ErrorClass::Operation => JobError::Operation(e),
                 ErrorClass::Connection => JobError::Connection(e),
@@ -601,7 +681,7 @@ impl Inner {
         if current != snapshot {
             // The source changed: drop the old part first, so a crash after saving the new
             // snapshot can't pair it with bytes from the previous version.
-            io::remove_part(dst, &job.part_path).await;
+            io::discard_part(dst, &job.part_path).await?;
             let updated = {
                 let mut q = self.queue();
                 q.get_mut(&job.id).map(|j| {
@@ -669,7 +749,7 @@ impl Inner {
         match &job.dest.host {
             None => io::remove_part(&Side::Local, &job.part_path).await,
             Some(host) => {
-                if let Some((_, sftp)) = self.sessions().find_matching(host, None) {
+                if let Some((_, _, sftp)) = self.sessions().find_matching(host, None) {
                     io::remove_part(&Side::Sftp(sftp), &job.part_path).await;
                 }
             }
@@ -764,16 +844,20 @@ pub async fn transfer_enqueue(
         ));
         built.push(job);
     }
-    inner
-        .prefer
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .extend(prefer);
-    if inner.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
-        return Err("Signed out while queueing; nothing was queued".into());
-    }
-    inner.queue().enqueue(built.clone());
-    inner.changed(built.clone());
+    let db = inner.app.state::<crate::db::LocalDb>();
+    commit_enqueue(&inner.queue, &inner.epoch, epoch, built.clone(), |jobs| {
+        inner
+            .prefer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(prefer);
+        for job in jobs {
+            if let Err(e) = store::save_job(&db, job) {
+                log::warn!("transfers: {e}");
+            }
+        }
+    })?;
+    let _ = inner.app.emit(CHANGED_EVENT, &built);
     inner.notify.notify_one();
     Ok(built)
 }
@@ -1133,6 +1217,77 @@ mod tests {
             ..host()
         };
         assert!(!same_endpoint(&recorded, &other_user));
+    }
+
+    #[test]
+    fn commit_after_a_wipe_is_rejected() {
+        let queue = Mutex::new(Queue::default());
+        let epoch = std::sync::atomic::AtomicU64::new(0);
+        let since = 0;
+        let mut wiped = false;
+        wipe_queue(&queue, &epoch, || wiped = true);
+        assert!(wiped);
+        let mut committed = false;
+        let r = commit_enqueue(
+            &queue,
+            &epoch,
+            since,
+            vec![crate::transfers::queue::test_job("a", JobStatus::Queued)],
+            |_| committed = true,
+        );
+        assert!(r.is_err());
+        assert!(!committed);
+        assert!(queue.lock().unwrap().all().is_empty());
+    }
+
+    #[test]
+    fn commit_without_a_wipe_adds_and_saves() {
+        let queue = Mutex::new(Queue::default());
+        let epoch = std::sync::atomic::AtomicU64::new(3);
+        let mut saved = Vec::new();
+        commit_enqueue(
+            &queue,
+            &epoch,
+            3,
+            vec![crate::transfers::queue::test_job("a", JobStatus::Queued)],
+            |jobs| saved = jobs.iter().map(|j| j.id.clone()).collect(),
+        )
+        .unwrap();
+        assert_eq!(saved, vec!["a".to_string()]);
+        assert_eq!(queue.lock().unwrap().all().len(), 1);
+    }
+
+    #[test]
+    fn endpoint_check_fails_closed() {
+        assert!(check_endpoint(&host(), Some(&host())).is_ok());
+        assert!(matches!(
+            check_endpoint(&host(), None),
+            Err(JobError::Connection(_))
+        ));
+        let moved = HostRef {
+            host: "new.example.com".into(),
+            ..host()
+        };
+        assert!(matches!(
+            check_endpoint(&host(), Some(&moved)),
+            Err(JobError::Operation(_))
+        ));
+    }
+
+    #[test]
+    fn a_session_picked_up_is_not_retired() {
+        let mut owned = OwnedSessions::default();
+        let t0 = Instant::now();
+        owned.touch("transfers:a", t0);
+        owned.touch("transfers:b", t0);
+        owned.touch("transfers:c", t0);
+        let later = t0 + Duration::from_secs(31);
+        owned.touch("transfers:b", later); // a job just reused it
+        let retired =
+            owned.retire_idle(&["transfers:c".to_string()], later, Duration::from_secs(30));
+        assert_eq!(retired, vec!["transfers:a".to_string()]);
+        assert!(!owned.is_owned("transfers:a"));
+        assert!(owned.is_owned("transfers:b") && owned.is_owned("transfers:c"));
     }
 
     #[test]

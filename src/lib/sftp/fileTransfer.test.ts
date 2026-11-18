@@ -407,6 +407,17 @@ describe("transferFiles with the transfer manager", () => {
     expect(results[1].error).toBe("Cancelled");
   });
 
+  it("settles as cancelled when the queue is wiped while enqueueing", async () => {
+    transferMocks.enqueueTransfers.mockImplementationOnce(async () => {
+      const jobs = [job("j1"), job("j2")];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      useSftpStore.getState().resetTransfers(); // wipe lands before the reply
+      return jobs;
+    });
+    const results = await start();
+    expect(results.map((r) => r.error)).toEqual(["Cancelled", "Cancelled"]);
+  });
+
   it("renames within the same remote pane instead of copying", async () => {
     const moveFile = vi.fn(async () => {});
     const mkdirAll = vi.fn(async () => {});
@@ -440,7 +451,8 @@ describe("transferFiles with the transfer manager", () => {
       rmImpl?: (p: string) => Promise<void>;
       delImpl?: (p: string) => Promise<void>;
       isDir?: (p: string) => boolean;
-      exists?: (p: string) => boolean;
+      /** Throws to simulate a missing path ("No such file") or an unanswered check. */
+      stat?: (p: string) => void;
     } = {},
   ) => {
     const calls: string[] = [];
@@ -462,7 +474,10 @@ describe("transferFiles with the transfer manager", () => {
         calls.push(`del ${p} recursive=${recursive}`);
         await opts.delImpl?.(p);
       }),
-      exists: vi.fn(async (p: string) => opts.exists?.(p) ?? false),
+      stat: vi.fn(async (p: string) => {
+        opts.stat?.(p);
+        return mkfile("x", p);
+      }),
     } as unknown as FileProvider;
     return { pane, calls };
   };
@@ -493,12 +508,9 @@ describe("transferFiles with the transfer manager", () => {
   });
 
   it("restores the old file when the replacing move fails", async () => {
-    const { pane, calls } = samePane(
-      async (from) => {
-        if (from === "/r/a.txt") throw new Error("connection lost");
-      },
-      { exists: (p) => p.includes(".shetu-replace-") },
-    );
+    const { pane, calls } = samePane(async (from) => {
+      if (from === "/r/a.txt") throw new Error("connection lost");
+    }, {});
     const results = await transferFiles({
       source: pane,
       dest: pane,
@@ -528,12 +540,9 @@ describe("transferFiles with the transfer manager", () => {
 
   it("restores the old file when setting it aside half-failed", async () => {
     // The server applied the rename, but the reply was lost.
-    const { pane, calls } = samePane(
-      async (from) => {
-        if (from === "/r/sub/a.txt") throw new Error("connection reset");
-      },
-      { exists: (p) => p.includes(".shetu-replace-") },
-    );
+    const { pane, calls } = samePane(async (from) => {
+      if (from === "/r/sub/a.txt") throw new Error("connection reset");
+    }, {});
     const results = await moveA(pane);
     const backup = backupOf(calls);
     expect(calls).toEqual([
@@ -544,12 +553,9 @@ describe("transferFiles with the transfer manager", () => {
   });
 
   it("names the kept backup when the old file can't be put back", async () => {
-    const { pane, calls } = samePane(
-      async (from) => {
-        if (from !== "/r/sub/a.txt") throw new Error("connection lost");
-      },
-      { exists: (p) => p.includes(".shetu-replace-") },
-    );
+    const { pane, calls } = samePane(async (from) => {
+      if (from !== "/r/sub/a.txt") throw new Error("connection lost");
+    }, {});
     const results = await moveA(pane);
     const backup = backupOf(calls);
     expect(results[0].error).toBe(
@@ -609,6 +615,76 @@ describe("transferFiles with the transfer manager", () => {
     const { pane, calls } = samePane(async () => {}, { listed: [] });
     await moveA(pane);
     expect(calls).toEqual(["mv /r/a.txt /r/sub/a.txt"]);
+  });
+
+  it("reports the plain error when setting the old file aside never happened", async () => {
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from === "/r/sub/a.txt" || from.includes(".shetu-replace-"))
+          throw new Error("permission denied");
+      },
+      {
+        stat: (p) => {
+          if (p.includes(".shetu-replace-"))
+            throw new Error("stat: No such file: no such file");
+        },
+      },
+    );
+    const results = await moveA(pane);
+    expect(results[0].error).toBe("permission denied");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("names the backup when its existence can't be confirmed", async () => {
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from !== "/r/sub/a.txt") throw new Error("connection lost");
+      },
+      {
+        stat: () => {
+          throw new Error("stat: Timeout");
+        },
+      },
+    );
+    const results = await moveA(pane);
+    expect(results[0].error).toBe(
+      `connection lost. The previous file is kept at ${backupOf(calls)}`,
+    );
+  });
+
+  it("shows every kept backup path, even in a mixed batch", async () => {
+    toastMock.error.mockClear();
+    const { pane } = samePane(
+      async (from, to) => {
+        if (from === "/r/b.txt" && to === "/r/sub/b.txt")
+          throw new Error("connection lost");
+        if (from.includes(".shetu-replace-") && to === "/r/sub/b.txt")
+          throw new Error("connection lost");
+      },
+      {
+        listed: [
+          mkfile("a.txt", "/r/sub/a.txt"),
+          mkfile("b.txt", "/r/sub/b.txt"),
+        ],
+      },
+    );
+    await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt"), mkfile("b.txt", "/r/b.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: new Map([
+        ["/r/a.txt", { action: "replace" as const }],
+        ["/r/b.txt", { action: "replace" as const }],
+      ]),
+    });
+    expect(toastMock.error).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /The previous file is kept at \/r\/sub\/\.shetu-replace-/,
+      ),
+      expect.anything(),
+    );
   });
 
   it("leaves a file alone when it is moved onto itself", async () => {
