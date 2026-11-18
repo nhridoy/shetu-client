@@ -1,4 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const toastMock = vi.hoisted(() =>
+  Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  }),
+);
+vi.mock("sonner", () => ({ toast: toastMock }));
+
 import type { TransferJob } from "@/lib/sftp/transfers";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
@@ -424,21 +435,33 @@ describe("transferFiles with the transfer manager", () => {
 
   const samePane = (
     moveImpl: (from: string, to: string) => Promise<void> = async () => {},
+    opts: {
+      listed?: FileItem[];
+      rmImpl?: (p: string) => Promise<void>;
+      isDir?: (p: string) => boolean;
+      exists?: (p: string) => boolean;
+    } = {},
   ) => {
     const calls: string[] = [];
     const pane = {
       ...remote,
-      listFiles: vi.fn(async () => [mkfile("a.txt", "/r/sub/a.txt")]),
+      listFiles: vi.fn(
+        async () => opts.listed ?? [mkfile("a.txt", "/r/sub/a.txt")],
+      ),
       removeFile: vi.fn(async (p: string) => {
         calls.push(`rm ${p}`);
+        await opts.rmImpl?.(p);
       }),
       moveFile: vi.fn(async (from: string, to: string) => {
         calls.push(`mv ${from} ${to}`);
         await moveImpl(from, to);
       }),
+      isDirectory: vi.fn(async (p: string) => opts.isDir?.(p) ?? false),
+      exists: vi.fn(async (p: string) => opts.exists?.(p) ?? false),
     } as unknown as FileProvider;
     return { pane, calls };
   };
+
   const replaceA = new Map([["/r/a.txt", { action: "replace" as const }]]);
   const backupOf = (calls: string[]) =>
     calls[0].replace("mv /r/sub/a.txt ", "");
@@ -454,7 +477,7 @@ describe("transferFiles with the transfer manager", () => {
       overrides: replaceA,
     });
     const backup = backupOf(calls);
-    expect(backup).toMatch(/^\/r\/sub\/a\.txt\..+$/);
+    expect(backup).toMatch(/^\/r\/sub\/\.shetu-replace-[0-9a-f]{8}$/);
     expect(calls).toEqual([
       `mv /r/sub/a.txt ${backup}`,
       "mv /r/a.txt /r/sub/a.txt",
@@ -465,9 +488,12 @@ describe("transferFiles with the transfer manager", () => {
   });
 
   it("restores the old file when the replacing move fails", async () => {
-    const { pane, calls } = samePane(async (from) => {
-      if (from === "/r/a.txt") throw new Error("connection lost");
-    });
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from === "/r/a.txt") throw new Error("connection lost");
+      },
+      { exists: (p) => p.includes(".shetu-replace-") },
+    );
     const results = await transferFiles({
       source: pane,
       dest: pane,
@@ -483,6 +509,80 @@ describe("transferFiles with the transfer manager", () => {
       `mv ${backup} /r/sub/a.txt`,
     ]);
     expect(results[0].error).toBe("connection lost");
+  });
+
+  const moveA = (pane: FileProvider) =>
+    transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: replaceA,
+    });
+
+  it("restores the old file when setting it aside half-failed", async () => {
+    // The server applied the rename, but the reply was lost.
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from === "/r/sub/a.txt") throw new Error("connection reset");
+      },
+      { exists: (p) => p.includes(".shetu-replace-") },
+    );
+    const results = await moveA(pane);
+    const backup = backupOf(calls);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      `mv ${backup} /r/sub/a.txt`,
+    ]);
+    expect(results[0].error).toBe("connection reset");
+  });
+
+  it("names the kept backup when the old file can't be put back", async () => {
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from !== "/r/sub/a.txt") throw new Error("connection lost");
+      },
+      { exists: (p) => p.includes(".shetu-replace-") },
+    );
+    const results = await moveA(pane);
+    const backup = backupOf(calls);
+    expect(results[0].error).toBe(
+      `connection lost. The previous file is kept at ${backup}`,
+    );
+  });
+
+  it("warns when the leftover backup can't be removed", async () => {
+    toastMock.warning.mockClear();
+    const { pane, calls } = samePane(async () => {}, {
+      rmImpl: async () => {
+        throw new Error("gone");
+      },
+    });
+    const results = await moveA(pane);
+    expect(results[0]).toMatchObject({ action: "moved" });
+    expect(results[0].error).toBeUndefined();
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      expect.stringContaining(backupOf(calls)),
+    );
+  });
+
+  it("never deletes a backup that turned out to be a folder", async () => {
+    toastMock.warning.mockClear();
+    const { pane, calls } = samePane(async () => {}, {
+      isDir: (p) => p.includes(".shetu-replace-"),
+    });
+    await moveA(pane);
+    expect(calls.some((c) => c.startsWith("rm "))).toBe(false);
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      expect.stringContaining(backupOf(calls)),
+    );
+  });
+
+  it("moves plainly when the approved target is already gone", async () => {
+    const { pane, calls } = samePane(async () => {}, { listed: [] });
+    await moveA(pane);
+    expect(calls).toEqual(["mv /r/a.txt /r/sub/a.txt"]);
   });
 
   it("leaves a file alone when it is moved onto itself", async () => {

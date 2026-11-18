@@ -382,7 +382,10 @@ export interface TransferOptions {
   ) => void;
 }
 
-/** Renames `from` onto `to`; with `replacing`, keeps the old `to` as a backup until it worked. */
+/**
+ * Renames `from` onto `to`. With `replacing`, the old `to` is set aside and only deleted once the
+ * new file is in place; on any failure it is put back, or the error says where it is kept.
+ */
 async function moveReplacing(
   provider: FileProvider,
   from: string,
@@ -390,15 +393,39 @@ async function moveReplacing(
   replacing: boolean,
 ): Promise<void> {
   if (!replacing) return provider.moveFile(from, to);
-  const backup = `${to}.${crypto.randomUUID().slice(0, 8)}.replaced`;
-  await provider.moveFile(to, backup);
+  // Short, so it fits even when `to`'s own name is at the filesystem's length limit.
+  const backup = joinPath(
+    parentPath(to),
+    `.shetu-replace-${crypto.randomUUID().slice(0, 8)}`,
+  );
   try {
+    await provider.moveFile(to, backup);
     await provider.moveFile(from, to);
   } catch (err) {
-    await provider.moveFile(backup, to).catch(() => {});
+    // A rename's reply can be lost after the server applied it: look for the old file.
+    if (await provider.exists(backup).catch(() => true)) {
+      const restored = await provider.moveFile(backup, to).then(
+        () => true,
+        () => false,
+      );
+      if (!restored) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`${message}. The previous file is kept at ${backup}`);
+      }
+    }
     throw err;
   }
-  await provider.removeFile(backup).catch(() => {});
+  // A backup that is a folder (the target changed meanwhile) is never deleted.
+  const isFolder = await provider.isDirectory(backup).catch(() => true);
+  const cleaned =
+    !isFolder &&
+    (await provider.removeFile(backup).then(
+      () => true,
+      () => false,
+    ));
+  if (!cleaned) {
+    toast.warning(`Moved, but the previous version is still at ${backup}`);
+  }
 }
 
 /** One toast for the whole batch. */
@@ -461,6 +488,8 @@ export async function transferFiles(
 
     // Moving within one remote pane is a rename: whole files and folders, no copy.
     if (isSameProvider && source.type === "remote" && mode === "move") {
+      // What is really there; resolveTransferPaths also reserves the names it hands out.
+      const listedNames = new Set(existingNames);
       const roots = resolveTransferPaths(
         files.map((file) => ({ file, relativePath: file.name })),
         destPath,
@@ -485,7 +514,7 @@ export async function transferFiles(
             const replacing =
               replace &&
               file.type !== "directory" &&
-              existingNames.has(fileNameFromPath(destFilePath));
+              listedNames.has(fileNameFromPath(destFilePath));
             await moveReplacing(source, file.path, destFilePath, replacing);
             result = { file, action: "moved" };
           } catch (err) {
