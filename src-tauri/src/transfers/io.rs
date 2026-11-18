@@ -261,16 +261,23 @@ async fn publish_local_new(part: &str, dest: &str) -> Result<String, JobError> {
     let mut tried = std::collections::HashSet::new();
     let mut target = dest.to_string();
     let mut links = true;
+    let mut placeholder: PlaceholderId = None;
     loop {
         let claimed = if links {
             tokio::fs::hard_link(part, &target).await
         } else {
-            tokio::fs::OpenOptions::new()
+            let created = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&target)
-                .await
-                .map(|_| ())
+                .await;
+            match created {
+                Ok(file) => {
+                    placeholder = file.metadata().await.ok().and_then(|m| placeholder_id(&m));
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         };
         match claimed {
             Ok(()) => break,
@@ -278,10 +285,7 @@ async fn publish_local_new(part: &str, dest: &str) -> Result<String, JobError> {
                 tried.insert(target.clone());
                 target = free_name(dest, |p| tried.contains(p));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(io_err("publish", e));
-            }
-            Err(_) if links => links = false,
+            Err(e) if links && links_unsupported(&e) => links = false,
             Err(e) => return Err(io_err("publish", e)),
         }
     }
@@ -294,18 +298,48 @@ async fn publish_local_new(part: &str, dest: &str) -> Result<String, JobError> {
     // empty placeholder; std has no no-replace rename for FAT. Upgrade with renameat2 /
     // MoveFileEx if that ever matters.
     if let Err(e) = tokio::fs::rename(part, &target).await {
-        remove_placeholder(&target).await;
+        remove_placeholder(&target, placeholder).await;
         return Err(io_err("rename", e));
     }
     Ok(target)
 }
 
-/// Removes a publish placeholder only while it is still our empty file.
-async fn remove_placeholder(path: &str) {
-    if tokio::fs::metadata(path)
-        .await
-        .is_ok_and(|m| m.is_file() && m.len() == 0)
+/// Identity of a placeholder we created (device + inode), to recognise it again. `None` where
+/// std can't tell (Windows); cleanup then relies on the empty-file check alone.
+type PlaceholderId = Option<(u64, u64)>;
+
+fn placeholder_id(m: &std::fs::Metadata) -> PlaceholderId {
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::MetadataExt;
+        Some((m.dev(), m.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        None
+    }
+}
+
+/// Whether a hard-link failure means "this filesystem can't hard-link" (then the placeholder
+/// path is used) rather than a real error that must fail the publish.
+fn links_unsupported(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    // vfat on Linux answers EPERM; Windows FAT answers ERROR_INVALID_FUNCTION (1) or
+    // ERROR_NOT_SUPPORTED (50).
+    matches!(
+        e.kind(),
+        ErrorKind::Unsupported | ErrorKind::PermissionDenied
+    ) || (cfg!(windows) && matches!(e.raw_os_error(), Some(1 | 50)))
+}
+
+/// Removes a publish placeholder only while it is still ours and empty.
+async fn remove_placeholder(path: &str, ours: PlaceholderId) {
+    let Ok(now) = tokio::fs::metadata(path).await else {
+        return;
+    };
+    let same = ours.is_none_or(|id| placeholder_id(&now) == Some(id));
+    if same && now.is_file() && now.len() == 0 {
         let _ = tokio::fs::remove_file(path).await;
     }
 }
@@ -554,15 +588,43 @@ mod tests {
         let d = Dir::new("spare");
         let ours = d.path("ours.txt");
         std::fs::write(&ours, b"").unwrap();
-        remove_placeholder(&ours).await;
+        let id = placeholder_id(&std::fs::metadata(&ours).unwrap());
+        remove_placeholder(&ours, id).await;
         assert!(
             !std::path::Path::new(&ours).exists(),
             "our empty placeholder goes"
         );
+
         let theirs = d.path("theirs.txt");
+        std::fs::write(&theirs, b"").unwrap();
+        let id = placeholder_id(&std::fs::metadata(&theirs).unwrap());
         std::fs::write(&theirs, b"someone else's data").unwrap();
-        remove_placeholder(&theirs).await;
+        remove_placeholder(&theirs, id).await;
         assert_eq!(std::fs::read(&theirs).unwrap(), b"someone else's data");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn placeholder_cleanup_spares_an_empty_file_swapped_in() {
+        let d = Dir::new("swap");
+        let path = d.path("a.txt");
+        std::fs::write(&path, b"").unwrap();
+        let ours = placeholder_id(&std::fs::metadata(&path).unwrap());
+        // Another process swaps in its own (also empty) file.
+        let other = d.path("other");
+        std::fs::write(&other, b"").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        remove_placeholder(&path, ours).await;
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn only_missing_link_support_falls_back() {
+        use std::io::{Error, ErrorKind};
+        assert!(links_unsupported(&Error::from(ErrorKind::Unsupported)));
+        assert!(links_unsupported(&Error::from(ErrorKind::PermissionDenied)));
+        assert!(!links_unsupported(&Error::from(ErrorKind::StorageFull)));
+        assert!(!links_unsupported(&Error::other("I/O error")));
     }
 
     #[tokio::test]
