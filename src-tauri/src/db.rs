@@ -16,6 +16,7 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
     for table in [
         "port_forwards",
         "forward_auto_start",
+        "transfer_jobs",
         "user_profiles",
         "user_keys",
         "team_vault_keys",
@@ -1612,6 +1613,7 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         CREATE TABLE IF NOT EXISTS sync_cancelled_vaults (vault_id TEXT PRIMARY KEY);
         -- Per-device auto-start choice for port forwards; never synced.
         CREATE TABLE IF NOT EXISTS forward_auto_start (forward_id TEXT PRIMARY KEY, mode TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS transfer_jobs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, data TEXT NOT NULL);
 
         CREATE TABLE IF NOT EXISTS __sync_meta (
             vault_id TEXT PRIMARY KEY,
@@ -3163,6 +3165,18 @@ mod tests {
         }
         // idempotent
         migrate_add_columns(&conn).unwrap();
+    }
+
+    #[test]
+    fn wipe_all_clears_transfer_jobs() {
+        let db = test_db();
+        db.conn.lock().unwrap().execute(
+            "INSERT INTO transfer_jobs (id, created_at, data) VALUES ('t1', 1, '{}')", [],
+        ).unwrap();
+        wipe_all(&db).unwrap();
+        let count: i64 = db.conn.lock().unwrap()
+            .query_row("SELECT COUNT(*) FROM transfer_jobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

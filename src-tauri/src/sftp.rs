@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::Emitter;
 
 use russh_sftp::client::SftpSession as RusshSftp;
 
@@ -31,17 +30,6 @@ pub struct SftpConnectResult {
     pub host_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SftpTransferProgress {
-    pub session_id: String,
-    pub transfer_id: String,
-    pub transfer_type: String,
-    pub path: String,
-    pub bytes_transferred: u64,
-    pub total_bytes: u64,
-    pub speed: f64,
-}
-
 pub struct SftpSession {
     pub host_id: Option<String>,
     pub host: String,
@@ -56,14 +44,12 @@ pub struct SftpSession {
 #[derive(Clone)]
 pub struct SftpSessions {
     pub sessions: Arc<Mutex<HashMap<String, SftpSession>>>,
-    pub cancel_tokens: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
 }
 
 impl Default for SftpSessions {
     fn default() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -71,6 +57,90 @@ impl Default for SftpSessions {
 impl SftpSessions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The host a session is connected to, and its SFTP handle.
+    pub fn session_info(&self, id: &str) -> Option<(crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let s = map.get(id)?;
+        Some((
+            crate::transfers::model::HostRef {
+                host_id: s.host_id.clone(),
+                host: s.host.clone(),
+                port: s.port,
+                username: s.username.clone(),
+            },
+            Arc::clone(&s.sftp),
+        ))
+    }
+
+    /// An open session to `host`, trying `prefer` first. Saved hosts match on host id + user,
+    /// quick-connect hosts on address, port and user.
+    pub fn find_matching(
+        &self,
+        host: &crate::transfers::model::HostRef,
+        prefer: Option<&str>,
+    ) -> Option<(String, crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let fits = |s: &SftpSession| {
+            let open = s.ssh_handle.as_ref().is_none_or(|h| !h.is_closed());
+            let same = match &host.host_id {
+                Some(id) => s.host_id.as_ref() == Some(id) && s.username == host.username,
+                None => s.host == host.host && s.port == host.port && s.username == host.username,
+            };
+            open && same
+        };
+        prefer
+            .and_then(|id| map.get_key_value(id))
+            .filter(|(_, s)| fits(s))
+            .or_else(|| map.iter().find(|(_, s)| fits(s)))
+            .map(|(id, s)| {
+                let found = crate::transfers::model::HostRef {
+                    host_id: s.host_id.clone(),
+                    host: s.host.clone(),
+                    port: s.port,
+                    username: s.username.clone(),
+                };
+                (id.clone(), found, Arc::clone(&s.sftp))
+            })
+    }
+
+    /// The session `id` if its connection is still open, with the host it is connected to.
+    pub fn get_open(
+        &self,
+        id: &str,
+    ) -> Option<(String, crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+        let map = self.sessions.lock().ok()?;
+        let s = map.get(id)?;
+        if s.ssh_handle.as_ref().is_some_and(|h| h.is_closed()) {
+            return None;
+        }
+        let host = crate::transfers::model::HostRef {
+            host_id: s.host_id.clone(),
+            host: s.host.clone(),
+            port: s.port,
+            username: s.username.clone(),
+        };
+        Some((id.to_string(), host, Arc::clone(&s.sftp)))
+    }
+
+    /// Closes and forgets a session (and its SSH connection when we opened it).
+    pub async fn disconnect(&self, session_id: &str) {
+        if let Some(session) = self.take(session_id) {
+            close_session(session).await;
+        }
+    }
+
+    /// Forgets a session at once, so no one can look it up; close it with `close_session`.
+    pub fn take(&self, session_id: &str) -> Option<SftpSession> {
+        self.sessions.lock().ok().and_then(|mut m| m.remove(session_id))
+    }
+}
+
+pub async fn close_session(session: SftpSession) {
+    let _ = session.sftp.close().await;
+    if session.created_ourselves {
+        drop(session.ssh_handle);
     }
 }
 
@@ -175,12 +245,25 @@ pub async fn sftp_connect_saved(
     session_id: String,
     host_id: String,
     username: Option<String>,
-    db: tauri::State<'_, crate::db::LocalDb>,
-    crypto: tauri::State<'_, crate::CryptoState>,
-    ssh_sessions: tauri::State<'_, crate::ssh::SshSessions>,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
     app_handle: tauri::AppHandle,
 ) -> Result<SftpConnectResult, String> {
+    connect_saved_session(&app_handle, session_id, host_id, username).await
+}
+
+/// Opens (or reuses) the SFTP session `session_id` to a saved host. Also used by the transfer
+/// manager to reconnect in the background; prompts go through the app-wide dialogs.
+pub async fn connect_saved_session(
+    app: &tauri::AppHandle,
+    session_id: String,
+    host_id: String,
+    username: Option<String>,
+) -> Result<SftpConnectResult, String> {
+    use tauri::Manager;
+    let app_handle = app.clone();
+    let db = app.state::<crate::db::LocalDb>();
+    let crypto = app.state::<crate::CryptoState>();
+    let ssh_sessions = app.state::<crate::ssh::SshSessions>();
+    let sftp_sessions = app.state::<SftpSessions>();
     let route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let config = &route.target;
 
@@ -257,28 +340,7 @@ pub async fn sftp_disconnect(
     session_id: String,
     sftp_sessions: tauri::State<'_, SftpSessions>,
 ) -> Result<(), String> {
-    let session = {
-        let mut sessions = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(&session_id)
-    };
-    if let Some(session) = session {
-        let _ = session.sftp.close().await;
-        if session.created_ourselves {
-            drop(session.ssh_handle);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn sftp_cancel_transfer(
-    transfer_id: String,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
-) -> Result<(), String> {
-    let tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-    if let Some(token) = tokens.get(&transfer_id) {
-        token.cancel();
-    }
+    sftp_sessions.disconnect(&session_id).await;
     Ok(())
 }
 
@@ -584,233 +646,6 @@ pub async fn sftp_readlink(
     sftp.read_link(&path)
         .await
         .map_err(|e| format!("readlink: {e}"))
-}
-
-#[tauri::command]
-pub async fn sftp_download(
-    session_id: String,
-    remote_path: String,
-    local_path: String,
-    transfer_id: String,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let sftp = {
-        let map = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
-        let session = map.get(&session_id).ok_or("SFTP session not found")?;
-        Arc::clone(&session.sftp)
-    };
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let metadata = sftp.metadata(&remote_path).await.map_err(|e| format!("stat: {e}"))?;
-    let total_bytes = metadata.len();
-
-    let mut remote_file = sftp.open(&remote_path).await.map_err(|e| format!("open: {e}"))?;
-    let mut local_file = tokio::fs::File::create(&local_path)
-        .await
-        .map_err(|e| format!("create local: {e}"))?;
-
-    let token = {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        let token = tokio_util::sync::CancellationToken::new();
-        tokens.insert(transfer_id.clone(), token.clone());
-        token
-    };
-
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut transferred = 0u64;
-    let start = std::time::Instant::now();
-
-    let result = loop {
-        if token.is_cancelled() {
-            break Err("Transfer cancelled".to_string());
-        }
-        let n = remote_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break Ok(());
-        }
-        local_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
-        transferred += n as u64;
-
-        let elapsed = start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 { transferred as f64 / elapsed } else { 0.0 };
-
-        let _ = app_handle.emit(
-            "sftp-transfer-progress",
-            SftpTransferProgress {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                transfer_type: "download".to_string(),
-                path: remote_path.clone(),
-                bytes_transferred: transferred,
-                total_bytes,
-                speed,
-            },
-        );
-    };
-
-    // Cleanup: remove token from map
-    {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        tokens.remove(&transfer_id);
-    }
-
-    result
-}
-
-#[tauri::command]
-pub async fn sftp_upload(
-    session_id: String,
-    local_path: String,
-    remote_path: String,
-    transfer_id: String,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let sftp = {
-        let map = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
-        let session = map.get(&session_id).ok_or("SFTP session not found")?;
-        Arc::clone(&session.sftp)
-    };
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let local_metadata = tokio::fs::metadata(&local_path)
-        .await
-        .map_err(|e| format!("stat local: {e}"))?;
-    let total_bytes = local_metadata.len();
-
-    let mut local_file = tokio::fs::File::open(&local_path)
-        .await
-        .map_err(|e| format!("open local: {e}"))?;
-    let mut remote_file = sftp
-        .create(&remote_path)
-        .await
-        .map_err(|e| format!("create remote: {e}"))?;
-
-    let token = {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        let token = tokio_util::sync::CancellationToken::new();
-        tokens.insert(transfer_id.clone(), token.clone());
-        token
-    };
-
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut transferred = 0u64;
-    let start = std::time::Instant::now();
-
-    let result = loop {
-        if token.is_cancelled() {
-            break Err("Transfer cancelled".to_string());
-        }
-        let n = local_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break Ok(());
-        }
-        remote_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
-        transferred += n as u64;
-
-        let elapsed = start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 { transferred as f64 / elapsed } else { 0.0 };
-
-        let _ = app_handle.emit(
-            "sftp-transfer-progress",
-            SftpTransferProgress {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                transfer_type: "upload".to_string(),
-                path: remote_path.clone(),
-                bytes_transferred: transferred,
-                total_bytes,
-                speed,
-            },
-        );
-    };
-
-    // Cleanup: remove token from map
-    {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        tokens.remove(&transfer_id);
-    }
-
-    result?;
-
-    remote_file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn sftp_server_copy(
-    src_session_id: String,
-    src_path: String,
-    dest_session_id: String,
-    dest_path: String,
-    total_bytes: u64,
-    transfer_id: String,
-    sftp_sessions: tauri::State<'_, SftpSessions>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let (src_sftp, dest_sftp) = {
-        let map = sftp_sessions.sessions.lock().map_err(|e| e.to_string())?;
-        let src_session = map.get(&src_session_id).ok_or("Source SFTP session not found")?;
-        let dest_session = map.get(&dest_session_id).ok_or("Dest SFTP session not found")?;
-        (Arc::clone(&src_session.sftp), Arc::clone(&dest_session.sftp))
-    };
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut remote_file = src_sftp.open(&src_path).await.map_err(|e| format!("open src: {e}"))?;
-    let mut dest_file = dest_sftp.create(&dest_path).await.map_err(|e| format!("create dest: {e}"))?;
-
-    let token = {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        let token = tokio_util::sync::CancellationToken::new();
-        tokens.insert(transfer_id.clone(), token.clone());
-        token
-    };
-
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut transferred = 0u64;
-    let start = std::time::Instant::now();
-
-    let result = loop {
-        if token.is_cancelled() {
-            break Err("Transfer cancelled".to_string());
-        }
-        let n = remote_file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break Ok(());
-        }
-        dest_file.write_all(&buf[..n]).await.map_err(|e| format!("write: {e}"))?;
-        transferred += n as u64;
-
-        let elapsed = start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 { transferred as f64 / elapsed } else { 0.0 };
-
-        let _ = app_handle.emit(
-            "sftp-transfer-progress",
-            SftpTransferProgress {
-                session_id: dest_session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                transfer_type: "upload".to_string(),
-                path: dest_path.clone(),
-                bytes_transferred: transferred,
-                total_bytes,
-                speed,
-            },
-        );
-    };
-
-    {
-        let mut tokens = sftp_sessions.cancel_tokens.lock().map_err(|e| e.to_string())?;
-        tokens.remove(&transfer_id);
-    }
-
-    result?;
-
-    dest_file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
-    Ok(())
 }
 
 #[tauri::command]

@@ -1,6 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const toastMock = vi.hoisted(() =>
+  Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  }),
+);
+vi.mock("sonner", () => ({ toast: toastMock }));
+
+import type { TransferJob } from "@/lib/sftp/transfers";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
-import { parentPath, resolveTransferPaths } from "./fileTransfer";
+import {
+  type FileProvider,
+  parentPath,
+  resolveTransferPaths,
+  transferFiles,
+} from "./fileTransfer";
 
 const mkdir = (name: string, path: string): FileItem => ({
   name,
@@ -235,5 +253,542 @@ describe("parentPath", () => {
 
   it("returns root for a bare root path", () => {
     expect(parentPath("/")).toBe("/");
+  });
+});
+
+const transferMocks = vi.hoisted(() => ({
+  enqueueTransfers: vi.fn(),
+  onTransfersChanged: vi.fn(async () => () => {}),
+  onTransfersReset: vi.fn(async () => () => {}),
+  listTransfers: vi.fn(async () => []),
+}));
+vi.mock("@/lib/sftp/transfers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/sftp/transfers")>()),
+  enqueueTransfers: transferMocks.enqueueTransfers,
+  onTransfersChanged: transferMocks.onTransfersChanged,
+  onTransfersReset: transferMocks.onTransfersReset,
+  listTransfers: transferMocks.listTransfers,
+}));
+
+describe("transferFiles with the transfer manager", () => {
+  const job = (id: string, patch: Partial<TransferJob> = {}): TransferJob => ({
+    id,
+    kind: "download",
+    src: { path: `/r/${id}`, host: null },
+    dest: { path: `/l/${id}`, host: null },
+    replace: false,
+    partPath: `/l/${id}.x.part`,
+    srcSize: 1,
+    srcMtime: 0,
+    status: "queued",
+    transferred: 0,
+    attempt: 0,
+    nextRetryAt: null,
+    waitReason: null,
+    error: null,
+    createdAt: 0,
+    speed: 0,
+    ...patch,
+  });
+
+  const remote = {
+    type: "remote" as const,
+    id: "pane-1",
+    getSessionId: () => "sess-1",
+    listFiles: vi.fn(async () => [mkfile("a.txt", "/l/a.txt")]),
+    listFilesRecursive: vi.fn(async () => []),
+    isDirectory: vi.fn(async () => false),
+  } as unknown as FileProvider;
+  const local = {
+    type: "local" as const,
+    id: "local",
+    listFiles: vi.fn(async () => [mkfile("a.txt", "/l/a.txt")]),
+    mkdirAll: vi.fn(async () => {}),
+  } as unknown as FileProvider;
+
+  const files = [mkfile("a.txt", "/r/a.txt"), mkfile("b.txt", "/r/b.txt")];
+
+  beforeEach(() => {
+    useSftpStore.setState({ transfers: [] });
+    transferMocks.enqueueTransfers.mockReset();
+    transferMocks.enqueueTransfers.mockImplementation(async () => {
+      const jobs = [job("j1"), job("j2")];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      return jobs;
+    });
+  });
+
+  const start = () =>
+    transferFiles({
+      source: remote,
+      dest: local,
+      files,
+      destPath: "/l",
+      mode: "copy",
+      overrides: new Map([["/r/a.txt", { action: "replace" as const }]]),
+    });
+
+  const settle = async (patches: Record<string, Partial<TransferJob>>) => {
+    await vi.waitFor(() =>
+      expect(transferMocks.enqueueTransfers).toHaveBeenCalled(),
+    );
+    useSftpStore
+      .getState()
+      .applyTransferChanges(
+        Object.entries(patches).map(([id, p]) => job(id, p)),
+      );
+  };
+
+  it("enqueues every remote file in one call with replace flags", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "done" } });
+    await run;
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledTimes(1);
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledWith([
+      {
+        kind: "download",
+        srcPath: "/r/a.txt",
+        destPath: "/l/a.txt",
+        srcSessionId: "sess-1",
+        destSessionId: undefined,
+        replace: true,
+      },
+      {
+        kind: "download",
+        srcPath: "/r/b.txt",
+        destPath: "/l/b.txt",
+        srcSessionId: "sess-1",
+        destSessionId: undefined,
+        replace: false,
+      },
+    ]);
+  });
+
+  it("resolves when jobs finish", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "done" } });
+    const results = await run;
+    expect(results.map((r) => r.action)).toEqual(["copied", "copied"]);
+  });
+
+  it("resolves_when_job_paused", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" }, j2: { status: "paused" } });
+    const results = await run;
+    expect(results.map((r) => r.action)).toEqual(["copied", "waiting"]);
+  });
+
+  it("treats_host_wait_as_handed_off", async () => {
+    const run = start();
+    let resolved = false;
+    void run.then(() => {
+      resolved = true;
+    });
+    await settle({
+      j1: { status: "done" },
+      j2: { status: "waiting", waitReason: "retry" },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false);
+    useSftpStore
+      .getState()
+      .applyTransferChanges([
+        job("j2", { status: "waiting", waitReason: "host" }),
+      ]);
+    const results = await run;
+    expect(results[1].action).toBe("waiting");
+  });
+
+  it("settles waiters as cancelled when the queue is wiped", async () => {
+    const run = start();
+    await settle({ j1: { status: "done" } });
+    useSftpStore.getState().resetTransfers();
+    const results = await run;
+    expect(results[1].error).toBe("Cancelled");
+  });
+
+  it("settles as cancelled when the queue is wiped while enqueueing", async () => {
+    transferMocks.enqueueTransfers.mockImplementationOnce(async () => {
+      const jobs = [job("j1"), job("j2")];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      useSftpStore.getState().resetTransfers(); // wipe lands before the reply
+      return jobs;
+    });
+    const results = await start();
+    expect(results.map((r) => r.error)).toEqual(["Cancelled", "Cancelled"]);
+  });
+
+  it("renames within the same remote pane instead of copying", async () => {
+    const moveFile = vi.fn(async () => {});
+    const mkdirAll = vi.fn(async () => {});
+    const pane = {
+      ...remote,
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => {
+        throw new Error("a rename doesn't need a listing");
+      }),
+      moveFile,
+      mkdirAll,
+    } as unknown as FileProvider;
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt"), mkdir("d", "/r/d")],
+      destPath: "/r/sub",
+      mode: "move",
+    });
+    expect(moveFile).toHaveBeenCalledWith("/r/a.txt", "/r/sub/a.txt");
+    expect(moveFile).toHaveBeenCalledWith("/r/d", "/r/sub/d");
+    expect(mkdirAll).not.toHaveBeenCalled();
+    expect(transferMocks.enqueueTransfers).not.toHaveBeenCalled();
+    expect(results.map((r) => r.action)).toEqual(["moved", "moved"]);
+  });
+
+  const samePane = (
+    moveImpl: (from: string, to: string) => Promise<void> = async () => {},
+    opts: {
+      listed?: FileItem[];
+      rmImpl?: (p: string) => Promise<void>;
+      delImpl?: (p: string) => Promise<void>;
+      isDir?: (p: string) => boolean;
+      /** Throws to simulate a missing path ("No such file") or an unanswered check. */
+      stat?: (p: string) => void;
+    } = {},
+  ) => {
+    const calls: string[] = [];
+    const pane = {
+      ...remote,
+      listFiles: vi.fn(
+        async () => opts.listed ?? [mkfile("a.txt", "/r/sub/a.txt")],
+      ),
+      removeFile: vi.fn(async (p: string) => {
+        calls.push(`rm ${p}`);
+        await opts.rmImpl?.(p);
+      }),
+      moveFile: vi.fn(async (from: string, to: string) => {
+        calls.push(`mv ${from} ${to}`);
+        await moveImpl(from, to);
+      }),
+      isDirectory: vi.fn(async (p: string) => opts.isDir?.(p) ?? false),
+      delete: vi.fn(async (p: string, recursive?: boolean) => {
+        calls.push(`del ${p} recursive=${recursive}`);
+        await opts.delImpl?.(p);
+      }),
+      stat: vi.fn(async (p: string) => {
+        opts.stat?.(p);
+        return mkfile("x", p);
+      }),
+    } as unknown as FileProvider;
+    return { pane, calls };
+  };
+
+  const replaceA = new Map([["/r/a.txt", { action: "replace" as const }]]);
+  const backupOf = (calls: string[]) =>
+    calls[0].replace("mv /r/sub/a.txt ", "");
+
+  it("replaces an existing file when moving within one remote pane", async () => {
+    const { pane, calls } = samePane();
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: replaceA,
+    });
+    const backup = backupOf(calls);
+    expect(backup).toMatch(/^\/r\/sub\/\.shetu-replace-[0-9a-f]{8}$/);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      "mv /r/a.txt /r/sub/a.txt",
+      `del ${backup} recursive=false`,
+    ]);
+    expect(results[0].action).toBe("moved");
+    expect(results[0].error).toBeUndefined();
+  });
+
+  it("restores the old file when the replacing move fails", async () => {
+    const { pane, calls } = samePane(async (from) => {
+      if (from === "/r/a.txt") throw new Error("connection lost");
+    }, {});
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: replaceA,
+    });
+    const backup = backupOf(calls);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      "mv /r/a.txt /r/sub/a.txt",
+      `mv ${backup} /r/sub/a.txt`,
+    ]);
+    expect(results[0].error).toBe("connection lost");
+  });
+
+  const moveA = (pane: FileProvider) =>
+    transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: replaceA,
+    });
+
+  it("restores the old file when setting it aside half-failed", async () => {
+    // The server applied the rename, but the reply was lost.
+    const { pane, calls } = samePane(async (from) => {
+      if (from === "/r/sub/a.txt") throw new Error("connection reset");
+    }, {});
+    const results = await moveA(pane);
+    const backup = backupOf(calls);
+    expect(calls).toEqual([
+      `mv /r/sub/a.txt ${backup}`,
+      `mv ${backup} /r/sub/a.txt`,
+    ]);
+    expect(results[0].error).toBe("connection reset");
+  });
+
+  it("names the kept backup when the old file can't be put back", async () => {
+    const { pane, calls } = samePane(async (from) => {
+      if (from !== "/r/sub/a.txt") throw new Error("connection lost");
+    }, {});
+    const results = await moveA(pane);
+    const backup = backupOf(calls);
+    expect(results[0].error).toBe(
+      `connection lost. The previous file is kept at ${backup}`,
+    );
+  });
+
+  it("warns when the leftover backup can't be removed", async () => {
+    toastMock.warning.mockClear();
+    const { pane, calls } = samePane(async () => {}, {
+      delImpl: async () => {
+        throw new Error("gone");
+      },
+    });
+    const results = await moveA(pane);
+    expect(results[0]).toMatchObject({ action: "moved" });
+    expect(results[0].error).toBeUndefined();
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      expect.stringContaining(backupOf(calls)),
+    );
+  });
+
+  it("never deletes a folder that took the backup's place", async () => {
+    toastMock.warning.mockClear();
+    // A folder appears at the backup path after the move: only a non-recursive delete may run,
+    // and the server refuses it for a folder with contents.
+    const { pane, calls } = samePane(async () => {}, {
+      isDir: () => false,
+      delImpl: async () => {
+        throw new Error("rmdir: Failure");
+      },
+    });
+    await moveA(pane);
+    expect(calls.filter((c) => c.startsWith("rm "))).toEqual([]);
+    expect(calls.filter((c) => c.startsWith("del "))).toEqual([
+      `del ${backupOf(calls)} recursive=false`,
+    ]);
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      expect.stringContaining(backupOf(calls)),
+    );
+  });
+
+  it("doesn't rely on a type check that can fail", async () => {
+    // isDirectory reports false when its stat fails; cleanup must not depend on it.
+    const { pane, calls } = samePane(async () => {}, {
+      isDir: () => {
+        throw new Error("stat failed");
+      },
+    });
+    const results = await moveA(pane);
+    expect(results[0].error).toBeUndefined();
+    expect(calls.filter((c) => c.startsWith("rm "))).toEqual([]);
+    expect(calls.at(-1)).toBe(`del ${backupOf(calls)} recursive=false`);
+  });
+
+  it("moves plainly when the approved target is already gone", async () => {
+    const { pane, calls } = samePane(async () => {}, { listed: [] });
+    await moveA(pane);
+    expect(calls).toEqual(["mv /r/a.txt /r/sub/a.txt"]);
+  });
+
+  it("reports the plain error when setting the old file aside never happened", async () => {
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from === "/r/sub/a.txt" || from.includes(".shetu-replace-"))
+          throw new Error("permission denied");
+      },
+      {
+        stat: (p) => {
+          if (p.includes(".shetu-replace-"))
+            throw new Error("stat: No such file: no such file");
+        },
+      },
+    );
+    const results = await moveA(pane);
+    expect(results[0].error).toBe("permission denied");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("names the backup when its existence can't be confirmed", async () => {
+    const { pane, calls } = samePane(
+      async (from) => {
+        if (from !== "/r/sub/a.txt") throw new Error("connection lost");
+      },
+      {
+        stat: () => {
+          throw new Error("stat: Timeout");
+        },
+      },
+    );
+    const results = await moveA(pane);
+    expect(results[0].error).toBe(
+      `connection lost. The previous file is kept at ${backupOf(calls)}`,
+    );
+  });
+
+  it("shows every kept backup path, even in a mixed batch", async () => {
+    toastMock.error.mockClear();
+    const { pane } = samePane(
+      async (from, to) => {
+        if (from === "/r/b.txt" && to === "/r/sub/b.txt")
+          throw new Error("connection lost");
+        if (from.includes(".shetu-replace-") && to === "/r/sub/b.txt")
+          throw new Error("connection lost");
+      },
+      {
+        listed: [
+          mkfile("a.txt", "/r/sub/a.txt"),
+          mkfile("b.txt", "/r/sub/b.txt"),
+        ],
+      },
+    );
+    await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/a.txt"), mkfile("b.txt", "/r/b.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: new Map([
+        ["/r/a.txt", { action: "replace" as const }],
+        ["/r/b.txt", { action: "replace" as const }],
+      ]),
+    });
+    expect(toastMock.error).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /The previous file is kept at \/r\/sub\/\.shetu-replace-/,
+      ),
+      expect.anything(),
+    );
+  });
+
+  it("doesn't set a folder aside to make room for a file", async () => {
+    const { pane, calls } = samePane(async () => {}, {
+      listed: [mkdir("a.txt", "/r/sub/a.txt")],
+    });
+    await moveA(pane);
+    expect(calls).toEqual(["mv /r/a.txt /r/sub/a.txt"]);
+  });
+
+  it("copies between two panes on the same host instead of renaming", async () => {
+    const moveFile = vi.fn(async () => {});
+    const paneA = {
+      ...remote,
+      id: "host-1",
+      getSessionId: () => "sess-a",
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => []),
+      moveFile,
+      mkdirAll: vi.fn(async () => {}),
+    } as unknown as FileProvider;
+    const paneB = {
+      ...(paneA as object),
+      getSessionId: () => "sess-b",
+    } as unknown as FileProvider;
+    transferMocks.enqueueTransfers.mockImplementationOnce(async () => {
+      const jobs = [job("j1", { kind: "serverCopy", status: "done" })];
+      useSftpStore.getState().applyTransferChanges(jobs);
+      return jobs;
+    });
+    await transferFiles({
+      source: paneA,
+      dest: paneB,
+      files: [mkfile("a.txt", "/r/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+    });
+    expect(moveFile).not.toHaveBeenCalled();
+    expect(transferMocks.enqueueTransfers).toHaveBeenCalledWith([
+      expect.objectContaining({
+        kind: "serverCopy",
+        srcSessionId: "sess-a",
+        destSessionId: "sess-b",
+      }),
+    ]);
+  });
+
+  it("leaves a file alone when it is moved onto itself", async () => {
+    const { pane, calls } = samePane();
+    const results = await transferFiles({
+      source: pane,
+      dest: pane,
+      files: [mkfile("a.txt", "/r/sub/a.txt")],
+      destPath: "/r/sub",
+      mode: "move",
+      overrides: new Map([["/r/sub/a.txt", { action: "replace" as const }]]),
+    });
+    expect(calls).toEqual([]);
+    expect(results[0].action).toBe("skipped");
+  });
+
+  it("reports failed jobs as errors", async () => {
+    const run = start();
+    await settle({
+      j1: { status: "done" },
+      j2: { status: "failed", error: "denied" },
+    });
+    const results = await run;
+    expect(results[1].error).toBe("denied");
+  });
+});
+
+describe("transferFiles without a transfer listener", () => {
+  it("fails instead of waiting forever", async () => {
+    vi.resetModules();
+    const transfers = await import("@/lib/sftp/transfers");
+    vi.mocked(transfers.onTransfersChanged).mockRejectedValueOnce(
+      new Error("no IPC"),
+    );
+    const { transferFiles: fresh } = await import("./fileTransfer");
+    const enqueue = vi.mocked(transfers.enqueueTransfers);
+    enqueue.mockClear();
+    const remote = {
+      type: "remote" as const,
+      id: "pane-1",
+      getSessionId: () => "sess-1",
+      listFiles: vi.fn(async () => []),
+      listFilesRecursive: vi.fn(async () => []),
+    } as unknown as FileProvider;
+    const local = {
+      type: "local" as const,
+      id: "local",
+      listFiles: vi.fn(async () => []),
+      mkdirAll: vi.fn(async () => {}),
+    } as unknown as FileProvider;
+    await expect(
+      fresh({
+        source: remote,
+        dest: local,
+        files: [mkfile("a.txt", "/r/a.txt")],
+        destPath: "/l",
+        mode: "copy",
+      }),
+    ).rejects.toThrow("transfer queue");
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });

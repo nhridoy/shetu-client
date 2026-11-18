@@ -30,6 +30,7 @@ mod system_lock;
 mod team_keys;
 mod team_sync;
 mod totp;
+mod transfers;
 mod update;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
@@ -376,11 +377,14 @@ fn get_api_url(state: tauri::State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn wipe_local_data(
+async fn wipe_local_data(
     db: tauri::State<'_, db::LocalDb>,
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
+    transfers: tauri::State<'_, transfers::manager::TransferManager>,
 ) -> Result<(), String> {
     forwarding.stop_all();
+    // Waits until the queue has dropped everything, so nothing is saved back after the wipe.
+    transfers.wipe().await;
     db::wipe_all(&db)
 }
 
@@ -1762,6 +1766,7 @@ pub fn run() {
             );
             let db_path = data_dir.join(db::DB_FILE_NAME);
             app.manage(db::open(&db_path.display().to_string())?);
+            app.manage(transfers::manager::TransferManager::new(app.handle().clone()));
 
             let handle = app.handle().clone();
             app.listen("main-ready", move |_| {
@@ -1918,11 +1923,15 @@ pub fn run() {
             sftp::sftp_chown,
             sftp::sftp_symlink,
             sftp::sftp_readlink,
-            sftp::sftp_download,
-            sftp::sftp_upload,
-            sftp::sftp_server_copy,
             sftp::sftp_search,
-            sftp::sftp_cancel_transfer,
+            transfers::manager::transfer_enqueue,
+            transfers::manager::transfer_list,
+            transfers::manager::transfer_pause,
+            transfers::manager::transfer_resume,
+            transfers::manager::transfer_resume_all,
+            transfers::manager::transfer_retry,
+            transfers::manager::transfer_cancel,
+            transfers::manager::transfer_clear_finished,
             oauth::bind_oauth_listener,
             oauth::await_oauth_callback,
             oauth::cancel_oauth_listener,
