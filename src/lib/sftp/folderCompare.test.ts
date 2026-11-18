@@ -18,6 +18,7 @@ import {
   copyRows,
   listSide,
   loadComparison,
+  newerOnTarget,
   TOO_MANY,
 } from "./folderCompare";
 
@@ -165,6 +166,27 @@ describe("folderCompare", () => {
         replace: [["/l/sub/b.txt", { action: "replace" }]],
         silent: true,
       },
+    ]);
+  });
+
+  it("finds changed files whose target copy is newer", () => {
+    const r = (path: string, l: number, rt: number): CompareRow => ({
+      path,
+      status: "differs",
+      isDir: false,
+      left: { path, isDir: false, size: 1, mtime: l },
+      right: { path, isDir: false, size: 2, mtime: rt },
+    });
+    const rows = [
+      r("older-there", 200, 100),
+      r("newer-there", 100, 200),
+      r("close", 100, 102),
+    ];
+    expect(newerOnTarget(rows, "right").map((x) => x.path)).toEqual([
+      "newer-there",
+    ]);
+    expect(newerOnTarget(rows, "left").map((x) => x.path)).toEqual([
+      "older-there",
     ]);
   });
 

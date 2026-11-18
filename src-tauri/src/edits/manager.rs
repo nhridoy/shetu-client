@@ -1,7 +1,9 @@
 //! Tauri glue for remote edits: one loop owns `EditState` and the watcher; commands and
 //! background work (stats, downloads, uploads) talk to it by message.
 
-use super::files::{create_edit_dir, load_edits, save_edits};
+use super::files::{
+    create_edit_dir, inside_root, load_edits, save_edits, sweep_targets, watch_target,
+};
 use super::state::{needs_confirm, Choice, Edit, EditEffect, EditState, EditStatus};
 use super::watch::{self, Watching};
 use crate::transfers::io::{self, Side};
@@ -65,12 +67,8 @@ enum Msg {
         id: String,
         local: (u64, i64),
     },
-    Enqueued {
-        id: String,
-        job_id: String,
-    },
     EnqueueFailed {
-        id: String,
+        job_id: String,
         error: String,
     },
     Finished(JobFinished),
@@ -83,6 +81,34 @@ enum Msg {
         local: (u64, i64),
         remote: (u64, i64),
     },
+}
+
+/// Queued uploads from an earlier run whose source is one of our temp copies: their edits come
+/// back as "Not uploaded" (the user re-uploads), so these must not run on their own.
+pub fn stale_edit_uploads(
+    jobs: &[crate::transfers::model::TransferJob],
+    root: &Path,
+) -> Vec<String> {
+    jobs.iter()
+        .filter(|j| j.kind == JobKind::Upload && j.src.host.is_none())
+        .filter(|j| !matches!(j.status, JobStatus::Done | JobStatus::Cancelled))
+        .filter(|j| Path::new(&j.src.path).starts_with(root))
+        .map(|j| j.id.clone())
+        .collect()
+}
+
+/// Watches an edit's temp file; if that's impossible, the edit says so (saves won't upload).
+fn start_watching(watching: &mut Watching, state: &mut EditState, edit: &Edit) -> Vec<EditEffect> {
+    let watched =
+        watch_target(edit).is_some_and(|(dir, file)| watching.watch(&edit.id, &dir, &file));
+    if watched {
+        Vec::new()
+    } else {
+        state.set_error(
+            &edit.id,
+            "Can't watch this file — saves won't upload; use Upload",
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -181,27 +207,35 @@ async fn run_loop(
 ) {
     let mut state = EditState::default();
     let (settled_tx, mut settled) = mpsc::unbounded_channel();
-    let mut watching = watch::start(settled_tx).ok();
-    if watching.is_none() {
-        log::warn!("edits: file watching unavailable; saves won't upload automatically");
-    }
+    let mut watching = watch::start(settled_tx);
 
     // Unsent edits survive a restart (listed as Not uploaded); everything else is cleaned up.
-    let saved = load_edits(&root).unwrap_or_else(|e| {
+    // If the list can't be read, nothing is deleted: unsent work may be in those folders.
+    let loaded = load_edits(&root);
+    if let Err(e) = &loaded {
         log::warn!("edits: could not read the saved list: {e}");
-        Vec::new()
-    });
-    let effects = state.restore(saved);
+    }
+    let mut effects = state.restore(loaded.clone().unwrap_or_default());
     let keep: Vec<String> = state.list().into_iter().map(|e| e.id).collect();
-    if let Ok(dirs) = std::fs::read_dir(&root) {
-        for dir in dirs.flatten() {
-            let name = dir.file_name().to_string_lossy().into_owned();
-            if dir.path().is_dir() && !keep.contains(&name) {
-                let _ = std::fs::remove_dir_all(dir.path());
-            }
-        }
+    for dir in sweep_targets(&root, loaded.is_ok().then_some(keep.as_slice())) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    // Watched again, so that once uploaded (or reopened) their saves upload as usual.
+    for edit in state.list() {
+        effects.extend(start_watching(&mut watching, &mut state, &edit));
     }
     apply(&app, &root, &tx, &mut state, &mut watching, effects);
+    // Uploads of these temp copies left in the queue by the last run would race the restored
+    // "Not uploaded" edits (and a later Upload): cancel them; the user re-uploads.
+    let transfers = app.state::<TransferManager>().inner().clone();
+    let edits_root = root.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(jobs) = transfers.list().await {
+            for id in stale_edit_uploads(&jobs, &edits_root) {
+                transfers.cancel(id);
+            }
+        }
+    });
 
     loop {
         let msg = tokio::select! {
@@ -221,13 +255,9 @@ async fn run_loop(
             }
             Msg::Opened(edit) => {
                 let edit = *edit;
-                if let Some(w) = watching.as_mut() {
-                    let local = PathBuf::from(&edit.local_path);
-                    if let (Some(dir), Some(name)) = (local.parent(), local.file_name()) {
-                        w.watch(&edit.id, dir, &name.to_string_lossy());
-                    }
-                }
-                state.opened(edit)
+                let mut effects = state.opened(edit.clone());
+                effects.extend(start_watching(&mut watching, &mut state, &edit));
+                effects
             }
             Msg::List(reply) => {
                 let _ = reply.send(state.list());
@@ -268,16 +298,12 @@ async fn run_loop(
             }
             Msg::Saved { id, local, remote } => state.saved(&id, local, remote),
             Msg::SavedOffline { id, local } => state.saved_offline(&id, local),
-            Msg::Enqueued { id, job_id } => {
-                state.enqueued(&id, job_id);
-                Vec::new()
+            Msg::EnqueueFailed { job_id, error } => {
+                state.job_finished(&job_id, JobStatus::Failed, Some(error), None)
             }
-            Msg::EnqueueFailed { id, error } => {
-                let job_id = format!("not-queued-{}", uuid::Uuid::new_v4());
-                state.enqueued(&id, job_id.clone());
-                state.job_finished(&job_id, JobStatus::Failed, Some(error))
+            Msg::Finished(done) => {
+                state.job_finished(&done.id, done.status, done.error, done.published)
             }
-            Msg::Finished(done) => state.job_finished(&done.id, done.status, done.error),
             Msg::RemoteStat { id, remote } => state.conflict_found(&id, remote),
             Msg::Downloaded { id, local, remote } => state.downloaded(&id, local, remote),
         };
@@ -326,7 +352,7 @@ fn apply(
     root: &Path,
     tx: &mpsc::UnboundedSender<Msg>,
     state: &mut EditState,
-    watching: &mut Option<Watching>,
+    watching: &mut Watching,
     effects: Vec<EditEffect>,
 ) {
     for effect in effects {
@@ -359,6 +385,10 @@ fn apply(
                 let Some(host) = state.get(&edit_id).map(|e| e.host.clone()) else {
                     continue;
                 };
+                // The job id is fixed here, inside the loop, so the edit knows its job before
+                // the queue can possibly report it finished.
+                let job_id = uuid::Uuid::new_v4().to_string();
+                state.enqueued(&edit_id, job_id.clone());
                 let (app, tx) = (app.clone(), tx.clone());
                 tauri::async_runtime::spawn(async move {
                     let result = async {
@@ -372,6 +402,8 @@ fn apply(
                             replace,
                         };
                         let mut job = build_job(&new, None, Some(host), snapshot, now_ms());
+                        job.part_path = crate::transfers::model::part_path(&job.dest.path, &job_id);
+                        job.id = job_id.clone();
                         job.expect_dest = expect;
                         let queued = app
                             .state::<TransferManager>()
@@ -379,17 +411,13 @@ fn apply(
                             .await?;
                         queued
                             .first()
-                            .map(|j| j.id.clone())
+                            .map(|_| ())
                             .ok_or_else(|| "nothing queued".to_string())
                     }
                     .await;
-                    let _ = tx.send(match result {
-                        Ok(job_id) => Msg::Enqueued {
-                            id: edit_id,
-                            job_id,
-                        },
-                        Err(error) => Msg::EnqueueFailed { id: edit_id, error },
-                    });
+                    if let Err(error) = result {
+                        let _ = tx.send(Msg::EnqueueFailed { job_id, error });
+                    }
                 });
             }
             EditEffect::Download { edit_id } => {
@@ -401,16 +429,20 @@ fn apply(
                     let Some(sftp) = session_for(&app, &edit.host, &edit.session_id) else {
                         return;
                     };
-                    if download(Arc::clone(&sftp), &edit.remote_path, &edit.local_path)
+                    // The server state is read before downloading: a change made meanwhile then
+                    // shows up as a conflict on the next save instead of being overwritten.
+                    let Ok(remote) =
+                        io::stat(&Side::Sftp(Arc::clone(&sftp)), &edit.remote_path).await
+                    else {
+                        return;
+                    };
+                    if download(sftp, &edit.remote_path, &edit.local_path)
                         .await
                         .is_err()
                     {
                         return;
                     }
-                    let (Ok(local), Ok(remote)) = (
-                        local_stat(&edit.local_path).await,
-                        io::stat(&Side::Sftp(sftp), &edit.remote_path).await,
-                    ) else {
+                    let Ok(local) = local_stat(&edit.local_path).await else {
                         return;
                     };
                     let _ = tx.send(Msg::Downloaded {
@@ -439,10 +471,8 @@ fn apply(
                 });
             }
             EditEffect::Remove { edit_id, local_dir } => {
-                if let Some(w) = watching.as_mut() {
-                    w.unwatch(&edit_id, Path::new(&local_dir));
-                }
-                if !local_dir.is_empty() && Path::new(&local_dir).starts_with(root) {
+                watching.unwatch(&edit_id, Path::new(&local_dir));
+                if inside_root(root, Path::new(&local_dir)) {
                     let _ = std::fs::remove_dir_all(&local_dir);
                 }
             }
@@ -574,4 +604,32 @@ pub fn edit_upload_now(id: String, manager: Mgr<'_>) -> Result<(), String> {
         .tx
         .send(Msg::UploadNow(id))
         .map_err(|_| "Editing stopped".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfers::queue::test_job;
+
+    #[test]
+    fn stale_edit_uploads_are_unfinished_uploads_of_temp_copies() {
+        let root = Path::new("/cache/remote-edits");
+        let upload = |id: &str, src: &str, status: JobStatus| {
+            let mut j = test_job(id, status);
+            j.kind = JobKind::Upload;
+            j.src.path = src.into();
+            j.src.host = None;
+            j
+        };
+        let jobs = vec![
+            upload("a", "/cache/remote-edits/e1/nginx.conf", JobStatus::Paused),
+            upload("b", "/cache/remote-edits/e2/x.conf", JobStatus::Done),
+            upload("c", "/home/me/site/index.html", JobStatus::Paused),
+            upload("d", "/cache/remote-edits/e3/y.conf", JobStatus::Failed),
+        ];
+        assert_eq!(
+            stale_edit_uploads(&jobs, root),
+            vec!["a".to_string(), "d".to_string()]
+        );
+    }
 }

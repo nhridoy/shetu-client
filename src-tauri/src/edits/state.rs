@@ -191,6 +191,15 @@ impl EditState {
         vec![EditEffect::Changed]
     }
 
+    /// Shows a problem on the edit (e.g. its file can't be watched).
+    pub fn set_error(&mut self, id: &str, message: &str) -> Vec<EditEffect> {
+        let Some(e) = self.get_mut(id) else {
+            return Vec::new();
+        };
+        e.error = Some(message.to_string());
+        vec![EditEffect::Changed]
+    }
+
     pub fn enqueued(&mut self, id: &str, job_id: String) {
         if let Some(e) = self.get_mut(id) {
             e.job = Some(job_id);
@@ -202,6 +211,7 @@ impl EditState {
         job_id: &str,
         status: JobStatus,
         error: Option<String>,
+        published: Option<(u64, i64)>,
     ) -> Vec<EditEffect> {
         let Some(e) = self
             .edits
@@ -214,21 +224,26 @@ impl EditState {
         let uploaded = e.uploading.take();
         match status {
             JobStatus::Done => {
-                if std::mem::take(&mut e.saving_copy) {
-                    // The copy went to "name (copy)": the server's file is still the one the
-                    // baseline describes, so the next save asks again.
-                    e.unsent = false;
-                    e.conflict = None;
-                    e.status = EditStatus::Watching;
-                } else if let Some(local) = uploaded {
-                    // Copies keep their time, so the server now matches what was uploaded.
-                    e.baseline = local;
-                    e.status = EditStatus::Watching;
-                    if std::mem::take(&mut e.dirty) {
-                        let baseline = e.baseline;
-                        return vec![Self::upload(e, true, Some(baseline)), EditEffect::Changed];
+                let copy = std::mem::take(&mut e.saving_copy);
+                e.dirty = false;
+                e.status = EditStatus::Watching;
+                e.error = None;
+                e.conflict = None;
+                // A copy went to "name (copy)": the server's own file still matches the
+                // baseline, so the next save asks again. Otherwise the server now holds what was
+                // published (read back by the queue, so a server that kept its own mtime still
+                // matches).
+                if !copy {
+                    if let Some(now) = published.or(uploaded) {
+                        e.baseline = now;
                     }
-                    e.unsent = false;
+                }
+                // Unsent whenever the temp file isn't what was uploaded: saves made during the
+                // upload, online or not, are never lost.
+                e.unsent = uploaded != Some(e.last_local);
+                if e.unsent && !copy {
+                    let baseline = e.baseline;
+                    return vec![Self::upload(e, true, Some(baseline)), EditEffect::Changed];
                 }
                 vec![EditEffect::Changed]
             }
@@ -311,6 +326,10 @@ impl EditState {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
+        // One upload at a time: the running one is followed by another if the file changed.
+        if e.status == EditStatus::Uploading {
+            return Vec::new();
+        }
         let baseline = e.baseline;
         vec![Self::upload(e, true, Some(baseline)), EditEffect::Changed]
     }
@@ -476,7 +495,7 @@ mod tests {
         s.saved("e", (12, 200), Some(BASE));
         s.enqueued("e", "job-1".into());
         assert!(uploads(&s.saved("e", (14, 220), Some(BASE))).is_empty());
-        let fx = s.job_finished("job-1", JobStatus::Done, None);
+        let fx = s.job_finished("job-1", JobStatus::Done, None, None);
         assert_eq!(uploads(&fx), vec![(true, Some((12, 200)))]);
         assert_eq!(s.get("e").unwrap().uploading, Some((14, 220)));
     }
@@ -486,7 +505,7 @@ mod tests {
         let mut s = opened();
         s.saved("e", (12, 200), Some(BASE));
         s.enqueued("e", "job-1".into());
-        s.job_finished("job-1", JobStatus::Done, None);
+        s.job_finished("job-1", JobStatus::Done, None, None);
         let e = s.get("e").unwrap();
         assert_eq!(
             (e.baseline, e.unsent, e.status, e.job.clone()),
@@ -499,7 +518,7 @@ mod tests {
         let mut s = opened();
         s.saved("e", (12, 200), Some(BASE));
         s.enqueued("e", "job-1".into());
-        let fx = s.job_finished("job-1", JobStatus::Failed, Some(DEST_CHANGED.into()));
+        let fx = s.job_finished("job-1", JobStatus::Failed, Some(DEST_CHANGED.into()), None);
         assert!(fx.contains(&StatRemote {
             edit_id: "e".into()
         }));
@@ -520,7 +539,7 @@ mod tests {
         let mut s = opened();
         s.saved("e", (12, 200), Some(BASE));
         s.enqueued("e", "job-1".into());
-        s.job_finished("job-1", JobStatus::Failed, Some("disk full".into()));
+        s.job_finished("job-1", JobStatus::Failed, Some("disk full".into()), None);
         let e = s.get("e").unwrap();
         assert_eq!(
             (e.status, e.unsent, e.error.as_deref()),
@@ -549,7 +568,7 @@ mod tests {
             vec![(false, None)]
         );
         s.enqueued("e", "job-1".into());
-        s.job_finished("job-1", JobStatus::Done, None);
+        s.job_finished("job-1", JobStatus::Done, None, None);
         let e = s.get("e").unwrap();
         assert_eq!(
             (e.baseline, e.unsent, e.status),
@@ -625,6 +644,60 @@ mod tests {
             (EditStatus::Watching, true, (12, 200))
         );
         assert!(e.error.as_deref().unwrap().contains("Connection closed"));
+    }
+
+    #[test]
+    fn done_uses_the_published_state_as_baseline() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        // The server kept its own mtime (no setstat): the baseline must be what is there.
+        s.job_finished("job-1", JobStatus::Done, None, Some((12, 999)));
+        assert_eq!(s.get("e").unwrap().baseline, (12, 999));
+        let fx = s.saved("e", (13, 210), Some((12, 999)));
+        assert_eq!(
+            uploads(&fx),
+            vec![(true, Some((12, 999)))],
+            "no false conflict"
+        );
+    }
+
+    #[test]
+    fn offline_save_during_upload_stays_unsent_and_uploads_again() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        s.saved_offline("e", (14, 220));
+        let fx = s.job_finished("job-1", JobStatus::Done, None, Some((12, 200)));
+        assert_eq!(uploads(&fx), vec![(true, Some((12, 200)))]);
+        assert!(s.get("e").unwrap().unsent);
+    }
+
+    #[test]
+    fn save_during_save_as_copy_stays_unsent() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        s.resolve("e", Choice::SaveAsCopy, (99, 300));
+        s.enqueued("e", "job-1".into());
+        s.saved("e", (14, 220), Some((99, 300)));
+        let fx = s.job_finished("job-1", JobStatus::Done, None, Some((12, 200)));
+        assert!(
+            uploads(&fx).is_empty(),
+            "the server copy still differs: no silent overwrite"
+        );
+        let e = s.get("e").unwrap();
+        assert!(e.unsent);
+        assert_eq!(e.baseline, BASE);
+        assert!(s.stop("e", false).is_err(), "Stop still asks");
+    }
+
+    #[test]
+    fn upload_now_while_uploading_waits_for_the_running_one() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        assert!(uploads(&s.upload_now("e")).is_empty());
+        assert_eq!(s.get("e").unwrap().job.as_deref(), Some("job-1"));
     }
 
     #[test]

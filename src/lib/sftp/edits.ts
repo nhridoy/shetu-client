@@ -58,16 +58,17 @@ function extensionOf(path: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-/** The app chosen for this file type before, or one picked now (and remembered). */
-async function appFor(path: string): Promise<string | null | undefined> {
+/** Asks which app to use, starting at the one chosen for this file type before, and
+ * remembers the answer. Undefined when the user cancels. */
+async function appFor(path: string): Promise<string | undefined> {
   const ext = extensionOf(path);
   const store = useSettingsStore.getState();
   const remembered = store.settings.openWithApps[ext];
-  if (remembered) return remembered;
   const picked = await open({
     title: "Choose an app",
     multiple: false,
     directory: false,
+    defaultPath: remembered,
   });
   if (!picked || Array.isArray(picked)) return undefined;
   await store.updateSetting("openWithApps", {

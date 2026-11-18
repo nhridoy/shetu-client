@@ -58,7 +58,7 @@ describe("remote edits", () => {
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
-  it("Open with… remembers the chosen app per extension", async () => {
+  it("Open with… remembers the chosen app per extension and can change it", async () => {
     mocks.invoke.mockResolvedValue({ id: "e" });
     mocks.pick.mockResolvedValueOnce("/usr/bin/code");
     await openRemoteFile("pane-1", "/etc/nginx.conf", { withApp: true });
@@ -69,12 +69,19 @@ describe("remote edits", () => {
     expect(useSettingsStore.getState().settings.openWithApps).toEqual({
       conf: "/usr/bin/code",
     });
+    // Next time the picker opens at the remembered app, and a different pick replaces it.
+    mocks.pick.mockResolvedValueOnce("/usr/bin/vim");
     await openRemoteFile("pane-1", "/etc/other.conf", { withApp: true });
-    expect(mocks.pick).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenLastCalledWith(
-      "edit_open",
-      expect.objectContaining({ appName: "/usr/bin/code" }),
+    expect(mocks.pick).toHaveBeenLastCalledWith(
+      expect.objectContaining({ defaultPath: "/usr/bin/code" }),
     );
+    expect(useSettingsStore.getState().settings.openWithApps).toEqual({
+      conf: "/usr/bin/vim",
+    });
+    mocks.pick.mockResolvedValueOnce(null);
+    expect(
+      await openRemoteFile("pane-1", "/etc/x.conf", { withApp: true }),
+    ).toBeNull();
   });
 
   it("closing a pane stops its sent edits and keeps unsent ones", async () => {

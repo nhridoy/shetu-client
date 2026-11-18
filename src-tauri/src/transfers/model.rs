@@ -77,6 +77,9 @@ pub struct TransferJob {
     /// the job with `DEST_CHANGED` instead of overwriting.
     #[serde(default)]
     pub expect_dest: Option<(u64, i64)>,
+    /// The destination's (size, mtime) right after this job published it.
+    #[serde(default)]
+    pub published: Option<(u64, i64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

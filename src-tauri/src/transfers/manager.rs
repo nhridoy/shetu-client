@@ -61,6 +61,7 @@ pub fn build_job(
         created_at: now,
         speed: 0.0,
         expect_dest: None,
+        published: None,
     }
 }
 
@@ -123,6 +124,8 @@ pub struct JobFinished {
     pub id: String,
     pub status: JobStatus,
     pub error: Option<String>,
+    /// What the destination looked like right after publishing (Done jobs).
+    pub published: Option<(u64, i64)>,
 }
 
 pub fn finished_of(jobs: &[TransferJob]) -> Vec<JobFinished> {
@@ -137,6 +140,7 @@ pub fn finished_of(jobs: &[TransferJob]) -> Vec<JobFinished> {
             id: j.id.clone(),
             status: j.status,
             error: j.error.clone(),
+            published: j.published,
         })
         .collect()
 }
@@ -258,6 +262,14 @@ impl TransferManager {
             reply,
         })
         .await?
+    }
+
+    pub async fn list(&self) -> Result<Vec<TransferJob>, String> {
+        self.ask(Msg::List).await
+    }
+
+    pub fn cancel(&self, id: String) {
+        self.send(Msg::Cancel(id));
     }
 
     /// A feed of jobs reaching Done, Failed or Cancelled.
@@ -443,6 +455,7 @@ fn apply(
                         let end = RunEnd::Finished {
                             result,
                             landed: None,
+                            published: None,
                         };
                         let _ = tx.send(Msg::Ended { id, run, end });
                     }
@@ -574,7 +587,11 @@ mod tests {
         let jobs = vec![
             test_job("q", JobStatus::Queued),
             test_job("a", JobStatus::Active),
-            test_job("d", JobStatus::Done),
+            {
+                let mut d = test_job("d", JobStatus::Done);
+                d.published = Some((1, 2));
+                d
+            },
             failed,
             test_job("c", JobStatus::Cancelled),
         ];
@@ -584,17 +601,20 @@ mod tests {
                 JobFinished {
                     id: "d".into(),
                     status: JobStatus::Done,
-                    error: None
+                    error: None,
+                    published: Some((1, 2))
                 },
                 JobFinished {
                     id: "f".into(),
                     status: JobStatus::Failed,
-                    error: Some("x".into())
+                    error: Some("x".into()),
+                    published: None
                 },
                 JobFinished {
                     id: "c".into(),
                     status: JobStatus::Cancelled,
-                    error: None
+                    error: None,
+                    published: None
                 },
             ]
         );

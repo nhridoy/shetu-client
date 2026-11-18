@@ -49,6 +49,19 @@ export async function loadComparison(
   return compareFolders(l, r);
 }
 
+/** Changed rows whose copy on the target side is newer: Sync would replace them. */
+export function newerOnTarget(
+  rows: CompareRow[],
+  direction: Direction,
+): CompareRow[] {
+  return rows.filter((r) => {
+    if (r.status !== "differs" || !r.left || !r.right) return false;
+    const [source, target] =
+      direction === "right" ? [r.left, r.right] : [r.right, r.left];
+    return target.mtime - source.mtime > 2;
+  });
+}
+
 /** Rows a direction may copy: new and changed files (and empty folders) on the source side. */
 export function copyable(
   rows: CompareRow[],

@@ -100,6 +100,7 @@ fn finished(result: Result<(), JobError>) -> RunEnd {
     RunEnd::Finished {
         result,
         landed: None,
+        published: None,
     }
 }
 
@@ -173,7 +174,13 @@ impl Ctx<'_> {
         }
     }
 
-    async fn copy(&self, src: &Side, dst: &Side, stop: &CancellationToken) -> Result<(), JobError> {
+    /// Copies into the `.part`; returns the source's (size, mtime) the copy was made from.
+    async fn copy(
+        &self,
+        src: &Side,
+        dst: &Side,
+        stop: &CancellationToken,
+    ) -> Result<(u64, i64), JobError> {
         let job = self.job;
         let snapshot = (job.src_size, job.src_mtime);
         let current = io::stat(src, &job.src.path).await?;
@@ -220,7 +227,7 @@ impl Ctx<'_> {
         if stop.is_cancelled() {
             return Err(JobError::Stopped);
         }
-        Ok(())
+        Ok(current)
     }
 
     /// Connects and copies. `Ok` hands back the destination, ready to publish.
@@ -229,11 +236,11 @@ impl Ctx<'_> {
         start_src: Option<Held<Arc<SftpSession>>>,
         start_dest: Option<Held<Arc<SftpSession>>>,
         stop: &CancellationToken,
-    ) -> Result<Side, RunEnd> {
+    ) -> Result<(Side, i64), RunEnd> {
         let src = self.side(End::Src, start_src).await?;
         let dst = self.side(End::Dest, start_dest).await?;
         match self.copy(&src, &dst, stop).await {
-            Ok(()) => Ok(dst),
+            Ok((_, mtime)) => Ok((dst, mtime)),
             Err(e) => Err(finished(Err(e))),
         }
     }
@@ -241,7 +248,8 @@ impl Ctx<'_> {
 
 /// Moves the finished `.part` into place, first checking that the destination is still what the
 /// job expects (if it says) so a changed server copy is never overwritten.
-async fn publish(dst: &Side, job: &TransferJob) -> Result<String, JobError> {
+/// `mtime` is the source's time when it was copied (it may have changed since queueing).
+async fn publish(dst: &Side, job: &TransferJob, mtime: i64) -> Result<String, JobError> {
     if job.expect_dest.is_some() {
         let actual = match io::stat(dst, &job.dest.path).await {
             Ok(found) => Some(found),
@@ -250,14 +258,7 @@ async fn publish(dst: &Side, job: &TransferJob) -> Result<String, JobError> {
         };
         check_expected_dest(job.expect_dest, actual)?;
     }
-    io::finish(
-        dst,
-        &job.part_path,
-        &job.dest.path,
-        job.replace,
-        job.src_mtime,
-    )
-    .await
+    io::finish(dst, &job.part_path, &job.dest.path, job.replace, mtime).await
 }
 
 /// Runs one transfer and reports how it ended. Publishing is not raced against Pause/Cancel:
@@ -284,11 +285,17 @@ pub async fn run(
     };
     let stopped = Err(finished(Err(JobError::Stopped)));
     let end = match until_stopped(&token, ctx.prepare(src, dest, &token), stopped).await {
-        Ok(dst) => match publish(&dst, &job).await {
-            Ok(landed) => RunEnd::Finished {
-                result: Ok(()),
-                landed: (landed != job.dest.path).then_some(landed),
-            },
+        Ok((dst, mtime)) => match publish(&dst, &job, mtime).await {
+            Ok(landed) => {
+                // Read back what is now there, so a module that queued this (an edit) knows the
+                // server state it produced, even when the server kept its own mtime.
+                let published = io::stat(&dst, &landed).await.ok();
+                RunEnd::Finished {
+                    result: Ok(()),
+                    landed: (landed != job.dest.path).then_some(landed),
+                    published,
+                }
+            }
             Err(e) => finished(Err(e)),
         },
         Err(end) => end,

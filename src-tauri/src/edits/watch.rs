@@ -22,7 +22,8 @@ enum Cmd {
 }
 
 pub struct Watching {
-    watcher: RecommendedWatcher,
+    /// The OS watcher; None when it couldn't be created (e.g. Linux's inotify instance limit).
+    watcher: Option<RecommendedWatcher>,
     /// Used for folders the OS watcher can't take (e.g. the inotify watch limit is used up).
     poll: Option<PollWatcher>,
     events: mpsc::UnboundedSender<PathBuf>,
@@ -49,10 +50,11 @@ fn key(path: &Path) -> Option<String> {
     Some(format!("{dir}/{file}"))
 }
 
-/// Starts watching; `settled` receives an edit id after its file has been quiet for `QUIET`.
-pub fn start(settled: mpsc::UnboundedSender<String>) -> notify::Result<Watching> {
+/// The debouncer: turns raw events for watched files into one `settled` id per quiet second.
+fn spawn_debouncer(
+    settled: mpsc::UnboundedSender<String>,
+) -> (mpsc::UnboundedSender<PathBuf>, mpsc::UnboundedSender<Cmd>) {
     let (events_tx, mut events) = mpsc::unbounded_channel::<PathBuf>();
-    let watcher = notify::recommended_watcher(forward(events_tx.clone()))?;
     let (cmds, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
     tauri::async_runtime::spawn(async move {
         let mut files: HashMap<String, String> = HashMap::new(); // "<dir>/<file>" → edit id
@@ -96,49 +98,93 @@ pub fn start(settled: mpsc::UnboundedSender<String>) -> notify::Result<Watching>
             }
         }
     });
-    Ok(Watching {
+    (events_tx, cmds)
+}
+
+/// Starts watching; `settled` receives an edit id after its file has been quiet for `QUIET`.
+/// Never fails: without an OS watcher, every folder is polled instead.
+pub fn start(settled: mpsc::UnboundedSender<String>) -> Watching {
+    let (events, cmds) = spawn_debouncer(settled);
+    let watcher = match notify::recommended_watcher(forward(events.clone())) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            log::warn!("edits: no OS file watcher ({e}); polling edit folders instead");
+            None
+        }
+    };
+    Watching {
         watcher,
         poll: None,
-        events: events_tx,
+        events,
         cmds,
-    })
+    }
+}
+
+/// Like `start`, but without the OS watcher: polling only (exercises the fallback in tests).
+#[cfg(test)]
+pub fn start_polling(settled: mpsc::UnboundedSender<String>) -> Watching {
+    let (events, cmds) = spawn_debouncer(settled);
+    Watching {
+        watcher: None,
+        poll: None,
+        events,
+        cmds,
+    }
 }
 
 impl Watching {
-    pub fn watch(&mut self, id: &str, dir: &Path, file: &str) {
-        if let Err(e) = self.watcher.watch(dir, RecursiveMode::NonRecursive) {
-            log::warn!(
-                "edits: OS watcher refused {} ({e}); polling it instead",
-                dir.display()
-            );
-            let polled = match self.poll.as_mut() {
-                Some(poll) => poll.watch(dir, RecursiveMode::NonRecursive),
-                None => {
-                    let config = notify::Config::default()
-                        .with_poll_interval(Duration::from_millis(500))
-                        // A same-size save within one tick barely moves the mtime: compare
-                        // contents (only the few edit folders are polled).
-                        .with_compare_contents(true);
-                    PollWatcher::new(forward(self.events.clone()), config).and_then(|mut poll| {
-                        let result = poll.watch(dir, RecursiveMode::NonRecursive);
-                        self.poll = Some(poll);
-                        result
-                    })
+    fn poll(&mut self, dir: &Path) -> notify::Result<()> {
+        if let Some(poll) = self.poll.as_mut() {
+            return poll.watch(dir, RecursiveMode::NonRecursive);
+        }
+        let config = notify::Config::default()
+            .with_poll_interval(Duration::from_millis(500))
+            // A same-size save within one tick barely moves the mtime: compare contents (only
+            // the few edit folders are polled).
+            .with_compare_contents(true);
+        let mut poll = PollWatcher::new(forward(self.events.clone()), config)?;
+        let result = poll.watch(dir, RecursiveMode::NonRecursive);
+        self.poll = Some(poll);
+        result
+    }
+
+    /// Starts watching; false when neither the OS watcher nor polling could take the folder.
+    pub fn watch(&mut self, id: &str, dir: &Path, file: &str) -> bool {
+        let by_os = match self.watcher.as_mut() {
+            Some(w) => match w.watch(dir, RecursiveMode::NonRecursive) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!(
+                        "edits: OS watcher refused {} ({e}); polling it",
+                        dir.display()
+                    );
+                    false
+                }
+            },
+            None => false,
+        };
+        let watched = by_os
+            || match self.poll(dir) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("edits: could not watch {}: {e}", dir.display());
+                    false
                 }
             };
-            if let Err(e) = polled {
-                log::warn!("edits: could not watch {}: {e}", dir.display());
-            }
+        if watched {
+            let _ = self.cmds.send(Cmd::Watch {
+                id: id.into(),
+                dir: dir.into(),
+                file: file.into(),
+            });
         }
-        let _ = self.cmds.send(Cmd::Watch {
-            id: id.into(),
-            dir: dir.into(),
-            file: file.into(),
-        });
+        watched
     }
 
     pub fn unwatch(&mut self, id: &str, dir: &Path) {
-        let _ = self.watcher.unwatch(dir);
+        if let Some(w) = self.watcher.as_mut() {
+            let _ = w.unwatch(dir);
+        }
         if let Some(poll) = self.poll.as_mut() {
             let _ = poll.unwatch(dir);
         }
@@ -151,13 +197,29 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn polling_only_still_sees_saves() {
+        let root = std::env::temp_dir().join(format!("shetu-poll-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("e2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"v1").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut watching = start_polling(tx);
+        assert!(watching.watch("e2", &dir, "a.txt"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        std::fs::write(dir.join("a.txt"), b"v2-longer").unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(4), rx.recv()).await;
+        assert_eq!(got.unwrap().as_deref(), Some("e2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn rename_over_counts_as_a_save() {
         let root = std::env::temp_dir().join(format!("shetu-watch-{}", uuid::Uuid::new_v4()));
         let dir = root.join("e1");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"v1").unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut watching = start(tx).unwrap();
+        let mut watching = start(tx);
         watching.watch("e1", &dir, "a.txt");
         tokio::time::sleep(Duration::from_millis(200)).await;
         // How editors save: write a temp file next to it, then rename it over the original.

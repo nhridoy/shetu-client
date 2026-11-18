@@ -84,6 +84,8 @@ pub enum RunEnd {
     Finished {
         result: Result<(), JobError>,
         landed: Option<String>,
+        /// The destination's (size, mtime) right after publishing.
+        published: Option<(u64, i64)>,
     },
     Wait(WaitReason),
 }
@@ -515,9 +517,16 @@ impl State {
                 }
                 _ => None,
             },
-            RunEnd::Finished { result, landed } => {
-                if let (Ok(()), Some(path), Some(j)) = (&result, landed, self.queue.get_mut(id)) {
-                    j.dest.path = path;
+            RunEnd::Finished {
+                result,
+                landed,
+                published,
+            } => {
+                if let (Ok(()), Some(j)) = (&result, self.queue.get_mut(id)) {
+                    if let Some(path) = landed {
+                        j.dest.path = path;
+                    }
+                    j.published = published;
                 }
                 self.queue.finish(id, result, now_ms).cloned()
             }
@@ -645,6 +654,7 @@ mod tests {
         RunEnd::Finished {
             result: Ok(()),
             landed: None,
+            published: None,
         }
     }
 
@@ -774,6 +784,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Err(JobError::Stopped),
             landed: None,
+            published: None,
         };
         let effects = state.ended("a", s.run, end, 0, &mut env);
         assert!(effects
@@ -808,6 +819,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Err(JobError::Stopped),
             landed: None,
+            published: None,
         };
         state.ended("a", s.run, end, 0, &mut env);
         assert_eq!(status(&state, "a"), Some(Queued));
@@ -846,6 +858,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Err(JobError::Stopped),
             landed: None,
+            published: None,
         };
         let effects = state.ended("a", s.run, end, 0, &mut env);
         assert!(effects
@@ -974,6 +987,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Err(JobError::Connection("channel closed".into())),
             landed: None,
+            published: None,
         };
         state.ended("a", s.run, end, 1000, &mut env);
         assert_eq!(env.taken, vec!["transfers:h1:me".to_string()]);
@@ -1046,6 +1060,21 @@ mod tests {
     }
 
     #[test]
+    fn the_published_state_is_recorded() {
+        let mut env = FakeEnv::default();
+        pane(&mut env);
+        let mut state = state_with(vec![download("a")]);
+        let s = start_one(&mut state, &mut env);
+        let end = RunEnd::Finished {
+            result: Ok(()),
+            landed: None,
+            published: Some((5, 9)),
+        };
+        state.ended("a", s.run, end, 0, &mut env);
+        assert_eq!(state.list()[0].published, Some((5, 9)));
+    }
+
+    #[test]
     fn a_landed_name_is_recorded() {
         let mut env = FakeEnv::default();
         pane(&mut env);
@@ -1054,6 +1083,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Ok(()),
             landed: Some("/l/a (copy)".into()),
+            published: None,
         };
         state.ended("a", s.run, end, 0, &mut env);
         assert_eq!(state.list()[0].dest.path, "/l/a (copy)");
@@ -1068,6 +1098,7 @@ mod tests {
         let end = RunEnd::Finished {
             result: Err(JobError::Connection("reset".into())),
             landed: None,
+            published: None,
         };
         state.ended("a", s.run, end, 1_000, &mut env);
         assert!(starts(&state.tick(2_999, Instant::now(), &mut env)).is_empty());

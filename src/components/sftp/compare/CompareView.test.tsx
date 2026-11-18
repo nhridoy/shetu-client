@@ -160,6 +160,27 @@ describe("CompareView", () => {
     expect(mocks.loadComparison).toHaveBeenCalledTimes(2);
   });
 
+  it("asks before Sync replaces newer files on the other side", async () => {
+    const newer: CompareRow = {
+      path: "config.php",
+      status: "differs",
+      isDir: false,
+      left: e("config.php"),
+      right: { ...e("config.php", 2), mtime: 500 },
+    };
+    mocks.loadComparison.mockResolvedValue([newer]);
+    await render();
+    window.confirm = vi.fn(() => false);
+    await click(button("Sync →"));
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("1 file on the other side is newer"),
+    );
+    expect(mocks.copyRows).not.toHaveBeenCalled();
+    window.confirm = vi.fn(() => true);
+    await click(button("Sync →"));
+    expect(mocks.copyRows).toHaveBeenCalled();
+  });
+
   it("shows a listing error instead of rows", async () => {
     mocks.loadComparison.mockRejectedValueOnce(new Error("Permission denied"));
     await render();
