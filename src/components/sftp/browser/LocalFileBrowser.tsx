@@ -15,6 +15,7 @@ import FileBrowserStatusBar from "@/components/sftp/browser/shared/FileBrowserSt
 import FileBrowserToolbar from "@/components/sftp/browser/shared/FileBrowserToolbar";
 import FileGridItem from "@/components/sftp/browser/shared/FileGridItem";
 import FileListItem from "@/components/sftp/browser/shared/FileListItem";
+import CompareButton from "@/components/sftp/compare/CompareButton";
 import ConfirmDeleteDialog from "@/components/ui/ConfirmDeleteDialog";
 import ContextMenu, { type ContextMenuItem } from "@/components/ui/ContextMenu";
 import PromptDialog from "@/components/ui/PromptDialog";
@@ -774,6 +775,7 @@ export default function LocalFileBrowser({
       <FileBrowserToolbar
         currentPath={currentPath}
         pathLabel="Local path"
+        beforeActions={<CompareButton paneId={paneId} />}
         searchQuery={searchQuery}
         showHidden={showHidden}
         viewMode={viewMode}

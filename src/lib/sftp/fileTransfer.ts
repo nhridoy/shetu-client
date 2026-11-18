@@ -364,6 +364,8 @@ function resultFor(file: FileItem, job: TransferJob): TransferFileResult {
 }
 
 export interface TransferOptions {
+  /** Skip the summary toast (the caller reports a batch of calls itself). */
+  silent?: boolean;
   source: FileProvider;
   dest: FileProvider;
   files: FileItem[];
@@ -556,7 +558,7 @@ export async function transferFiles(
         results.push(result);
         onFileComplete?.(file, i, result);
       }
-      showSummary(results, mode);
+      if (!options.silent) showSummary(results, mode);
       return results;
     }
 
@@ -769,7 +771,7 @@ export async function transferFiles(
       }
     }
 
-    showSummary(results, mode);
+    if (!options.silent) showSummary(results, mode);
     return results;
   } finally {
     useSftpStore.getState().setTransferScanning(false);

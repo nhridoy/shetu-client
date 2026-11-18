@@ -172,6 +172,10 @@ interface SftpState {
   pendingFileDrop: PendingFileDrop | null;
   transfers: TransferJob[];
   transferScanning: boolean;
+  /** Two panes being compared, or null. */
+  compare: { leftPaneId: string; rightPaneId: string } | null;
+  openCompare: (leftPaneId: string, rightPaneId: string) => void;
+  closeCompare: () => void;
   clipboard: {
     paths: string[];
     sourceId: string;
@@ -256,6 +260,10 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   pendingFileDrop: null,
   transfers: [],
   transferScanning: false,
+  compare: null,
+  openCompare: (leftPaneId, rightPaneId) =>
+    set({ compare: { leftPaneId, rightPaneId } }),
+  closeCompare: () => set({ compare: null }),
   transferResets: 0,
   clipboard: null,
   clipboardMode: null,
