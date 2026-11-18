@@ -150,8 +150,8 @@ Projects 2–4 reuse the transfer engine built here.
   trusted from the web layer (clipboard pastes send `size: 0`).
 - **Destination decision is saved on the job** (my call): `new` (no conflict when queued) or
   `replace` (user approved replacing). Just before the final rename, Rust re-checks: a `new` job
-  whose destination now exists finishes under the next free name (`name (1).ext`, the same rule
-  `resolveTransferPaths` uses for auto-rename) instead of overwriting.
+  whose destination now exists finishes under the next free name (`name (copy).ext`, then `name (copy 2).ext`: the same
+  rule `resolveTransferPaths` uses for auto-rename) instead of overwriting.
 - **Safe write and resume, per kind:**
   - **Download:**
     - Write to the local `<dest>.part`.
