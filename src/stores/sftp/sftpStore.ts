@@ -11,6 +11,13 @@ import {
   sourceFirstFromSide,
 } from "@/lib/common/treeUtils";
 import {
+  type EditConflict,
+  listEdits,
+  onEditConflict,
+  onEditsChanged,
+  type RemoteEdit,
+} from "@/lib/sftp/edits";
+import {
   clearFinishedTransfers,
   listTransfers,
   onTransfersChanged,
@@ -58,6 +65,24 @@ const initialConnectionState: SftpConnectionState = {
   connecting: false,
   error: null,
 };
+
+let editsListener: Promise<void> | null = null;
+
+/** Mirrors the Rust edit list and surfaces conflicts. Never blocks anything; retried later. */
+function startEditsListener(
+  apply: (edits: RemoteEdit[]) => void,
+  conflict: (c: EditConflict | null) => void,
+): Promise<void> {
+  editsListener ??= (async () => {
+    await onEditsChanged(apply);
+    await onEditConflict(conflict);
+    apply(await listEdits());
+  })().catch((e) => {
+    editsListener = null;
+    console.warn("edits: could not load the list", e);
+  });
+  return editsListener;
+}
 
 let transferListener: Promise<boolean> | null = null;
 
@@ -172,6 +197,12 @@ interface SftpState {
   pendingFileDrop: PendingFileDrop | null;
   transfers: TransferJob[];
   transferScanning: boolean;
+  /** Remote files open in a desktop app (mirror of the Rust edit list). */
+  edits: RemoteEdit[];
+  /** A save that found the server copy changed, waiting for the user's choice. */
+  editConflict: EditConflict | null;
+  applyEdits: (edits: RemoteEdit[]) => void;
+  setEditConflict: (conflict: EditConflict | null) => void;
   /** Two panes being compared, or null. */
   compare: { leftPaneId: string; rightPaneId: string } | null;
   openCompare: (leftPaneId: string, rightPaneId: string) => void;
@@ -260,6 +291,10 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   pendingFileDrop: null,
   transfers: [],
   transferScanning: false,
+  edits: [],
+  editConflict: null,
+  applyEdits: (edits) => set({ edits }),
+  setEditConflict: (editConflict) => set({ editConflict }),
   compare: null,
   openCompare: (leftPaneId, rightPaneId) =>
     set({ compare: { leftPaneId, rightPaneId } }),
@@ -477,8 +512,13 @@ export const useSftpStore = create<SftpState>((set, get) => ({
   setError: (error, type) =>
     set({ errorState: { lastError: error, errorType: type } }),
   clearError: () => set({ errorState: { ...initialErrorState } }),
-  ensureTransferListener: () =>
-    startTransferListener(get().applyTransferChanges, get().resetTransfers),
+  ensureTransferListener: () => {
+    void startEditsListener(get().applyEdits, get().setEditConflict);
+    return startTransferListener(
+      get().applyTransferChanges,
+      get().resetTransfers,
+    );
+  },
 
   connectSftp: async (hostId: string) => {
     set({

@@ -1,5 +1,6 @@
 import { FolderIcon } from "@phosphor-icons/react";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { buildContextMenuItems } from "@/components/sftp/browser/shared/buildContextMenuItems";
 import FileBrowserListShared from "@/components/sftp/browser/shared/FileBrowserList";
 import FileGridItem from "@/components/sftp/browser/shared/FileGridItem";
@@ -9,6 +10,7 @@ import {
   type ColumnDef,
   useResizableColumns,
 } from "@/hooks/sftp/useResizableColumns";
+import { openRemoteFile } from "@/lib/sftp/edits";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import type {
   FileItem,
@@ -16,6 +18,15 @@ import type {
   FileSortField,
   FileViewMode,
 } from "@/types/sftp/sftpTypes";
+
+/** A host pane's SFTP session id is its pane id. Errors become a toast. */
+async function openFromPane(paneId: string, path: string, withApp: boolean) {
+  try {
+    await openRemoteFile(paneId, path, { withApp });
+  } catch (e) {
+    toast.error(`Couldn't open: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
 const REMOTE_COLUMNS: ColumnDef[] = [
   { key: "type", label: "", defaultWidth: 36, minWidth: 36 },
@@ -136,6 +147,8 @@ export default function FileBrowserList({
         onNewFolder: actions.handleNewFolder,
         onPermissions: actions.onPermissions,
         onOpenInEditor: actions.onOpenInEditor,
+        onOpenWithDefault: (f) => void openFromPane(paneId, f.path, false),
+        onOpenWith: (f) => void openFromPane(paneId, f.path, true),
       },
       (path, name) => {
         setRenamingPath(path);
@@ -150,6 +163,7 @@ export default function FileBrowserList({
     setRenamingPath,
     setRenameValue,
     selectedFiles,
+    paneId,
   ]);
 
   let body: ReactNode;

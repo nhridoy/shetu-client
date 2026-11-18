@@ -55,6 +55,27 @@ const baseActions = {
 };
 
 describe("buildContextMenuItems", () => {
+  it("offers Open in default app / Open with… only for remote files", () => {
+    const onOpenWithDefault = vi.fn();
+    const onOpenWith = vi.fn();
+    const actions = { ...baseActions, onOpenWithDefault, onOpenWith };
+    const items = buildContextMenuItems(file, null, actions, vi.fn());
+    findItem(items, "Open in default app")?.onClick?.();
+    findItem(items, "Open with…")?.onClick?.();
+    expect(onOpenWithDefault).toHaveBeenCalledWith(file);
+    expect(onOpenWith).toHaveBeenCalledWith(file);
+    const onDir = buildContextMenuItems(dir, null, actions, vi.fn());
+    expect(findItem(onDir, "Open in default app")).toBeUndefined();
+    expect(findItem(onDir, "Open with…")).toBeUndefined();
+    const withoutHandlers = buildContextMenuItems(
+      file,
+      null,
+      baseActions,
+      vi.fn(),
+    );
+    expect(findItem(withoutHandlers, "Open with…")).toBeUndefined();
+  });
+
   it("adds Open in Editor before base items for a file", () => {
     const onOpenInEditor = vi.fn();
     const items = buildContextMenuItems(
