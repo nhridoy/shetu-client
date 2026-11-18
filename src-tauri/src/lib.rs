@@ -2,6 +2,7 @@
 
 mod crypto;
 mod db;
+mod edits;
 mod forwarding;
 mod git;
 mod host_inherit;
