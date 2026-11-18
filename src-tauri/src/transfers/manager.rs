@@ -112,6 +112,95 @@ impl Throttle {
     }
 }
 
+/// One cancel token per running job, tagged with a run number so a finished run can't remove
+/// the token of a newer run of the same job.
+#[derive(Default)]
+pub struct RunTokens {
+    next: u64,
+    map: HashMap<String, (u64, CancellationToken)>,
+}
+
+impl RunTokens {
+    pub fn start(&mut self, id: &str) -> (u64, CancellationToken) {
+        self.next += 1;
+        let token = CancellationToken::new();
+        if let Some((_, old)) = self.map.insert(id.to_string(), (self.next, token.clone())) {
+            old.cancel();
+        }
+        (self.next, token)
+    }
+    pub fn finish(&mut self, id: &str, run: u64) {
+        if self.map.get(id).is_some_and(|(r, _)| *r == run) {
+            self.map.remove(id);
+        }
+    }
+    pub fn is_running(&self, id: &str) -> bool {
+        self.map.contains_key(id)
+    }
+    pub fn cancel(&self, id: &str) {
+        if let Some((_, t)) = self.map.get(id) {
+            t.cancel();
+        }
+    }
+    pub fn cancel_all(&self) {
+        for (_, t) in self.map.values() {
+            t.cancel();
+        }
+    }
+}
+
+/// Ends a run as soon as its token fires, wherever it is (connecting, a hung request, renaming).
+async fn until_stopped(
+    stop: &CancellationToken,
+    run: impl std::future::Future<Output = RunEnd>,
+) -> RunEnd {
+    tokio::select! {
+        biased;
+        _ = stop.cancelled() => RunEnd::Finished(Err(JobError::Stopped)),
+        end = run => end,
+    }
+}
+
+/// A job for a newly queued file; one whose source can't be read is created already failed.
+pub fn job_for_stat(
+    new: &NewJob,
+    src_host: Option<HostRef>,
+    dest_host: Option<HostRef>,
+    stat: Result<(u64, i64), JobError>,
+    now: i64,
+) -> TransferJob {
+    match stat {
+        Ok(snapshot) => build_job(new, src_host, dest_host, snapshot, now),
+        Err(e) => {
+            let mut job = build_job(new, src_host, dest_host, (0, 0), now);
+            let msg = match e {
+                JobError::Connection(m) | JobError::Operation(m) => m,
+                JobError::Stopped => "stopped".into(),
+            };
+            job.status = JobStatus::Failed;
+            job.error = Some(format!("{}: {msg}", new.src_path));
+            job
+        }
+    }
+}
+
+/// One connect at a time per manager-owned session id, so parallel jobs share one sign-in.
+#[derive(Default)]
+pub struct ConnectLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+impl ConnectLocks {
+    pub async fn lock(&self, sid: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = Arc::clone(
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(sid.to_string())
+                .or_default(),
+        );
+        lock.lock_owned().await
+    }
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -130,7 +219,8 @@ enum RunEnd {
 struct Inner {
     app: tauri::AppHandle,
     queue: Mutex<Queue>,
-    tokens: Mutex<HashMap<String, CancellationToken>>,
+    tokens: Mutex<RunTokens>,
+    connect_locks: ConnectLocks,
     /// Session each job was queued from (src, dest); memory only.
     prefer: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
     /// Manager-opened sessions in use by running jobs.
@@ -158,6 +248,7 @@ impl TransferManager {
             app: app.clone(),
             queue: Mutex::new(queue),
             tokens: Mutex::default(),
+            connect_locks: ConnectLocks::default(),
             prefer: Mutex::default(),
             running: Mutex::default(),
             owned: Mutex::default(),
@@ -169,15 +260,11 @@ impl TransferManager {
 
     /// Sign-out / device wipe: stop everything and forget the queue (`.part` files stay).
     pub fn wipe(&self) {
-        for token in self
-            .inner
+        self.inner
             .tokens
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .values()
-        {
-            token.cancel();
-        }
+            .cancel_all();
         self.inner
             .queue
             .lock()
@@ -266,13 +353,29 @@ impl Inner {
 
         self.close_idle_owned().await;
 
-        let start = self.queue().startable();
+        // A job whose previous run hasn't let go yet waits for the next pass.
+        let start: Vec<String> = {
+            let tokens = self.tokens.lock().unwrap_or_else(|p| p.into_inner());
+            self.queue()
+                .startable()
+                .into_iter()
+                .filter(|id| !tokens.is_running(id))
+                .collect()
+        };
+        let mut runs = Vec::new();
         for id in &start {
             self.queue().mark_active(id);
+            // The token exists before the task does, so a pause or cancel can't slip past it.
+            runs.push(
+                self.tokens
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .start(id),
+            );
         }
         self.changed_ids(&start);
-        for id in start {
-            tauri::async_runtime::spawn(run_job(Arc::clone(self), id));
+        for (id, (run, token)) in start.into_iter().zip(runs) {
+            tauri::async_runtime::spawn(run_job(Arc::clone(self), id, run, token));
         }
 
         let busy = self.queue().all().iter().any(|j| {
@@ -333,6 +436,12 @@ impl Inner {
             return Acquire::Wait(WaitReason::Unlock);
         }
         let sid = format!("{OWNED_PREFIX}{host_id}:{}", host.username);
+        // Jobs to the same host share one connect (and one prompt); later ones reuse it.
+        let _turn = self.connect_locks.lock(&sid).await;
+        if let Some((sid, sftp)) = self.sessions().find_matching(host, prefer) {
+            let owned = sid.starts_with(OWNED_PREFIX).then_some(sid);
+            return Acquire::Ready(Side::Sftp(sftp), owned);
+        }
         let connected = crate::sftp::connect_saved_session(
             &self.app,
             sid.clone(),
@@ -491,22 +600,21 @@ async fn run_loop(inner: Arc<Inner>) {
     }
 }
 
-async fn run_job(inner: Arc<Inner>, id: String) {
-    let Some(job) = inner.queue().get(&id).cloned() else {
-        return;
+async fn run_job(inner: Arc<Inner>, id: String, run: u64, token: CancellationToken) {
+    let job = inner
+        .queue()
+        .get(&id)
+        .filter(|j| j.status == JobStatus::Active)
+        .cloned();
+    let end = match job {
+        Some(job) => until_stopped(&token, inner.run(&job, &token)).await,
+        None => RunEnd::Finished(Err(JobError::Stopped)),
     };
-    let token = CancellationToken::new();
     inner
         .tokens
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(id.clone(), token.clone());
-    let end = inner.run(&job, &token).await;
-    inner
-        .tokens
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&id);
+        .finish(&id, run);
     inner
         .running
         .lock()
@@ -572,21 +680,9 @@ pub async fn transfer_enqueue(
         let src = lookup(&new.src_session_id)?;
         let dest = lookup(&new.dest_session_id)?;
         let src_side = src.as_ref().map_or(&Side::Local, |(_, side)| side);
-        let snapshot = io::stat(src_side, &new.src_path)
-            .await
-            .map_err(|e| match e {
-                JobError::Connection(m) | JobError::Operation(m) => {
-                    format!("{}: {m}", new.src_path)
-                }
-                JobError::Stopped => format!("{}: stopped", new.src_path),
-            })?;
-        let job = build_job(
-            new,
-            src.map(|(h, _)| h),
-            dest.map(|(h, _)| h),
-            snapshot,
-            now,
-        );
+        // One unreadable file (a broken symlink, a file deleted meanwhile) fails on its own.
+        let stat = io::stat(src_side, &new.src_path).await;
+        let job = job_for_stat(new, src.map(|(h, _)| h), dest.map(|(h, _)| h), stat, now);
         prefer.push((
             job.id.clone(),
             (new.src_session_id.clone(), new.dest_session_id.clone()),
@@ -617,15 +713,12 @@ fn apply(manager: &TransferManager, ids: Vec<String>) {
 #[tauri::command]
 pub fn transfer_pause(id: String, manager: Mgr<'_>) -> Result<(), String> {
     if manager.inner.queue().pause(&id) {
-        if let Some(t) = manager
+        manager
             .inner
             .tokens
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&id)
-        {
-            t.cancel();
-        }
+            .cancel(&id);
         apply(&manager, vec![id]);
     }
     Ok(())
@@ -672,15 +765,12 @@ pub fn transfer_cancel(id: String, manager: Mgr<'_>) -> Result<(), String> {
         .remove(&id);
     if was_active {
         // The running task deletes the `.part` once it has let go of the file.
-        if let Some(t) = manager
+        manager
             .inner
             .tokens
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&id)
-        {
-            t.cancel();
-        }
+            .cancel(&id);
     } else {
         let inner = Arc::clone(&manager.inner);
         let job = job.clone();
@@ -786,6 +876,76 @@ mod tests {
         assert_eq!(
             connect_error_class("connect web:22: Connection refused"),
             ErrorClass::Connection
+        );
+    }
+
+    #[test]
+    fn finished_old_run_keeps_newer_runs_token() {
+        let mut t = RunTokens::default();
+        let (old, old_token) = t.start("a");
+        let (new, new_token) = t.start("a");
+        assert_ne!(old, new);
+        assert!(old_token.is_cancelled(), "a replaced run is stopped");
+        t.finish("a", old);
+        assert!(t.is_running("a"));
+        t.cancel("a");
+        assert!(new_token.is_cancelled());
+        t.finish("a", new);
+        assert!(!t.is_running("a"));
+    }
+
+    #[test]
+    fn cancel_all_stops_every_run() {
+        let mut t = RunTokens::default();
+        let (_, a) = t.start("a");
+        let (_, b) = t.start("b");
+        t.cancel_all();
+        assert!(a.is_cancelled() && b.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_hung_run() {
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let end = until_stopped(&stop, std::future::pending::<RunEnd>()).await;
+        assert!(matches!(end, RunEnd::Finished(Err(JobError::Stopped))));
+    }
+
+    #[test]
+    fn unreadable_source_is_queued_as_failed() {
+        let new = new_job(JobKind::Download);
+        let j = job_for_stat(
+            &new,
+            Some(host()),
+            None,
+            Err(JobError::Operation("stat: No such file".into())),
+            5,
+        );
+        assert_eq!(j.status, JobStatus::Failed);
+        assert_eq!(j.error.as_deref(), Some("/r/a.tar: stat: No such file"));
+        let ok = job_for_stat(&new, Some(host()), None, Ok((100, 7)), 5);
+        assert_eq!(
+            (ok.status, ok.src_size, ok.error),
+            (JobStatus::Queued, 100, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn connects_to_one_session_id_take_turns() {
+        let locks = ConnectLocks::default();
+        let first = locks.lock("transfers:h1:me").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), locks.lock("transfers:h1:me"))
+                .await
+                .is_err(),
+            "second connect waits"
+        );
+        let _other = locks.lock("transfers:h2:me").await; // other hosts don't wait
+        drop(first);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), locks.lock("transfers:h1:me"))
+                .await
+                .is_ok()
         );
     }
 
