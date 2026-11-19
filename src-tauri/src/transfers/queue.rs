@@ -257,6 +257,8 @@ pub(crate) fn test_job(id: &str, status: JobStatus) -> TransferJob {
         error: None,
         created_at: 0,
         speed: 0.0,
+        expect_dest: None,
+        published: None,
     }
 }
 

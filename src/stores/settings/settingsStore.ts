@@ -26,6 +26,8 @@ export interface AppSettings {
   lockAfterIdleMinutes: number;
   /** App lock when the computer sleeps or the OS screen locks. */
   lockOnSystemLock: boolean;
+  /** "Open with…" app per file extension, for remote edits. */
+  openWithApps: Record<string, string>;
 }
 
 export const LOCK_IDLE_MINUTES = [0, 1, 5, 15, 30, 60] as const;
@@ -47,6 +49,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   agentForwardingDecisions: {},
   lockAfterIdleMinutes: 0,
   lockOnSystemLock: true,
+  openWithApps: {},
 };
 
 const SSH_TERMS: string[] = ["xterm-256color", "xterm", "vt100"];
@@ -101,12 +104,20 @@ function mergeSettings(saved: Partial<AppSettings> | null): AppSettings {
           Object.entries(decisions).filter(([, v]) => typeof v === "boolean"),
         )
       : {};
+  const apps: unknown = merged.openWithApps;
+  merged.openWithApps =
+    apps && typeof apps === "object" && !Array.isArray(apps)
+      ? Object.fromEntries(
+          Object.entries(apps).filter(([, v]) => typeof v === "string"),
+        )
+      : {};
   return merged;
 }
 
 function parseValue(key: string, value: unknown): unknown {
   if (value === null || value === undefined) return null;
-  if (key === "agentForwardingDecisions") return value; // validated in mergeSettings
+  if (key === "agentForwardingDecisions" || key === "openWithApps")
+    return value; // validated in mergeSettings
   if (
     key === "fontSize" ||
     key === "scrollback" ||

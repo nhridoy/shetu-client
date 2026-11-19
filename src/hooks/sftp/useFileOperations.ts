@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useModal } from "@/hooks/useModal";
 import { extractError } from "@/lib/common/extractError";
 import { nameFormSchema } from "@/lib/schema/common/nameFormSchema";
+import { stopEditsForSession } from "@/lib/sftp/edits";
 import type { FileProvider } from "@/lib/sftp/fileTransfer";
 import {
   getProvider,
@@ -125,6 +126,7 @@ export function useFileOperations({
   const disconnect = useCallback(async () => {
     providerRef.current = null;
     unregisterProvider(paneId);
+    await stopEditsForSession(paneId, useSftpStore.getState().edits);
     await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
     actions.resetPane(paneId, "/");
     useSftpStore.getState().disconnectPane(paneId);

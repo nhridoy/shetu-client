@@ -62,6 +62,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 log = "0.4"
 regex = "1"
+notify = "8"
 
 [features]
 default = ["custom-protocol"]

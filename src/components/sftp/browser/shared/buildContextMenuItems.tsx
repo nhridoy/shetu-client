@@ -1,4 +1,5 @@
 import {
+  AppWindowIcon,
   ArrowDownIcon,
   CodeIcon,
   CopyIcon,
@@ -18,6 +19,9 @@ interface FileBrowserActions extends BaseContextMenuActions {
   handleDownload: (file: FileItem) => void;
   onPermissions?: (file: FileItem) => void;
   onOpenInEditor?: (file: FileItem | null) => void;
+  /** Remote files: open in the desktop's default app / a chosen app; saves upload back. */
+  onOpenWithDefault?: (file: FileItem) => void;
+  onOpenWith?: (file: FileItem) => void;
 }
 
 export function buildContextMenuItems(
@@ -50,6 +54,20 @@ export function buildContextMenuItems(
         icon: <FolderOpenIcon className="w-4 h-4" />,
         shortcut: "Enter",
         onClick: () => actions.handleDoubleClick(menuFile),
+      });
+    }
+    if (menuFile.type === "file" && actions.onOpenWithDefault) {
+      beforeItems.push({
+        label: "Open in default app",
+        icon: <AppWindowIcon className="w-4 h-4" />,
+        onClick: () => actions.onOpenWithDefault?.(menuFile),
+      });
+    }
+    if (menuFile.type === "file" && actions.onOpenWith) {
+      beforeItems.push({
+        label: "Open with…",
+        icon: <AppWindowIcon className="w-4 h-4" />,
+        onClick: () => actions.onOpenWith?.(menuFile),
       });
     }
     if (menuFile.type === "file") {

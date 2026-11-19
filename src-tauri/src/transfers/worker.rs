@@ -100,6 +100,7 @@ fn finished(result: Result<(), JobError>) -> RunEnd {
     RunEnd::Finished {
         result,
         landed: None,
+        published: None,
     }
 }
 
@@ -173,7 +174,13 @@ impl Ctx<'_> {
         }
     }
 
-    async fn copy(&self, src: &Side, dst: &Side, stop: &CancellationToken) -> Result<(), JobError> {
+    /// Copies into the `.part`; returns the source's (size, mtime) the copy was made from.
+    async fn copy(
+        &self,
+        src: &Side,
+        dst: &Side,
+        stop: &CancellationToken,
+    ) -> Result<(u64, i64), JobError> {
         let job = self.job;
         let snapshot = (job.src_size, job.src_mtime);
         let current = io::stat(src, &job.src.path).await?;
@@ -220,7 +227,7 @@ impl Ctx<'_> {
         if stop.is_cancelled() {
             return Err(JobError::Stopped);
         }
-        Ok(())
+        Ok(current)
     }
 
     /// Connects and copies. `Ok` hands back the destination, ready to publish.
@@ -229,14 +236,62 @@ impl Ctx<'_> {
         start_src: Option<Held<Arc<SftpSession>>>,
         start_dest: Option<Held<Arc<SftpSession>>>,
         stop: &CancellationToken,
-    ) -> Result<Side, RunEnd> {
+    ) -> Result<(Side, i64), RunEnd> {
         let src = self.side(End::Src, start_src).await?;
         let dst = self.side(End::Dest, start_dest).await?;
         match self.copy(&src, &dst, stop).await {
-            Ok(()) => Ok(dst),
+            Ok((_, mtime)) => Ok((dst, mtime)),
             Err(e) => Err(finished(Err(e))),
         }
     }
+}
+
+/// Moves the finished `.part` into place, first checking that the destination is still what the
+/// job expects (if it says). "Must not exist" is enforced atomically (except on local
+/// filesystems without hard links, see `publish_local_new`); an expected version is
+/// best effort over SFTP: a save landing between the check and `finish`'s remove-then-rename
+/// can still be replaced (no conditional rename in russh-sftp 2.4).
+/// `mtime` is the source's time when it was copied (it may have changed since queueing).
+/// Returns where it landed and the (size, mtime) it published, read from the `.part` once
+/// its time is set (a rename keeps both), so it is this transfer's version, not a later one.
+async fn publish(
+    dst: &Side,
+    job: &TransferJob,
+    mtime: i64,
+) -> Result<(String, Option<(u64, i64)>), JobError> {
+    // The time is set first, so the destination check is the last step before the rename.
+    if mtime > 0 {
+        io::set_mtime(dst, &job.part_path, mtime).await;
+    }
+    let published = io::stat(dst, &job.part_path).await.ok();
+    // "Must not exist" is published without replacing: a file that appears at the last moment
+    // is never removed, and the copy that went elsewhere is taken back.
+    if job.expect_dest == Some(ABSENT) {
+        let landed = match io::finish(dst, &job.part_path, &job.dest.path, false, 0).await {
+            Ok(landed) => landed,
+            // SFTP rename refuses a target created after `finish` looked: that is the conflict,
+            // anything else stays its own error.
+            Err(e) => {
+                return Err(match io::stat_if_exists(dst, &job.dest.path).await {
+                    Ok(Some(_)) => JobError::Operation(DEST_CHANGED.into()),
+                    _ => e,
+                })
+            }
+        };
+        if landed != job.dest.path {
+            if let Err(e) = io::discard_part(dst, &landed).await {
+                log::warn!("transfers: couldn't remove the stray copy at {landed}: {e:?}");
+            }
+            return Err(JobError::Operation(DEST_CHANGED.into()));
+        }
+        return Ok((landed, published));
+    }
+    if job.expect_dest.is_some() {
+        let actual = io::stat_if_exists(dst, &job.dest.path).await?;
+        check_expected_dest(job.expect_dest, actual)?;
+    }
+    let landed = io::finish(dst, &job.part_path, &job.dest.path, job.replace, 0).await?;
+    Ok((landed, published))
 }
 
 /// Runs one transfer and reports how it ended. Publishing is not raced against Pause/Cancel:
@@ -263,10 +318,13 @@ pub async fn run(
     };
     let stopped = Err(finished(Err(JobError::Stopped)));
     let end = match until_stopped(&token, ctx.prepare(src, dest, &token), stopped).await {
-        Ok(dst) => match io::finish(&dst, &job.part_path, &job.dest.path, job.replace).await {
-            Ok(landed) => RunEnd::Finished {
+        Ok((dst, mtime)) => match publish(&dst, &job, mtime).await {
+            // `published` tells a module that queued this (an edit) the server state it
+            // produced, even when the server kept its own mtime.
+            Ok((landed, published)) => RunEnd::Finished {
                 result: Ok(()),
                 landed: (landed != job.dest.path).then_some(landed),
+                published,
             },
             Err(e) => finished(Err(e)),
         },
@@ -299,6 +357,52 @@ pub async fn remove_part(app: tauri::AppHandle, job: TransferJob) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn local_publish_job(dir: &std::path::Path) -> TransferJob {
+        let mut job = crate::transfers::queue::test_job("p", JobStatus::Queued);
+        job.dest.host = None;
+        job.dest.path = dir.join("a.txt").display().to_string();
+        job.part_path = dir.join("a.txt.part").display().to_string();
+        job.replace = true;
+        job
+    }
+
+    #[tokio::test]
+    async fn absent_never_replaces_a_file_that_appeared() {
+        let dir = std::env::temp_dir().join(format!("shetu-pub-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut job = local_publish_job(&dir);
+        job.expect_dest = Some(crate::transfers::model::ABSENT);
+        std::fs::write(&job.part_path, b"mine").unwrap();
+        std::fs::write(&job.dest.path, b"theirs").unwrap();
+        let r = publish(&Side::Local, &job, 0).await;
+        assert_eq!(
+            r.map(|_| ()),
+            Err(JobError::Operation(
+                crate::transfers::model::DEST_CHANGED.into()
+            ))
+        );
+        assert_eq!(std::fs::read(&job.dest.path).unwrap(), b"theirs");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|d| d.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["a.txt".to_string()], "no stray copy, no part");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn publish_reports_the_version_it_wrote() {
+        let dir = std::env::temp_dir().join(format!("shetu-pub-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = local_publish_job(&dir);
+        std::fs::write(&job.part_path, b"hello").unwrap();
+        let (landed, published) = publish(&Side::Local, &job, 1_600_000_000).await.unwrap();
+        assert_eq!(landed, job.dest.path);
+        assert_eq!(published, Some((5, 1_600_000_000)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn server_copy_offset_is_always_zero() {

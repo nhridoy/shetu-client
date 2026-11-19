@@ -980,7 +980,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // ignore logout errors
       }
     }
-    await teardownSession();
+    const failures = await teardownSession();
+    if (failures.length)
+      toast.warning(
+        `Signed out, but some local data couldn't be cleared: ${failures.join("; ")}`,
+      );
   },
 
   unlock: async (password: string) => {

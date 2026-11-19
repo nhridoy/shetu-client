@@ -9,6 +9,7 @@ import {
 } from "@dnd-kit/react";
 
 import { useEffect, useState } from "react";
+import CompareView from "@/components/sftp/compare/CompareView";
 import FileTransfer from "@/components/sftp/transfer/FileTransfer";
 import SftpPaneTree from "@/components/sftp/views/SftpPaneTree";
 import { type FileDragState, useSftpStore } from "@/stores/sftp/sftpStore";
@@ -54,6 +55,8 @@ type DropSide = "left" | "right" | "top" | "bottom";
 export default function SftpLayout() {
   const root = useSftpStore((s) => s.root);
   const activePaneId = useSftpStore((s) => s.activePaneId);
+  const compare = useSftpStore((s) => s.compare);
+  const closeCompare = useSftpStore((s) => s.closeCompare);
   const movePane = useSftpStore((s) => s.movePane);
   const setFileDragState = useSftpStore((s) => s.setFileDragState);
   const setPendingFileDrop = useSftpStore((s) => s.setPendingFileDrop);
@@ -202,6 +205,13 @@ export default function SftpLayout() {
             node={root}
             activePaneId={activePaneId}
             dropTarget={dropTarget}
+          />
+        )}
+        {compare && (
+          <CompareView
+            leftPaneId={compare.leftPaneId}
+            rightPaneId={compare.rightPaneId}
+            onClose={closeCompare}
           />
         )}
       </div>

@@ -10,6 +10,8 @@ import {
   XIcon,
 } from "@phosphor-icons/react";
 import { type ReactNode, useEffect, useState } from "react";
+import EditConflictDialog from "@/components/sftp/edits/EditConflictDialog";
+import EditingList from "@/components/sftp/edits/EditingList";
 import { Button } from "@/components/ui/Button";
 import {
   cancelTransfer,
@@ -139,134 +141,145 @@ export default function FileTransfer() {
   ).length;
   const anyPaused = transfers.some((t) => t.status === "paused");
 
-  if (transfers.length === 0) return null;
+  // The editing list and the conflict dialog show even with no transfers.
+  if (transfers.length === 0)
+    return (
+      <>
+        <EditingList />
+        <EditConflictDialog />
+      </>
+    );
 
   return (
-    <div className="border-t border-dark-700 bg-dark-900 max-h-48 overflow-hidden flex flex-col">
-      {/* Header */}
-      <div className="px-3 py-1.5 border-b border-dark-700 flex items-center justify-between text-xs shrink-0">
-        <div className="flex items-center gap-2 text-dark-300">
-          <LightningIcon
-            className="w-3.5 h-3.5 text-primary-400"
-            weight="bold"
-          />
-          <span>Transfers</span>
-          {activeCount > 0 && (
-            <span className="text-primary-400">{activeCount} active</span>
-          )}
+    <>
+      <EditingList />
+      <EditConflictDialog />
+      <div className="border-t border-dark-700 bg-dark-900 max-h-48 overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="px-3 py-1.5 border-b border-dark-700 flex items-center justify-between text-xs shrink-0">
+          <div className="flex items-center gap-2 text-dark-300">
+            <LightningIcon
+              className="w-3.5 h-3.5 text-primary-400"
+              weight="bold"
+            />
+            <span>Transfers</span>
+            {activeCount > 0 && (
+              <span className="text-primary-400">{activeCount} active</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            {anyPaused && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void resumeAllTransfers()}
+              >
+                Resume all
+              </Button>
+            )}
+            {finishedCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void clearCompleted()}
+              >
+                Clear done ({finishedCount})
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          {anyPaused && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void resumeAllTransfers()}
-            >
-              Resume all
-            </Button>
-          )}
-          {finishedCount > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void clearCompleted()}
-            >
-              Clear done ({finishedCount})
-            </Button>
-          )}
-        </div>
-      </div>
 
-      {/* Transfer list */}
-      <div className="overflow-y-auto flex-1">
-        {transfers.map((t) => {
-          const progress = t.srcSize > 0 ? t.transferred / t.srcSize : 0;
-          const unfinished = t.status !== "done" && t.status !== "cancelled";
-          return (
-            <div
-              key={t.id}
-              className="px-3 py-1.5 border-b border-dark-800 last:border-0 flex items-center gap-2 text-xs"
-            >
-              <KindIcon job={t} />
+        {/* Transfer list */}
+        <div className="overflow-y-auto flex-1">
+          {transfers.map((t) => {
+            const progress = t.srcSize > 0 ? t.transferred / t.srcSize : 0;
+            const unfinished = t.status !== "done" && t.status !== "cancelled";
+            return (
+              <div
+                key={t.id}
+                className="px-3 py-1.5 border-b border-dark-800 last:border-0 flex items-center gap-2 text-xs"
+              >
+                <KindIcon job={t} />
 
-              <span className="text-white truncate flex-1">
-                {baseName(t.dest.path)}
-              </span>
-              {t.status === "active" && t.srcSize > 0 && (
-                <span className="text-dark-500 text-[10px] shrink-0">
-                  {formatBytes(t.transferred)} / {formatBytes(t.srcSize)}
+                <span className="text-white truncate flex-1">
+                  {baseName(t.dest.path)}
                 </span>
-              )}
-
-              {t.status === "active" ? (
-                <div className="flex items-center gap-2">
-                  <div className="w-16 bg-dark-700 rounded-full h-1">
-                    <div
-                      className="bg-primary-500 h-1 rounded-full transition-all"
-                      style={{ width: `${Math.round(progress * 100)}%` }}
-                    />
-                  </div>
-                  <span className="text-dark-400 w-8 text-right">
-                    {Math.round(progress * 100)}%
+                {t.status === "active" && t.srcSize > 0 && (
+                  <span className="text-dark-500 text-[10px] shrink-0">
+                    {formatBytes(t.transferred)} / {formatBytes(t.srcSize)}
                   </span>
-                  {t.speed ? (
-                    <span className="text-dark-500 w-20 text-right">
-                      {formatSpeed(t.speed)}
-                    </span>
-                  ) : null}
-                </div>
-              ) : t.status === "done" ? (
-                <span className="flex items-center gap-1 text-green-400">
-                  <CheckIcon className="w-3.5 h-3.5 shrink-0" weight="bold" />
-                  Done
-                </span>
-              ) : (
-                <span
-                  className={`truncate max-w-48 ${t.status === "failed" ? "text-red-400" : "text-dark-400"}`}
-                  title={t.error ?? undefined}
-                >
-                  {statusLabel(t, now)}
-                </span>
-              )}
+                )}
 
-              {(t.status === "queued" ||
-                t.status === "active" ||
-                t.status === "waiting") && (
-                <RowButton
-                  label="Pause"
-                  onClick={() => void pauseTransfer(t.id)}
-                >
-                  <PauseIcon className="w-3 h-3" weight="bold" />
-                </RowButton>
-              )}
-              {t.status === "paused" && (
-                <RowButton
-                  label="Resume"
-                  onClick={() => void resumeTransfer(t.id)}
-                >
-                  <PlayIcon className="w-3 h-3" weight="bold" />
-                </RowButton>
-              )}
-              {t.status === "failed" && (
-                <RowButton
-                  label="Retry"
-                  onClick={() => void retryTransfer(t.id)}
-                >
-                  <ArrowClockwiseIcon className="w-3 h-3" weight="bold" />
-                </RowButton>
-              )}
-              {unfinished && (
-                <RowButton
-                  label="Cancel"
-                  onClick={() => void cancelTransfer(t.id)}
-                >
-                  <XIcon className="w-3 h-3 text-red-400" weight="bold" />
-                </RowButton>
-              )}
-            </div>
-          );
-        })}
+                {t.status === "active" ? (
+                  <div className="flex items-center gap-2">
+                    <div className="w-16 bg-dark-700 rounded-full h-1">
+                      <div
+                        className="bg-primary-500 h-1 rounded-full transition-all"
+                        style={{ width: `${Math.round(progress * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-dark-400 w-8 text-right">
+                      {Math.round(progress * 100)}%
+                    </span>
+                    {t.speed ? (
+                      <span className="text-dark-500 w-20 text-right">
+                        {formatSpeed(t.speed)}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : t.status === "done" ? (
+                  <span className="flex items-center gap-1 text-green-400">
+                    <CheckIcon className="w-3.5 h-3.5 shrink-0" weight="bold" />
+                    Done
+                  </span>
+                ) : (
+                  <span
+                    className={`truncate max-w-48 ${t.status === "failed" ? "text-red-400" : "text-dark-400"}`}
+                    title={t.error ?? undefined}
+                  >
+                    {statusLabel(t, now)}
+                  </span>
+                )}
+
+                {(t.status === "queued" ||
+                  t.status === "active" ||
+                  t.status === "waiting") && (
+                  <RowButton
+                    label="Pause"
+                    onClick={() => void pauseTransfer(t.id)}
+                  >
+                    <PauseIcon className="w-3 h-3" weight="bold" />
+                  </RowButton>
+                )}
+                {t.status === "paused" && (
+                  <RowButton
+                    label="Resume"
+                    onClick={() => void resumeTransfer(t.id)}
+                  >
+                    <PlayIcon className="w-3 h-3" weight="bold" />
+                  </RowButton>
+                )}
+                {t.status === "failed" && (
+                  <RowButton
+                    label="Retry"
+                    onClick={() => void retryTransfer(t.id)}
+                  >
+                    <ArrowClockwiseIcon className="w-3 h-3" weight="bold" />
+                  </RowButton>
+                )}
+                {unfinished && (
+                  <RowButton
+                    label="Cancel"
+                    onClick={() => void cancelTransfer(t.id)}
+                  >
+                    <XIcon className="w-3 h-3 text-red-400" weight="bold" />
+                  </RowButton>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

@@ -73,6 +73,13 @@ pub struct TransferJob {
     pub created_at: i64,
     #[serde(default)]
     pub speed: f64,
+    /// The destination's (size, mtime) that must still hold when publishing; a mismatch fails
+    /// the job with `DEST_CHANGED` instead of overwriting.
+    #[serde(default)]
+    pub expect_dest: Option<(u64, i64)>,
+    /// The destination's (size, mtime) right after this job published it.
+    #[serde(default)]
+    pub published: Option<(u64, i64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +94,23 @@ pub enum JobError {
 pub enum ErrorClass {
     Connection,
     Operation,
+}
+
+pub const DEST_CHANGED: &str = "conflict: the server copy changed";
+
+/// An expected destination that must not exist (the server file was gone when the user
+/// chose to write it). No real stat has a negative mtime.
+pub const ABSENT: (u64, i64) = (0, -1);
+
+pub fn check_expected_dest(
+    expect: Option<(u64, i64)>,
+    actual: Option<(u64, i64)>,
+) -> Result<(), JobError> {
+    match expect {
+        Some(ABSENT) if actual.is_none() => Ok(()),
+        Some(expected) if actual != Some(expected) => Err(JobError::Operation(DEST_CHANGED.into())),
+        _ => Ok(()),
+    }
 }
 
 pub fn part_path(dest: &str, id: &str) -> String {
@@ -161,6 +185,29 @@ mod tests {
     use super::*;
     use russh_sftp::client::error::Error as SftpError;
     use russh_sftp::protocol::{Status, StatusCode};
+
+    #[test]
+    fn expected_dest_rules() {
+        assert!(check_expected_dest(None, None).is_ok());
+        assert!(check_expected_dest(Some((10, 5)), Some((10, 5))).is_ok());
+        assert_eq!(
+            check_expected_dest(Some((10, 5)), Some((11, 5))),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+        assert_eq!(
+            check_expected_dest(Some((10, 5)), None),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+    }
+
+    #[test]
+    fn absent_means_the_destination_must_not_exist() {
+        assert!(check_expected_dest(Some(ABSENT), None).is_ok());
+        assert_eq!(
+            check_expected_dest(Some(ABSENT), Some((0, 0))),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+    }
 
     #[test]
     fn part_path_uses_first_8_chars_of_id() {

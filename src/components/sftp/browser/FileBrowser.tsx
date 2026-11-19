@@ -13,6 +13,7 @@ import PasteConflictDialog from "@/components/sftp/browser/PasteConflictDialog";
 import PermissionsDialog from "@/components/sftp/browser/PermissionsDialog";
 import FileBrowserStatusBar from "@/components/sftp/browser/shared/FileBrowserStatusBar";
 import FileBrowserToolbar from "@/components/sftp/browser/shared/FileBrowserToolbar";
+import CompareButton from "@/components/sftp/compare/CompareButton";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import PromptDialog from "@/components/ui/PromptDialog";
@@ -567,9 +568,12 @@ export default function FileBrowser({
         canNavigateBack={historyIndex > 0}
         canNavigateForward={historyIndex < history.length - 1}
         beforeActions={
-          <Button size="sm" onClick={() => ops.handleUpload()}>
-            Upload
-          </Button>
+          <>
+            <CompareButton paneId={paneId} />
+            <Button size="sm" onClick={() => ops.handleUpload()}>
+              Upload
+            </Button>
+          </>
         }
         onDisconnect={ops.disconnect}
       />

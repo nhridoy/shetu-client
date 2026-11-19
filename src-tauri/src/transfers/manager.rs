@@ -60,6 +60,8 @@ pub fn build_job(
         error: None,
         created_at: now,
         speed: 0.0,
+        expect_dest: None,
+        published: None,
     }
 }
 
@@ -116,6 +118,33 @@ fn now_ms() -> i64 {
 
 type Prefer = Vec<(String, actor::PreferPair)>;
 
+/// A job that reached Done, Failed or Cancelled, for other modules that queued it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobFinished {
+    pub id: String,
+    pub status: JobStatus,
+    pub error: Option<String>,
+    /// What the destination looked like right after publishing (Done jobs).
+    pub published: Option<(u64, i64)>,
+}
+
+pub fn finished_of(jobs: &[TransferJob]) -> Vec<JobFinished> {
+    jobs.iter()
+        .filter(|j| {
+            matches!(
+                j.status,
+                JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+            )
+        })
+        .map(|j| JobFinished {
+            id: j.id.clone(),
+            status: j.status,
+            error: j.error.clone(),
+            published: j.published,
+        })
+        .collect()
+}
+
 /// Everything the loop handles, one at a time.
 pub enum Msg {
     Enqueue {
@@ -133,6 +162,8 @@ pub enum Msg {
     Cancel(String),
     ClearFinished(oneshot::Sender<Result<(), String>>),
     Wipe(oneshot::Sender<()>),
+    /// Another module wants to hear when jobs finish.
+    Subscribe(mpsc::UnboundedSender<JobFinished>),
     Lookup {
         id: String,
         run: u64,
@@ -221,6 +252,33 @@ impl TransferManager {
             .map_err(|_| "The transfer queue stopped".to_string())
     }
 
+    /// Queues jobs built elsewhere in Rust (e.g. edit uploads). Refused if a wipe happens first.
+    pub async fn enqueue_built(&self, jobs: Vec<TransferJob>) -> Result<Vec<TransferJob>, String> {
+        let epoch = self.ask(Msg::Epoch).await?;
+        self.ask(|reply| Msg::Enqueue {
+            jobs,
+            prefer: Vec::new(),
+            epoch,
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn list(&self) -> Result<Vec<TransferJob>, String> {
+        self.ask(Msg::List).await
+    }
+
+    pub fn cancel(&self, id: String) {
+        self.send(Msg::Cancel(id));
+    }
+
+    /// A feed of jobs reaching Done, Failed or Cancelled.
+    pub fn subscribe_finished(&self) -> mpsc::UnboundedReceiver<JobFinished> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.send(Msg::Subscribe(tx));
+        rx
+    }
+
     /// Sign-out / device wipe: stop everything and forget the queue (`.part` files stay).
     pub async fn wipe(&self) {
         let _ = self.ask(Msg::Wipe).await;
@@ -238,6 +296,7 @@ async fn run_loop(
         taken: Vec::new(),
     };
     let locks = Arc::new(ConnectLocks::default());
+    let mut subscribers: Vec<mpsc::UnboundedSender<JobFinished>> = Vec::new();
     loop {
         // Tick once a second while there is anything to watch; otherwise just wait.
         let msg = if state.busy() {
@@ -252,20 +311,30 @@ async fn run_loop(
         let mut effects = match msg {
             // Answered only once their effects are applied: the caller then sees the table
             // already cleared (wipe) or the delete's outcome (clear).
+            Some(Msg::Subscribe(sub)) => {
+                subscribers.push(sub);
+                Vec::new()
+            }
             Some(Msg::Wipe(reply)) => {
-                let _ = apply(&app, &tx, &locks, state.wipe());
+                let _ = apply(&app, &tx, &locks, &mut subscribers, state.wipe());
                 let _ = reply.send(());
                 Vec::new()
             }
             Some(Msg::ClearFinished(reply)) => {
-                let _ = reply.send(apply(&app, &tx, &locks, state.clear_finished()));
+                let _ = reply.send(apply(
+                    &app,
+                    &tx,
+                    &locks,
+                    &mut subscribers,
+                    state.clear_finished(),
+                ));
                 Vec::new()
             }
             Some(msg) => handle(&mut state, msg, &mut env),
             None => Vec::new(),
         };
         effects.extend(state.tick(now_ms(), Instant::now(), &mut env));
-        let _ = apply(&app, &tx, &locks, effects);
+        let _ = apply(&app, &tx, &locks, &mut subscribers, effects);
         for session in env.taken.drain(..) {
             tauri::async_runtime::spawn(crate::sftp::close_session(session));
         }
@@ -302,7 +371,7 @@ fn handle(state: &mut State, msg: Msg, env: &mut AppEnv) -> Vec<Effect<Arc<SftpS
         Msg::Retry(id) => state.retry(&id),
         Msg::Cancel(id) => state.cancel(&id),
         // Handled in the loop: they answer after their effects are applied.
-        Msg::ClearFinished(_) | Msg::Wipe(_) => Vec::new(),
+        Msg::ClearFinished(_) | Msg::Wipe(_) | Msg::Subscribe(_) => Vec::new(),
         Msg::Lookup {
             id,
             run,
@@ -331,6 +400,7 @@ fn apply(
     app: &tauri::AppHandle,
     tx: &mpsc::UnboundedSender<Msg>,
     locks: &Arc<ConnectLocks>,
+    subscribers: &mut Vec<mpsc::UnboundedSender<JobFinished>>,
     effects: Vec<Effect<Arc<SftpSession>>>,
 ) -> Result<(), String> {
     let db = app.state::<crate::db::LocalDb>();
@@ -344,6 +414,11 @@ fn apply(
                     }
                 }
                 let _ = app.emit(CHANGED_EVENT, &jobs);
+                let finished = finished_of(&jobs);
+                if !finished.is_empty() {
+                    // A closed receiver means its module went away: forget it.
+                    subscribers.retain(|sub| finished.iter().all(|f| sub.send(f.clone()).is_ok()));
+                }
             }
             Effect::Progress { job, save } => {
                 if save {
@@ -380,6 +455,7 @@ fn apply(
                         let end = RunEnd::Finished {
                             result,
                             landed: None,
+                            published: None,
                         };
                         let _ = tx.send(Msg::Ended { id, run, end });
                     }
@@ -501,6 +577,47 @@ mod tests {
             dest_session_id: None,
             replace: true,
         }
+    }
+
+    #[test]
+    fn finished_of_reports_terminal_jobs_only() {
+        use crate::transfers::queue::test_job;
+        let mut failed = test_job("f", JobStatus::Failed);
+        failed.error = Some("x".into());
+        let jobs = vec![
+            test_job("q", JobStatus::Queued),
+            test_job("a", JobStatus::Active),
+            {
+                let mut d = test_job("d", JobStatus::Done);
+                d.published = Some((1, 2));
+                d
+            },
+            failed,
+            test_job("c", JobStatus::Cancelled),
+        ];
+        assert_eq!(
+            finished_of(&jobs),
+            vec![
+                JobFinished {
+                    id: "d".into(),
+                    status: JobStatus::Done,
+                    error: None,
+                    published: Some((1, 2))
+                },
+                JobFinished {
+                    id: "f".into(),
+                    status: JobStatus::Failed,
+                    error: Some("x".into()),
+                    published: None
+                },
+                JobFinished {
+                    id: "c".into(),
+                    status: JobStatus::Cancelled,
+                    error: None,
+                    published: None
+                },
+            ]
+        );
     }
 
     #[test]
