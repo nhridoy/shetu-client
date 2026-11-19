@@ -1214,19 +1214,40 @@ fn device_id_path(data_local_dir: &std::path::Path) -> std::path::PathBuf {
 
 fn get_or_create_device_id() -> String {
     let dirs = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let path = device_id_path(&dirs);
-    if let Ok(id) = std::fs::read_to_string(&path) {
-        let id = id.trim().to_string();
-        if !id.is_empty() {
-            return id;
-        }
+    device_id_at(&device_id_path(&dirs))
+}
+
+/// The saved device ID, created on first use. Created exclusively: two launches racing on a
+/// fresh install (one about to exit as the second copy) end up with the same ID.
+fn device_id_at(path: &std::path::Path) -> String {
+    let saved = || {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+    };
+    if let Some(id) = saved() {
+        return id;
     }
-    let id = uuid::Uuid::new_v4().to_string();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, &id);
-    id
+    let id = uuid::Uuid::new_v4().to_string();
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path);
+    match created {
+        Ok(mut file) => {
+            let _ = std::io::Write::write_all(&mut file, id.as_bytes());
+            id
+        }
+        // Another launch created it (use its ID), or it is empty: replace it.
+        Err(_) => saved().unwrap_or_else(|| {
+            let _ = std::fs::write(path, &id);
+            id
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -1268,7 +1289,7 @@ mod lock_session_tests {
 
 #[cfg(test)]
 mod shetu_identity_tests {
-    use super::device_id_path;
+    use super::{device_id_at, device_id_path};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1277,6 +1298,22 @@ mod shetu_identity_tests {
         assert_eq!(super::both(Err("a".into()), Ok(())), Err("a".into()));
         assert_eq!(super::both(Ok(()), Err("b".into())), Err("b".into()));
         assert_eq!(super::both(Err("a".into()), Err("b".into())), Err("a; b".into()));
+    }
+
+    #[test]
+    fn device_id_is_created_once_and_kept() {
+        let dir = std::env::temp_dir().join(format!("shetu-dev-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("shetu").join("device_id");
+        let first = device_id_at(&path);
+        assert!(!first.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        assert_eq!(device_id_at(&path), first, "later launches read it back");
+        // An empty file (e.g. a crash mid-write) gets a fresh ID.
+        std::fs::write(&path, "").unwrap();
+        let fresh = device_id_at(&path);
+        assert!(!fresh.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fresh);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1749,20 +1786,20 @@ fn wrap_dek(state: tauri::State<'_, CryptoState>) -> Result<String, String> {
     crypto::wrap_dek(&session)
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// A second launch shows the running copy instead: its main window, or the splash screen
-/// while the main window is still loading.
+/// A second launch shows the running copy instead: the splash screen while it is still
+/// loading (it closes on `main-ready`), otherwise the main window, even if hidden or minimized.
 fn focus_running_window(app: &tauri::AppHandle) {
     let window = app
-        .get_webview_window("main")
-        .filter(|w| w.is_visible().unwrap_or(false))
-        .or_else(|| app.get_webview_window("splashscreen"));
+        .get_webview_window("splashscreen")
+        .or_else(|| app.get_webview_window("main"));
     if let Some(window) = window {
         let _ = window.unminimize();
+        let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::install_panic_hook();
     tauri::Builder::default()
