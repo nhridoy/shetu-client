@@ -88,3 +88,4 @@ tokio = { version = "1.53.1", features = ["test-util"] }
 # Test-only: hand-build .ppk fixtures (no puttygen available).
 aes = "0.9"
 cbc = "0.2"
+opendal = { version = "0.59", default-features = false, features = ["services-fs", "executors-tokio"] }

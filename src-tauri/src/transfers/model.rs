@@ -16,6 +16,14 @@ pub struct HostRef {
     pub username: String,
 }
 
+/// A saved S3 account and the bucket a transfer end is in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageRef {
+    pub account_id: String,
+    pub bucket: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {

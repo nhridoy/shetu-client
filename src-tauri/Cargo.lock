@@ -3966,6 +3966,7 @@ dependencies = [
  "opendal-http-transport-reqwest",
  "opendal-layer-retry",
  "opendal-layer-timeout",
+ "opendal-service-fs",
  "opendal-service-s3",
 ]
 
@@ -4028,6 +4029,20 @@ checksum = "afffa0cf8a6690b3b44cc510816ba675638eb236699a7d449e44ac3344bafd36"
 dependencies = [
  "opendal-core",
  "tokio",
+]
+
+[[package]]
+name = "opendal-service-fs"
+version = "0.59.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70768b8f5af6996a494e784a1dc2a76b5cf890c422aff31ad094319bde98feb7"
+dependencies = [
+ "bytes",
+ "log",
+ "opendal-core",
+ "serde",
+ "tokio",
+ "xattr",
 ]
 
 [[package]]

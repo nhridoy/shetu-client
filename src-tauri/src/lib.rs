@@ -385,8 +385,10 @@ async fn wipe_local_data(
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     transfers: tauri::State<'_, transfers::manager::TransferManager>,
     edits: tauri::State<'_, edits::manager::EditManager>,
+    storage: tauri::State<'_, storage::sessions::StorageSessions>,
 ) -> Result<(), String> {
     forwarding.stop_all();
+    storage.clear();
     // Edits first: once their temp copies are gone, no edit upload can start from them. A
     // failure is reported after the rest of the wipe has still run.
     let edits_wiped = edits.wipe().await;
@@ -1870,6 +1872,7 @@ pub fn run() {
             api_url: Mutex::new(None),
         })
         .manage(live::LiveState::default())
+        .manage(storage::sessions::StorageSessions::default())
         .manage(CancelTokens {
             tokens: Mutex::new(HashMap::new()),
         })
@@ -1901,6 +1904,16 @@ pub fn run() {
             storage::accounts::storage_account_view,
             storage::accounts::storage_account_save,
             storage::accounts::storage_test,
+            storage::sessions::storage_connect,
+            storage::sessions::storage_disconnect,
+            storage::sessions::storage_list,
+            storage::sessions::storage_list_recursive,
+            storage::sessions::storage_stat,
+            storage::sessions::storage_mkdir,
+            storage::sessions::storage_delete,
+            storage::sessions::storage_rename,
+            storage::sessions::storage_read,
+            storage::sessions::storage_write,
             update::update_installation_kind,
             device_info,
             get_device_id,

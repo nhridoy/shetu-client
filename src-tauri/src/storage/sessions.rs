@@ -1,0 +1,248 @@
+//! Open bucket panes (pane id → operator) and the commands a bucket pane uses.
+
+use super::accounts::{load_account, operator_for};
+use super::ops::{self, StorageEntry};
+use crate::db::LocalDb;
+use crate::transfers::model::StorageRef;
+use crate::CryptoState;
+use opendal::Operator;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri::Manager;
+
+/// Largest object `storage_read` opens in the app.
+const READ_MAX: u64 = 10 * 1024 * 1024;
+
+#[derive(Default)]
+pub struct StorageSessions {
+    open: Mutex<HashMap<String, (StorageRef, Operator)>>,
+}
+
+/// An operator for a saved account's bucket, built from the encrypted store.
+pub fn operator_from_store(
+    db: &LocalDb,
+    crypto: &CryptoState,
+    r: &StorageRef,
+) -> Result<Operator, String> {
+    let mut account = load_account(db, crypto, &r.account_id)?;
+    account.bucket = r.bucket.clone();
+    operator_for(&account)
+}
+
+impl StorageSessions {
+    pub fn get(&self, sid: &str) -> Option<(StorageRef, Operator)> {
+        self.open.lock().ok()?.get(sid).cloned()
+    }
+
+    pub fn insert(&self, sid: String, r: StorageRef, op: Operator) {
+        if let Ok(mut open) = self.open.lock() {
+            open.insert(sid, (r, op));
+        }
+    }
+
+    pub fn remove(&self, sid: &str) {
+        if let Ok(mut open) = self.open.lock() {
+            open.remove(sid);
+        }
+    }
+
+    /// Sign-out: every open bucket is forgotten.
+    pub fn clear(&self) {
+        if let Ok(mut open) = self.open.lock() {
+            open.clear();
+        }
+    }
+
+    /// An operator for a transfer end: an open pane's on that bucket, else a new one.
+    pub fn operator_for_ref(
+        &self,
+        app: &tauri::AppHandle,
+        r: &StorageRef,
+    ) -> Result<Operator, String> {
+        let open = self.open.lock().ok().and_then(|o| {
+            o.values()
+                .find(|(seen, _)| seen == r)
+                .map(|(_, op)| op.clone())
+        });
+        match open {
+            Some(op) => Ok(op),
+            None => operator_from_store(&app.state::<LocalDb>(), &app.state::<CryptoState>(), r),
+        }
+    }
+
+    fn op(&self, sid: &str) -> Result<Operator, String> {
+        self.get(sid)
+            .map(|(_, op)| op)
+            .ok_or_else(|| "Bucket not open — reconnect the pane".to_string())
+    }
+}
+
+type Sessions<'a> = tauri::State<'a, StorageSessions>;
+
+/// Opens a pane on an account's bucket after checking it can be listed. Returns the bucket.
+#[tauri::command]
+pub async fn storage_connect(
+    session_id: String,
+    account_id: String,
+    db: tauri::State<'_, LocalDb>,
+    crypto: tauri::State<'_, CryptoState>,
+    sessions: Sessions<'_>,
+) -> Result<String, String> {
+    let account = load_account(&db, &crypto, &account_id)?;
+    let op = operator_for(&account)?;
+    op.list_with("/")
+        .limit(1)
+        .await
+        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
+    let bucket = account.bucket.clone();
+    sessions.insert(
+        session_id,
+        StorageRef {
+            account_id,
+            bucket: account.bucket,
+        },
+        op,
+    );
+    Ok(bucket)
+}
+
+#[tauri::command]
+pub fn storage_disconnect(session_id: String, sessions: Sessions<'_>) {
+    sessions.remove(&session_id);
+}
+
+#[tauri::command]
+pub async fn storage_list(
+    session_id: String,
+    path: String,
+    sessions: Sessions<'_>,
+) -> Result<Vec<StorageEntry>, String> {
+    ops::list_dir(&sessions.op(&session_id)?, &path).await
+}
+
+#[tauri::command]
+pub async fn storage_list_recursive(
+    session_id: String,
+    path: String,
+    cap: usize,
+    sessions: Sessions<'_>,
+) -> Result<Vec<StorageEntry>, String> {
+    ops::list_tree(&sessions.op(&session_id)?, &path, cap).await
+}
+
+#[tauri::command]
+pub async fn storage_stat(
+    session_id: String,
+    path: String,
+    sessions: Sessions<'_>,
+) -> Result<Option<(u64, i64)>, String> {
+    ops::stat(&sessions.op(&session_id)?, &path).await
+}
+
+#[tauri::command]
+pub async fn storage_mkdir(
+    session_id: String,
+    path: String,
+    sessions: Sessions<'_>,
+) -> Result<(), String> {
+    ops::mkdir(&sessions.op(&session_id)?, &path).await
+}
+
+#[tauri::command]
+pub async fn storage_delete(
+    session_id: String,
+    path: String,
+    is_dir: bool,
+    sessions: Sessions<'_>,
+) -> Result<(), String> {
+    ops::delete(&sessions.op(&session_id)?, &path, is_dir).await
+}
+
+#[tauri::command]
+pub async fn storage_rename(
+    session_id: String,
+    from: String,
+    to: String,
+    is_dir: bool,
+    sessions: Sessions<'_>,
+) -> Result<(), String> {
+    ops::rename_tree(&sessions.op(&session_id)?, &from, &to, is_dir).await
+}
+
+#[tauri::command]
+pub async fn storage_read(
+    session_id: String,
+    path: String,
+    sessions: Sessions<'_>,
+) -> Result<Vec<u8>, String> {
+    ops::read_small(&sessions.op(&session_id)?, &path, READ_MAX).await
+}
+
+#[tauri::command]
+pub async fn storage_write(
+    session_id: String,
+    path: String,
+    data: Vec<u8>,
+    sessions: Sessions<'_>,
+) -> Result<(), String> {
+    ops::write_small(&sessions.op(&session_id)?, &path, data).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{crypto, db};
+    use serde_json::json;
+
+    #[test]
+    fn operator_from_store_uses_the_saved_account_and_job_bucket() {
+        let mut keys = crypto::KeySession::new();
+        crypto::generate_account_material(&mut keys).unwrap();
+        let db = db::open(":memory:").unwrap();
+        let crypto = CryptoState {
+            session: Mutex::new(keys),
+        };
+        let missing = StorageRef {
+            account_id: "gone".into(),
+            bucket: "b".into(),
+        };
+        assert_eq!(
+            operator_from_store(&db, &crypto, &missing).unwrap_err(),
+            "storage account not found"
+        );
+        let row = super::super::accounts::save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "Backups",
+            &json!({"provider": "aws", "region": "us-east-1", "bucket": "first",
+                    "accessKeyId": "AKIA", "secretAccessKey": "secret-value-xyz"}),
+            "6f1c1b2e-6b7a-4c1e-9a65-1f2a3b4c5d6e",
+        )
+        .unwrap();
+        let r = StorageRef {
+            account_id: row.id,
+            bucket: "queued-bucket".into(),
+        };
+        assert_eq!(
+            operator_from_store(&db, &crypto, &r).unwrap().info().name(),
+            "queued-bucket"
+        );
+    }
+
+    #[test]
+    fn sessions_open_and_forget() {
+        let s = StorageSessions::default();
+        let op = Operator::new(opendal::services::Memory::default()).unwrap();
+        let r = StorageRef {
+            account_id: "a".into(),
+            bucket: "b".into(),
+        };
+        s.insert("pane-1".into(), r.clone(), op);
+        assert_eq!(s.get("pane-1").map(|(seen, _)| seen), Some(r));
+        s.clear();
+        assert!(s.get("pane-1").is_none());
+        assert!(s.op("pane-1").is_err());
+    }
+}
