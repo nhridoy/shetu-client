@@ -50,7 +50,12 @@ impl ForwardingState {
     ) -> Result<(u64, CancellationToken), String> {
         // Checked under the entries lock, so a pane closing mid-batch can't race a start.
         let mut entries = self.entries.lock().map_err(|e| e.to_string())?;
-        if self.closed_owners.lock().map_err(|e| e.to_string())?.contains(&owner_pane_id) {
+        if self
+            .closed_owners
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains(&owner_pane_id)
+        {
             return Err("Its terminal was closed".into());
         }
         if let Some(entry) = entries.get(&definition.id) {
@@ -58,7 +63,10 @@ impl ForwardingState {
                 return Err("Forward is already running".into());
             }
         }
-        let run = self.next_run.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let run = self
+            .next_run
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         let cancel = CancellationToken::new();
         entries.insert(
             definition.id.clone(),
@@ -197,7 +205,12 @@ impl ForwardingState {
                 Ok(ForwardStatus::Active)
             }
             Err(error) => {
-                update_status(&self.entries, &id, run, ForwardStatus::Failed(error.clone()));
+                update_status(
+                    &self.entries,
+                    &id,
+                    run,
+                    ForwardStatus::Failed(error.clone()),
+                );
                 Err(error)
             }
         }
@@ -397,7 +410,10 @@ fn update_status(
         if let Some(entry) = entries.get_mut(id).filter(|entry| entry.run == run) {
             entry.status = status.clone();
             if let Some(app) = &entry.app {
-                let _ = app.emit("forward-status", serde_json::json!({ "id": id, "status": status }));
+                let _ = app.emit(
+                    "forward-status",
+                    serde_json::json!({ "id": id, "status": status }),
+                );
             }
         }
     }
@@ -523,7 +539,12 @@ mod tests {
         let (new_run, _) = state.claim(&def("f"), "pane-1".into(), None).unwrap();
         assert_ne!(old_run, new_run);
         // The old run's late writes and self-stop leave the new run alone.
-        update_status(&state.entries, "f", old_run, ForwardStatus::Failed("stale".into()));
+        update_status(
+            &state.entries,
+            "f",
+            old_run,
+            ForwardStatus::Failed("stale".into()),
+        );
         state.stop_run("f", old_run);
         assert_eq!(state.status("f"), ForwardStatus::Starting);
         update_status(&state.entries, "f", new_run, ForwardStatus::Active);
@@ -598,7 +619,10 @@ mod tests {
 
     #[test]
     fn login_and_host_key_failures_are_permanent() {
-        let host_key = format!("destination connection: ssh handshake web:22: {}", russh::Error::UnknownKey);
+        let host_key = format!(
+            "destination connection: ssh handshake web:22: {}",
+            russh::Error::UnknownKey
+        );
         for permanent in [
             "authentication rejected",
             host_key.as_str(),
@@ -608,7 +632,11 @@ mod tests {
         ] {
             assert!(is_permanent_failure(permanent), "{permanent}");
         }
-        for transient in ["SSH connection closed", "connect web:22: Connection refused", "timed out"] {
+        for transient in [
+            "SSH connection closed",
+            "connect web:22: Connection refused",
+            "timed out",
+        ] {
             assert!(!is_permanent_failure(transient), "{transient}");
         }
     }

@@ -16,7 +16,7 @@ function statusLabel(edit: RemoteEdit): string {
     case "uploading":
       return "Uploading…";
     case "conflict":
-      return "Conflict: server copy changed";
+      return edit.error ?? "Conflict: server copy changed";
     case "notUploaded":
       return "Not uploaded";
     default:

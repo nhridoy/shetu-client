@@ -31,7 +31,9 @@ pub struct OAuthBind {
 }
 
 #[tauri::command]
-pub async fn bind_oauth_listener(state: tauri::State<'_, OAuthListener>) -> Result<OAuthBind, String> {
+pub async fn bind_oauth_listener(
+    state: tauri::State<'_, OAuthListener>,
+) -> Result<OAuthBind, String> {
     let mut bound = None;
     for port in OAUTH_PORTS {
         match TcpListener::bind(("127.0.0.1", port)).await {
@@ -61,9 +63,9 @@ pub async fn await_oauth_callback(
     let cancelled = &state.cancelled;
     let listener = {
         let mut guard = state.listener.lock().map_err(|e| e.to_string())?;
-        let current = guard
-            .as_ref()
-            .ok_or_else(|| "No OAuth listener bound. Call bind_oauth_listener first.".to_string())?;
+        let current = guard.as_ref().ok_or_else(|| {
+            "No OAuth listener bound. Call bind_oauth_listener first.".to_string()
+        })?;
         if current.0 != attempt {
             return Err(
                 "This sign-in attempt was superseded by a newer attempt. Please try again."
@@ -90,9 +92,7 @@ pub async fn await_oauth_callback(
     )
     .await
     .map_err(|_| {
-        format!(
-            "OAuth callback timed out after {CALLBACK_TIMEOUT_SECS} seconds. Please try again."
-        )
+        format!("OAuth callback timed out after {CALLBACK_TIMEOUT_SECS} seconds. Please try again.")
     })??;
 
     Ok(url)

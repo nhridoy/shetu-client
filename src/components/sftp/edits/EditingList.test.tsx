@@ -70,6 +70,20 @@ afterEach(() => {
 });
 
 describe("EditingList", () => {
+  it("shows why a conflict choice failed", async () => {
+    useSftpStore.setState({
+      edits: [
+        edit({
+          status: "conflict",
+          unsent: true,
+          error: "Couldn't get the server version: Connection closed",
+        }),
+      ],
+    });
+    await render(<EditingList />);
+    expect(text()).toContain("Couldn't get the server version");
+  });
+
   it("asks before discarding a save Shetu hadn't seen yet", async () => {
     useSftpStore.setState({ edits: [edit()] });
     api.stopEdit.mockRejectedValueOnce("unsent");

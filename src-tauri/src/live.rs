@@ -496,7 +496,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(60)).await;
             stopper.cancel();
         });
-        run_live(|| async { Opened::Network }, report(new), quick(), new_cancel).await;
+        run_live(
+            || async { Opened::Network },
+            report(new),
+            quick(),
+            new_cancel,
+        )
+        .await;
         old_task.await.unwrap();
         assert_eq!(
             *statuses.lock().unwrap(),

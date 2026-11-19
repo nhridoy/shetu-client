@@ -69,4 +69,26 @@ describe("useFolderCompare", () => {
     );
     act(() => root.unmount());
   });
+  it("an action from an older render uses that render's folders", async () => {
+    setPath("L", "/first");
+    setPath("R", "/right");
+    const row = { path: "y.txt", status: "onlyLeft", isDir: false } as const;
+    mocks.loadComparison.mockResolvedValueOnce([row]);
+    mocks.deleteEntry.mockClear();
+    const root = createRoot(
+      document.body.appendChild(document.createElement("div")),
+    );
+    await act(async () => root.render(<Probe />));
+    const old = api;
+    setPath("L", "/second");
+    mocks.loadComparison.mockResolvedValueOnce([row]);
+    await act(async () => void (await api?.rescan()));
+    mocks.loadComparison.mockReturnValue(new Promise(() => {}));
+    await act(async () => void old?.remove(row));
+    expect(mocks.deleteEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ root: "/first" }),
+      "y.txt",
+    );
+    act(() => root.unmount());
+  });
 });

@@ -72,7 +72,9 @@ fn definition(
 /// Auto-start is chosen per device (a teammate's choice must not start tunnels here), so it
 /// lives in a local-only table, never in the synced payload.
 fn local_auto_start(db: &LocalDb, forward_id: &str) -> AutoStart {
-    let Ok(conn) = db.conn.lock() else { return AutoStart::Off };
+    let Ok(conn) = db.conn.lock() else {
+        return AutoStart::Off;
+    };
     conn.query_row(
         "SELECT mode FROM forward_auto_start WHERE forward_id = ?1",
         [forward_id],
@@ -86,20 +88,41 @@ fn local_auto_start(db: &LocalDb, forward_id: &str) -> AutoStart {
 fn set_local_auto_start(db: &LocalDb, forward_id: &str, mode: AutoStart) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let result = match mode {
-        AutoStart::Off => conn.execute("DELETE FROM forward_auto_start WHERE forward_id = ?1", [forward_id]),
+        AutoStart::Off => conn.execute(
+            "DELETE FROM forward_auto_start WHERE forward_id = ?1",
+            [forward_id],
+        ),
         _ => conn.execute(
             "INSERT INTO forward_auto_start (forward_id, mode) VALUES (?1, ?2)
              ON CONFLICT(forward_id) DO UPDATE SET mode = excluded.mode",
-            rusqlite::params![forward_id, serde_json::to_value(mode).map_err(|e| e.to_string())?.as_str()],
+            rusqlite::params![
+                forward_id,
+                serde_json::to_value(mode)
+                    .map_err(|e| e.to_string())?
+                    .as_str()
+            ],
         ),
     };
-    result.map(|_| ()).map_err(|e| format!("save auto-start: {e}"))
+    result
+        .map(|_| ())
+        .map_err(|e| format!("save auto-start: {e}"))
 }
 
 /// The forward as saved now, or None when it (or its host) was deleted.
-pub fn get_live(db: &LocalDb, session: &KeySession, id: &str) -> Result<Option<ForwardDefinition>, String> {
-    let Some(row) = db::get_sync_row(db, Table::PortForwards, id)? else { return Ok(None) };
-    if row.deleted_at.is_some() || row.host_id.as_deref().is_none_or(|h| live_host(db, h).is_err()) {
+pub fn get_live(
+    db: &LocalDb,
+    session: &KeySession,
+    id: &str,
+) -> Result<Option<ForwardDefinition>, String> {
+    let Some(row) = db::get_sync_row(db, Table::PortForwards, id)? else {
+        return Ok(None);
+    };
+    if row.deleted_at.is_some()
+        || row
+            .host_id
+            .as_deref()
+            .is_none_or(|h| live_host(db, h).is_err())
+    {
         return Ok(None);
     }
     definition(db, &row, session).map(Some)
@@ -218,7 +241,9 @@ pub enum Trigger {
 pub fn still_wanted(definition: &ForwardDefinition, trigger: &Trigger) -> bool {
     match trigger {
         Trigger::Unlock => definition.auto_start == AutoStart::Unlock,
-        Trigger::Terminal(host) => definition.auto_start == AutoStart::Terminal && &definition.host_id == host,
+        Trigger::Terminal(host) => {
+            definition.auto_start == AutoStart::Terminal && &definition.host_id == host
+        }
     }
 }
 
@@ -559,8 +584,17 @@ mod tests {
         input.auto_start = AutoStart::Terminal;
         let saved = create(&db, &session, DEVICE, input).unwrap();
         // The synced, encrypted payload never carries it…
-        let row = crate::db::get_sync_row(&db, Table::PortForwards, &saved.id).unwrap().unwrap();
-        let plain = crate::team_keys::decrypt_row_secret(&db, &session, &row.data, "port_forwards", &row.vault_id).unwrap();
+        let row = crate::db::get_sync_row(&db, Table::PortForwards, &saved.id)
+            .unwrap()
+            .unwrap();
+        let plain = crate::team_keys::decrypt_row_secret(
+            &db,
+            &session,
+            &row.data,
+            "port_forwards",
+            &row.vault_id,
+        )
+        .unwrap();
         assert!(!plain.contains("auto"), "{plain}");
         // …and a forward synced from elsewhere (no local setting) is Off here.
         crate::db::wipe_all(&db).unwrap();
@@ -568,7 +602,10 @@ mod tests {
         let mut copy = row.clone();
         copy.revision = 1;
         crate::db::upsert_sync_row(&db, Table::PortForwards, &copy).unwrap();
-        assert_eq!(get(&db, &session, DEVICE, &saved.id).unwrap().auto_start, AutoStart::Off);
+        assert_eq!(
+            get(&db, &session, DEVICE, &saved.id).unwrap().auto_start,
+            AutoStart::Off
+        );
     }
 
     #[test]
@@ -576,7 +613,13 @@ mod tests {
         let db = crate::db::open(":memory:").unwrap();
         host(&db, "h1");
         let session = session();
-        let saved = create(&db, &session, DEVICE, ForwardInput::dynamic("h1", "socks", 1080)).unwrap();
+        let saved = create(
+            &db,
+            &session,
+            DEVICE,
+            ForwardInput::dynamic("h1", "socks", 1080),
+        )
+        .unwrap();
         assert_eq!(saved.auto_start, AutoStart::Off);
     }
 
@@ -599,7 +642,10 @@ mod tests {
         assert!(still_wanted(&def, &Trigger::Terminal("h1".into())));
         assert!(!still_wanted(&def, &Trigger::Terminal("h2".into())));
         assert!(!still_wanted(&def, &Trigger::Unlock));
-        let off = ForwardDefinition { auto_start: AutoStart::Off, ..def };
+        let off = ForwardDefinition {
+            auto_start: AutoStart::Off,
+            ..def
+        };
         assert!(!still_wanted(&off, &Trigger::Terminal("h1".into())));
     }
 
@@ -608,7 +654,13 @@ mod tests {
         let db = crate::db::open(":memory:").unwrap();
         host(&db, "h1");
         let session = session();
-        let saved = create(&db, &session, DEVICE, ForwardInput::dynamic("h1", "socks", 1080)).unwrap();
+        let saved = create(
+            &db,
+            &session,
+            DEVICE,
+            ForwardInput::dynamic("h1", "socks", 1080),
+        )
+        .unwrap();
         assert!(get_live(&db, &session, &saved.id).unwrap().is_some());
         delete(&db, &session, DEVICE, &saved.id).unwrap();
         assert!(get_live(&db, &session, &saved.id).unwrap().is_none());

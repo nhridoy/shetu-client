@@ -78,9 +78,16 @@ enum Step {
 fn record(result: AuthResult, allowed: &mut Option<MethodSet>) -> Step {
     match result {
         AuthResult::Success => Step::Success,
-        AuthResult::Failure { remaining_methods, partial_success } => {
+        AuthResult::Failure {
+            remaining_methods,
+            partial_success,
+        } => {
             *allowed = Some(remaining_methods);
-            if partial_success { Step::Partial } else { Step::Rejected }
+            if partial_success {
+                Step::Partial
+            } else {
+                Step::Rejected
+            }
         }
     }
 }
@@ -105,7 +112,11 @@ impl<A: AgentStream + Send + Unpin> russh::Signer for AgentSigner<'_, A> {
     ) -> Result<Vec<u8>, Self::Error> {
         // The agent may be showing a confirmation popup.
         let _waiting = UserWait::start(&self.waits);
-        match self.agent.sign_request(key, hash_alg, to_sign.clone()).await {
+        match self
+            .agent
+            .sign_request(key, hash_alg, to_sign.clone())
+            .await
+        {
             Ok(signed) => Ok(signed),
             Err(_) => {
                 self.refused = true;
@@ -116,7 +127,11 @@ impl<A: AgentStream + Send + Unpin> russh::Signer for AgentSigner<'_, A> {
 }
 
 /// Appends a well-formed but invalid signature blob, as the agent client would append a real one.
-fn append_dummy_signature(mut data: Vec<u8>, key: &russh::keys::PublicKey, hash_alg: Option<russh::keys::HashAlg>) -> Vec<u8> {
+fn append_dummy_signature(
+    mut data: Vec<u8>,
+    key: &russh::keys::PublicKey,
+    hash_alg: Option<russh::keys::HashAlg>,
+) -> Vec<u8> {
     use russh::keys::ssh_key::Algorithm;
     let algorithm = match key.algorithm() {
         Algorithm::Rsa { .. } => Algorithm::Rsa { hash: hash_alg },
@@ -144,8 +159,15 @@ fn append_dummy_signature(mut data: Vec<u8>, key: &russh::keys::PublicKey, hash_
 
 /// Saved password used to auto-answer keyboard-interactive: never once the password step ran
 /// (rejected or partial), and never after any partial success (the server wants a second factor).
-fn auto_answer_password(config: &crate::ssh::SshConfig, password_ran: bool, partial_seen: bool) -> Option<String> {
-    config.password.clone().filter(|_| !password_ran && !partial_seen)
+fn auto_answer_password(
+    config: &crate::ssh::SshConfig,
+    password_ran: bool,
+    partial_seen: bool,
+) -> Option<String> {
+    config
+        .password
+        .clone()
+        .filter(|_| !password_ran && !partial_seen)
 }
 
 pub(crate) async fn login<H, A, F>(
@@ -180,13 +202,18 @@ where
     let user = &config.username;
     // Methods the server still allows; unknown until the first failure lists them.
     let mut allowed: Option<MethodSet> = None;
-    let allows = |allowed: &Option<MethodSet>, m: MethodKind| allowed.as_ref().is_none_or(|s| s.contains(&m));
+    let allows = |allowed: &Option<MethodSet>, m: MethodKind| {
+        allowed.as_ref().is_none_or(|s| s.contains(&m))
+    };
     let mut last_error = "no authentication method succeeded".to_string();
     let mut partial_seen = false;
 
     // No explicit credentials — send NONE auth request (servers like telehack.com accept it).
     if config.private_key.is_none() && config.password.is_none() {
-        let auth = session.authenticate_none(user.clone()).await.map_err(|e| format!("none auth: {e}"))?;
+        let auth = session
+            .authenticate_none(user.clone())
+            .await
+            .map_err(|e| format!("none auth: {e}"))?;
         match record(auth, &mut allowed) {
             Step::Success => return Ok(()),
             Step::Partial => partial_seen = true,
@@ -218,7 +245,10 @@ where
         }
     }
 
-    if let Some(connect) = ctx.agent.filter(|_| allows(&allowed, MethodKind::PublicKey)) {
+    if let Some(connect) = ctx
+        .agent
+        .filter(|_| allows(&allowed, MethodKind::PublicKey))
+    {
         if let Some(mut agent) = connect.await {
             let cap = if config.password.is_some() {
                 AGENT_CAP_WITH_PASSWORD
@@ -235,14 +265,24 @@ where
                 .ok()
                 .and_then(Result::ok)
                 .unwrap_or_default();
-            let mut signer = AgentSigner { agent: &mut agent, refused: false, waits: Arc::clone(&ctx.waits) };
+            let mut signer = AgentSigner {
+                agent: &mut agent,
+                refused: false,
+                waits: Arc::clone(&ctx.waits),
+            };
             for identity in identities.into_iter().take(cap) {
                 if signer.refused || !allows(&allowed, MethodKind::PublicKey) {
                     break;
                 }
                 let key = identity.public_key().into_owned();
-                let hash = key.algorithm().is_rsa().then_some(russh::keys::HashAlg::Sha256);
-                match session.authenticate_publickey_with(user.clone(), key, hash, &mut signer).await {
+                let hash = key
+                    .algorithm()
+                    .is_rsa()
+                    .then_some(russh::keys::HashAlg::Sha256);
+                match session
+                    .authenticate_publickey_with(user.clone(), key, hash, &mut signer)
+                    .await
+                {
                     Ok(auth) => match record(auth, &mut allowed) {
                         Step::Success => return Ok(()),
                         Step::Partial => partial_seen = true,
@@ -267,7 +307,12 @@ where
                 prompts: vec![("Password".to_string(), false)],
             };
             // No answer at all is a cancel; an empty string is a (legal) password.
-            Some(prompter(request).await.and_then(|a| a.into_iter().next()).ok_or(CANCELLED)?)
+            Some(
+                prompter(request)
+                    .await
+                    .and_then(|a| a.into_iter().next())
+                    .ok_or(CANCELLED)?,
+            )
         }
         _ => None,
     };
@@ -285,7 +330,8 @@ where
                 Step::Success => return Ok(()),
                 Step::Partial => password_ran = true,
                 // No earlier list and `password` missing from the continue list: unsupported.
-                Step::Rejected if listed_before.is_none() && !allows(&allowed, MethodKind::Password) => {}
+                Step::Rejected
+                    if listed_before.is_none() && !allows(&allowed, MethodKind::Password) => {}
                 Step::Rejected => {
                     password_ran = true;
                     password_rejected = true;
@@ -296,7 +342,9 @@ where
     }
 
     // Non-interactive with a rejected password: nothing could answer, keep today's error.
-    if !allows(&allowed, MethodKind::KeyboardInteractive) || (password_rejected && ctx.prompter.is_none()) {
+    if !allows(&allowed, MethodKind::KeyboardInteractive)
+        || (password_rejected && ctx.prompter.is_none())
+    {
         return Err(last_error);
     }
     let kbd_err = |e: russh::Error| format!("keyboard-interactive auth: {e}");
@@ -314,7 +362,9 @@ where
         for round in 0..=KBD_MAX_ROUNDS {
             let (name, instructions, prompts) = match reply {
                 Kbd::Success => return Ok(()),
-                Kbd::Failure { remaining_methods, .. } => {
+                Kbd::Failure {
+                    remaining_methods, ..
+                } => {
                     if auto_answered
                         && ctx.prompter.is_some()
                         && remaining_methods.contains(&MethodKind::KeyboardInteractive)
@@ -324,11 +374,19 @@ where
                     return Err("authentication rejected".to_string());
                 }
                 Kbd::InfoRequest { .. } if round == KBD_MAX_ROUNDS => break,
-                Kbd::InfoRequest { name, instructions, prompts } => (name, instructions, prompts),
+                Kbd::InfoRequest {
+                    name,
+                    instructions,
+                    prompts,
+                } => (name, instructions, prompts),
             };
             let answers = if prompts.is_empty() {
                 Vec::new()
-            } else if let (1, true, Some(params)) = (prompts.len(), crate::totp::is_code_prompt(&prompts[0].prompt), &totp) {
+            } else if let (1, true, Some(params)) = (
+                prompts.len(),
+                crate::totp::is_code_prompt(&prompts[0].prompt),
+                &totp,
+            ) {
                 auto_answered = true;
                 let code = crate::totp::code(params, crate::totp::unix_now());
                 totp = None;
@@ -345,11 +403,21 @@ where
             } else if let Some(prompter) = &ctx.prompter {
                 let prompts = prompts.into_iter().map(|p| (p.prompt, p.echo)).collect();
                 let _waiting = UserWait::start(&ctx.waits);
-                prompter(AuthPromptRequest { kind: PromptKind::KeyboardInteractive, name, instructions, prompts }).await.ok_or(CANCELLED)?
+                prompter(AuthPromptRequest {
+                    kind: PromptKind::KeyboardInteractive,
+                    name,
+                    instructions,
+                    prompts,
+                })
+                .await
+                .ok_or(CANCELLED)?
             } else {
                 return Err(NON_INTERACTIVE.to_string());
             };
-            reply = session.authenticate_keyboard_interactive_respond(answers).await.map_err(kbd_err)?;
+            reply = session
+                .authenticate_keyboard_interactive_respond(answers)
+                .await
+                .map_err(kbd_err)?;
         }
         return Err("authentication rejected".to_string());
     }
@@ -401,7 +469,10 @@ mod tests {
     }
 
     fn now_secs() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     impl russh::server::Handler for Srv {
@@ -413,7 +484,11 @@ mod tests {
         ) -> Result<russh::server::Auth, Self::Error> {
             self.log.lock().unwrap().push(fp(key));
             let ok = self.keys.iter().any(|k| k.key_data() == key.key_data());
-            Ok(if ok { russh::server::Auth::Accept } else { russh::server::Auth::reject() })
+            Ok(if ok {
+                russh::server::Auth::Accept
+            } else {
+                russh::server::Auth::reject()
+            })
         }
         async fn auth_password(
             &mut self,
@@ -421,24 +496,35 @@ mod tests {
             password: &str,
         ) -> Result<russh::server::Auth, Self::Error> {
             self.log.lock().unwrap().push("password".into());
-            Ok(if self.password == Some(password) && self.password_partial {
-                russh::server::Auth::Reject {
-                    proceed_with_methods: Some(MethodSet::from(&[MethodKind::KeyboardInteractive][..])),
-                    partial_success: true,
-                }
-            } else if self.password == Some(password) {
-                russh::server::Auth::Accept
-            } else if self.methods.as_ref().is_none_or(|m| m.contains(&MethodKind::Password)) {
-                // Like OpenSSH: a wrong password keeps `password` among the methods that can continue.
-                russh::server::Auth::Reject {
-                    proceed_with_methods: Some(
-                        self.after_password.clone().or_else(|| self.methods.clone()).unwrap_or_else(MethodSet::all),
-                    ),
-                    partial_success: false,
-                }
-            } else {
-                russh::server::Auth::reject()
-            })
+            Ok(
+                if self.password == Some(password) && self.password_partial {
+                    russh::server::Auth::Reject {
+                        proceed_with_methods: Some(MethodSet::from(
+                            &[MethodKind::KeyboardInteractive][..],
+                        )),
+                        partial_success: true,
+                    }
+                } else if self.password == Some(password) {
+                    russh::server::Auth::Accept
+                } else if self
+                    .methods
+                    .as_ref()
+                    .is_none_or(|m| m.contains(&MethodKind::Password))
+                {
+                    // Like OpenSSH: a wrong password keeps `password` among the methods that can continue.
+                    russh::server::Auth::Reject {
+                        proceed_with_methods: Some(
+                            self.after_password
+                                .clone()
+                                .or_else(|| self.methods.clone())
+                                .unwrap_or_else(MethodSet::all),
+                        ),
+                        partial_success: false,
+                    }
+                } else {
+                    russh::server::Auth::reject()
+                },
+            )
         }
         async fn auth_keyboard_interactive<'a>(
             &'a mut self,
@@ -470,23 +556,47 @@ mod tests {
                     prompts: prompts.into(),
                 });
             };
-            let answers: Vec<String> = response.map(|b| String::from_utf8_lossy(&b).into_owned()).collect();
+            let answers: Vec<String> = response
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .collect();
             for answer in &answers {
-                self.log.lock().unwrap().push(format!("kbd-answer:{answer}"));
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("kbd-answer:{answer}"));
             }
-            let round = if self.kbd_then_sent { &self.kbd_then } else { &self.kbd };
+            let round = if self.kbd_then_sent {
+                &self.kbd_then
+            } else {
+                &self.kbd
+            };
             let now = now_secs();
             let matches = |expected: &str, answer: &str| match (expected, &self.totp) {
-                ("<totp>", Some(p)) => [now, now - p.period].iter().any(|t| crate::totp::code(p, *t) == answer),
+                ("<totp>", Some(p)) => [now, now - p.period]
+                    .iter()
+                    .any(|t| crate::totp::code(p, *t) == answer),
                 _ => expected == answer,
             };
-            let ok = answers.len() == round.len() && round.iter().zip(&answers).all(|((_, e), a)| matches(e, a));
+            let ok = answers.len() == round.len()
+                && round.iter().zip(&answers).all(|((_, e), a)| matches(e, a));
             if ok && !self.kbd_then_sent && !self.kbd_then.is_empty() {
                 self.kbd_then_sent = true;
-                let prompts: Vec<_> = self.kbd_then.iter().map(|(p, _)| ((*p).into(), false)).collect();
-                return Ok(russh::server::Auth::Partial { name: "".into(), instructions: "".into(), prompts: prompts.into() });
+                let prompts: Vec<_> = self
+                    .kbd_then
+                    .iter()
+                    .map(|(p, _)| ((*p).into(), false))
+                    .collect();
+                return Ok(russh::server::Auth::Partial {
+                    name: "".into(),
+                    instructions: "".into(),
+                    prompts: prompts.into(),
+                });
             }
-            Ok(if ok { russh::server::Auth::Accept } else { russh::server::Auth::reject() })
+            Ok(if ok {
+                russh::server::Auth::Accept
+            } else {
+                russh::server::Auth::reject()
+            })
         }
     }
 
@@ -513,8 +623,20 @@ mod tests {
         key.to_openssh(LineEnding::LF).unwrap().to_string()
     }
 
-    async fn run(srv: Srv, config: SshConfig, agent: Option<Agent>, prompter: Option<Prompter>) -> Result<(), String> {
-        run_with(srv, config, agent.map(|agent| async move { Some(agent) }), prompter, UserWaits::default()).await
+    async fn run(
+        srv: Srv,
+        config: SshConfig,
+        agent: Option<Agent>,
+        prompter: Option<Prompter>,
+    ) -> Result<(), String> {
+        run_with(
+            srv,
+            config,
+            agent.map(|agent| async move { Some(agent) }),
+            prompter,
+            UserWaits::default(),
+        )
+        .await
     }
 
     async fn run_with(
@@ -533,15 +655,29 @@ mod tests {
             server_config.methods = methods;
         }
         tokio::spawn(async move {
-            if let Ok(running) = russh::server::run_stream(Arc::new(server_config), server_io, srv).await {
+            if let Ok(running) =
+                russh::server::run_stream(Arc::new(server_config), server_io, srv).await
+            {
                 let _ = running.await;
             }
         });
-        let mut session =
-            russh::client::connect_stream(Arc::new(russh::client::Config::default()), client_io, Client)
-                .await
-                .unwrap();
-        login(&mut session, &config, LoginContext { agent, prompter, waits }).await
+        let mut session = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client_io,
+            Client,
+        )
+        .await
+        .unwrap();
+        login(
+            &mut session,
+            &config,
+            LoginContext {
+                agent,
+                prompter,
+                waits,
+            },
+        )
+        .await
     }
 
     #[derive(Clone)]
@@ -574,7 +710,10 @@ mod tests {
         agent_serving(keys, Allow).await
     }
 
-    async fn agent_serving(keys: &[PrivateKey], behaviour: impl russh::keys::agent::server::Agent + Sync) -> Agent {
+    async fn agent_serving(
+        keys: &[PrivateKey],
+        behaviour: impl russh::keys::agent::server::Agent + Sync,
+    ) -> Agent {
         let (server_io, client_io) = tokio::io::duplex(1 << 16);
         tokio::spawn(russh::keys::agent::server::serve(
             futures::stream::iter(vec![Ok::<_, std::io::Error>(server_io)]),
@@ -600,31 +739,52 @@ mod tests {
         let host_key = random_key();
         let agent_keys = [random_key(), random_key()];
         let agent = agent_with(&agent_keys).await;
-        let srv = Srv { keys: vec![host_key.public_key().clone()], ..Default::default() };
+        let srv = Srv {
+            keys: vec![host_key.public_key().clone()],
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        run(srv, config(Some(pem(&host_key)), None), Some(agent), None).await.unwrap();
+        run(srv, config(Some(pem(&host_key)), None), Some(agent), None)
+            .await
+            .unwrap();
         assert_eq!(*log.lock().unwrap(), vec![fp(host_key.public_key())]);
     }
 
     #[tokio::test]
     async fn password_host_unchanged_without_agent() {
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        run(srv, config(None, Some("pw")), None, None).await.unwrap();
+        run(srv, config(None, Some("pw")), None, None)
+            .await
+            .unwrap();
         assert_eq!(*log.lock().unwrap(), vec!["password".to_string()]);
     }
 
     #[tokio::test]
     async fn accepted_key_never_discovers_the_agent() {
         let host_key = random_key();
-        let srv = Srv { keys: vec![host_key.public_key().clone()], ..Default::default() };
+        let srv = Srv {
+            keys: vec![host_key.public_key().clone()],
+            ..Default::default()
+        };
         let discovered = Arc::new(AtomicUsize::new(0));
         let seen = discovered.clone();
         let discover = async move {
             seen.fetch_add(1, Ordering::SeqCst);
             None::<Agent>
         };
-        run_with(srv, config(Some(pem(&host_key)), None), Some(discover), None, UserWaits::default()).await.unwrap();
+        run_with(
+            srv,
+            config(Some(pem(&host_key)), None),
+            Some(discover),
+            None,
+            UserWaits::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(discovered.load(Ordering::SeqCst), 0);
     }
 
@@ -634,28 +794,49 @@ mod tests {
         let waits = UserWaits::default();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let agent = agent_serving(&[key.clone()], ConfirmWatch(waits.clone(), seen.clone())).await;
-        let srv = Srv { keys: vec![key.public_key().clone()], ..Default::default() };
-        within(run_with(srv, config(None, None), Some(async move { Some(agent) }), None, waits.clone()))
-            .await
-            .unwrap();
+        let srv = Srv {
+            keys: vec![key.public_key().clone()],
+            ..Default::default()
+        };
+        within(run_with(
+            srv,
+            config(None, None),
+            Some(async move { Some(agent) }),
+            None,
+            waits.clone(),
+        ))
+        .await
+        .unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![1]);
         assert_eq!(waits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn login_prompt_counts_as_waiting_only_for_its_connection() {
-        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Code: ", "1")],
+            methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let (mine, other) = (UserWaits::default(), UserWaits::default());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (m, o, s) = (mine.clone(), other.clone(), seen.clone());
         let prompter: Prompter = Arc::new(move |_| {
-            s.lock().unwrap().push((m.load(Ordering::SeqCst), o.load(Ordering::SeqCst)));
+            s.lock()
+                .unwrap()
+                .push((m.load(Ordering::SeqCst), o.load(Ordering::SeqCst)));
             Box::pin(async { Some(vec!["1".to_string()]) })
         });
         let no_agent = None::<std::future::Ready<Option<Agent>>>;
-        within(run_with(srv, config(Some(pem(&random_key())), None), no_agent, Some(prompter), mine.clone()))
-            .await
-            .unwrap();
+        within(run_with(
+            srv,
+            config(Some(pem(&random_key())), None),
+            no_agent,
+            Some(prompter),
+            mine.clone(),
+        ))
+        .await
+        .unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![(1, 0)]);
         assert_eq!(mine.load(Ordering::SeqCst), 0);
     }
@@ -665,9 +846,14 @@ mod tests {
         let host_key = random_key();
         let agent_keys = [random_key(), random_key()];
         let agent = agent_with(&agent_keys).await;
-        let srv = Srv { keys: vec![agent_keys[1].public_key().clone()], ..Default::default() };
+        let srv = Srv {
+            keys: vec![agent_keys[1].public_key().clone()],
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        run(srv, config(Some(pem(&host_key)), None), Some(agent), None).await.unwrap();
+        run(srv, config(Some(pem(&host_key)), None), Some(agent), None)
+            .await
+            .unwrap();
         let log = log.lock().unwrap().clone();
         assert_eq!(log.first(), Some(&fp(host_key.public_key())));
         assert_eq!(log.last(), Some(&fp(agent_keys[1].public_key())));
@@ -677,9 +863,14 @@ mod tests {
     async fn agent_capped_at_three_when_password_saved() {
         let agent_keys: Vec<_> = (0..5).map(|_| random_key()).collect();
         let agent = agent_with(&agent_keys).await;
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        run(srv, config(None, Some("pw")), Some(agent), None).await.unwrap();
+        run(srv, config(None, Some("pw")), Some(agent), None)
+            .await
+            .unwrap();
         let log = log.lock().unwrap().clone();
         let agent_attempts = log.iter().take_while(|e| *e != "password").count();
         assert_eq!(agent_attempts, 3, "{log:?}");
@@ -690,7 +881,10 @@ mod tests {
     async fn agent_capped_at_five_when_password_can_be_prompted() {
         let agent_keys: Vec<_> = (0..6).map(|_| random_key()).collect();
         let agent = agent_with(&agent_keys).await;
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let prompted = log.clone();
         let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
@@ -698,11 +892,17 @@ mod tests {
             prompted.lock().unwrap().push("prompt".into());
             Box::pin(async { Some(vec!["pw".to_string()]) })
         });
-        within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
+        within(run(srv, config(None, None), Some(agent), Some(prompter)))
+            .await
+            .unwrap();
         let log = log.lock().unwrap().clone();
         let agent_attempts = log.iter().take_while(|e| *e != "prompt").count();
         assert_eq!(agent_attempts, 5, "{log:?}");
-        assert_eq!(log[5..], ["prompt".to_string(), "password".to_string()], "{log:?}");
+        assert_eq!(
+            log[5..],
+            ["prompt".to_string(), "password".to_string()],
+            "{log:?}"
+        );
     }
 
     #[tokio::test]
@@ -710,7 +910,10 @@ mod tests {
         // OpenSSH's default MaxAuthTries is 6: saved key + 4 agent keys leaves one for the prompt.
         let agent_keys: Vec<_> = (0..6).map(|_| random_key()).collect();
         let agent = agent_with(&agent_keys).await;
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let prompted = log.clone();
         let prompter: Prompter = Arc::new(move |_| {
@@ -718,11 +921,17 @@ mod tests {
             Box::pin(async { Some(vec!["pw".to_string()]) })
         });
         let saved = config(Some(pem(&random_key())), None);
-        within(run(srv, saved, Some(agent), Some(prompter))).await.unwrap();
+        within(run(srv, saved, Some(agent), Some(prompter)))
+            .await
+            .unwrap();
         let log = log.lock().unwrap().clone();
         let publickey_attempts = log.iter().take_while(|e| *e != "prompt").count();
         assert_eq!(publickey_attempts, 5, "{log:?}");
-        assert_eq!(log[5..], ["prompt".to_string(), "password".to_string()], "{log:?}");
+        assert_eq!(
+            log[5..],
+            ["prompt".to_string(), "password".to_string()],
+            "{log:?}"
+        );
     }
 
     #[tokio::test]
@@ -734,20 +943,32 @@ mod tests {
             russh::keys::agent::AgentIdentity::PublicKey { key, .. } => key.clone(),
             other => panic!("unexpected identity {other:?}"),
         };
-        let srv = Srv { keys: vec![fourth.clone()], ..Default::default() };
+        let srv = Srv {
+            keys: vec![fourth.clone()],
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let prompter: Prompter = Arc::new(|_| panic!("must not prompt"));
-        within(run(srv, config(None, None), Some(agent), Some(prompter))).await.unwrap();
+        within(run(srv, config(None, None), Some(agent), Some(prompter)))
+            .await
+            .unwrap();
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 4);
         assert_eq!(log.last(), Some(&fp(&fourth)));
     }
 
     fn totp_params(secret: &[u8]) -> crate::totp::TotpParams {
-        crate::totp::TotpParams { secret: secret.to_vec(), algorithm: crate::totp::Algorithm::Sha1, digits: 6, period: 30 }
+        crate::totp::TotpParams {
+            secret: secret.to_vec(),
+            algorithm: crate::totp::Algorithm::Sha1,
+            digits: 6,
+            period: 30,
+        }
     }
 
-    fn counting_prompter(answer: impl Fn() -> String + Send + Sync + 'static) -> (Prompter, Arc<AtomicUsize>) {
+    fn counting_prompter(
+        answer: impl Fn() -> String + Send + Sync + 'static,
+    ) -> (Prompter, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = calls.clone();
         let answer = Arc::new(answer);
@@ -776,14 +997,27 @@ mod tests {
 
     #[tokio::test]
     async fn totp_only_for_code_prompts() {
-        let srv = Srv { kbd: vec![("Password: ", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Password: ", "pw")],
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let mut config = config(None, None);
         config.totp = Some(totp_params(b"identity-secret"));
         let (prompter, calls) = counting_prompter(|| "pw".into());
-        within(run(srv, config, None, Some(prompter))).await.unwrap();
+        within(run(srv, config, None, Some(prompter)))
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(log.lock().unwrap().iter().filter(|e| e.starts_with("kbd-answer:")).count(), 1);
+        assert_eq!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.starts_with("kbd-answer:"))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -798,23 +1032,36 @@ mod tests {
         let log = srv.log.clone();
         let mut config = config(None, Some("pw"));
         config.totp = Some(totp_params(b"a-stale-secret"));
-        let (prompter, calls) = counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
-        within(run(srv, config, None, Some(prompter))).await.unwrap();
+        let (prompter, calls) =
+            counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
+        within(run(srv, config, None, Some(prompter)))
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(count(&log, "kbd-answer:pw"), 0);
     }
 
     #[tokio::test]
     async fn plain_password_host_still_auto_answers_any_single_prompt() {
-        let srv = Srv { kbd: vec![("Verification code: ", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Verification code: ", "pw")],
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), None, None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), None, None))
+            .await
+            .unwrap();
         assert_eq!(count(&log, "kbd-answer:pw"), 1);
     }
 
     #[tokio::test]
     async fn password_prompt_naming_a_host_gets_the_password_not_the_code() {
-        let srv = Srv { kbd: vec![("(deploy@hotpot) Password:", "pw")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("(deploy@hotpot) Password:", "pw")],
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let mut config = config(None, Some("pw"));
         config.totp = Some(totp_params(b"identity-secret"));
         within(run(srv, config, None, None)).await.unwrap();
@@ -831,8 +1078,11 @@ mod tests {
         };
         let mut config = config(None, None);
         config.totp = Some(totp_params(b"a-stale-secret"));
-        let (prompter, calls) = counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
-        within(run(srv, config, None, Some(prompter))).await.unwrap();
+        let (prompter, calls) =
+            counting_prompter(move || crate::totp::code(&server_totp, now_secs()));
+        within(run(srv, config, None, Some(prompter)))
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -858,7 +1108,14 @@ mod tests {
             ..Default::default()
         };
         let log = srv.log.clone();
-        run(srv, config(Some(pem(&random_key())), Some("pw")), None, None).await.unwrap();
+        run(
+            srv,
+            config(Some(pem(&random_key())), Some("pw")),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(count(&log, "password"), 0);
         assert_eq!(count(&log, "kbdint"), 1);
     }
@@ -871,13 +1128,18 @@ mod tests {
             ..Default::default()
         };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), None, None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), None, None))
+            .await
+            .unwrap();
         assert_eq!(count(&log, "kbdint"), 1);
     }
 
     #[tokio::test]
     async fn kbdint_no_auto_answer_after_rejected_password() {
-        let srv = Srv { kbd: vec![("Code: ", "123456")], ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Code: ", "123456")],
+            ..Default::default()
+        };
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = calls.clone();
         let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
@@ -885,7 +1147,9 @@ mod tests {
             assert_eq!(request.prompts, vec![("Code: ".to_string(), false)]);
             Box::pin(async { Some(vec!["123456".to_string()]) })
         });
-        run(srv, config(None, Some("pw")), None, Some(prompter)).await.unwrap();
+        run(srv, config(None, Some("pw")), None, Some(prompter))
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -893,12 +1157,23 @@ mod tests {
     async fn kbdint_no_auto_answer_when_rejected_password_vanishes_from_methods() {
         let srv = Srv {
             kbd: vec![("Password: ", "pw")],
-            methods: methods(&[MethodKind::PublicKey, MethodKind::Password, MethodKind::KeyboardInteractive]),
+            methods: methods(&[
+                MethodKind::PublicKey,
+                MethodKind::Password,
+                MethodKind::KeyboardInteractive,
+            ]),
             after_password: methods(&[MethodKind::KeyboardInteractive]),
             ..Default::default()
         };
         let log = srv.log.clone();
-        let err = run(srv, config(Some(pem(&random_key())), Some("pw")), None, None).await.unwrap_err();
+        let err = run(
+            srv,
+            config(Some(pem(&random_key())), Some("pw")),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err, "authentication rejected");
         assert_eq!(count(&log, "kbdint"), 0);
     }
@@ -910,24 +1185,47 @@ mod tests {
             methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]),
             ..Default::default()
         };
-        let err = run(srv, config(Some(pem(&random_key())), Some("pw")), None, None).await.unwrap_err();
+        let err = run(
+            srv,
+            config(Some(pem(&random_key())), Some("pw")),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(
-            err.contains("This server needs an interactive login (2FA). Connect in a terminal instead."),
+            err.contains(
+                "This server needs an interactive login (2FA). Connect in a terminal instead."
+            ),
             "{err}"
         );
     }
 
     #[tokio::test]
     async fn kbdint_cancel_is_login_cancelled() {
-        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Code: ", "1")],
+            methods: methods(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let prompter: Prompter = Arc::new(|_| Box::pin(async { None }));
-        let err = run(srv, config(Some(pem(&random_key())), None), None, Some(prompter)).await.unwrap_err();
+        let err = run(
+            srv,
+            config(Some(pem(&random_key())), None),
+            None,
+            Some(prompter),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err, "Login cancelled");
     }
 
     #[tokio::test]
     async fn password_prompted_when_none_saved() {
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
@@ -935,42 +1233,65 @@ mod tests {
             s.lock().unwrap().push((request.kind, request.prompts));
             Box::pin(async { Some(vec!["pw".to_string()]) })
         });
-        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
-        assert_eq!(*seen.lock().unwrap(), vec![(PromptKind::Password, vec![("Password".to_string(), false)])]);
+        within(run(srv, config(None, None), None, Some(prompter)))
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(PromptKind::Password, vec![("Password".to_string(), false)])]
+        );
         assert_eq!(count(&log, "password"), 1);
     }
 
     #[tokio::test]
     async fn non_interactive_skips_password_prompt() {
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        assert!(within(run(srv, config(None, None), None, None)).await.is_err());
+        assert!(within(run(srv, config(None, None), None, None))
+            .await
+            .is_err());
         assert_eq!(count(&log, "password"), 0);
     }
 
     #[tokio::test]
     async fn password_prompt_cancel_is_login_cancelled() {
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let prompter: Prompter = Arc::new(|_| Box::pin(async { None }));
-        let err = within(run(srv, config(None, None), None, Some(prompter))).await.unwrap_err();
+        let err = within(run(srv, config(None, None), None, Some(prompter)))
+            .await
+            .unwrap_err();
         assert_eq!(err, "Login cancelled");
         assert_eq!(count(&log, "password"), 0);
     }
 
     #[tokio::test]
     async fn password_prompt_empty_answer_list_is_cancel() {
-        let srv = Srv { password: Some(""), ..Default::default() };
+        let srv = Srv {
+            password: Some(""),
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let prompter: Prompter = Arc::new(|_| Box::pin(async { Some(Vec::new()) }));
-        let err = within(run(srv, config(None, None), None, Some(prompter))).await.unwrap_err();
+        let err = within(run(srv, config(None, None), None, Some(prompter)))
+            .await
+            .unwrap_err();
         assert_eq!(err, "Login cancelled");
         assert_eq!(count(&log, "password"), 0);
     }
 
     #[tokio::test]
     async fn password_prompt_counts_as_waiting_on_the_user() {
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let waits = UserWaits::default();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (w, s) = (waits.clone(), seen.clone());
@@ -979,27 +1300,45 @@ mod tests {
             Box::pin(async { Some(vec!["pw".to_string()]) })
         });
         let no_agent = None::<std::future::Ready<Option<Agent>>>;
-        within(run_with(srv, config(None, None), no_agent, Some(prompter), waits.clone())).await.unwrap();
+        within(run_with(
+            srv,
+            config(None, None),
+            no_agent,
+            Some(prompter),
+            waits.clone(),
+        ))
+        .await
+        .unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![1]);
         assert_eq!(waits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn password_prompt_skipped_when_server_lacks_password() {
-        let srv = Srv { kbd: vec![("Code: ", "1")], methods: methods(&[MethodKind::KeyboardInteractive]), ..Default::default() };
+        let srv = Srv {
+            kbd: vec![("Code: ", "1")],
+            methods: methods(&[MethodKind::KeyboardInteractive]),
+            ..Default::default()
+        };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let prompter: Prompter = Arc::new(move |request: AuthPromptRequest| {
             s.lock().unwrap().push(request.kind);
             Box::pin(async { Some(vec!["1".to_string()]) })
         });
-        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
+        within(run(srv, config(None, None), None, Some(prompter)))
+            .await
+            .unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![PromptKind::KeyboardInteractive]);
     }
 
     #[tokio::test]
     async fn wrong_prompted_password_moves_on_to_kbdint() {
-        let srv = Srv { password: Some("right"), kbd: vec![("Code: ", "1")], ..Default::default() };
+        let srv = Srv {
+            password: Some("right"),
+            kbd: vec![("Code: ", "1")],
+            ..Default::default()
+        };
         let log = srv.log.clone();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
@@ -1008,39 +1347,69 @@ mod tests {
             s.lock().unwrap().push(request.kind);
             Box::pin(async move { Some(vec![if password { "wrong" } else { "1" }.to_string()]) })
         });
-        within(run(srv, config(None, None), None, Some(prompter))).await.unwrap();
-        assert_eq!(*seen.lock().unwrap(), vec![PromptKind::Password, PromptKind::KeyboardInteractive]);
+        within(run(srv, config(None, None), None, Some(prompter)))
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![PromptKind::Password, PromptKind::KeyboardInteractive]
+        );
         assert_eq!(count(&log, "password"), 1);
     }
 
     #[test]
     fn prompt_kind_serializes_for_the_event() {
-        assert_eq!(serde_json::to_value(PromptKind::Password).unwrap(), "password");
-        assert_eq!(serde_json::to_value(PromptKind::KeyboardInteractive).unwrap(), "keyboard-interactive");
+        assert_eq!(
+            serde_json::to_value(PromptKind::Password).unwrap(),
+            "password"
+        );
+        assert_eq!(
+            serde_json::to_value(PromptKind::KeyboardInteractive).unwrap(),
+            "keyboard-interactive"
+        );
     }
 
     #[tokio::test]
     async fn bad_key_falls_through_to_password() {
         let bad = Some("not a key".to_string());
-        let srv = Srv { password: Some("pw"), ..Default::default() };
-        run(srv, config(bad.clone(), Some("pw")), None, None).await.unwrap();
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
+        run(srv, config(bad.clone(), Some("pw")), None, None)
+            .await
+            .unwrap();
 
-        let srv = Srv { password: Some("other"), ..Default::default() };
-        let err = run(srv, config(bad, Some("pw")), None, None).await.unwrap_err();
+        let srv = Srv {
+            password: Some("other"),
+            ..Default::default()
+        };
+        let err = run(srv, config(bad, Some("pw")), None, None)
+            .await
+            .unwrap_err();
         assert!(err.starts_with("decode private key"), "{err}");
         assert!(err.contains("; then: "), "{err}");
     }
 
     fn within<T>(f: impl std::future::Future<Output = T>) -> impl std::future::Future<Output = T> {
-        async { tokio::time::timeout(std::time::Duration::from_secs(10), f).await.expect("login hung") }
+        async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), f)
+                .await
+                .expect("login hung")
+        }
     }
 
     #[tokio::test]
     async fn agent_sign_refusal_does_not_wedge_session() {
         let agent = agent_serving(&[random_key()], RefuseSign).await;
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), Some(agent), None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), Some(agent), None))
+            .await
+            .unwrap();
         assert_eq!(count(&log, "password"), 1);
     }
 
@@ -1049,9 +1418,14 @@ mod tests {
         // The peer accepts the connection but never answers the identities request.
         let (_silent_peer, client_io) = tokio::io::duplex(1 << 16);
         let agent: Agent = AgentClient::connect(client_io).dynamic();
-        let srv = Srv { password: Some("pw"), ..Default::default() };
+        let srv = Srv {
+            password: Some("pw"),
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        within(run(srv, config(None, Some("pw")), Some(agent), None)).await.unwrap();
+        within(run(srv, config(None, Some("pw")), Some(agent), None))
+            .await
+            .unwrap();
         assert_eq!(count(&log, "password"), 1);
     }
 
@@ -1060,21 +1434,42 @@ mod tests {
     #[test]
     fn no_auto_answer_after_any_partial_success() {
         let cfg = config(None, Some("pw"));
-        assert_eq!(auto_answer_password(&cfg, false, false).as_deref(), Some("pw"), "plain PAM");
-        assert_eq!(auto_answer_password(&cfg, false, true), None, "after a partial success");
-        assert_eq!(auto_answer_password(&cfg, true, false), None, "after the password step");
+        assert_eq!(
+            auto_answer_password(&cfg, false, false).as_deref(),
+            Some("pw"),
+            "plain PAM"
+        );
+        assert_eq!(
+            auto_answer_password(&cfg, false, true),
+            None,
+            "after a partial success"
+        );
+        assert_eq!(
+            auto_answer_password(&cfg, true, false),
+            None,
+            "after the password step"
+        );
     }
 
     #[test]
     fn partial_success_is_not_a_rejection() {
         let mut allowed = None;
         let remaining = MethodSet::from(&[MethodKind::KeyboardInteractive][..]);
-        let result = AuthResult::Failure { remaining_methods: remaining.clone(), partial_success: true };
+        let result = AuthResult::Failure {
+            remaining_methods: remaining.clone(),
+            partial_success: true,
+        };
         assert!(matches!(record(result, &mut allowed), Step::Partial));
         assert_eq!(allowed, Some(remaining));
-        let result = AuthResult::Failure { remaining_methods: MethodSet::empty(), partial_success: false };
+        let result = AuthResult::Failure {
+            remaining_methods: MethodSet::empty(),
+            partial_success: false,
+        };
         assert!(matches!(record(result, &mut allowed), Step::Rejected));
-        assert!(matches!(record(AuthResult::Success, &mut allowed), Step::Success));
+        assert!(matches!(
+            record(AuthResult::Success, &mut allowed),
+            Step::Success
+        ));
     }
 
     // russh's test server clears partial_success on password replies (server/encrypted.rs ~771),
@@ -1093,23 +1488,40 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Some(vec!["pw".to_string(), "1".to_string()]) })
         });
-        within(run(srv, config(None, Some("pw")), None, Some(prompter))).await.unwrap();
+        within(run(srv, config(None, Some("pw")), None, Some(prompter)))
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn kbdint_rounds_are_capped() {
-        let srv = Srv { kbd_endless: true, ..Default::default() };
+        let srv = Srv {
+            kbd_endless: true,
+            ..Default::default()
+        };
         let log = srv.log.clone();
-        let err = within(run(srv, config(Some(pem(&random_key())), None), None, None)).await.unwrap_err();
+        let err = within(run(srv, config(Some(pem(&random_key())), None), None, None))
+            .await
+            .unwrap_err();
         assert_eq!(err, "authentication rejected");
-        assert!(count(&log, "kbdint") <= KBD_MAX_ROUNDS + 1, "{:?}", log.lock().unwrap());
+        assert!(
+            count(&log, "kbdint") <= KBD_MAX_ROUNDS + 1,
+            "{:?}",
+            log.lock().unwrap()
+        );
     }
 
     #[tokio::test]
     async fn kbdint_success_on_the_last_round_is_accepted() {
-        let srv = Srv { kbd_endless: true, kbd_accept_after: Some(KBD_MAX_ROUNDS), ..Default::default() };
-        within(run(srv, config(Some(pem(&random_key())), None), None, None)).await.unwrap();
+        let srv = Srv {
+            kbd_endless: true,
+            kbd_accept_after: Some(KBD_MAX_ROUNDS),
+            ..Default::default()
+        };
+        within(run(srv, config(Some(pem(&random_key())), None), None, None))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1126,9 +1538,14 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Some(vec!["fresh".to_string()]) })
         });
-        within(run(srv, config(Some(pem(&random_key())), Some("stale")), None, Some(prompter)))
-            .await
-            .unwrap();
+        within(run(
+            srv,
+            config(Some(pem(&random_key())), Some("stale")),
+            None,
+            Some(prompter),
+        ))
+        .await
+        .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(count(&log, "kbdint"), 2);
     }

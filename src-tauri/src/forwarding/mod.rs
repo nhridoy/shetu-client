@@ -146,7 +146,12 @@ pub async fn auto_start_forwards(
             if !runtime::should_auto_start(&state.status(&definition.id)) {
                 return Ok(false);
             }
-            Ok::<_, String>(state.start(definition, owner, db, crypto, app, ssh).await.is_ok())
+            Ok::<_, String>(
+                state
+                    .start(definition, owner, db, crypto, app, ssh)
+                    .await
+                    .is_ok(),
+            )
         }
     });
     let mut started = 0;

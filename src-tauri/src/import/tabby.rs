@@ -15,9 +15,13 @@ fn check_shape(text: &str) -> Result<(), String> {
     let mut parser = Parser::new_from_str(text);
     let mut depth = 0usize;
     loop {
-        let (event, _) = parser.next_token().map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
+        let (event, _) = parser
+            .next_token()
+            .map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
         match event {
-            Event::Alias(_) => return Err("This Tabby config uses YAML aliases, which aren't supported".into()),
+            Event::Alias(_) => {
+                return Err("This Tabby config uses YAML aliases, which aren't supported".into())
+            }
             Event::SequenceStart(..) | Event::MappingStart(..) => {
                 depth += 1;
                 if depth > 64 {
@@ -33,15 +37,25 @@ fn check_shape(text: &str) -> Result<(), String> {
 
 pub(crate) fn parse(text: &str, origin: &str) -> Result<ImportPreview, String> {
     check_shape(text)?;
-    let docs = YamlLoader::load_from_str(text).map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
-    let mut out = ImportPreview { source: "tabby".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() };
-    let Some(doc) = docs.first() else { return Ok(out) };
-    let text_of = |y: &Yaml| match y {
-        Yaml::String(s) => Some(s.trim().to_string()),
-        Yaml::Integer(n) => Some(n.to_string()),
-        _ => None,
-    }
-    .filter(|s| !s.is_empty());
+    let docs = YamlLoader::load_from_str(text)
+        .map_err(|e| format!("Couldn't read the Tabby config: {e}"))?;
+    let mut out = ImportPreview {
+        source: "tabby".into(),
+        origin: origin.into(),
+        hosts: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let Some(doc) = docs.first() else {
+        return Ok(out);
+    };
+    let text_of = |y: &Yaml| {
+        match y {
+            Yaml::String(s) => Some(s.trim().to_string()),
+            Yaml::Integer(n) => Some(n.to_string()),
+            _ => None,
+        }
+        .filter(|s| !s.is_empty())
+    };
     // Newer configs reference groups by id; older ones put the name on the profile.
     let groups: Vec<(String, String)> = doc["groups"]
         .as_vec()
@@ -54,25 +68,44 @@ pub(crate) fn parse(text: &str, origin: &str) -> Result<ImportPreview, String> {
         let kind = text_of(&profile["type"]).unwrap_or_default();
         if kind != "ssh" {
             if !BUILT_IN.contains(&kind.as_str()) {
-                out.skipped.push(Skipped { name, reason: format!("{kind} profile") });
+                out.skipped.push(Skipped {
+                    name,
+                    reason: format!("{kind} profile"),
+                });
             }
             continue;
         }
         let options = &profile["options"];
         let Some(hostname) = text_of(&options["host"]) else {
-            out.skipped.push(Skipped { name, reason: "No host name".into() });
+            out.skipped.push(Skipped {
+                name,
+                reason: "No host name".into(),
+            });
             continue;
         };
-        let group = text_of(&profile["group"]).map(|g| groups.iter().find(|(id, _)| *id == g).map_or(g.clone(), |(_, n)| n.clone()));
-        let key = options["privateKeys"].as_vec().and_then(|keys| keys.first()).and_then(text_of).map(|k| {
-            let path = k.strip_prefix("file://").unwrap_or(&k);
-            super::encoding::percent_decode(path)
+        let group = text_of(&profile["group"]).map(|g| {
+            groups
+                .iter()
+                .find(|(id, _)| *id == g)
+                .map_or(g.clone(), |(_, n)| n.clone())
         });
+        let key = options["privateKeys"]
+            .as_vec()
+            .and_then(|keys| keys.first())
+            .and_then(text_of)
+            .map(|k| {
+                let path = k.strip_prefix("file://").unwrap_or(&k);
+                super::encoding::percent_decode(path)
+            });
         out.hosts.push(ImportedHost {
             id: text_of(&profile["id"]).unwrap_or_else(|| name.clone()),
             name,
             hostname,
-            port: options["port"].as_i64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0).unwrap_or(22),
+            port: options["port"]
+                .as_i64()
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .unwrap_or(22),
             user: text_of(&options["user"]),
             key: key.map(|k| super::describe_key(Path::new(&k))),
             jump: text_of(&options["jumpHost"]),
@@ -135,7 +168,10 @@ groups:
 "#;
 
     fn host<'a>(p: &'a ImportPreview, name: &str) -> &'a ImportedHost {
-        p.hosts.iter().find(|h| h.name == name).unwrap_or_else(|| panic!("{name} in {p:?}"))
+        p.hosts
+            .iter()
+            .find(|h| h.name == name)
+            .unwrap_or_else(|| panic!("{name} in {p:?}"))
     }
 
     #[test]
@@ -143,11 +179,17 @@ groups:
         let p = parse(CONFIG, "config.yaml").unwrap();
         assert_eq!(p.source, "tabby");
         let web = host(&p, "web");
-        assert_eq!((web.hostname.as_str(), web.port, web.user.as_deref()), ("10.0.0.4", 2222, Some("deploy")));
+        assert_eq!(
+            (web.hostname.as_str(), web.port, web.user.as_deref()),
+            ("10.0.0.4", 2222, Some("deploy"))
+        );
         assert_eq!(web.id, "ssh:custom:web:1111");
         assert_eq!(web.key.as_ref().unwrap().path, "/home/u/.ssh/id work");
         let b = host(&p, "bastion");
-        assert_eq!((b.port, b.user.as_deref(), b.key.is_none()), (22, None, true));
+        assert_eq!(
+            (b.port, b.user.as_deref(), b.key.is_none()),
+            (22, None, true)
+        );
     }
 
     #[test]
@@ -161,15 +203,24 @@ groups:
     #[test]
     fn jump_host_by_profile_id() {
         let p = parse(CONFIG, "f").unwrap();
-        assert_eq!(host(&p, "inner").jump.as_deref(), Some("ssh:custom:bastion:3333"));
+        assert_eq!(
+            host(&p, "inner").jump.as_deref(),
+            Some("ssh:custom:bastion:3333")
+        );
         // Unknown ids are kept; the shared planner notes them.
-        assert_eq!(host(&p, "lost").jump.as_deref(), Some("ssh:custom:gone:9999"));
+        assert_eq!(
+            host(&p, "lost").jump.as_deref(),
+            Some("ssh:custom:gone:9999")
+        );
     }
 
     #[test]
     fn non_ssh_skipped() {
         let p = parse(CONFIG, "f").unwrap();
-        assert!(p.skipped.contains(&Skipped { name: "console".into(), reason: "serial profile".into() }));
+        assert!(p.skipped.contains(&Skipped {
+            name: "console".into(),
+            reason: "serial profile".into()
+        }));
         assert!(p.skipped.iter().all(|s| s.name != "zsh"));
         assert_eq!(p.hosts.len(), 4);
     }

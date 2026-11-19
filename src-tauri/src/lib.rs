@@ -386,9 +386,10 @@ async fn wipe_local_data(
     edits: tauri::State<'_, edits::manager::EditManager>,
 ) -> Result<(), String> {
     forwarding.stop_all();
+    // Edits first: once their temp copies are gone, no edit upload can start from them.
+    edits.wipe().await?;
     // Waits until the queue has dropped everything, so nothing is saved back after the wipe.
     transfers.wipe().await;
-    edits.wipe().await;
     db::wipe_all(&db)
 }
 

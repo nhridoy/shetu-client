@@ -53,17 +53,31 @@ impl KnownHosts {
                         if host.is_empty() || fingerprint.is_empty() {
                             return None;
                         }
-                        Some(KnownHostEntry { host: host.to_string(), port, fingerprint })
+                        Some(KnownHostEntry {
+                            host: host.to_string(),
+                            port,
+                            fingerprint,
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default();
-        Self { path: path.to_path_buf(), entries, trust_new_hosts: false }
+        Self {
+            path: path.to_path_buf(),
+            entries,
+            trust_new_hosts: false,
+        }
     }
 
     /// Background (non-interactive) connections never trust a key the user has not seen.
     /// A first-seen key accepted via `trust_new_hosts` is saved here.
-    pub fn decide(&mut self, host: &str, port: u16, fingerprint: &str, interactive: bool) -> HostKeyDecision {
+    pub fn decide(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+        interactive: bool,
+    ) -> HostKeyDecision {
         match self.check(host, port, fingerprint) {
             HostKeyStatus::Known => HostKeyDecision::Accept,
             _ if !interactive => HostKeyDecision::Reject,
@@ -225,7 +239,9 @@ fn canonical_os_id(id: &str) -> Option<&'static str> {
 }
 
 pub fn fingerprint_of(server_public_key: &russh::keys::PublicKey) -> String {
-    server_public_key.fingerprint(russh::keys::HashAlg::Sha256).to_string()
+    server_public_key
+        .fingerprint(russh::keys::HashAlg::Sha256)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -271,7 +287,10 @@ mod tests {
     }
 
     fn tmp_path() -> std::path::PathBuf {
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!("shetu-known-hosts-{stamp}.txt"))
     }
 
@@ -290,12 +309,21 @@ mod tests {
 
     #[test]
     fn os_detection_parses_os_release_ids() {
-        assert_eq!(detect_os("Linux", "ID=ubuntu\nVERSION_ID=24.04\n"), Some("ubuntu"));
-        assert_eq!(detect_os("Linux", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"), Some("linuxmint"));
+        assert_eq!(
+            detect_os("Linux", "ID=ubuntu\nVERSION_ID=24.04\n"),
+            Some("ubuntu")
+        );
+        assert_eq!(
+            detect_os("Linux", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"),
+            Some("linuxmint")
+        );
         assert_eq!(detect_os("Linux", "ID=pop\nID_LIKE=ubuntu\n"), Some("pop"));
         assert_eq!(detect_os("Linux", "ID=opensuse-leap\n"), Some("opensuse"));
         assert_eq!(detect_os("Linux", "ID=amzn\n"), Some("amazon"));
-        assert_eq!(detect_os("Linux", "ID=someweirdos\nID_LIKE=debian\n"), Some("debian"));
+        assert_eq!(
+            detect_os("Linux", "ID=someweirdos\nID_LIKE=debian\n"),
+            Some("debian")
+        );
         assert_eq!(detect_os("Linux", "ID=someweirdos\n"), Some("linux"));
         assert_eq!(detect_os("Linux", ""), Some("linux"));
     }
@@ -317,7 +345,11 @@ mod tests {
     #[test]
     fn known_hosts_persists_and_skips_corrupt_lines() {
         let path = tmp_path();
-        std::fs::write(&path, "web|22|fp-a\ncorrupt-line-no-separators\nmail|25|fp-b\n").unwrap();
+        std::fs::write(
+            &path,
+            "web|22|fp-a\ncorrupt-line-no-separators\nmail|25|fp-b\n",
+        )
+        .unwrap();
         let mut kh = KnownHosts::load(&path);
         assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Known);
         assert_eq!(kh.check("mail", 25, "fp-b"), HostKeyStatus::Known);
@@ -364,7 +396,10 @@ mod tests {
     fn unknown_key_on_interactive_connection_prompts_without_saving() {
         let path = tmp_path();
         let mut kh = KnownHosts::load(&path);
-        assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Prompt(HostKeyPromptKind::New));
+        assert_eq!(
+            kh.decide("web", 22, "fp-a", true),
+            HostKeyDecision::Prompt(HostKeyPromptKind::New)
+        );
         assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Unknown);
         let _ = std::fs::remove_file(&path);
     }
@@ -385,7 +420,10 @@ mod tests {
         let mut kh = KnownHosts::load(&path);
         kh.trust_new_hosts = true;
         assert_eq!(kh.decide("web", 22, "fp-a", true), HostKeyDecision::Accept);
-        assert_eq!(KnownHosts::load(&path).check("web", 22, "fp-a"), HostKeyStatus::Known);
+        assert_eq!(
+            KnownHosts::load(&path).check("web", 22, "fp-a"),
+            HostKeyStatus::Known
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -395,7 +433,10 @@ mod tests {
         let mut kh = KnownHosts::load(&path);
         kh.accept("web", 22, "fp-a");
         kh.trust_new_hosts = true;
-        assert_eq!(kh.decide("web", 22, "fp-b", true), HostKeyDecision::Prompt(HostKeyPromptKind::Changed));
+        assert_eq!(
+            kh.decide("web", 22, "fp-b", true),
+            HostKeyDecision::Prompt(HostKeyPromptKind::Changed)
+        );
         assert_eq!(kh.decide("web", 22, "fp-b", false), HostKeyDecision::Reject);
         assert_eq!(kh.check("web", 22, "fp-a"), HostKeyStatus::Known);
         let _ = std::fs::remove_file(&path);
@@ -415,7 +456,11 @@ mod tests {
     fn host_key_answer_only_approves_the_fingerprint_shown() {
         let (tx_a, mut rx_a) = oneshot::channel();
         let (tx_b, mut rx_b) = oneshot::channel();
-        settle_pending(vec![("fp-a".into(), tx_a), ("fp-b".into(), tx_b)], "fp-a", true);
+        settle_pending(
+            vec![("fp-a".into(), tx_a), ("fp-b".into(), tx_b)],
+            "fp-a",
+            true,
+        );
         assert_eq!(rx_a.try_recv(), Ok(true));
         assert_eq!(rx_b.try_recv(), Ok(false));
         let (tx, mut rx) = oneshot::channel();
@@ -425,14 +470,23 @@ mod tests {
 
     #[test]
     fn rejected_host_key_ends_connect_without_reconnect() {
-        let rejected = format!("destination connection: ssh handshake web:22: {}", russh::Error::UnknownKey);
+        let rejected = format!(
+            "destination connection: ssh handshake web:22: {}",
+            russh::Error::UnknownKey
+        );
         assert_eq!(
             connect_failure_events(&rejected),
-            vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+            vec![(
+                "error",
+                "Connection cancelled: host key not trusted.".to_string()
+            )]
         );
         assert_eq!(
             connect_failure_events("connect web:22: refused"),
-            vec![("error", "connect web:22: refused".to_string()), ("disconnected", String::new())]
+            vec![
+                ("error", "connect web:22: refused".to_string()),
+                ("disconnected", String::new())
+            ]
         );
     }
 
@@ -440,13 +494,22 @@ mod tests {
     fn ping_reports_reachable_only_when_the_destination_key_is_untrusted() {
         use crate::ssh_route::{RouteError, RouteHop};
         let refused = format!("ssh handshake web:22: {}", russh::Error::UnknownKey);
-        let target = ping_failure(RouteError { hop: RouteHop::Target, message: refused.clone() })
-            .expect("the destination answered");
+        let target = ping_failure(RouteError {
+            hop: RouteHop::Target,
+            message: refused.clone(),
+        })
+        .expect("the destination answered");
         assert!(target.reachable);
         assert_eq!(target.latency_ms, None);
-        let bastion = ping_failure(RouteError { hop: RouteHop::Bastion, message: refused });
+        let bastion = ping_failure(RouteError {
+            hop: RouteHop::Bastion,
+            message: refused,
+        });
         assert_eq!(bastion.err(), Some("Jump host key not trusted".to_string()));
-        let other = ping_failure(RouteError { hop: RouteHop::Target, message: "authentication rejected".into() });
+        let other = ping_failure(RouteError {
+            hop: RouteHop::Target,
+            message: "authentication rejected".into(),
+        });
         assert_eq!(other.err(), Some("authentication rejected".to_string()));
     }
 
@@ -454,10 +517,16 @@ mod tests {
     async fn prompter_round_trip() {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let answerer = Arc::clone(&pending);
-        let answer = await_prompt_answer(&pending, move |id| {
-            assert_eq!(answerer.lock().unwrap().len(), 1);
-            settle_prompt(&answerer, id, Some(vec!["x".into()]));
-        }, |_| panic!("answered prompt must not close"), AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(
+            &pending,
+            move |id| {
+                assert_eq!(answerer.lock().unwrap().len(), 1);
+                settle_prompt(&answerer, id, Some(vec!["x".into()]));
+            },
+            |_| panic!("answered prompt must not close"),
+            AUTH_PROMPT_TIMEOUT,
+        )
+        .await;
         assert_eq!(answer, Some(vec!["x".to_string()]));
         assert!(pending.lock().unwrap().is_empty());
     }
@@ -468,7 +537,13 @@ mod tests {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let seen = Arc::new(Mutex::new(String::new()));
         let seen_in = Arc::clone(&seen);
-        let answer = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(), |_| {}, AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(
+            &pending,
+            move |id| *seen_in.lock().unwrap() = id.to_string(),
+            |_| {},
+            AUTH_PROMPT_TIMEOUT,
+        )
+        .await;
         assert_eq!(answer, None);
         assert!(pending.lock().unwrap().is_empty());
         settle_prompt(&pending, &seen.lock().unwrap(), Some(vec!["late".into()]));
@@ -482,8 +557,12 @@ mod tests {
         let seen = Arc::new(Mutex::new(String::new()));
         let closed = Arc::new(Mutex::new(Vec::<String>::new()));
         let (seen_in, closed_in) = (Arc::clone(&seen), Arc::clone(&closed));
-        let waiting = await_prompt_answer(&pending, move |id| *seen_in.lock().unwrap() = id.to_string(),
-            move |id| closed_in.lock().unwrap().push(id.to_string()), AUTH_PROMPT_TIMEOUT);
+        let waiting = await_prompt_answer(
+            &pending,
+            move |id| *seen_in.lock().unwrap() = id.to_string(),
+            move |id| closed_in.lock().unwrap().push(id.to_string()),
+            AUTH_PROMPT_TIMEOUT,
+        );
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await; // dropped mid-wait, as disconnect does
         assert!(pending.lock().unwrap().is_empty());
         assert_eq!(*closed.lock().unwrap(), vec![seen.lock().unwrap().clone()]);
@@ -495,7 +574,13 @@ mod tests {
         let pending: PendingPrompts = Arc::new(Mutex::new(HashMap::new()));
         let closed = Arc::new(Mutex::new(0));
         let closed_in = Arc::clone(&closed);
-        let answer = await_prompt_answer(&pending, |_| {}, move |_| *closed_in.lock().unwrap() += 1, AUTH_PROMPT_TIMEOUT).await;
+        let answer = await_prompt_answer(
+            &pending,
+            |_| {},
+            move |_| *closed_in.lock().unwrap() += 1,
+            AUTH_PROMPT_TIMEOUT,
+        )
+        .await;
         assert_eq!(answer, None);
         assert_eq!(*closed.lock().unwrap(), 1);
     }
@@ -510,7 +595,10 @@ mod tests {
         assert!(!mine.is_waiting());
         waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         assert!(mine.is_waiting());
-        assert!(!other.is_waiting(), "a login prompt on another connection to the same host");
+        assert!(
+            !other.is_waiting(),
+            "a login prompt on another connection to the same host"
+        );
     }
 
     #[test]
@@ -519,7 +607,10 @@ mod tests {
         let watch = HostKeyPromptWatch::new(Arc::clone(&pending), "target.internal", 22);
         assert!(!watch.is_waiting());
         let (tx, _rx) = oneshot::channel();
-        pending.lock().unwrap().insert("target.internal:22".to_string(), vec![("fp".to_string(), tx)]);
+        pending.lock().unwrap().insert(
+            "target.internal:22".to_string(),
+            vec![("fp".to_string(), tx)],
+        );
         assert!(watch.is_waiting());
         pending.lock().unwrap().remove("target.internal:22");
         assert!(!watch.is_waiting());
@@ -611,7 +702,12 @@ async fn await_prompt_answer(
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     pending.lock().ok()?.insert(id.clone(), tx);
-    let mut guard = PromptGuard { pending: Arc::clone(pending), id, answered: false, closed: Some(closed) };
+    let mut guard = PromptGuard {
+        pending: Arc::clone(pending),
+        id,
+        answered: false,
+        closed: Some(closed),
+    };
     emit(&guard.id);
     let answer = tokio::time::timeout(timeout, rx).await;
     guard.answered = matches!(answer, Ok(Ok(_)));
@@ -636,7 +732,11 @@ fn auth_prompt_payload(
     username: &str,
     request: &crate::ssh_auth::AuthPromptRequest,
 ) -> serde_json::Value {
-    let prompts: Vec<_> = request.prompts.iter().map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo })).collect();
+    let prompts: Vec<_> = request
+        .prompts
+        .iter()
+        .map(|(text, echo)| serde_json::json!({ "text": text, "echo": echo }))
+        .collect();
     serde_json::json!({
         "id": id, "sessionId": session_id, "hop": hop, "kind": request.kind, "host": host, "port": port, "username": username,
         "name": request.name, "instructions": request.instructions, "prompts": prompts,
@@ -653,20 +753,38 @@ pub(crate) fn make_prompter(
     username: String,
 ) -> crate::ssh_auth::Prompter {
     Arc::new(move |request: crate::ssh_auth::AuthPromptRequest| {
-        let (app, pending, session_id, host, username) =
-            (app.clone(), Arc::clone(&pending), session_id.clone(), host.clone(), username.clone());
+        let (app, pending, session_id, host, username) = (
+            app.clone(),
+            Arc::clone(&pending),
+            session_id.clone(),
+            host.clone(),
+            username.clone(),
+        );
         Box::pin(async move {
-            await_prompt_answer(&pending, |id| {
-                let _ = app.emit("ssh-auth-prompt", auth_prompt_payload(id, &session_id, hop, &host, port, &username, &request));
-            }, |id| {
-                let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
-            }, AUTH_PROMPT_TIMEOUT).await
+            await_prompt_answer(
+                &pending,
+                |id| {
+                    let _ = app.emit(
+                        "ssh-auth-prompt",
+                        auth_prompt_payload(id, &session_id, hop, &host, port, &username, &request),
+                    );
+                },
+                |id| {
+                    let _ = app.emit("ssh-auth-prompt-closed", serde_json::json!({ "id": id }));
+                },
+                AUTH_PROMPT_TIMEOUT,
+            )
+            .await
         })
     })
 }
 
 #[tauri::command]
-pub fn answer_auth_prompt(id: String, responses: Option<Vec<String>>, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
+pub fn answer_auth_prompt(
+    id: String,
+    responses: Option<Vec<String>>,
+    state: tauri::State<'_, SshSessions>,
+) -> Result<(), String> {
     settle_prompt(&state.pending_prompts, &id, responses);
     Ok(())
 }
@@ -686,9 +804,15 @@ pub(crate) fn is_host_key_rejection(error: &str) -> bool {
 /// No `disconnected` for a refused key, so the terminal does not reconnect and prompt again.
 fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
     if is_host_key_rejection(error) {
-        vec![("error", "Connection cancelled: host key not trusted.".to_string())]
+        vec![(
+            "error",
+            "Connection cancelled: host key not trusted.".to_string(),
+        )]
     } else {
-        vec![("error", error.to_string()), ("disconnected", String::new())]
+        vec![
+            ("error", error.to_string()),
+            ("disconnected", String::new()),
+        ]
     }
 }
 
@@ -696,7 +820,11 @@ fn connect_failure_events(error: &str) -> Vec<(&'static str, String)> {
 fn ping_failure(error: crate::ssh_route::RouteError) -> Result<PingResult, String> {
     match error.hop {
         _ if !is_host_key_rejection(&error.message) => Err(error.message),
-        crate::ssh_route::RouteHop::Target => Ok(PingResult { reachable: true, latency_ms: None, os: None }),
+        crate::ssh_route::RouteHop::Target => Ok(PingResult {
+            reachable: true,
+            latency_ms: None,
+            os: None,
+        }),
         crate::ssh_route::RouteHop::Bastion => Err("Jump host key not trusted".to_string()),
     }
 }
@@ -716,7 +844,9 @@ impl SshSessions {
             inflight: Arc::new(Mutex::new(HashMap::new())),
             pending_keys: Arc::new(Mutex::new(HashMap::new())),
             pending_prompts: Arc::new(Mutex::new(HashMap::new())),
-            known_hosts: Arc::new(Mutex::new(KnownHosts::load(&data_dir.join(KNOWN_HOSTS_FILE)))),
+            known_hosts: Arc::new(Mutex::new(KnownHosts::load(
+                &data_dir.join(KNOWN_HOSTS_FILE),
+            ))),
         }
     }
 }
@@ -733,7 +863,12 @@ pub struct SshHandler {
     /// This connection only, so another terminal's prompt to the same host does not pause its timeout.
     user_waits: crate::ssh_auth::UserWaits,
     auto_accept: bool,
-    forwarded: Option<mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>>,
+    forwarded: Option<
+        mpsc::Sender<(
+            russh::Channel<russh::client::Msg>,
+            russh::client::ChannelOpenHandle,
+        )>,
+    >,
     forward_bind: Option<(String, u32)>,
     require_known_host: bool,
     /// Set only on the target's interactive terminal handler.
@@ -749,16 +884,19 @@ pub(crate) struct HostKeyPromptWatch {
 }
 
 impl HostKeyPromptWatch {
-    pub(crate) fn new(
-        pending: PendingKeys,
-        host: &str,
-        port: u16,
-    ) -> Self {
-        Self { pending, waits: Default::default(), key: format!("{host}:{port}") }
+    pub(crate) fn new(pending: PendingKeys, host: &str, port: u16) -> Self {
+        Self {
+            pending,
+            waits: Default::default(),
+            key: format!("{host}:{port}"),
+        }
     }
 
     pub(crate) fn is_waiting(&self) -> bool {
-        self.pending.lock().map(|pending| pending.contains_key(&self.key)).unwrap_or(false)
+        self.pending
+            .lock()
+            .map(|pending| pending.contains_key(&self.key))
+            .unwrap_or(false)
             || self.waits.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
@@ -778,7 +916,8 @@ impl SshHandler {
     }
 
     pub(crate) fn prompt_watch(&self) -> HostKeyPromptWatch {
-        let mut watch = HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
+        let mut watch =
+            HostKeyPromptWatch::new(Arc::clone(&self.pending_keys), &self.host, self.port);
         watch.waits = Arc::clone(&self.user_waits);
         watch
     }
@@ -800,7 +939,22 @@ impl SshHandler {
     ) -> Self {
         // Every SSH, SFTP, forward and bastion connection builds a handler first.
         crate::logging::hide(&host);
-        Self { host, port, session_id, app, known_hosts, pending_keys, pending_prompts: None, user_waits: Default::default(), auto_accept, forwarded: None, forward_bind: None, require_known_host: false, forward_agent: false, hop: crate::ssh_route::RouteHop::Target }
+        Self {
+            host,
+            port,
+            session_id,
+            app,
+            known_hosts,
+            pending_keys,
+            pending_prompts: None,
+            user_waits: Default::default(),
+            auto_accept,
+            forwarded: None,
+            forward_bind: None,
+            require_known_host: false,
+            forward_agent: false,
+            hop: crate::ssh_route::RouteHop::Target,
+        }
     }
 
     pub(crate) fn at_hop(mut self, hop: crate::ssh_route::RouteHop) -> Self {
@@ -809,7 +963,10 @@ impl SshHandler {
     }
     pub(crate) fn with_forwarded_channels(
         mut self,
-        sender: mpsc::Sender<(russh::Channel<russh::client::Msg>, russh::client::ChannelOpenHandle)>,
+        sender: mpsc::Sender<(
+            russh::Channel<russh::client::Msg>,
+            russh::client::ChannelOpenHandle,
+        )>,
         address: String,
         port: u32,
     ) -> Self {
@@ -827,7 +984,6 @@ impl SshHandler {
         self.require_known_host = true;
         self
     }
-
 }
 
 impl russh::client::Handler for SshHandler {
@@ -863,11 +1019,17 @@ impl russh::client::Handler for SshHandler {
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
         if !accept_agent_channel(self.forward_agent) {
-            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
             return Ok(());
         }
-        let Some(agent) = crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await else {
-            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+        let Some(agent) =
+            crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await
+        else {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
             return Ok(());
         };
         reply.accept().await;
@@ -892,7 +1054,9 @@ impl russh::client::Handler for SshHandler {
                 HostKeyDecision::Accept => return Ok(true),
                 HostKeyDecision::Reject => return Ok(false),
                 HostKeyDecision::Prompt(HostKeyPromptKind::New) => ("new", None),
-                HostKeyDecision::Prompt(HostKeyPromptKind::Changed) => ("changed", kh.get_fingerprint(&host, port)),
+                HostKeyDecision::Prompt(HostKeyPromptKind::Changed) => {
+                    ("changed", kh.get_fingerprint(&host, port))
+                }
             }
         };
         let host_port_key = format!("{}:{}", host, port);
@@ -979,7 +1143,8 @@ pub(crate) async fn authenticate_over_stream<R>(
     stream: R,
     progress: Option<(&tauri::AppHandle, &str)>,
 ) -> Result<russh::client::Handle<SshHandler>, String>
-where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let client_config = Arc::new(crate::ssh_options::client_config(
         &crate::ssh_options::defaults(),
@@ -998,8 +1163,22 @@ where R: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 
     let agent_path = crate::ssh_options::defaults().agent_path;
     let agent = use_agent.then(|| crate::ssh_agent::connect_agent(&agent_path));
-    let prompter = prompter.map(|(app, pending)| make_prompter(app, pending, session_id, hop, config.host.clone(), config.port, config.username.clone()));
-    let ctx = crate::ssh_auth::LoginContext { agent, prompter, waits };
+    let prompter = prompter.map(|(app, pending)| {
+        make_prompter(
+            app,
+            pending,
+            session_id,
+            hop,
+            config.host.clone(),
+            config.port,
+            config.username.clone(),
+        )
+    });
+    let ctx = crate::ssh_auth::LoginContext {
+        agent,
+        prompter,
+        waits,
+    };
     crate::ssh_auth::login(&mut session, config, ctx).await?;
     Ok(session)
 }
@@ -1059,9 +1238,25 @@ async fn probe_os_saved(
     if route.bastion.is_none() {
         return probe_os(app, session_id, &route.target, known_hosts, pending_keys).await;
     }
-    let target_handler = SshHandler::new(route.target.host.clone(), route.target.port, session_id.clone(), app.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), true);
+    let target_handler = SshHandler::new(
+        route.target.host.clone(),
+        route.target.port,
+        session_id.clone(),
+        app.clone(),
+        Arc::clone(&known_hosts),
+        Arc::clone(&pending_keys),
+        true,
+    );
     let bastion = route.bastion.as_ref()?;
-    let bastion_handler = SshHandler::new(bastion.host.clone(), bastion.port, session_id, app, known_hosts, pending_keys, true);
+    let bastion_handler = SshHandler::new(
+        bastion.host.clone(),
+        bastion.port,
+        session_id,
+        app,
+        known_hosts,
+        pending_keys,
+        true,
+    );
     tokio::time::timeout(std::time::Duration::from_secs(12), async {
         let connection = crate::ssh_route::connect_saved_route(route, target_handler, bastion_handler, None).await.ok()?;
         let mut channel = connection.target.channel_open_session().await.ok()?;
@@ -1088,7 +1283,10 @@ pub async fn connect(
     rows: u32,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    run_connect_session(app_handle, session_id, config, None, None, &state, cols, rows).await;
+    run_connect_session(
+        app_handle, session_id, config, None, None, &state, cols, rows,
+    )
+    .await;
     Ok(())
 }
 
@@ -1108,15 +1306,16 @@ pub async fn connect_saved(
     crypto: tauri::State<'_, crate::CryptoState>,
     state: tauri::State<'_, SshSessions>,
 ) -> Result<(), String> {
-    let mut route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
+    let mut route =
+        crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let mut config = route.target.clone();
     // Gates both the handler flag and the agent_forward request in run_connect_session.
     config.forward_agent = agent_forwarding_on(config.forward_agent, allow_agent_forwarding);
     config.detect_os = detect_os;
     route.target.detect_os = detect_os;
     let os = if detect_os {
-        let existing_os = crate::db::get_sync_row(&db, crate::db::Table::Hosts, &host_id)?
-            .and_then(|r| r.os);
+        let existing_os =
+            crate::db::get_sync_row(&db, crate::db::Table::Hosts, &host_id)?.and_then(|r| r.os);
         if existing_os.is_some() {
             existing_os
         } else {
@@ -1136,7 +1335,17 @@ pub async fn connect_saved(
     } else {
         None
     };
-    run_connect_session(app_handle, session_id, config, Some(route), os, &state, cols, rows).await;
+    run_connect_session(
+        app_handle,
+        session_id,
+        config,
+        Some(route),
+        os,
+        &state,
+        cols,
+        rows,
+    )
+    .await;
     Ok(())
 }
 
@@ -1151,7 +1360,8 @@ fn close_reason_is_lost<E>(reason: Result<bool, E>) -> bool {
 
 const CONNECTION_LOST_NOTICE: &str = "\r\n[Connection lost]\r\n";
 
-pub(crate) const NO_AGENT_NOTICE: &str = "\r\n[Agent forwarding unavailable: no SSH agent found]\r\n";
+pub(crate) const NO_AGENT_NOTICE: &str =
+    "\r\n[Agent forwarding unavailable: no SSH agent found]\r\n";
 
 /// Pipes `a` and `b` until either direction ends, then drops both. The agent protocol is
 /// request/response, and a Windows named pipe never sees EOF from `copy_bidirectional`.
@@ -1215,17 +1425,25 @@ async fn run_connect_session(
         let os = if pre_detected_os.is_some() {
             pre_detected_os
         } else if config.detect_os {
-            if let Some(ref route) = route { probe_os_saved(
-                app_handle.clone(), session_id.clone(), route,
-                Arc::clone(&known_hosts), Arc::clone(&pending_keys),
-            ).await } else { probe_os(
-                app_handle.clone(),
-                session_id.clone(),
-                &config,
-                Arc::clone(&known_hosts),
-                Arc::clone(&pending_keys),
-            )
-            .await }
+            if let Some(ref route) = route {
+                probe_os_saved(
+                    app_handle.clone(),
+                    session_id.clone(),
+                    route,
+                    Arc::clone(&known_hosts),
+                    Arc::clone(&pending_keys),
+                )
+                .await
+            } else {
+                probe_os(
+                    app_handle.clone(),
+                    session_id.clone(),
+                    &config,
+                    Arc::clone(&known_hosts),
+                    Arc::clone(&pending_keys),
+                )
+                .await
+            }
         } else {
             None
         };
@@ -1238,15 +1456,37 @@ async fn run_connect_session(
             Arc::clone(&known_hosts),
             Arc::clone(&pending_keys),
             false,
-        ).with_prompts(&pending_prompts).with_forward_agent(config.forward_agent);
+        )
+        .with_prompts(&pending_prompts)
+        .with_forward_agent(config.forward_agent);
 
         let routed = if let Some(ref route) = route {
             let bastion_config = route.bastion.as_ref().unwrap_or(&route.target);
-            let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(), Arc::clone(&known_hosts), Arc::clone(&pending_keys), false).with_prompts(&pending_prompts);
-            crate::ssh_route::connect_saved_route(route, handler, bastion_handler, Some((&app_handle, &session_id))).await.map_err(String::from)
+            let bastion_handler = SshHandler::new(
+                bastion_config.host.clone(),
+                bastion_config.port,
+                session_id.clone(),
+                app_handle.clone(),
+                Arc::clone(&known_hosts),
+                Arc::clone(&pending_keys),
+                false,
+            )
+            .with_prompts(&pending_prompts);
+            crate::ssh_route::connect_saved_route(
+                route,
+                handler,
+                bastion_handler,
+                Some((&app_handle, &session_id)),
+            )
+            .await
+            .map_err(String::from)
         } else {
-            connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await
-                .map(|target| crate::ssh_route::RouteConnection { target, bastion: None })
+            connect_authenticated(handler, &config, Some((&app_handle, &session_id)))
+                .await
+                .map(|target| crate::ssh_route::RouteConnection {
+                    target,
+                    bastion: None,
+                })
         };
         let connection = match routed {
             Ok(connection) => connection,
@@ -1273,7 +1513,15 @@ async fn run_connect_session(
             let _ = channel.set_env(false, name.as_str(), value.as_str()).await;
         }
         if let Err(e) = channel
-            .request_pty(true, &crate::ssh_options::defaults().term, cols, rows, 0, 0, &[])
+            .request_pty(
+                true,
+                &crate::ssh_options::defaults().term,
+                cols,
+                rows,
+                0,
+                0,
+                &[],
+            )
             .await
         {
             emit(&app_handle, "error", &e.to_string());
@@ -1281,7 +1529,10 @@ async fn run_connect_session(
             return;
         }
         if config.forward_agent {
-            if crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path).await.is_none() {
+            if crate::ssh_agent::connect_agent(&crate::ssh_options::defaults().agent_path)
+                .await
+                .is_none()
+            {
                 emit(&app_handle, "output", NO_AGENT_NOTICE);
             } else if channel.agent_forward(false).await.is_err() {
                 emit(&app_handle, "output", NO_AGENT_NOTICE);
@@ -1328,11 +1579,17 @@ async fn run_connect_session(
             };
             sessions.insert(
                 session_id.clone(),
-                SessionSlot { cmd_tx: tx, writer_handle },
+                SessionSlot {
+                    cmd_tx: tx,
+                    writer_handle,
+                },
             );
         }
         // Remove from inflight now that session is fully established
-        inflight_for_spawn.lock().ok().map(|mut g| g.remove(&session_id));
+        inflight_for_spawn
+            .lock()
+            .ok()
+            .map(|mut g| g.remove(&session_id));
 
         let _ = app_handle.emit(
             "ssh-output",
@@ -1348,8 +1605,12 @@ async fn run_connect_session(
             Some(StartupAction::Command(c)) => {
                 let _ = startup_tx.send(SessionCmd::Input(startup_bytes(c))).await;
             }
-            Some(StartupAction::MissingSnippet) => emit(&app_handle, "output", STARTUP_MISSING_NOTICE),
-            Some(StartupAction::SnippetHasVariables) => emit(&app_handle, "output", STARTUP_VARIABLES_NOTICE),
+            Some(StartupAction::MissingSnippet) => {
+                emit(&app_handle, "output", STARTUP_MISSING_NOTICE)
+            }
+            Some(StartupAction::SnippetHasVariables) => {
+                emit(&app_handle, "output", STARTUP_VARIABLES_NOTICE)
+            }
             None => {}
         }
         drop(startup_tx);
@@ -1407,7 +1668,10 @@ async fn run_connect_session(
         // session handle drops here → connection closed
     });
     // Store inflight handle so disconnect can abort during probe/handshake
-    inflight_for_insert.lock().ok().map(|mut g| g.insert(connect_session_id, handle));
+    inflight_for_insert
+        .lock()
+        .ok()
+        .map(|mut g| g.insert(connect_session_id, handle));
 }
 
 #[tauri::command]
@@ -1498,8 +1762,15 @@ pub async fn accept_host_key(
 }
 
 #[tauri::command]
-pub fn set_trust_new_hosts(enabled: bool, state: tauri::State<'_, SshSessions>) -> Result<(), String> {
-    state.known_hosts.lock().map_err(|e| e.to_string())?.trust_new_hosts = enabled;
+pub fn set_trust_new_hosts(
+    enabled: bool,
+    state: tauri::State<'_, SshSessions>,
+) -> Result<(), String> {
+    state
+        .known_hosts
+        .lock()
+        .map_err(|e| e.to_string())?
+        .trust_new_hosts = enabled;
     Ok(())
 }
 
@@ -1519,26 +1790,73 @@ pub async fn ping_host_saved(
     let timeout = std::time::Duration::from_millis(2000);
     let start = std::time::Instant::now();
     if route.bastion.is_some() {
-        let target_handler = SshHandler::new(config.host.clone(), config.port, "ping".into(), app_handle.clone(), Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys), true);
+        let target_handler = SshHandler::new(
+            config.host.clone(),
+            config.port,
+            "ping".into(),
+            app_handle.clone(),
+            Arc::clone(&state.known_hosts),
+            Arc::clone(&state.pending_keys),
+            true,
+        );
         let bastion_config = route.bastion.as_ref().expect("checked above");
-        let bastion_handler = SshHandler::new(bastion_config.host.clone(), bastion_config.port, "ping".into(), app_handle.clone(), Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys), true);
-        let connected = tokio::time::timeout(std::time::Duration::from_secs(20), crate::ssh_route::connect_saved_route(&route, target_handler, bastion_handler, None)).await;
+        let bastion_handler = SshHandler::new(
+            bastion_config.host.clone(),
+            bastion_config.port,
+            "ping".into(),
+            app_handle.clone(),
+            Arc::clone(&state.known_hosts),
+            Arc::clone(&state.pending_keys),
+            true,
+        );
+        let connected = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            crate::ssh_route::connect_saved_route(&route, target_handler, bastion_handler, None),
+        )
+        .await;
         match connected {
             Ok(Ok(connection)) => drop(connection),
             Ok(Err(error)) => return ping_failure(error),
-            Err(_) => return Ok(PingResult { reachable: false, latency_ms: None, os: None }),
+            Err(_) => {
+                return Ok(PingResult {
+                    reachable: false,
+                    latency_ms: None,
+                    os: None,
+                })
+            }
         }
         let latency_ms = start.elapsed().as_millis() as u64;
-        let os = if detect_os { probe_os_saved(app_handle, "ping".into(), &route, Arc::clone(&state.known_hosts), Arc::clone(&state.pending_keys)).await } else { None };
-        if let Some(ref value) = os { let _ = crate::db::update_host_os(&db, &host_id, value); }
-        return Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os });
+        let os = if detect_os {
+            probe_os_saved(
+                app_handle,
+                "ping".into(),
+                &route,
+                Arc::clone(&state.known_hosts),
+                Arc::clone(&state.pending_keys),
+            )
+            .await
+        } else {
+            None
+        };
+        if let Some(ref value) = os {
+            let _ = crate::db::update_host_os(&db, &host_id, value);
+        }
+        return Ok(PingResult {
+            reachable: true,
+            latency_ms: Some(latency_ms),
+            os,
+        });
     }
     let addr = resolve_addr(&config.host, config.port).await?;
     let connected = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
     match connected {
         Ok(Ok(_)) => {}
         _ => {
-            return Ok(PingResult { reachable: false, latency_ms: None, os: None });
+            return Ok(PingResult {
+                reachable: false,
+                latency_ms: None,
+                os: None,
+            });
         }
     }
     let latency_ms = start.elapsed().as_millis() as u64;
@@ -1557,7 +1875,11 @@ pub async fn ping_host_saved(
     if let Some(ref os_val) = os {
         let _ = crate::db::update_host_os(&db, &host_id, os_val);
     }
-    Ok(PingResult { reachable: true, latency_ms: Some(latency_ms), os })
+    Ok(PingResult {
+        reachable: true,
+        latency_ms: Some(latency_ms),
+        os,
+    })
 }
 
 fn load_startup(
@@ -1576,9 +1898,19 @@ fn load_startup(
             return None;
         }
         let session = crypto.session.lock().ok()?;
-        let plain = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "snippets", &row.vault_id).ok()?;
+        let plain = crate::team_keys::decrypt_row_secret(
+            db,
+            &session,
+            &row.data,
+            "snippets",
+            &row.vault_id,
+        )
+        .ok()?;
         let v: serde_json::Value = serde_json::from_str(&plain).ok()?;
-        v["command"].as_str().filter(|c| !c.trim().is_empty()).map(String::from)
+        v["command"]
+            .as_str()
+            .filter(|c| !c.trim().is_empty())
+            .map(String::from)
     })();
     Some(match command {
         None => StartupAction::MissingSnippet,
@@ -1614,11 +1946,13 @@ pub fn load_host_config_as(
     let row = crate::db::get_sync_row(db, crate::db::Table::Hosts, host_id)?
         .ok_or_else(|| "host not found".to_string())?;
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
-    let plaintext = crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id)?;
+    let plaintext =
+        crate::team_keys::decrypt_row_secret(db, &session, &row.data, "hosts", &row.vault_id)?;
     drop(session);
     let payload: serde_json::Value =
         serde_json::from_str(&plaintext).map_err(|e| format!("bad host payload: {e}"))?;
-    let chain = crate::host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
+    let chain =
+        crate::host_inherit::group_chain(db, crypto, &row.vault_id, row.group_id.as_deref());
     let effective = crate::host_inherit::resolve_with(
         &payload,
         row.auth_type.as_deref().unwrap_or("password"),
@@ -1646,7 +1980,11 @@ pub fn load_host_config_as(
         detect_os: false,
         keepalive_secs: effective.keepalive_secs.map(|(secs, _)| secs),
         forward_agent: effective.forward_agent.0,
-        env: effective.env.into_iter().map(|(name, value, _)| (name, value)).collect(),
+        env: effective
+            .env
+            .into_iter()
+            .map(|(name, value, _)| (name, value))
+            .collect(),
         // `{none: true}` has neither command nor snippetId, so load_startup gives None.
         startup: load_startup(db, crypto, &row.vault_id, &effective.startup.0),
         totp: effective
@@ -1658,12 +1996,19 @@ pub fn load_host_config_as(
     if let Some(key_id) = effective.key_id.as_deref() {
         let decrypt = |key_row: &crate::db::SyncRow| -> Result<serde_json::Value, String> {
             let session = crypto.session.lock().map_err(|e| e.to_string())?;
-            let key_plain = crate::team_keys::decrypt_row_secret(db, &session, &key_row.data, "keys", &key_row.vault_id)?;
+            let key_plain = crate::team_keys::decrypt_row_secret(
+                db,
+                &session,
+                &key_row.data,
+                "keys",
+                &key_row.vault_id,
+            )?;
             serde_json::from_str(&key_plain).map_err(|e| format!("bad key payload: {e}"))
         };
         let key_payload = if effective.auth_from.is_some() || effective.identity.is_some() {
             // An unusable inherited or identity key means "no key": the connect never fails because of it.
-            crate::host_inherit::usable_key(db, key_id, &row.vault_id).and_then(|k| decrypt(&k).ok())
+            crate::host_inherit::usable_key(db, key_id, &row.vault_id)
+                .and_then(|k| decrypt(&k).ok())
         } else {
             let key_row = crate::db::get_sync_row(db, crate::db::Table::Keys, key_id)?
                 .ok_or_else(|| "key not found".to_string())?;
@@ -1685,14 +2030,26 @@ mod auth_prompt_payload_tests {
 
     #[test]
     fn payload_names_the_hop_session_and_kind() {
-        let request = AuthPromptRequest { kind: PromptKind::Password, name: String::new(), instructions: String::new(), prompts: vec![("Password".into(), false)] };
+        let request = AuthPromptRequest {
+            kind: PromptKind::Password,
+            name: String::new(),
+            instructions: String::new(),
+            prompts: vec![("Password".into(), false)],
+        };
         let target = auth_prompt_payload("p1", "s1", RouteHop::Target, "h", 22, "u", &request);
-        assert_eq!(target, serde_json::json!({
-            "id": "p1", "sessionId": "s1", "hop": "target", "kind": "password", "host": "h", "port": 22, "username": "u",
-            "name": "", "instructions": "", "prompts": [{"text": "Password", "echo": false}],
-        }));
-        let bastion = auth_prompt_payload("p2", "s1", RouteHop::Bastion, "jump", 2222, "j", &request);
-        assert_eq!((bastion["hop"].as_str(), bastion["sessionId"].as_str()), (Some("bastion"), Some("s1")));
+        assert_eq!(
+            target,
+            serde_json::json!({
+                "id": "p1", "sessionId": "s1", "hop": "target", "kind": "password", "host": "h", "port": 22, "username": "u",
+                "name": "", "instructions": "", "prompts": [{"text": "Password", "echo": false}],
+            })
+        );
+        let bastion =
+            auth_prompt_payload("p2", "s1", RouteHop::Bastion, "jump", 2222, "j", &request);
+        assert_eq!(
+            (bastion["hop"].as_str(), bastion["sessionId"].as_str()),
+            (Some("bastion"), Some("s1"))
+        );
     }
 }
 

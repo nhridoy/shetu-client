@@ -111,7 +111,9 @@ fn check_argon2_limits(text: &str) -> Result<(), String> {
     let (mut memory, mut passes) = (0u64, 0u64);
     // Unparsable values are left for ssh-key to reject.
     for (key, value) in text.lines().filter_map(|l| l.split_once(": ")) {
-        let Ok(v) = value.parse::<u64>() else { continue };
+        let Ok(v) = value.parse::<u64>() else {
+            continue;
+        };
         match key {
             "Argon2-Memory" => memory = memory.max(v),
             "Argon2-Passes" => passes = passes.max(v),
@@ -129,7 +131,10 @@ fn too_large() -> String {
     "Could not read PuTTY key: Argon2 parameters too large".into()
 }
 
-pub(crate) fn convert_ppk_inner(text: String, passphrase: Option<String>) -> Result<String, String> {
+pub(crate) fn convert_ppk_inner(
+    text: String,
+    passphrase: Option<String>,
+) -> Result<String, String> {
     use russh::keys::ssh_key::Error;
     check_argon2_limits(&text)?;
     let passphrase = passphrase.filter(|p| !p.is_empty());

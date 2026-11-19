@@ -77,11 +77,7 @@ fn git_candidates() -> Vec<std::ffi::OsString> {
         r"C:\Program Files (x86)\Git\bin\git.exe".into(),
     ];
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(
-            Path::new(&local)
-                .join(r"Programs\Git\cmd\git.exe")
-                .into(),
-        );
+        candidates.push(Path::new(&local).join(r"Programs\Git\cmd\git.exe").into());
     }
     candidates
 }
@@ -107,11 +103,7 @@ fn run_git(root: &str, args: &[&str]) -> Result<Output, String> {
     run_git_timeout(root, args, GIT_TIMEOUT_MS)
 }
 
-fn run_git_timeout(
-    root: &str,
-    args: &[&str],
-    timeout_ms: u64,
-) -> Result<Output, String> {
+fn run_git_timeout(root: &str, args: &[&str], timeout_ms: u64) -> Result<Output, String> {
     let git = resolve_git();
     let mut cmd = Command::new(&git);
     cmd.arg("-C")
@@ -140,19 +132,17 @@ fn run_git_timeout(
         cmd.env("GIT_OPTIONAL_LOCKS", "0");
     }
 
-    let child = cmd.spawn().map_err(|e| {
-        format!("Failed to run git ({git}): {e} — is Git installed and on PATH?")
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run git ({git}): {e} — is Git installed and on PATH?"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
-        let output = child
-            .wait_with_output()
-            .unwrap_or_else(|_| Output {
-                status: ExitStatus::default(),
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            });
+        let output = child.wait_with_output().unwrap_or_else(|_| Output {
+            status: ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
         let _ = tx.send(output);
     });
 
@@ -234,7 +224,12 @@ fn ahead_behind(root: &str) -> (i32, i32) {
 fn upstream_name(root: &str) -> Option<String> {
     let out = run_git(
         root,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
     )
     .ok()?;
     if !out.status.success() {
@@ -341,10 +336,7 @@ pub async fn git_stage(
 }
 
 #[tauri::command]
-pub async fn git_stage_all(
-    root: String,
-    lock: tauri::State<'_, GitLock>,
-) -> Result<(), String> {
+pub async fn git_stage_all(root: String, lock: tauri::State<'_, GitLock>) -> Result<(), String> {
     let git_lock = lock.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = git_lock
@@ -376,10 +368,7 @@ pub async fn git_unstage(
 }
 
 #[tauri::command]
-pub async fn git_unstage_all(
-    root: String,
-    lock: tauri::State<'_, GitLock>,
-) -> Result<(), String> {
+pub async fn git_unstage_all(root: String, lock: tauri::State<'_, GitLock>) -> Result<(), String> {
     let git_lock = lock.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = git_lock
@@ -462,7 +451,12 @@ fn parse_branches(data: &str) -> Vec<GitBranch> {
 fn branches_inner(root: &str) -> Result<Vec<GitBranch>, String> {
     let out = run_git(
         root,
-        &["branch", "-a", "--no-color", "--format=%(HEAD)%00%(refname)"],
+        &[
+            "branch",
+            "-a",
+            "--no-color",
+            "--format=%(HEAD)%00%(refname)",
+        ],
     )?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -487,10 +481,7 @@ fn validate_branch_name(name: &str) -> Result<(), String> {
     if name == "." || name == ".." {
         return Err(format!("'{name}' is not a valid branch name"));
     }
-    if name
-        .bytes()
-        .any(|b| b < 0x20 || b == b' ' || b == 0x7f)
-    {
+    if name.bytes().any(|b| b < 0x20 || b == b' ' || b == 0x7f) {
         return Err("Branch name cannot contain whitespace".to_string());
     }
     for bad in ['~', '^', ':', '?', '*', '[', '\\', '\u{7f}'] {
@@ -518,15 +509,8 @@ pub async fn git_switch_branch(
             .lock()
             .map_err(|e| format!("git lock poisoned: {e}"))?;
         let out = if let Some(remote) = refname.strip_prefix("refs/remotes/") {
-            let local = remote
-                .rsplit('/')
-                .next()
-                .unwrap_or(remote)
-                .to_string();
-            run_git(
-                &root,
-                &["switch", "-c", &local, "--track", &refname],
-            )?
+            let local = remote.rsplit('/').next().unwrap_or(remote).to_string();
+            run_git(&root, &["switch", "-c", &local, "--track", &refname])?
         } else {
             // `git switch` takes a branch name, not a full refname
             // (only `git checkout` accepts `refs/heads/...`).
@@ -782,9 +766,7 @@ pub async fn git_resolve_conflict(
                 let ours = show_stage_bytes(&root, &rel, '2');
                 let theirs = show_stage_bytes(&root, &rel, '3');
                 if ours.is_none() && theirs.is_none() {
-                    return Err(
-                        "File is deleted on both sides — nothing to keep".to_string(),
-                    );
+                    return Err("File is deleted on both sides — nothing to keep".to_string());
                 }
                 let combined = match (ours, theirs) {
                     (Some(mut a), Some(b)) => {
@@ -797,9 +779,8 @@ pub async fn git_resolve_conflict(
                     (None, None) => unreachable!(),
                 };
                 let abs = Path::new(root.trim_end_matches(['/', '\\'])).join(&rel);
-                std::fs::write(&abs, combined).map_err(|e| {
-                    format!("Failed to write resolved file: {e}")
-                })?;
+                std::fs::write(&abs, combined)
+                    .map_err(|e| format!("Failed to write resolved file: {e}"))?;
             }
             _ => unreachable!(),
         }
@@ -835,20 +816,13 @@ fn show_stage_bytes(root: &str, rel: &str, stage: char) -> Option<Vec<u8>> {
 
 /// Pull the current branch from its upstream, fast-forward only.
 #[tauri::command]
-pub async fn git_pull(
-    root: String,
-    lock: tauri::State<'_, GitLock>,
-) -> Result<(), String> {
+pub async fn git_pull(root: String, lock: tauri::State<'_, GitLock>) -> Result<(), String> {
     let git_lock = lock.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = git_lock
             .lock()
             .map_err(|e| format!("git lock poisoned: {e}"))?;
-        let out = run_git_timeout(
-            &root,
-            &["pull", "--ff-only"],
-            GIT_NETWORK_TIMEOUT_MS,
-        )?;
+        let out = run_git_timeout(&root, &["pull", "--ff-only"], GIT_NETWORK_TIMEOUT_MS)?;
         require_success(&out, "Pull")
     })
     .await
@@ -857,10 +831,7 @@ pub async fn git_pull(
 
 /// Push the current branch to its upstream.
 #[tauri::command]
-pub async fn git_push(
-    root: String,
-    lock: tauri::State<'_, GitLock>,
-) -> Result<(), String> {
+pub async fn git_push(root: String, lock: tauri::State<'_, GitLock>) -> Result<(), String> {
     let git_lock = lock.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = git_lock
@@ -897,8 +868,7 @@ pub async fn git_publish(
             .to_string();
         if remote.is_empty() {
             return Err(
-                "No git remotes configured — add a remote to publish this branch"
-                    .to_string(),
+                "No git remotes configured — add a remote to publish this branch".to_string(),
             );
         }
         let out = run_git_timeout(
@@ -990,10 +960,7 @@ pub async fn git_stash_push(
 
 /// Restore the most recent stash and drop it.
 #[tauri::command]
-pub async fn git_stash_pop(
-    root: String,
-    lock: tauri::State<'_, GitLock>,
-) -> Result<(), String> {
+pub async fn git_stash_pop(root: String, lock: tauri::State<'_, GitLock>) -> Result<(), String> {
     let git_lock = lock.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = git_lock

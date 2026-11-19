@@ -1,7 +1,7 @@
 //! Every decision about remote edits, one event at a time. Pure: the loop in `manager.rs`
 //! feeds it (saves, job outcomes, user choices) and carries out the effects.
 
-use crate::transfers::model::{HostRef, JobStatus, DEST_CHANGED};
+use crate::transfers::model::{HostRef, JobStatus, ABSENT, DEST_CHANGED};
 use serde::{Deserialize, Serialize};
 
 pub const LARGE_FILE: u64 = 50 * 1024 * 1024;
@@ -164,7 +164,7 @@ impl EditState {
                 vec![Self::upload(e, true, Some(baseline)), EditEffect::Changed]
             }
             _ => {
-                let remote = remote.unwrap_or((0, 0));
+                let remote = remote.unwrap_or(ABSENT);
                 e.status = EditStatus::Conflict;
                 e.conflict = Some(remote);
                 vec![
@@ -296,12 +296,9 @@ impl EditState {
             return Vec::new();
         };
         match choice {
-            // Replaces only the server version the user was shown: a newer one asks again.
-            // (0, 0) is "the server file was gone": nothing there to protect.
-            Choice::Overwrite => {
-                let expect = (shown != (0, 0)).then_some(shown);
-                vec![Self::upload(e, true, expect), EditEffect::Changed]
-            }
+            // Replaces only the server version the user was shown (or, if it was gone, only
+            // while it still is): a newer one is refused and asks again.
+            Choice::Overwrite => vec![Self::upload(e, true, Some(shown)), EditEffect::Changed],
             Choice::KeepServer => vec![EditEffect::Download {
                 edit_id: e.id.clone(),
                 shown,
@@ -370,8 +367,9 @@ impl EditState {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
-        // One upload at a time: the running one is followed by another if the file changed.
-        if e.status == EditStatus::Uploading {
+        // One upload at a time (the running one is followed by another if the file changed),
+        // and none while a conflict waits for its answer.
+        if matches!(e.status, EditStatus::Uploading | EditStatus::Conflict) {
             return Vec::new();
         }
         let baseline = e.baseline;
@@ -392,7 +390,9 @@ impl EditState {
         if e.status == EditStatus::Uploading {
             return Err("Wait for the upload to finish, then stop".into());
         }
-        let unseen = local_now.is_some_and(|l| l != e.last_local);
+        // Unreadable counts too: an editor may be between moving the old file aside and
+        // renaming the new one in.
+        let unseen = local_now != Some(e.last_local);
         if (e.unsent || unseen) && !discard {
             return Err("unsent".into());
         }
@@ -416,8 +416,12 @@ impl EditState {
     ) -> Vec<EditEffect> {
         let mut effects = Vec::new();
         for mut e in saved {
-            if let Some(now) = local_now(&e).filter(|now| *now != e.last_local) {
-                e.last_local = now;
+            // Changed, or unreadable (possibly mid-save): kept, never deleted unasked.
+            let now = local_now(&e);
+            if now != Some(e.last_local) {
+                if let Some(now) = now {
+                    e.last_local = now;
+                }
                 e.unsent = true;
             }
             if e.unsent {
@@ -644,7 +648,7 @@ mod tests {
         assert!(s.list().is_empty());
         let mut s = opened();
         assert!(
-            s.stop("e", false, None).is_ok(),
+            s.stop("e", false, Some(BASE)).is_ok(),
             "nothing unsent: stops without asking"
         );
     }
@@ -657,7 +661,7 @@ mod tests {
         unsent.status = EditStatus::Uploading;
         unsent.job = Some("job-9".into());
         unsent.dirty = true;
-        let fx = s.restore(vec![unsent, edit("sent")], |_| None);
+        let fx = s.restore(vec![unsent, edit("sent")], |_| Some(BASE));
         assert!(fx.contains(&Remove {
             edit_id: "sent".into(),
             local_dir: "/cache/remote-edits/sent".into()
@@ -776,12 +780,12 @@ mod tests {
             uploads(&s.resolve("e", Choice::Overwrite)),
             vec![(true, Some((99, 300)))]
         );
-        // The server file was gone when asked: nothing to protect.
+        // The server file was gone when asked: it must still be gone.
         let mut s = opened();
         s.saved("e", (12, 200), None);
         assert_eq!(
             uploads(&s.resolve("e", Choice::Overwrite)),
-            vec![(true, None)]
+            vec![(true, Some(ABSENT))]
         );
     }
 
@@ -874,6 +878,28 @@ mod tests {
             "server read before the upload: look again"
         );
         assert!(!s.stale_check("e", (12, 200)));
+    }
+
+    #[test]
+    fn upload_now_waits_for_the_conflict_answer() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        assert!(s.upload_now("e").is_empty());
+        s.resolve("e", Choice::KeepServer);
+        assert!(
+            s.upload_now("e").is_empty(),
+            "nor while Keep-server downloads"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_temp_file_is_not_safe_to_delete() {
+        let mut s = opened();
+        assert_eq!(s.stop("e", false, None), Err("unsent".to_string()));
+        let mut s = EditState::default();
+        let fx = s.restore(vec![edit("gone")], |_| None);
+        assert!(!fx.iter().any(|f| matches!(f, Remove { .. })));
+        assert_eq!(s.get("gone").unwrap().status, EditStatus::NotUploaded);
     }
 
     #[test]

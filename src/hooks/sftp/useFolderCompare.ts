@@ -35,12 +35,16 @@ export function sideOf(paneId: string): CompareSide | null {
 }
 
 export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
-  const [rows, setRows] = useState<CompareRow[]>([]);
+  // The rows and the folders they came from, set together: every action uses the folders of
+  // the rows it was rendered with.
+  const [shown, setShown] = useState<{
+    rows: CompareRow[];
+    sides: [CompareSide, CompareSide] | null;
+  }>({ rows: [], sides: null });
+  const { rows, sides } = shown;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
-  /** The folders the shown rows came from: actions use these, not a scan still loading. */
-  const sides = useRef<[CompareSide, CompareSide] | null>(null);
 
   const rescan = useCallback(async () => {
     const left = sideOf(leftPaneId);
@@ -54,14 +58,11 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
     setError(null);
     try {
       const next = await loadComparison(left, right);
-      if (mine === generation.current) {
-        sides.current = [left, right];
-        setRows(next);
-      }
+      if (mine === generation.current)
+        setShown({ rows: next, sides: [left, right] });
     } catch (e) {
       if (mine === generation.current) {
-        sides.current = null;
-        setRows([]);
+        setShown({ rows: [], sides: null });
         setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
@@ -77,8 +78,8 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
 
   const copy = useCallback(
     async (picked: CompareRow[], direction: Direction) => {
-      if (!sides.current) return;
-      const [left, right] = sides.current;
+      if (!sides) return;
+      const [left, right] = sides;
       const results = await copyRows(picked, direction, left, right);
       const failed = results.filter((r) => r.error).length;
       const waiting = results.filter((r) => r.action === "waiting").length;
@@ -88,18 +89,18 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
       else if (copied > 0) toast.success(`Copied ${copied} files`);
       await rescan();
     },
-    [rescan],
+    [rescan, sides],
   );
 
   const remove = useCallback(
     async (row: CompareRow) => {
-      if (!sides.current) return;
-      const [left, right] = sides.current;
+      if (!sides) return;
+      const [left, right] = sides;
       const side = row.status === "onlyLeft" ? left : right;
       await deleteEntry(side, row.path);
       await rescan();
     },
-    [rescan],
+    [rescan, sides],
   );
 
   useEffect(() => {

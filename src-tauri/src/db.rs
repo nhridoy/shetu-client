@@ -364,11 +364,7 @@ pub fn import_legacy_team_cache(
     teams: &serde_json::Value,
     vaults: &serde_json::Value,
 ) -> Result<bool, String> {
-    fn field<'a>(
-        value: &'a serde_json::Value,
-        camel: &str,
-        snake: &str,
-    ) -> Option<&'a str> {
+    fn field<'a>(value: &'a serde_json::Value, camel: &str, snake: &str) -> Option<&'a str> {
         value
             .get(camel)
             .or_else(|| value.get(snake))
@@ -1038,7 +1034,8 @@ pub fn acknowledge_team_operation(
                 .map_err(|e| e.to_string())?;
             }
         }
-        if error.is_some() && matches!(operation_type.as_str(), "invite.accept" | "invite.decline") {
+        if error.is_some() && matches!(operation_type.as_str(), "invite.accept" | "invite.decline")
+        {
             if let Some(invite_id) = value.get("invite_id").and_then(serde_json::Value::as_str) {
                 conn.execute(
                     "UPDATE team_invites SET status='sync_rejected' WHERE account_id=?1 AND id=?2",
@@ -1661,7 +1658,11 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
     const COLUMNS: &[(&str, &str, &str)] = &[
         ("hosts", "auth_type", "TEXT NOT NULL DEFAULT 'password'"),
         ("team_records", "owner_id", "TEXT NOT NULL DEFAULT ''"),
-        ("team_records", "owner_deletion_scheduled_for", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "team_records",
+            "owner_deletion_scheduled_for",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
         ("team_members", "id", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "public_key", "TEXT NOT NULL DEFAULT ''"),
         ("team_members", "fingerprint", "TEXT NOT NULL DEFAULT ''"),
@@ -2220,12 +2221,22 @@ pub fn reattach_orphans(db: &LocalDb, vault_id: &str, device_id: &str) -> Result
     for group in groups.iter().filter(|g| g.deleted_at.is_none()) {
         if let Some(parent) = group.parent_id.as_deref().filter(|p| !live(p)) {
             let target = nearest_live(parent).filter(|p| !is_within(p, &group.id));
-            moves.push((Table::Groups, group.id.clone(), group.operation_id.clone(), target));
+            moves.push((
+                Table::Groups,
+                group.id.clone(),
+                group.operation_id.clone(),
+                target,
+            ));
         }
     }
     for host in list_sync_rows(db, Table::Hosts, vault_id, false)? {
         if let Some(group) = host.group_id.as_deref().filter(|g| !live(g)) {
-            moves.push((Table::Hosts, host.id.clone(), host.operation_id.clone(), nearest_live(group)));
+            moves.push((
+                Table::Hosts,
+                host.id.clone(),
+                host.operation_id.clone(),
+                nearest_live(group),
+            ));
         }
     }
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
@@ -2234,7 +2245,9 @@ pub fn reattach_orphans(db: &LocalDb, vault_id: &str, device_id: &str) -> Result
     for (table, id, scanned_operation, target) in moves {
         // Re-read under the lock: skip rows edited or deleted since the scan, and
         // change only the link so no other field is overwritten.
-        let Some(mut row) = get_sync_row_unlocked(&conn, table, &id)? else { continue };
+        let Some(mut row) = get_sync_row_unlocked(&conn, table, &id)? else {
+            continue;
+        };
         if row.deleted_at.is_some() || row.operation_id != scanned_operation {
             continue;
         }
@@ -2890,15 +2903,31 @@ mod tests {
 
         let get = |table, id| get_sync_row(&db, table, id).unwrap().unwrap();
         // Nearest live ancestor, else the top level.
-        assert_eq!(get(Table::Groups, "child").parent_id.as_deref(), Some("keep"));
+        assert_eq!(
+            get(Table::Groups, "child").parent_id.as_deref(),
+            Some("keep")
+        );
         assert_eq!(get(Table::Groups, "child-of-top").parent_id, None);
         assert_eq!(get(Table::Hosts, "host").group_id.as_deref(), Some("keep"));
         assert_eq!(get(Table::Hosts, "host-missing").group_id, None);
-        assert_eq!(get(Table::Groups, "loop-a").parent_id, None, "never under its own child");
+        assert_eq!(
+            get(Table::Groups, "loop-a").parent_id,
+            None,
+            "never under its own child"
+        );
         // Untouched: healthy links and the deleted groups themselves.
-        assert_eq!(get(Table::Groups, "kept-child").parent_id.as_deref(), Some("keep"));
-        assert_eq!(get(Table::Hosts, "host-kept").group_id.as_deref(), Some("keep"));
-        assert_eq!(get(Table::Groups, "gone").parent_id.as_deref(), Some("keep"));
+        assert_eq!(
+            get(Table::Groups, "kept-child").parent_id.as_deref(),
+            Some("keep")
+        );
+        assert_eq!(
+            get(Table::Hosts, "host-kept").group_id.as_deref(),
+            Some("keep")
+        );
+        assert_eq!(
+            get(Table::Groups, "gone").parent_id.as_deref(),
+            Some("keep")
+        );
         // The move is a new local edit, so it is queued for push.
         let moved = get(Table::Groups, "child");
         assert!(moved.revision > child.revision);
@@ -2906,10 +2935,16 @@ mod tests {
         assert_eq!(moved.device_id, device);
         let queued = outbox_pending(&db).unwrap();
         assert!(
-            queued.iter().any(|e| e.record_id == "child" && e.operation_id == moved.operation_id),
+            queued
+                .iter()
+                .any(|e| e.record_id == "child" && e.operation_id == moved.operation_id),
             "the move is queued for push"
         );
-        assert_eq!(reattach_orphans(&db, "v1", device).unwrap(), 0, "second run is a no-op");
+        assert_eq!(
+            reattach_orphans(&db, "v1", device).unwrap(),
+            0,
+            "second run is a no-op"
+        );
     }
 
     #[test]
@@ -2919,7 +2954,10 @@ mod tests {
         store_team_sync_cursor(&db, account, None).unwrap();
         assert_eq!(team_sync_cursor(&db, account).unwrap(), None);
         store_team_sync_cursor(&db, account, Some("c1")).unwrap();
-        assert_eq!(team_sync_cursor(&db, account).unwrap().as_deref(), Some("c1"));
+        assert_eq!(
+            team_sync_cursor(&db, account).unwrap().as_deref(),
+            Some("c1")
+        );
     }
 
     #[test]
@@ -3170,12 +3208,21 @@ mod tests {
     #[test]
     fn wipe_all_clears_transfer_jobs() {
         let db = test_db();
-        db.conn.lock().unwrap().execute(
-            "INSERT INTO transfer_jobs (id, created_at, data) VALUES ('t1', 1, '{}')", [],
-        ).unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO transfer_jobs (id, created_at, data) VALUES ('t1', 1, '{}')",
+                [],
+            )
+            .unwrap();
         wipe_all(&db).unwrap();
-        let count: i64 = db.conn.lock().unwrap()
-            .query_row("SELECT COUNT(*) FROM transfer_jobs", [], |r| r.get(0)).unwrap();
+        let count: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM transfer_jobs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -3202,7 +3249,8 @@ mod tests {
         wipe_all(&db).unwrap();
         let conn = db.conn.lock().unwrap();
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM identities", [], |r| r
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -3830,9 +3878,16 @@ mod team_sync_tests {
         let session = crate::crypto::KeySession::new();
         let apply = |s: &crate::team_sync::TeamSnapshot| {
             apply_team_sync_page(&db, account_id, s, &[], &session, None, false).unwrap();
-            list_teams(&db, account_id).unwrap()[0].owner_deletion_scheduled_for.clone()
+            list_teams(&db, account_id).unwrap()[0]
+                .owner_deletion_scheduled_for
+                .clone()
         };
-        assert_eq!(apply(&wire(r#","owner_deletion_scheduled_for":"2026-12-13T00:00:00Z""#)), "2026-12-13T00:00:00Z");
+        assert_eq!(
+            apply(&wire(
+                r#","owner_deletion_scheduled_for":"2026-12-13T00:00:00Z""#
+            )),
+            "2026-12-13T00:00:00Z"
+        );
         assert_eq!(apply(&wire("")), "");
     }
 

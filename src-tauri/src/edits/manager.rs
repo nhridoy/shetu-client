@@ -2,14 +2,14 @@
 //! background work (stats, downloads, uploads) talk to it by message.
 
 use super::files::{
-    create_edit_dir, inside_root, load_for_startup, local_file_name, save_edits, sweep_targets,
-    watch_target,
+    create_edit_dir, inside_root, load_for_startup, local_file_name, remove_root, save_edits,
+    sweep_targets, watch_target,
 };
 use super::state::{needs_confirm, Choice, Edit, EditEffect, EditState, EditStatus};
 use super::watch::{self, Watching};
 use crate::transfers::io::{self, Side};
 use crate::transfers::manager::{build_job, JobFinished, NewJob, TransferManager};
-use crate::transfers::model::{HostRef, JobError, JobKind, JobStatus};
+use crate::transfers::model::{HostRef, JobError, JobKind, JobStatus, ABSENT};
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -39,7 +39,8 @@ enum Msg {
         remote_path: String,
         reply: oneshot::Sender<Option<Edit>>,
     },
-    Opened(Box<Edit>),
+    /// Answered once the file is watched, so the editor opens only after that.
+    Opened(Box<Edit>, oneshot::Sender<()>),
     List(oneshot::Sender<Vec<Edit>>),
     Stop {
         id: String,
@@ -51,7 +52,7 @@ enum Msg {
         choice: Choice,
     },
     UploadNow(String),
-    Wipe(oneshot::Sender<()>),
+    Wipe(oneshot::Sender<Result<(), String>>),
     /// The watcher saw the file go quiet.
     Settled(String),
     Saved {
@@ -185,15 +186,13 @@ fn err_text(e: JobError) -> String {
     }
 }
 
-/// Copies the server file over `local_path` (through a `.part`, then a rename).
-async fn download(
-    sftp: Arc<SftpSession>,
-    remote_path: &str,
-    local_path: &str,
-) -> Result<(), String> {
+/// Copies the server file over `local_path` (through a `.part`, then a rename) and returns
+/// the copy's (size, mtime), read before the rename: once it is in place there is nothing left
+/// to fail.
+async fn download(src: &Side, remote_path: &str, local_path: &str) -> Result<(u64, i64), String> {
     let part = format!("{local_path}.part");
     io::copy(
-        &Side::Sftp(sftp),
+        src,
         remote_path,
         &Side::Local,
         &part,
@@ -203,9 +202,11 @@ async fn download(
     )
     .await
     .map_err(err_text)?;
+    let stat = local_stat(&part).await?;
     tokio::fs::rename(&part, local_path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(stat)
 }
 
 impl EditManager {
@@ -231,8 +232,8 @@ impl EditManager {
     }
 
     /// Sign-out / device wipe: stop every edit and delete every temp copy, unsent included.
-    pub async fn wipe(&self) {
-        let _ = self.ask(Msg::Wipe).await;
+    pub async fn wipe(&self) -> Result<(), String> {
+        self.ask(Msg::Wipe).await?
     }
 }
 
@@ -290,10 +291,11 @@ async fn run_loop(
                 let _ = reply.send(state.find(&session_id, &remote_path).cloned());
                 Vec::new()
             }
-            Msg::Opened(edit) => {
+            Msg::Opened(edit, reply) => {
                 let edit = *edit;
                 let mut effects = state.opened(edit.clone());
                 effects.extend(start_watching(&mut watching, &mut state, &edit));
+                let _ = reply.send(());
                 effects
             }
             Msg::List(reply) => {
@@ -318,8 +320,7 @@ async fn run_loop(
             Msg::Wipe(reply) => {
                 let effects = state.wipe();
                 apply(&app, &root, &tx, &mut state, &mut watching, effects);
-                let _ = std::fs::remove_dir_all(&root);
-                let _ = reply.send(());
+                let _ = reply.send(remove_root(&root));
                 Vec::new()
             }
             Msg::Settled(id) => {
@@ -467,8 +468,9 @@ fn apply(
                         let remote = io::stat(&Side::Sftp(Arc::clone(&sftp)), &edit.remote_path)
                             .await
                             .map_err(err_text)?;
-                        download(sftp, &edit.remote_path, &edit.local_path).await?;
-                        let local = local_stat(&edit.local_path).await?;
+                        let local =
+                            download(&Side::Sftp(sftp), &edit.remote_path, &edit.local_path)
+                                .await?;
                         Ok::<_, String>((local, remote))
                     }
                     .await;
@@ -496,8 +498,8 @@ fn apply(
                         None => Err(NO_CONNECTION.to_string()),
                         Some(sftp) => match io::stat(&Side::Sftp(sftp), &edit.remote_path).await {
                             Ok(remote) => Ok(remote),
-                            // Gone from the server: (0, 0), as for a save.
-                            Err(JobError::Operation(_)) => Ok((0, 0)),
+                            // Gone from the server, as for a save.
+                            Err(JobError::Operation(_)) => Ok(ABSENT),
                             Err(e) => Err(err_text(e)),
                         },
                     };
@@ -567,11 +569,13 @@ pub async fn edit_open(
         .join(local_file_name(&remote_path))
         .display()
         .to_string();
-    if let Err(e) = download(sftp, &remote_path, &local_path).await {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(e);
-    }
-    let local = local_stat(&local_path).await?;
+    let local = match download(&Side::Sftp(sftp), &remote_path, &local_path).await {
+        Ok(local) => local,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+    };
     let edit = Edit {
         id,
         session_id,
@@ -589,10 +593,10 @@ pub async fn edit_open(
         conflict: None,
         error: None,
     };
+    // Watched before the editor opens: a save made right away isn't missed.
     manager
-        .tx
-        .send(Msg::Opened(Box::new(edit.clone())))
-        .map_err(|_| "Editing stopped".to_string())?;
+        .ask(|reply| Msg::Opened(Box::new(edit.clone()), reply))
+        .await?;
     open(&local_path)?;
     Ok(edit)
 }
@@ -665,6 +669,24 @@ mod tests {
             stale_edit_uploads(&[j], root, 3_000),
             vec!["new".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn download_reports_the_copy_it_put_in_place() {
+        let dir = std::env::temp_dir().join(format!("shetu-dl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dst) = (dir.join("server.txt"), dir.join("local.txt"));
+        std::fs::write(&src, b"server copy").unwrap();
+        let got = download(
+            &Side::Local,
+            &src.display().to_string(),
+            &dst.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, (11, local_mtime(&dst)));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"server copy");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -38,7 +38,30 @@ pub fn save_edits(root: &Path, edits: &[Edit]) -> Result<(), String> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     std::io::Write::write_all(&mut options.open(&tmp).map_err(|e| e.to_string())?, &json)
         .map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, root.join(LIST_FILE)).map_err(|e| e.to_string())
+    // Never replace a list that can't be read: its folders may hold unsent work.
+    let list = root.join(LIST_FILE);
+    if list.exists() && load_edits(root).is_err() {
+        set_aside(root).map_err(|e| format!("keeping the unreadable list: {e}"))?;
+    }
+    std::fs::rename(&tmp, list).map_err(|e| e.to_string())
+}
+
+fn set_aside(root: &Path) -> std::io::Result<()> {
+    let aside = root.join(format!(
+        "{UNREADABLE}-{}",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    std::fs::rename(root.join(LIST_FILE), aside)
+}
+
+/// Deletes every temp copy (sign-out); already gone is fine, anything else is reported.
+pub fn remove_root(root: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(root) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Couldn't delete the remote-edit copies: {e}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 const UNREADABLE: &str = "edits.json.unreadable";
@@ -50,11 +73,7 @@ pub fn load_for_startup(root: &Path) -> (Vec<Edit>, bool) {
     let loaded = load_edits(root);
     if let Err(e) = &loaded {
         log::warn!("edits: could not read the saved list: {e}");
-        let aside = root.join(format!(
-            "{UNREADABLE}-{}",
-            chrono::Utc::now().timestamp_millis()
-        ));
-        let _ = std::fs::rename(root.join(LIST_FILE), aside);
+        let _ = set_aside(root);
     }
     let quarantined = std::fs::read_dir(root).is_ok_and(|dirs| {
         dirs.flatten()
@@ -76,10 +95,24 @@ pub fn local_file_name(remote_path: &str) -> String {
             c => c,
         })
         .collect();
-    if safe.is_empty() || safe == "." || safe == ".." {
+    // Windows drops trailing dots and spaces, and reserves device names even with an extension.
+    let safe = safe.trim_end_matches(['.', ' ']);
+    let stem = safe
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
+    if safe.is_empty() {
         "file".into()
+    } else if device {
+        format!("_{safe}")
     } else {
-        safe
+        safe.to_string()
     }
 }
 
@@ -226,6 +259,39 @@ mod tests {
         assert_eq!(local_file_name("/srv/a:b*c?.txt"), "a_b_c_.txt");
         assert_eq!(local_file_name("/srv/.."), "file");
         assert_eq!(local_file_name("/"), "file");
+    }
+
+    #[test]
+    fn windows_device_names_become_ordinary_names() {
+        assert_eq!(local_file_name("/srv/CON.txt"), "_CON.txt");
+        assert_eq!(local_file_name("/srv/nul"), "_nul");
+        assert_eq!(local_file_name("/srv/com1.log"), "_com1.log");
+        assert_eq!(local_file_name("/srv/notes. "), "notes");
+        assert_eq!(local_file_name("/srv/console.txt"), "console.txt");
+    }
+
+    #[test]
+    fn saving_never_replaces_an_unreadable_list() {
+        let r = root();
+        std::fs::write(r.join(LIST_FILE), b"{not json").unwrap();
+        save_edits(&r, &[]).unwrap();
+        assert!(!load_for_startup(&r).1, "the old list is kept aside");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_the_root_reports_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = root();
+        assert!(remove_root(&r.join("missing")).is_ok());
+        let edits = r.join("remote-edits");
+        std::fs::create_dir_all(edits.join("e1")).unwrap();
+        std::fs::set_permissions(&edits, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(remove_root(&edits).is_err());
+        std::fs::set_permissions(&edits, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(remove_root(&edits).is_ok());
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]

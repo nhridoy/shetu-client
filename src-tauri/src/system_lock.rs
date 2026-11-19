@@ -45,9 +45,18 @@ mod linux {
 
     fn sleep(app: &AppHandle) -> zbus::Result<()> {
         let conn = Connection::system()?;
-        let manager = Proxy::new(&conn, LOGIND, MANAGER_PATH, "org.freedesktop.login1.Manager")?;
+        let manager = Proxy::new(
+            &conn,
+            LOGIND,
+            MANAGER_PATH,
+            "org.freedesktop.login1.Manager",
+        )?;
         for msg in manager.receive_signal("PrepareForSleep")? {
-            emit(app, "PrepareForSleep", msg.body().deserialize::<bool>().ok());
+            emit(
+                app,
+                "PrepareForSleep",
+                msg.body().deserialize::<bool>().ok(),
+            );
         }
         Ok(())
     }
@@ -63,8 +72,18 @@ mod linux {
     fn screen(app: &AppHandle) -> zbus::Result<()> {
         let conn = Connection::system()?;
         let path = session_path(&conn)?;
-        let session = Proxy::new(&conn, LOGIND, path.as_str(), "org.freedesktop.login1.Session")?;
-        let props = Proxy::new(&conn, LOGIND, path.as_str(), "org.freedesktop.DBus.Properties")?;
+        let session = Proxy::new(
+            &conn,
+            LOGIND,
+            path.as_str(),
+            "org.freedesktop.login1.Session",
+        )?;
+        let props = Proxy::new(
+            &conn,
+            LOGIND,
+            path.as_str(),
+            "org.freedesktop.DBus.Properties",
+        )?;
         let locks = session.receive_signal("Lock")?;
         let changes = props.receive_signal("PropertiesChanged")?;
         // `loginctl lock-session` sends Lock; desktop lockers (GNOME, KDE) set LockedHint.
@@ -75,13 +94,18 @@ mod linux {
             }
         });
         for msg in changes {
-            let Ok((iface, changed, _)) = msg.body().deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>() else {
+            let Ok((iface, changed, _)) =
+                msg.body()
+                    .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+            else {
                 continue;
             };
             if iface != "org.freedesktop.login1.Session" {
                 continue;
             }
-            let hint = changed.get("LockedHint").and_then(|v| bool::try_from(v).ok());
+            let hint = changed
+                .get("LockedHint")
+                .and_then(|v| bool::try_from(v).ok());
             emit(app, "PropertiesChanged", hint);
         }
         Ok(())
@@ -89,16 +113,20 @@ mod linux {
 
     pub fn start(app: AppHandle) {
         let sleep_app = app.clone();
-        let _ = std::thread::Builder::new().name("system-lock-sleep".into()).spawn(move || {
-            if let Err(e) = sleep(&sleep_app) {
-                eprintln!("system lock: sleep signals unavailable: {e}");
-            }
-        });
-        let _ = std::thread::Builder::new().name("system-lock-screen".into()).spawn(move || {
-            if let Err(e) = screen(&app) {
-                eprintln!("system lock: screen-lock signals unavailable: {e}");
-            }
-        });
+        let _ = std::thread::Builder::new()
+            .name("system-lock-sleep".into())
+            .spawn(move || {
+                if let Err(e) = sleep(&sleep_app) {
+                    eprintln!("system lock: sleep signals unavailable: {e}");
+                }
+            });
+        let _ = std::thread::Builder::new()
+            .name("system-lock-screen".into())
+            .spawn(move || {
+                if let Err(e) = screen(&app) {
+                    eprintln!("system lock: screen-lock signals unavailable: {e}");
+                }
+            });
     }
 }
 
@@ -107,20 +135,27 @@ mod windows_events {
     use std::sync::OnceLock;
     use tauri::{AppHandle, Emitter};
     use windows::core::w;
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Power::RegisterSuspendResumeNotification;
-    use windows::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
+    use windows::Win32::System::RemoteDesktop::{
+        WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, DEVICE_NOTIFY_WINDOW_HANDLE, MSG,
-        PBT_APMSUSPEND,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW,
+        DEVICE_NOTIFY_WINDOW_HANDLE, MSG, PBT_APMSUSPEND, WINDOW_EX_STYLE, WINDOW_STYLE,
+        WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
     };
 
     static APP: OnceLock<AppHandle> = OnceLock::new();
 
-    unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         let reason = match msg {
             WM_WTSSESSION_CHANGE if wparam.0 as u32 == WTS_SESSION_LOCK => Some("screen"),
             WM_POWERBROADCAST if wparam.0 as u32 == PBT_APMSUSPEND => Some("sleep"),
@@ -138,7 +173,12 @@ mod windows_events {
         unsafe {
             let instance: HINSTANCE = GetModuleHandleW(None)?.into();
             let class = w!("ShetuSystemLock");
-            let wc = WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance, lpszClassName: class, ..Default::default() };
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: class,
+                ..Default::default()
+            };
             RegisterClassW(&wc);
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -157,7 +197,9 @@ mod windows_events {
             WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)?;
             // Connected standby (Modern Standby) sends suspend only to windows registered for it.
             // Kept for the app's lifetime, like this thread, so it is never unregistered.
-            if let Err(e) = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE) {
+            if let Err(e) =
+                RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE)
+            {
                 // Session-lock notifications still work; only connected-standby sleep is missed.
                 eprintln!("system lock: suspend notifications unavailable: {e}");
             }
@@ -171,11 +213,13 @@ mod windows_events {
 
     pub fn start(app: AppHandle) {
         let _ = APP.set(app);
-        let _ = std::thread::Builder::new().name("system-lock".into()).spawn(|| {
-            if let Err(e) = run() {
-                eprintln!("system lock: session notifications unavailable: {e}");
-            }
-        });
+        let _ = std::thread::Builder::new()
+            .name("system-lock".into())
+            .spawn(|| {
+                if let Err(e) = run() {
+                    eprintln!("system lock: session notifications unavailable: {e}");
+                }
+            });
     }
 }
 
@@ -198,20 +242,23 @@ mod macos {
         });
         unsafe {
             let workspace = NSWorkspace::sharedWorkspace();
-            let token = workspace.notificationCenter().addObserverForName_object_queue_usingBlock(
-                Some(NSWorkspaceWillSleepNotification),
-                None,
-                None,
-                &on_sleep,
-            );
+            let token = workspace
+                .notificationCenter()
+                .addObserverForName_object_queue_usingBlock(
+                    Some(NSWorkspaceWillSleepNotification),
+                    None,
+                    None,
+                    &on_sleep,
+                );
             std::mem::forget(token);
             let screen_locked = NSString::from_str("com.apple.screenIsLocked");
-            let token = NSDistributedNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-                Some(&screen_locked),
-                None,
-                None,
-                &on_screen,
-            );
+            let token = NSDistributedNotificationCenter::defaultCenter()
+                .addObserverForName_object_queue_usingBlock(
+                    Some(&screen_locked),
+                    None,
+                    None,
+                    &on_screen,
+                );
             std::mem::forget(token);
         }
     }
@@ -223,12 +270,18 @@ mod tests {
 
     #[test]
     fn linux_signal_reason_maps_logind_signals() {
-        assert_eq!(linux_signal_reason("PrepareForSleep", Some(true)), Some("sleep"));
+        assert_eq!(
+            linux_signal_reason("PrepareForSleep", Some(true)),
+            Some("sleep")
+        );
         assert_eq!(linux_signal_reason("PrepareForSleep", Some(false)), None);
         assert_eq!(linux_signal_reason("Lock", None), Some("screen"));
         assert_eq!(linux_signal_reason("Unlock", None), None);
         // GNOME/KDE's own lock (Super+L) only flips LockedHint.
-        assert_eq!(linux_signal_reason("PropertiesChanged", Some(true)), Some("screen"));
+        assert_eq!(
+            linux_signal_reason("PropertiesChanged", Some(true)),
+            Some("screen")
+        );
         assert_eq!(linux_signal_reason("PropertiesChanged", Some(false)), None);
         assert_eq!(linux_signal_reason("PropertiesChanged", None), None);
     }

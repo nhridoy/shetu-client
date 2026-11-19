@@ -98,11 +98,16 @@ pub enum ErrorClass {
 
 pub const DEST_CHANGED: &str = "conflict: the server copy changed";
 
+/// An expected destination that must not exist (the server file was gone when the user
+/// chose to write it). No real stat has a negative mtime.
+pub const ABSENT: (u64, i64) = (0, -1);
+
 pub fn check_expected_dest(
     expect: Option<(u64, i64)>,
     actual: Option<(u64, i64)>,
 ) -> Result<(), JobError> {
     match expect {
+        Some(ABSENT) if actual.is_none() => Ok(()),
         Some(expected) if actual != Some(expected) => Err(JobError::Operation(DEST_CHANGED.into())),
         _ => Ok(()),
     }
@@ -191,6 +196,15 @@ mod tests {
         );
         assert_eq!(
             check_expected_dest(Some((10, 5)), None),
+            Err(JobError::Operation(DEST_CHANGED.into()))
+        );
+    }
+
+    #[test]
+    fn absent_means_the_destination_must_not_exist() {
+        assert!(check_expected_dest(Some(ABSENT), None).is_ok());
+        assert_eq!(
+            check_expected_dest(Some(ABSENT), Some((0, 0))),
             Err(JobError::Operation(DEST_CHANGED.into()))
         );
     }

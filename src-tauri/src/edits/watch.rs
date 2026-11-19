@@ -69,7 +69,8 @@ fn spawn_debouncer(
             };
             tokio::select! {
                 // Commands first: a mapping sent before watching starts is in place before that
-                // folder's first event is looked at.
+                // folder's first event is looked at. Then due reports, so a flood of unrelated
+                // events can't hold back a file that has gone quiet.
                 biased;
                 Some(cmd) = cmd_rx.recv() => match cmd {
                     Cmd::Watch { id, dir, file } => {
@@ -82,11 +83,6 @@ fn spawn_debouncer(
                         due.remove(&id);
                     }
                 },
-                Some(path) = events.recv() => {
-                    if let Some(id) = key(&path).and_then(|k| files.get(&k)) {
-                        due.insert(id.clone(), tokio::time::Instant::now() + QUIET);
-                    }
-                }
                 _ = wake => {
                     let now = tokio::time::Instant::now();
                     let ready: Vec<String> =
@@ -96,6 +92,11 @@ fn spawn_debouncer(
                         if settled.send(id).is_err() {
                             return;
                         }
+                    }
+                }
+                Some(path) = events.recv() => {
+                    if let Some(id) = key(&path).and_then(|k| files.get(&k)) {
+                        due.insert(id.clone(), tokio::time::Instant::now() + QUIET);
                     }
                 }
             }
@@ -218,6 +219,33 @@ mod tests {
             let got = tokio::time::timeout(QUIET * 3, rx.recv()).await;
             assert_eq!(got.ok().flatten().as_deref(), Some("e9"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_quiet_file_is_reported_during_unrelated_events() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (events, cmds) = spawn_debouncer(tx);
+        let dir = PathBuf::from("/x/e7");
+        cmds.send(Cmd::Watch {
+            id: "e7".into(),
+            dir: dir.clone(),
+            file: "a.txt".into(),
+        })
+        .unwrap();
+        events.send(dir.join("a.txt")).unwrap();
+        let flood = tokio::spawn(async move {
+            loop {
+                for _ in 0..1000 {
+                    if events.send(PathBuf::from("/x/other/b.txt")).is_err() {
+                        return;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let got = tokio::time::timeout(QUIET * 3, rx.recv()).await;
+        flood.abort();
+        assert_eq!(got.ok().flatten().as_deref(), Some("e7"));
     }
 
     #[tokio::test]

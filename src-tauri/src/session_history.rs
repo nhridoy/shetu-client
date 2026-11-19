@@ -76,7 +76,12 @@ fn decode(row: &SyncRow, keys: &KeySession) -> Result<HistoryItem, String> {
     serde_json::from_str(&plaintext).map_err(|e| e.to_string())
 }
 
-fn save(db: &LocalDb, keys: &KeySession, device_id: &str, item: &HistoryItem) -> Result<(), String> {
+fn save(
+    db: &LocalDb,
+    keys: &KeySession,
+    device_id: &str,
+    item: &HistoryItem,
+) -> Result<(), String> {
     let plaintext = serde_json::to_string(item).map_err(|e| e.to_string())?;
     let data = crypto::encrypt_secret(&plaintext, Table::SessionHistory.as_str(), keys)?;
     let row = SyncRow {
@@ -171,22 +176,40 @@ pub fn finish_attempt(
     save(db, keys, device_id, &item)
 }
 
-pub fn list_attempts(db: &LocalDb, keys: &KeySession, vault_id: &str) -> Result<Vec<HistoryItem>, String> {
+pub fn list_attempts(
+    db: &LocalDb,
+    keys: &KeySession,
+    vault_id: &str,
+) -> Result<Vec<HistoryItem>, String> {
     let rows = db::list_sync_rows(db, Table::SessionHistory, vault_id, false)?;
-    let mut items = rows.iter().map(|row| decode(row, keys)).collect::<Result<Vec<_>, _>>()?;
-    items.sort_by(|a, b| b.started_at.cmp(&a.started_at).then_with(|| b.id.cmp(&a.id)));
+    let mut items = rows
+        .iter()
+        .map(|row| decode(row, keys))
+        .collect::<Result<Vec<_>, _>>()?;
+    items.sort_by(|a, b| {
+        b.started_at
+            .cmp(&a.started_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
     Ok(items)
 }
 
 /// A chunk can arrive on a later sync page than its deleted parent. Queue a
 /// matching tombstone once both rows are present; never expose the orphan.
-pub fn reconcile_deleted_chunks(db: &LocalDb, keys: &KeySession, device_id: &str, vault_id: &str) -> Result<usize, String> {
+pub fn reconcile_deleted_chunks(
+    db: &LocalDb,
+    keys: &KeySession,
+    device_id: &str,
+    vault_id: &str,
+) -> Result<usize, String> {
     let deleted = db::list_sync_rows(db, Table::SessionHistory, vault_id, true)?
         .into_iter()
         .filter(|row| row.deleted_at.is_some())
         .map(|row| row.id)
         .collect::<std::collections::HashSet<_>>();
-    if deleted.is_empty() { return Ok(0); }
+    if deleted.is_empty() {
+        return Ok(0);
+    }
     let mut targets = Vec::new();
     for row in db::list_sync_rows(db, Table::SessionOutputChunks, vault_id, false)? {
         let plaintext = crypto::decrypt_secret(&row.data, keys)?;
@@ -209,10 +232,21 @@ pub fn recover_interrupted(
 ) -> Result<usize, String> {
     let unfinished = list_attempts(db, keys, vault_id)?
         .into_iter()
-        .filter(|item| item.origin_device_id == device_id && matches!(item.state.as_str(), "connecting" | "connected") && !active_attempt_ids.contains(&item.id))
+        .filter(|item| {
+            item.origin_device_id == device_id
+                && matches!(item.state.as_str(), "connecting" | "connected")
+                && !active_attempt_ids.contains(&item.id)
+        })
         .collect::<Vec<_>>();
     for item in &unfinished {
-        finish_attempt(db, keys, device_id, &item.id, "interrupted", "app restarted")?;
+        finish_attempt(
+            db,
+            keys,
+            device_id,
+            &item.id,
+            "interrupted",
+            "app restarted",
+        )?;
     }
     Ok(unfinished.len())
 }
@@ -271,7 +305,15 @@ pub fn append_output(
         return Ok(());
     }
     for chunk in buffer.push(output) {
-        save_chunk(db, keys, device_id, &item.vault_id, attempt_id, buffer, chunk)?;
+        save_chunk(
+            db,
+            keys,
+            device_id,
+            &item.vault_id,
+            attempt_id,
+            buffer,
+            chunk,
+        )?;
     }
     if buffer.truncated && !item.truncated {
         item.truncated = true;
@@ -289,15 +331,30 @@ pub fn flush_output(
 ) -> Result<bool, String> {
     let item = load(db, keys, attempt_id)?;
     let pending = buffer.finish();
-    if pending.is_empty() { return Ok(false); }
-    if let Err(error) = save_chunk(db, keys, device_id, &item.vault_id, attempt_id, buffer, pending.clone()) {
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    if let Err(error) = save_chunk(
+        db,
+        keys,
+        device_id,
+        &item.vault_id,
+        attempt_id,
+        buffer,
+        pending.clone(),
+    ) {
         buffer.pending = pending;
         return Err(error);
     }
     Ok(true)
 }
 
-pub fn read_output(db: &LocalDb, keys: &KeySession, vault_id: &str, attempt_id: &str) -> Result<String, String> {
+pub fn read_output(
+    db: &LocalDb,
+    keys: &KeySession,
+    vault_id: &str,
+    attempt_id: &str,
+) -> Result<String, String> {
     let item = load(db, keys, attempt_id)?;
     if item.vault_id != vault_id {
         return Err("session vault mismatch".into());
@@ -389,7 +446,10 @@ pub fn set_retention_days(
     if !matches!(days, 7 | 30 | 90) {
         return Err("retention must be 7, 30, or 90 days".into());
     }
-    let plaintext = serde_json::to_string(&Preferences { retention_days: days }).map_err(|e| e.to_string())?;
+    let plaintext = serde_json::to_string(&Preferences {
+        retention_days: days,
+    })
+    .map_err(|e| e.to_string())?;
     let data = crypto::encrypt_secret(&plaintext, Table::SessionPreferences.as_str(), keys)?;
     let row = SyncRow {
         id: preference_id(vault_id)?,
@@ -414,7 +474,9 @@ pub fn apply_retention(
         .into_iter()
         .filter(|item| !matches!(item.state.as_str(), "connecting" | "connected"))
         .filter(|item| {
-            item.ended_at.as_deref().or(Some(item.started_at.as_str()))
+            item.ended_at
+                .as_deref()
+                .or(Some(item.started_at.as_str()))
                 .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
                 .is_some_and(|stamp| stamp.with_timezone(&Utc) < threshold)
         })
@@ -495,7 +557,18 @@ mod tests {
         let mut keys = crate::crypto::KeySession::new();
         crate::crypto::generate_account_material(&mut keys).unwrap();
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        start_attempt(&db, &keys, &device_id, &vault_id, &attempt_id, "host-1", "Prod", "ssh", false).unwrap();
+        start_attempt(
+            &db,
+            &keys,
+            &device_id,
+            &vault_id,
+            &attempt_id,
+            "host-1",
+            "Prod",
+            "ssh",
+            false,
+        )
+        .unwrap();
         mark_connected(&db, &keys, &device_id, &attempt_id).unwrap();
         finish_attempt(&db, &keys, &device_id, &attempt_id, "ended", "pane closed").unwrap();
         assert!(mark_connected(&db, &keys, &device_id, &attempt_id).is_err());
@@ -518,12 +591,40 @@ mod tests {
         let other_device = uuid::Uuid::new_v4().to_string();
         let own = uuid::Uuid::new_v4().to_string();
         let remote = uuid::Uuid::new_v4().to_string();
-        start_attempt(&db, &keys, &this_device, &vault_id, &own, "h", "Own", "ssh", false).unwrap();
-        start_attempt(&db, &keys, &other_device, &vault_id, &remote, "h", "Remote", "ssh", false).unwrap();
-        assert_eq!(recover_interrupted(&db, &keys, &this_device, &vault_id, &[]).unwrap(), 1);
+        start_attempt(
+            &db,
+            &keys,
+            &this_device,
+            &vault_id,
+            &own,
+            "h",
+            "Own",
+            "ssh",
+            false,
+        )
+        .unwrap();
+        start_attempt(
+            &db,
+            &keys,
+            &other_device,
+            &vault_id,
+            &remote,
+            "h",
+            "Remote",
+            "ssh",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            recover_interrupted(&db, &keys, &this_device, &vault_id, &[]).unwrap(),
+            1
+        );
         assert_eq!(load(&db, &keys, &own).unwrap().state, "interrupted");
         assert_eq!(load(&db, &keys, &remote).unwrap().state, "connecting");
-        assert_eq!(recover_interrupted(&db, &keys, &this_device, &vault_id, &[]).unwrap(), 0);
+        assert_eq!(
+            recover_interrupted(&db, &keys, &this_device, &vault_id, &[]).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -543,12 +644,26 @@ mod tests {
         assert!(!rows[0].data.contains("retention_days"));
         assert!(set_retention_days(&db, &keys, &device_id, &vault_id, 8).is_err());
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        start_attempt(&db, &keys, &device_id, &vault_id, &attempt_id, "h", "Old", "ssh", false).unwrap();
+        start_attempt(
+            &db,
+            &keys,
+            &device_id,
+            &vault_id,
+            &attempt_id,
+            "h",
+            "Old",
+            "ssh",
+            false,
+        )
+        .unwrap();
         let mut old = load(&db, &keys, &attempt_id).unwrap();
         old.state = "ended".into();
         old.ended_at = Some("2020-01-01T00:00:00.000Z".into());
         save(&db, &keys, &device_id, &old).unwrap();
-        assert_eq!(apply_retention(&db, &keys, &device_id, &vault_id).unwrap(), 1);
+        assert_eq!(
+            apply_retention(&db, &keys, &device_id, &vault_id).unwrap(),
+            1
+        );
         assert!(list_attempts(&db, &keys, &vault_id).unwrap().is_empty());
     }
 
@@ -563,7 +678,10 @@ mod tests {
 
         let mut capped = OutputBuffer::default();
         let chunks = capped.push(&"x".repeat(10 * 1024 * 1024 + 100));
-        assert_eq!(chunks.iter().map(String::len).sum::<usize>() + capped.finish().len(), 10 * 1024 * 1024);
+        assert_eq!(
+            chunks.iter().map(String::len).sum::<usize>() + capped.finish().len(),
+            10 * 1024 * 1024
+        );
         assert!(capped.truncated);
     }
 
@@ -577,9 +695,28 @@ mod tests {
         let mut keys = crate::crypto::KeySession::new();
         crate::crypto::generate_account_material(&mut keys).unwrap();
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        start_attempt(&db, &keys, &device_id, &vault_id, &attempt_id, "h", "Host", "ssh", true).unwrap();
+        start_attempt(
+            &db,
+            &keys,
+            &device_id,
+            &vault_id,
+            &attempt_id,
+            "h",
+            "Host",
+            "ssh",
+            true,
+        )
+        .unwrap();
         let mut buffer = OutputBuffer::default();
-        append_output(&db, &keys, &device_id, &attempt_id, &mut buffer, &"secret-output".repeat(7000)).unwrap();
+        append_output(
+            &db,
+            &keys,
+            &device_id,
+            &attempt_id,
+            &mut buffer,
+            &"secret-output".repeat(7000),
+        )
+        .unwrap();
         flush_output(&db, &keys, &device_id, &attempt_id, &mut buffer).unwrap();
         let rows = db::list_sync_rows(&db, Table::SessionOutputChunks, &vault_id, false).unwrap();
         assert_eq!(rows.len(), 2);
@@ -589,7 +726,11 @@ mod tests {
         delete_attempt(&db, &keys, &device_id, &vault_id, &attempt_id).unwrap();
         assert!(list_attempts(&db, &keys, &vault_id).unwrap().is_empty());
         assert!(read_output(&db, &keys, &vault_id, &attempt_id).is_err());
-        assert!(db::list_sync_rows(&db, Table::SessionOutputChunks, &vault_id, false).unwrap().is_empty());
+        assert!(
+            db::list_sync_rows(&db, Table::SessionOutputChunks, &vault_id, false)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -602,12 +743,42 @@ mod tests {
         let mut keys = crate::crypto::KeySession::new();
         crate::crypto::generate_account_material(&mut keys).unwrap();
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        start_attempt(&db, &keys, &device_id, &vault_id, &attempt_id, "h", "Host", "ssh", true).unwrap();
+        start_attempt(
+            &db,
+            &keys,
+            &device_id,
+            &vault_id,
+            &attempt_id,
+            "h",
+            "Host",
+            "ssh",
+            true,
+        )
+        .unwrap();
         delete_attempt(&db, &keys, &device_id, &vault_id, &attempt_id).unwrap();
         let mut buffer = OutputBuffer::default();
-        save_chunk(&db, &keys, &device_id, &vault_id, &attempt_id, &mut buffer, "late".into()).unwrap();
-        assert_eq!(reconcile_deleted_chunks(&db, &keys, &device_id, &vault_id).unwrap(), 1);
-        assert!(db::list_sync_rows(&db, Table::SessionOutputChunks, &vault_id, false).unwrap().is_empty());
-        assert_eq!(reconcile_deleted_chunks(&db, &keys, &device_id, &vault_id).unwrap(), 0);
+        save_chunk(
+            &db,
+            &keys,
+            &device_id,
+            &vault_id,
+            &attempt_id,
+            &mut buffer,
+            "late".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            reconcile_deleted_chunks(&db, &keys, &device_id, &vault_id).unwrap(),
+            1
+        );
+        assert!(
+            db::list_sync_rows(&db, Table::SessionOutputChunks, &vault_id, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reconcile_deleted_chunks(&db, &keys, &device_id, &vault_id).unwrap(),
+            0
+        );
     }
 }

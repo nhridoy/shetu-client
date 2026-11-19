@@ -209,7 +209,10 @@ mod tests {
             ("ops", None, true, false)
         );
         let text = serde_json::to_string(&v).unwrap();
-        assert!(!text.contains("s3cret!pw") && !text.contains("GEZDGNBV"), "{text}");
+        assert!(
+            !text.contains("s3cret!pw") && !text.contains("GEZDGNBV"),
+            "{text}"
+        );
         let saved = db::get_sync_row(&db, db::Table::Identities, &row.id)
             .unwrap()
             .unwrap();

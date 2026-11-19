@@ -478,7 +478,9 @@ impl HttpClient {
         if self.state.generation() != generation {
             // Never after a sign-out, even one whose keychain delete failed and left the old
             // token in place.
-            if let Some(new_refresh) = new_refresh.filter(|_| !self.state.signed_out.load(Ordering::SeqCst)) {
+            if let Some(new_refresh) =
+                new_refresh.filter(|_| !self.state.signed_out.load(Ordering::SeqCst))
+            {
                 let _ = self.refresh.persist_rotated_token(&new_refresh);
             }
             drop(access);
@@ -530,7 +532,10 @@ pub async fn http_request(
         state.inner().clone(),
         Arc::new(KeyringRefreshProvider { app: app.clone() }),
     );
-    match client.request(&method, &path, body, auth.unwrap_or(true)).await {
+    match client
+        .request(&method, &path, body, auth.unwrap_or(true))
+        .await
+    {
         Ok(res) => Ok((res.status, res.body)),
         Err(HttpErrorKind::Network) => Err(format!("network:{NETWORK_ERROR_MESSAGE}")),
         Err(HttpErrorKind::InvalidUrl) => Err(format!("network:{INVALID_URL_MESSAGE}")),
@@ -615,10 +620,7 @@ pub fn set_auth_tokens(
 }
 
 #[tauri::command]
-pub fn clear_auth_tokens(
-    app: AppHandle,
-    state: tauri::State<'_, HttpState>,
-) -> Result<(), String> {
+pub fn clear_auth_tokens(app: AppHandle, state: tauri::State<'_, HttpState>) -> Result<(), String> {
     let cleared = state.clear_session(&KeyringRefreshProvider { app: app.clone() });
     if let Ok(dir) = app.path().app_data_dir() {
         remember_sign_out(&dir, &cleared);
@@ -640,9 +642,7 @@ pub fn set_base_url(url: String, state: tauri::State<'_, HttpState>) -> Result<(
 }
 
 #[tauri::command]
-pub fn get_request_log(
-    state: tauri::State<'_, HttpState>,
-) -> Result<Vec<RequestLogEntry>, String> {
+pub fn get_request_log(state: tauri::State<'_, HttpState>) -> Result<Vec<RequestLogEntry>, String> {
     Ok(state.request_log())
 }
 
@@ -690,20 +690,32 @@ pub(crate) mod tests {
 
     #[test]
     fn server_reason_reads_both_error_shapes() {
-        assert_eq!(server_reason(r#"{"error":"device mismatch"}"#).as_deref(), Some("device mismatch"));
         assert_eq!(
-            server_reason(r#"{"error":{"code":"VALIDATION_ERROR","message":"invalid team operation"}}"#).as_deref(),
+            server_reason(r#"{"error":"device mismatch"}"#).as_deref(),
+            Some("device mismatch")
+        );
+        assert_eq!(
+            server_reason(
+                r#"{"error":{"code":"VALIDATION_ERROR","message":"invalid team operation"}}"#
+            )
+            .as_deref(),
             Some("VALIDATION_ERROR: invalid team operation")
         );
         assert_eq!(server_reason("<html>502 Bad Gateway</html>"), None);
-        let text: String = (0..500).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let text: String = (0..500)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let long = serde_json::json!({ "error": text }).to_string();
-        assert_eq!(server_reason(&long).unwrap(), text.chars().take(200).collect::<String>());
+        assert_eq!(
+            server_reason(&long).unwrap(),
+            text.chars().take(200).collect::<String>()
+        );
     }
 
     #[test]
     fn server_reason_cannot_add_log_lines() {
-        let forged = r#"{"error":"bad request\n2026-11-05 10:00:00.000 INFO  [app_lib] fake\r\tline"}"#;
+        let forged =
+            r#"{"error":"bad request\n2026-11-05 10:00:00.000 INFO  [app_lib] fake\r\tline"}"#;
         assert_eq!(
             server_reason(forged).as_deref(),
             Some("bad request 2026-11-05 10:00:00.000 INFO  [app_lib] fake  line")
@@ -780,8 +792,13 @@ pub(crate) mod tests {
         // A panic here never answers the webview: auth buttons stayed in their loading state forever.
         for base in ["", "not a url", "localhost:8080"] {
             let client = HttpClient::new(HttpState::new(base.into()), mem_refresh(None));
-            let res = client.request("POST", "/api/v1/auth/prelogin", None, false).await;
-            assert!(matches!(res, Err(HttpErrorKind::InvalidUrl)), "base {base:?}: {res:?}");
+            let res = client
+                .request("POST", "/api/v1/auth/prelogin", None, false)
+                .await;
+            assert!(
+                matches!(res, Err(HttpErrorKind::InvalidUrl)),
+                "base {base:?}: {res:?}"
+            );
         }
     }
 
@@ -796,18 +813,30 @@ pub(crate) mod tests {
                 let mut buf = [0u8; 4096];
                 let n = s.read(&mut buf).unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
-                let body = if req.contains("authorization:") { "sent" } else { "none" };
+                let body = if req.contains("authorization:") {
+                    "sent"
+                } else {
+                    "none"
+                };
                 let _ = s.write_all(
-                    format!("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{body}")
-                        .as_bytes(),
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{body}"
+                    )
+                    .as_bytes(),
                 );
             }
         });
         let state = HttpState::new(format!("http://{addr}"));
         state.set_token(Some("secret-access-token".into()));
         let client = HttpClient::new(state, mem_refresh(None));
-        assert_eq!(client.request("GET", "/", None, false).await.unwrap().body, "none");
-        assert_eq!(client.request("GET", "/", None, true).await.unwrap().body, "sent");
+        assert_eq!(
+            client.request("GET", "/", None, false).await.unwrap().body,
+            "none"
+        );
+        assert_eq!(
+            client.request("GET", "/", None, true).await.unwrap().body,
+            "sent"
+        );
     }
 
     #[tokio::test]
@@ -815,7 +844,10 @@ pub(crate) mod tests {
         let (url, _) = spawn_mock(|_| (200, r#"{"ok":true}"#.to_string()));
         let state = HttpState::new(url);
         let client = HttpClient::new(state.clone(), mem_refresh(None));
-        let res = client.request("GET", "/api/v1/ping", None, false).await.unwrap();
+        let res = client
+            .request("GET", "/api/v1/ping", None, false)
+            .await
+            .unwrap();
         assert_eq!(res.status, 200);
         assert!(res.body.contains("ok"));
         let log = state.request_log();
@@ -834,14 +866,20 @@ pub(crate) mod tests {
             } else if first_original2.fetch_add(1, Ordering::SeqCst) == 0 {
                 (401, "{}".to_string())
             } else {
-                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+                (
+                    200,
+                    r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string(),
+                )
             }
         });
         let state = HttpState::new(url);
         state.set_token(Some("a1".into()));
         let refresh = mem_refresh(Some("r1"));
         let client = HttpClient::new(state.clone(), refresh.clone());
-        let res = client.request("GET", "/api/v1/a", None, true).await.unwrap();
+        let res = client
+            .request("GET", "/api/v1/a", None, true)
+            .await
+            .unwrap();
         assert_eq!(res.status, 200);
         assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
         assert_eq!(state.token().as_deref(), Some("a2"));
@@ -859,7 +897,10 @@ pub(crate) mod tests {
         let (url, _) = spawn_mock(move |path| {
             if path == "/api/v1/auth/refresh" {
                 let _ = go_rx.lock().unwrap().recv();
-                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+                (
+                    200,
+                    r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string(),
+                )
             } else {
                 (401, "{}".to_string())
             }
@@ -873,7 +914,10 @@ pub(crate) mod tests {
             client.request("GET", "/api/v1/a", None, true),
         )
         .await;
-        assert!(dropped.is_err(), "the request should still be waiting on its refresh");
+        assert!(
+            dropped.is_err(),
+            "the request should still be waiting on its refresh"
+        );
         go_tx.send(()).unwrap();
         for _ in 0..100 {
             if !state.is_refreshing() {
@@ -881,7 +925,10 @@ pub(crate) mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(!state.is_refreshing(), "the refresh must finish and release the flag");
+        assert!(
+            !state.is_refreshing(),
+            "the refresh must finish and release the flag"
+        );
         assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
         assert_eq!(state.token().as_deref(), Some("a2"));
     }
@@ -913,7 +960,10 @@ pub(crate) mod tests {
         let o2 = originals.clone();
         let (url, hits) = spawn_mock(move |path| {
             if path == "/api/v1/auth/refresh" {
-                (200, r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string())
+                (
+                    200,
+                    r#"{"data":{"access_token":"a2","refresh_token":"r2"}}"#.to_string(),
+                )
             } else if o2.fetch_add(1, Ordering::SeqCst) == 0 {
                 (401, "{}".to_string())
             } else {
@@ -945,7 +995,11 @@ pub(crate) mod tests {
     async fn refresh_in_flight(
         reply: (u16, &'static str),
         during: impl FnOnce(&HttpState, &MemoryRefresh),
-    ) -> (Result<HttpResponse, HttpErrorKind>, HttpState, Arc<MemoryRefresh>) {
+    ) -> (
+        Result<HttpResponse, HttpErrorKind>,
+        HttpState,
+        Arc<MemoryRefresh>,
+    ) {
         let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let originals = std::sync::atomic::AtomicUsize::new(0);
@@ -964,7 +1018,8 @@ pub(crate) mod tests {
         state.set_token(Some("a1".into()));
         let refresh = mem_refresh(Some("r1"));
         let client = HttpClient::new(state.clone(), refresh.clone());
-        let call = tokio::spawn(async move { client.request("GET", "/api/v1/a", None, true).await });
+        let call =
+            tokio::spawn(async move { client.request("GET", "/api/v1/a", None, true).await });
         arrived_rx.recv().await.unwrap();
         during(&state, &refresh);
         go_tx.send(()).unwrap();
@@ -1006,16 +1061,19 @@ pub(crate) mod tests {
         let (_, state, refresh) =
             refresh_in_flight((200, ROTATED), |state, _| state.replace_session(None)).await;
         assert_eq!(*refresh.persisted.lock().unwrap(), vec!["r2".to_string()]);
-        assert_eq!(state.token(), None, "no access token for the replaced generation");
+        assert_eq!(
+            state.token(),
+            None,
+            "no access token for the replaced generation"
+        );
     }
 
     #[tokio::test]
     async fn sign_out_during_refresh_stores_no_tokens() {
-        let (res, state, refresh) =
-            refresh_in_flight((200, ROTATED), |state, r| {
-                state.clear_session(r).unwrap();
-            })
-            .await;
+        let (res, state, refresh) = refresh_in_flight((200, ROTATED), |state, r| {
+            state.clear_session(r).unwrap();
+        })
+        .await;
         assert_eq!(state.token(), None);
         assert!(refresh.persisted.lock().unwrap().is_empty());
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
@@ -1114,7 +1172,12 @@ pub(crate) mod tests {
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
         // The webview's own refresh with the leftover token is refused too.
         let res = client
-            .request("POST", "/api/v1/auth/refresh", Some(json!({ "refresh_token": "r1" })), false)
+            .request(
+                "POST",
+                "/api/v1/auth/refresh",
+                Some(json!({ "refresh_token": "r1" })),
+                false,
+            )
             .await;
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
@@ -1170,10 +1233,14 @@ pub(crate) mod tests {
         let state = HttpState::new(String::new());
         state.signed_out.store(true, Ordering::SeqCst);
         let before = state.generation();
-        assert!(state.start_session("a2".into(), Some("r2"), &StuckKeychain).is_err());
+        assert!(state
+            .start_session("a2".into(), Some("r2"), &StuckKeychain)
+            .is_err());
         assert_eq!(state.token().as_deref(), Some("a2"));
         assert_eq!(state.generation(), before + 1);
-        assert!(state.start_session("a3".into(), Some("r3"), &*mem_refresh(None)).is_ok());
+        assert!(state
+            .start_session("a3".into(), Some("r3"), &*mem_refresh(None))
+            .is_ok());
         assert!(!state.signed_out.load(Ordering::SeqCst));
     }
 
@@ -1202,11 +1269,20 @@ pub(crate) mod tests {
         let res = client.request("GET", "/api/v1/a", None, true).await;
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
         let res = client
-            .request("POST", "/api/v1/auth/refresh", Some(json!({ "refresh_token": "r1" })), false)
+            .request(
+                "POST",
+                "/api/v1/auth/refresh",
+                Some(json!({ "refresh_token": "r1" })),
+                false,
+            )
             .await;
         assert!(matches!(res, Err(HttpErrorKind::Http(401, _))), "{res:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 1, "no refresh call");
-        assert_eq!(state.token().as_deref(), Some("a2"), "not replaced by the old session");
+        assert_eq!(
+            state.token().as_deref(),
+            Some("a2"),
+            "not replaced by the old session"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1261,7 +1337,9 @@ pub(crate) mod tests {
             locked: Mutex::new(vec![]),
         };
         let before = state.generation();
-        state.start_session("a2".into(), Some("r2"), &probe).unwrap();
+        state
+            .start_session("a2".into(), Some("r2"), &probe)
+            .unwrap();
         assert_eq!(probe.get_refresh_token().as_deref(), Some("r2"));
         // No refresh token handed over: the old one must not stay readable.
         state.start_session("a3".into(), None, &probe).unwrap();
@@ -1302,13 +1380,15 @@ pub(crate) mod tests {
         // upstream); the waiter sees the session already torn down and falls
         // through to the plain 401 passthrough. Either request can initiate
         // the refresh. Exactly one refresh call.
-        let (url, hits) = spawn_mock(|_| (401, r#"{"error":{"code":"UNAUTHORIZED","message":"x"}}"#.to_string()));
+        let (url, hits) = spawn_mock(|_| {
+            (
+                401,
+                r#"{"error":{"code":"UNAUTHORIZED","message":"x"}}"#.to_string(),
+            )
+        });
         let state = Arc::new(HttpState::new(url));
         state.set_token(Some("a1".into()));
-        let client = Arc::new(HttpClient::new(
-            (*state).clone(),
-            mem_refresh(Some("r1")),
-        ));
+        let client = Arc::new(HttpClient::new((*state).clone(), mem_refresh(Some("r1"))));
         let c1 = client.clone();
         let c2 = client.clone();
         let (r1, r2) = tokio::join!(
@@ -1332,7 +1412,10 @@ pub(crate) mod tests {
         state.set_token(Some("a1".into()));
         let refresh = mem_refresh(Some("r1"));
         let client = HttpClient::new(state, refresh.clone());
-        let err = client.request("GET", "/api/v1/a", None, true).await.unwrap_err();
+        let err = client
+            .request("GET", "/api/v1/a", None, true)
+            .await
+            .unwrap_err();
         assert_eq!(err, HttpErrorKind::SessionExpired);
         assert!(refresh.get_refresh_token().is_none()); // cleared
     }
@@ -1341,13 +1424,17 @@ pub(crate) mod tests {
     async fn test_network_error_classification() {
         let state = HttpState::new("http://127.0.0.1:1".into()); // closed port
         let client = HttpClient::new(state, mem_refresh(None));
-        let err = client.request("GET", "/api/v1/ping", None, false).await.unwrap_err();
+        let err = client
+            .request("GET", "/api/v1/ping", None, false)
+            .await
+            .unwrap_err();
         assert_eq!(err, HttpErrorKind::Network);
     }
 
     #[tokio::test]
     async fn test_401_without_session_passes_through() {
-        let body = r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#.to_string();
+        let body =
+            r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#.to_string();
         let (url, _) = spawn_mock(move |_| (401, body.clone()));
         let state = HttpState::new(url);
         let client = HttpClient::new(state, mem_refresh(None)); // no tokens at all
@@ -1357,7 +1444,10 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            HttpErrorKind::Http(401, r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#.to_string())
+            HttpErrorKind::Http(
+                401,
+                r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#.to_string()
+            )
         );
     }
 
@@ -1372,7 +1462,10 @@ pub(crate) mod tests {
         let state = HttpState::new(url);
         state.set_token(Some("expired-access".into()));
         let client = HttpClient::new(state, mem_refresh(None)); // no refresh token
-        let err = client.request("GET", "/api/v1/a", None, true).await.unwrap_err();
+        let err = client
+            .request("GET", "/api/v1/a", None, true)
+            .await
+            .unwrap_err();
         assert_eq!(
             err,
             HttpErrorKind::Http(
@@ -1388,18 +1481,25 @@ pub(crate) mod tests {
         // the original 401 body must surface — not "session expired".
         let (url, _) = spawn_mock(|path| {
             if path == "/api/v1/auth/refresh" {
-                (500, r#"{"error":{"code":"INTERNAL_ERROR","message":"boom"}}"#.to_string())
+                (
+                    500,
+                    r#"{"error":{"code":"INTERNAL_ERROR","message":"boom"}}"#.to_string(),
+                )
             } else {
                 (
                     401,
-                    r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#.to_string(),
+                    r#"{"error":{"code":"UNAUTHORIZED","message":"invalid credentials"}}"#
+                        .to_string(),
                 )
             }
         });
         let state = HttpState::new(url);
         state.set_token(Some("a1".into()));
         let client = HttpClient::new(state, mem_refresh(Some("r1")));
-        let err = client.request("POST", "/api/v1/auth/login", Some(json!({})), true).await.unwrap_err();
+        let err = client
+            .request("POST", "/api/v1/auth/login", Some(json!({})), true)
+            .await
+            .unwrap_err();
         assert_eq!(
             err,
             HttpErrorKind::Http(

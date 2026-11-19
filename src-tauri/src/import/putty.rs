@@ -17,11 +17,17 @@ fn session(encoded: &str, values: &HashMap<String, String>, out: &mut ImportPrev
     let get = |k: &str| values.get(k).map(|v| v.trim()).filter(|v| !v.is_empty());
     let protocol = get("Protocol").unwrap_or("ssh").to_ascii_lowercase();
     if protocol != "ssh" {
-        out.skipped.push(Skipped { name, reason: format!("{protocol} session") });
+        out.skipped.push(Skipped {
+            name,
+            reason: format!("{protocol} session"),
+        });
         return;
     }
     let Some(target) = get("HostName") else {
-        out.skipped.push(Skipped { name, reason: "No host name".into() });
+        out.skipped.push(Skipped {
+            name,
+            reason: "No host name".into(),
+        });
         return;
     };
     let (user_in_host, hostname) = match target.rsplit_once('@') {
@@ -42,23 +48,38 @@ fn session(encoded: &str, values: &HashMap<String, String>, out: &mut ImportPrev
 }
 
 fn empty(origin: &str) -> ImportPreview {
-    ImportPreview { source: "putty".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() }
+    ImportPreview {
+        source: "putty".into(),
+        origin: origin.into(),
+        hosts: Vec::new(),
+        skipped: Vec::new(),
+    }
 }
 
 /// A regedit value: `"text"` (with `\\` and `\"` escapes) or `dword:hex`, as plain text.
 fn reg_value(raw: &str) -> String {
     if let Some(hex) = raw.strip_prefix("dword:") {
-        return u32::from_str_radix(hex.trim(), 16).map(|n| n.to_string()).unwrap_or_default();
+        return u32::from_str_radix(hex.trim(), 16)
+            .map(|n| n.to_string())
+            .unwrap_or_default();
     }
-    let inner = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(raw);
-    inner.replace("\\\\", "\u{0}").replace("\\\"", "\"").replace('\u{0}', "\\")
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(raw);
+    inner
+        .replace("\\\\", "\u{0}")
+        .replace("\\\"", "\"")
+        .replace('\u{0}', "\\")
 }
 
 pub(crate) fn parse_reg(text: &str, origin: &str) -> ImportPreview {
     let mut out = empty(origin);
     let marker = r"\SimonTatham\PuTTY\Sessions\";
     for (section, entries) in super::ini::sections(text) {
-        let Some(pos) = section.find(marker) else { continue };
+        let Some(pos) = section.find(marker) else {
+            continue;
+        };
         let encoded = &section[pos + marker.len()..];
         if encoded.is_empty() || encoded.contains('\\') {
             continue;
@@ -79,7 +100,10 @@ pub(crate) fn parse_sessions_dir(dir: &Path) -> ImportPreview {
         // No folder just means PuTTY isn't used here.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
         Err(e) => {
-            out.skipped.push(Skipped { name: dir.to_string_lossy().into_owned(), reason: format!("Couldn't list sessions: {e}") });
+            out.skipped.push(Skipped {
+                name: dir.to_string_lossy().into_owned(),
+                reason: format!("Couldn't list sessions: {e}"),
+            });
             return out;
         }
     };
@@ -87,16 +111,24 @@ pub(crate) fn parse_sessions_dir(dir: &Path) -> ImportPreview {
     for entry in entries {
         match entry {
             Ok(entry) => files.push(entry.path()),
-            Err(e) => out.skipped.push(Skipped { name: dir.to_string_lossy().into_owned(), reason: format!("Couldn't list a session: {e}") }),
+            Err(e) => out.skipped.push(Skipped {
+                name: dir.to_string_lossy().into_owned(),
+                reason: format!("Couldn't list a session: {e}"),
+            }),
         }
     }
     files.sort();
     for path in files {
-        let Some(encoded) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        let Some(encoded) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
         let text = match super::read_source_file(&path) {
             Ok(text) => text,
             Err(reason) => {
-                out.skipped.push(Skipped { name: percent_decode(&encoded), reason });
+                out.skipped.push(Skipped {
+                    name: percent_decode(&encoded),
+                    reason,
+                });
                 continue;
             }
         };
@@ -113,16 +145,22 @@ pub(crate) fn parse_sessions_dir(dir: &Path) -> ImportPreview {
 #[cfg(windows)]
 pub(crate) fn read_registry() -> Option<ImportPreview> {
     use winreg::{enums::HKEY_CURRENT_USER, types::FromRegValue, RegKey};
-    let sessions = RegKey::predef(HKEY_CURRENT_USER).open_subkey(REG_PATH).ok()?;
+    let sessions = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(REG_PATH)
+        .ok()?;
     let mut out = empty(&format!(r"HKEY_CURRENT_USER\{REG_PATH}"));
     for encoded in sessions.enum_keys().flatten() {
-        let Ok(key) = sessions.open_subkey(&encoded) else { continue };
+        let Ok(key) = sessions.open_subkey(&encoded) else {
+            continue;
+        };
         let values = key
             .enum_values()
             .flatten()
             .map(|(name, value)| {
                 let text = match value.vtype {
-                    winreg::enums::REG_DWORD => u32::from_reg_value(&value).map(|n| n.to_string()).unwrap_or_default(),
+                    winreg::enums::REG_DWORD => u32::from_reg_value(&value)
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
                     _ => String::from_reg_value(&value).unwrap_or_default(),
                 };
                 (name, text)
@@ -180,7 +218,10 @@ mod tests {
 "#;
 
     fn host<'a>(p: &'a ImportPreview, name: &str) -> &'a ImportedHost {
-        p.hosts.iter().find(|h| h.name == name).unwrap_or_else(|| panic!("{name} in {p:?}"))
+        p.hosts
+            .iter()
+            .find(|h| h.name == name)
+            .unwrap_or_else(|| panic!("{name} in {p:?}"))
     }
 
     #[test]
@@ -200,8 +241,15 @@ mod tests {
 
     #[test]
     fn reg_user_in_hostname() {
-        let db = parse_reg(REG, "f").hosts.into_iter().find(|h| h.name == "db").unwrap();
-        assert_eq!((db.hostname.as_str(), db.user.as_deref()), ("db.example.com", Some("root")));
+        let db = parse_reg(REG, "f")
+            .hosts
+            .into_iter()
+            .find(|h| h.name == "db")
+            .unwrap();
+        assert_eq!(
+            (db.hostname.as_str(), db.user.as_deref()),
+            ("db.example.com", Some("root"))
+        );
     }
 
     #[test]
@@ -209,7 +257,12 @@ mod tests {
         let p = parse_reg(REG, "f");
         assert!(p.hosts.iter().all(|h| h.name != "Default Settings"));
         assert!(p.skipped.iter().all(|s| s.name != "Default Settings"));
-        let reason = |n: &str| p.skipped.iter().find(|s| s.name == n).map(|s| s.reason.clone());
+        let reason = |n: &str| {
+            p.skipped
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| s.reason.clone())
+        };
         assert_eq!(reason("router").as_deref(), Some("telnet session"));
         assert_eq!(reason("console").as_deref(), Some("serial session"));
     }
@@ -240,7 +293,8 @@ mod tests {
         let p = parse_sessions_dir(&dir);
         // Unix opens the directory and finds it isn't a file; Windows can't open it at all.
         assert!(
-            p.skipped.iter().any(|s| s.name == "broken" && (s.reason.contains("isn't a file") || s.reason.contains("Couldn't open"))),
+            p.skipped.iter().any(|s| s.name == "broken"
+                && (s.reason.contains("isn't a file") || s.reason.contains("Couldn't open"))),
             "{p:?}"
         );
     }
@@ -252,19 +306,28 @@ mod tests {
         let p = parse_sessions_dir(&file);
         assert_eq!(p.skipped.len(), 1, "{p:?}");
         // A missing folder just means PuTTY isn't here.
-        assert!(parse_sessions_dir(&file.with_extension("missing")).skipped.is_empty());
+        assert!(parse_sessions_dir(&file.with_extension("missing"))
+            .skipped
+            .is_empty());
     }
 
     #[test]
     fn sessions_dir_maps_files() {
         let dir = std::env::temp_dir().join(format!("shetu-putty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("web%20one"), "HostName=w.example.com\nUserName=me\nPortNumber=2222\nProtocol=ssh\n").unwrap();
+        std::fs::write(
+            dir.join("web%20one"),
+            "HostName=w.example.com\nUserName=me\nPortNumber=2222\nProtocol=ssh\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("Default%20Settings"), "HostName=\n").unwrap();
         let p = parse_sessions_dir(&dir);
         assert_eq!(p.hosts.len(), 1);
         let h = &p.hosts[0];
-        assert_eq!((h.name.as_str(), h.hostname.as_str(), h.port), ("web one", "w.example.com", 2222));
+        assert_eq!(
+            (h.name.as_str(), h.hostname.as_str(), h.port),
+            ("web one", "w.example.com", 2222)
+        );
         assert_eq!(h.user.as_deref(), Some("me"));
     }
 }
