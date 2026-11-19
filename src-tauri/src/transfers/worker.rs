@@ -247,7 +247,9 @@ impl Ctx<'_> {
 }
 
 /// Moves the finished `.part` into place, first checking that the destination is still what the
-/// job expects (if it says) so a changed server copy is never overwritten.
+/// job expects (if it says). "Must not exist" is enforced atomically; an expected version is
+/// best effort over SFTP: a save landing between the check and `finish`'s remove-then-rename
+/// can still be replaced (no conditional rename in russh-sftp 2.4).
 /// `mtime` is the source's time when it was copied (it may have changed since queueing).
 /// Returns where it landed and the (size, mtime) it published, read from the `.part` once
 /// its time is set (a rename keeps both), so it is this transfer's version, not a later one.
@@ -264,9 +266,21 @@ async fn publish(
     // "Must not exist" is published without replacing: a file that appears at the last moment
     // is never removed, and the copy that went elsewhere is taken back.
     if job.expect_dest == Some(ABSENT) {
-        let landed = io::finish(dst, &job.part_path, &job.dest.path, false, 0).await?;
+        let landed = match io::finish(dst, &job.part_path, &job.dest.path, false, 0).await {
+            Ok(landed) => landed,
+            // SFTP rename refuses a target created after `finish` looked: that is the conflict,
+            // anything else stays its own error.
+            Err(e) => {
+                return Err(match io::stat_if_exists(dst, &job.dest.path).await {
+                    Ok(Some(_)) => JobError::Operation(DEST_CHANGED.into()),
+                    _ => e,
+                })
+            }
+        };
         if landed != job.dest.path {
-            let _ = io::discard_part(dst, &landed).await;
+            if let Err(e) = io::discard_part(dst, &landed).await {
+                log::warn!("transfers: couldn't remove the stray copy at {landed}: {e:?}");
+            }
             return Err(JobError::Operation(DEST_CHANGED.into()));
         }
         return Ok((landed, published));
@@ -373,10 +387,7 @@ mod tests {
             .flatten()
             .map(|d| d.file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(
-            !names.iter().any(|n| n.contains("(1)")),
-            "no stray copy: {names:?}"
-        );
+        assert_eq!(names, vec!["a.txt".to_string()], "no stray copy, no part");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

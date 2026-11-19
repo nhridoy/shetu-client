@@ -34,11 +34,12 @@ struct ConflictView {
 }
 
 enum Msg {
-    /// Also answers how many sign-out wipes have run, so an open can tell if one ran meanwhile.
+    /// Also answers how many sign-out wipes have run, so an open can tell if one ran meanwhile,
+    /// and the token a wipe cancels, which stops its download.
     Find {
         session_id: String,
         remote_path: String,
-        reply: oneshot::Sender<(Option<Edit>, u64)>,
+        reply: oneshot::Sender<(Option<Edit>, u64, CancellationToken)>,
     },
     /// Answered once the file is watched, so the editor opens only after that. Refused (and
     /// its copy deleted) if a wipe ran since the open started (`started`).
@@ -245,19 +246,16 @@ fn err_text(e: JobError) -> String {
 /// Copies the server file over `local_path` (through a `.part`, then a rename) and returns
 /// the copy's (size, mtime), read before the rename: once it is in place there is nothing left
 /// to fail.
-async fn download(src: &Side, remote_path: &str, local_path: &str) -> Result<(u64, i64), String> {
+async fn download(
+    src: &Side,
+    remote_path: &str,
+    local_path: &str,
+    stop: &CancellationToken,
+) -> Result<(u64, i64), String> {
     let part = format!("{local_path}.part");
-    io::copy(
-        src,
-        remote_path,
-        &Side::Local,
-        &part,
-        0,
-        &CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .map_err(err_text)?;
+    io::copy(src, remote_path, &Side::Local, &part, 0, stop, |_| {})
+        .await
+        .map_err(err_text)?;
     let stat = local_stat(&part).await?;
     tokio::fs::rename(&part, local_path)
         .await
@@ -302,6 +300,8 @@ async fn run_loop(
 ) {
     let started_ms = now_ms();
     let mut wipes: u64 = 0;
+    // Cancelled by a wipe: downloads still running stop writing their (deleted) copies.
+    let mut downloads = CancellationToken::new();
     let mut state = EditState::default();
     let (settled_tx, mut settled) = mpsc::unbounded_channel();
     let mut watching = watch::start(settled_tx);
@@ -319,7 +319,15 @@ async fn run_loop(
     for edit in state.list() {
         effects.extend(start_watching(&mut watching, &mut state, &edit));
     }
-    apply(&app, &root, &tx, &mut state, &mut watching, effects);
+    apply(
+        &app,
+        &root,
+        &tx,
+        &mut state,
+        &mut watching,
+        &downloads,
+        effects,
+    );
     // Uploads of these temp copies left in the queue by the last run would race the restored
     // "Not uploaded" edits (and a later Upload): cancel them; the user re-uploads.
     let transfers = app.state::<TransferManager>().inner().clone();
@@ -345,7 +353,8 @@ async fn run_loop(
                 remote_path,
                 reply,
             } => {
-                let _ = reply.send((state.find(&session_id, &remote_path).cloned(), wipes));
+                let found = state.find(&session_id, &remote_path).cloned();
+                let _ = reply.send((found, wipes, downloads.clone()));
                 Vec::new()
             }
             Msg::CreateDir { id, started, reply } => {
@@ -387,8 +396,18 @@ async fn run_loop(
             Msg::UploadNow(id) => state.upload_now(&id),
             Msg::Wipe(reply) => {
                 wipes += 1;
+                downloads.cancel();
+                downloads = CancellationToken::new();
                 let effects = state.wipe();
-                apply(&app, &root, &tx, &mut state, &mut watching, effects);
+                apply(
+                    &app,
+                    &root,
+                    &tx,
+                    &mut state,
+                    &mut watching,
+                    &downloads,
+                    effects,
+                );
                 let _ = reply.send(remove_root(&root));
                 Vec::new()
             }
@@ -420,7 +439,15 @@ async fn run_loop(
             Msg::DownloadFailed { id, shown, error } => state.download_failed(&id, shown, &error),
             Msg::ConflictCheckFailed { id, error } => state.conflict_check_failed(&id, &error),
         };
-        apply(&app, &root, &tx, &mut state, &mut watching, effects);
+        apply(
+            &app,
+            &root,
+            &tx,
+            &mut state,
+            &mut watching,
+            &downloads,
+            effects,
+        );
     }
 }
 
@@ -468,6 +495,7 @@ fn apply(
     tx: &mpsc::UnboundedSender<Msg>,
     state: &mut EditState,
     watching: &mut Watching,
+    downloads: &CancellationToken,
     effects: Vec<EditEffect>,
 ) {
     for effect in effects {
@@ -539,7 +567,7 @@ fn apply(
                 let Some(edit) = state.get(&edit_id).cloned() else {
                     continue;
                 };
-                let (app, tx) = (app.clone(), tx.clone());
+                let (app, tx, stop) = (app.clone(), tx.clone(), downloads.clone());
                 tauri::async_runtime::spawn(async move {
                     let result = async {
                         let sftp = session_for(&app, &edit.host, &edit.session_id)
@@ -549,9 +577,13 @@ fn apply(
                         let remote = io::stat(&Side::Sftp(Arc::clone(&sftp)), &edit.remote_path)
                             .await
                             .map_err(err_text)?;
-                        let local =
-                            download(&Side::Sftp(sftp), &edit.remote_path, &edit.local_path)
-                                .await?;
+                        let local = download(
+                            &Side::Sftp(sftp),
+                            &edit.remote_path,
+                            &edit.local_path,
+                            &stop,
+                        )
+                        .await?;
                         Ok::<_, String>((local, remote))
                     }
                     .await;
@@ -622,7 +654,7 @@ pub async fn edit_open(
             .map_err(|e| format!("Couldn't open the file: {e}"))
     };
     // Already editing this file from this pane: open the same copy again.
-    let (existing, started) = manager
+    let (existing, started, downloads) = manager
         .ask(|reply| Msg::Find {
             session_id: session_id.clone(),
             remote_path: remote_path.clone(),
@@ -655,7 +687,7 @@ pub async fn edit_open(
         .join(local_file_name(&remote_path))
         .display()
         .to_string();
-    let local = match download(&Side::Sftp(sftp), &remote_path, &local_path).await {
+    let local = match download(&Side::Sftp(sftp), &remote_path, &local_path, &downloads).await {
         Ok(local) => local,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
@@ -836,6 +868,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sign_out_stops_a_download_in_flight() {
+        let dir = std::env::temp_dir().join(format!("shetu-dlc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dst) = (dir.join("server.txt"), dir.join("local.txt"));
+        std::fs::write(&src, vec![b'x'; 1 << 20]).unwrap();
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let got = download(
+            &Side::Local,
+            &src.display().to_string(),
+            &dst.display().to_string(),
+            &stop,
+        )
+        .await;
+        assert!(got.is_err());
+        assert!(!dst.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn download_reports_the_copy_it_put_in_place() {
         let dir = std::env::temp_dir().join(format!("shetu-dl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -845,6 +897,7 @@ mod tests {
             &Side::Local,
             &src.display().to_string(),
             &dst.display().to_string(),
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
