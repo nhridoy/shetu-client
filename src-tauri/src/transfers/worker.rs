@@ -247,7 +247,8 @@ impl Ctx<'_> {
 }
 
 /// Moves the finished `.part` into place, first checking that the destination is still what the
-/// job expects (if it says). "Must not exist" is enforced atomically; an expected version is
+/// job expects (if it says). "Must not exist" is enforced atomically (except on local
+/// filesystems without hard links, see `publish_local_new`); an expected version is
 /// best effort over SFTP: a save landing between the check and `finish`'s remove-then-rename
 /// can still be replaced (no conditional rename in russh-sftp 2.4).
 /// `mtime` is the source's time when it was copied (it may have changed since queueing).

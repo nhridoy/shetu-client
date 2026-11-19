@@ -887,6 +887,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wipe_stops_a_download_that_is_running() {
+        let dir = std::env::temp_dir().join(format!("shetu-dlr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A pipe as the "server file": it sends some bytes, then stalls mid-download.
+        let (src, dst) = (dir.join("server.fifo"), dir.join("local.txt"));
+        let made = std::process::Command::new("mkfifo")
+            .arg(&src)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let feeder = {
+            let src = src.clone();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let mut pipe = std::fs::OpenOptions::new().write(true).open(&src).unwrap();
+                pipe.write_all(&[b'x'; 4096]).unwrap();
+                std::thread::sleep(Duration::from_secs(2));
+            })
+        };
+        // The token the loop's wipe cancels.
+        let downloads = CancellationToken::new();
+        let running = {
+            let (src, dst, stop) = (
+                src.display().to_string(),
+                dst.display().to_string(),
+                downloads.clone(),
+            );
+            tokio::spawn(async move { download(&Side::Local, &src, &dst, &stop).await })
+        };
+        let part = dir.join("local.txt.part");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while std::fs::metadata(&part).map_or(0, |m| m.len()) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the download is under way");
+        downloads.cancel();
+        let got = tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .expect("cancelling stops it at once")
+            .unwrap();
+        assert!(got.is_err());
+        assert!(!dst.exists(), "nothing is put in place");
+        feeder.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn download_reports_the_copy_it_put_in_place() {
         let dir = std::env::temp_dir().join(format!("shetu-dl-{}", uuid::Uuid::new_v4()));
