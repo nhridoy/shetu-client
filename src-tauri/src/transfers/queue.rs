@@ -240,10 +240,12 @@ pub(crate) fn test_job(id: &str, status: JobStatus) -> TransferJob {
         src: Endpoint {
             path: "/r/a".into(),
             host: None,
+            storage: None,
         },
         dest: Endpoint {
             path: "/l/a".into(),
             host: None,
+            storage: None,
         },
         replace: false,
         part_path: part_path("/l/a", id),

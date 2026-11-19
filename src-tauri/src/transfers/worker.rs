@@ -9,6 +9,7 @@ use russh_sftp::client::SftpSession;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tauri::Manager as _;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -135,6 +136,16 @@ impl Ctx<'_> {
             End::Src => &self.job.src,
             End::Dest => &self.job.dest,
         };
+        // A bucket: an open pane's operator, or one built from the saved account. A missing
+        // account won't come back on a retry.
+        if let Some(r) = &endpoint.storage {
+            return self
+                .app
+                .state::<crate::storage::sessions::StorageSessions>()
+                .operator_for_ref(self.app, r)
+                .map(Side::Remote)
+                .map_err(|e| finished(Err(JobError::Operation(e))));
+        }
         let Some(host) = &endpoint.host else {
             return Ok(Side::Local);
         };
@@ -174,13 +185,14 @@ impl Ctx<'_> {
         }
     }
 
-    /// Copies into the `.part`; returns the source's (size, mtime) the copy was made from.
+    /// Copies into the `.part` (for a bucket, straight to the final key); returns the source's
+    /// (size, mtime) the copy was made from and the path written.
     async fn copy(
         &self,
         src: &Side,
         dst: &Side,
         stop: &CancellationToken,
-    ) -> Result<(u64, i64), JobError> {
+    ) -> Result<((u64, i64), String), JobError> {
         let job = self.job;
         let snapshot = (job.src_size, job.src_mtime);
         let current = io::stat(src, &job.src.path).await?;
@@ -196,15 +208,31 @@ impl Ctx<'_> {
                 snapshot: current,
             });
         }
+        // A bucket upload writes the final key, so its name and the expected-version check
+        // come first; "must not exist" is left to the write itself where the service can.
+        let target = if matches!(dst, Side::Remote(_)) {
+            let target = io::remote_target(dst, &job.dest.path, job.replace).await?;
+            if let Some(expect) = job.expect_dest.filter(|e| *e != ABSENT) {
+                check_expected_dest(Some(expect), io::stat_if_exists(dst, &target).await?)?;
+            }
+            target
+        } else {
+            job.part_path.clone()
+        };
+        let opts = io::WriteOpts {
+            mtime: current.1,
+            if_not_exists: job.expect_dest == Some(ABSENT),
+        };
         let started = Instant::now();
         let mut emit = Throttle::new(PROGRESS_EMIT_MS);
         io::copy(
             src,
             &job.src.path,
             dst,
-            &job.part_path,
+            &target,
             offset,
             stop,
+            opts,
             |written| {
                 if !emit.ready(now_ms()) {
                     return;
@@ -227,7 +255,7 @@ impl Ctx<'_> {
         if stop.is_cancelled() {
             return Err(JobError::Stopped);
         }
-        Ok(current)
+        Ok((current, target))
     }
 
     /// Connects and copies. `Ok` hands back the destination, ready to publish.
@@ -236,11 +264,11 @@ impl Ctx<'_> {
         start_src: Option<Held<Arc<SftpSession>>>,
         start_dest: Option<Held<Arc<SftpSession>>>,
         stop: &CancellationToken,
-    ) -> Result<(Side, i64), RunEnd> {
+    ) -> Result<(Side, i64, String), RunEnd> {
         let src = self.side(End::Src, start_src).await?;
         let dst = self.side(End::Dest, start_dest).await?;
         match self.copy(&src, &dst, stop).await {
-            Ok((_, mtime)) => Ok((dst, mtime)),
+            Ok(((_, mtime), written)) => Ok((dst, mtime, written)),
             Err(e) => Err(finished(Err(e))),
         }
     }
@@ -258,7 +286,12 @@ async fn publish(
     dst: &Side,
     job: &TransferJob,
     mtime: i64,
+    written: &str,
 ) -> Result<(String, Option<(u64, i64)>), JobError> {
+    // A bucket upload is already in place under the name `copy` chose.
+    if matches!(dst, Side::Remote(_)) {
+        return Ok((written.to_string(), io::stat(dst, written).await.ok()));
+    }
     // The time is set first, so the destination check is the last step before the rename.
     if mtime > 0 {
         io::set_mtime(dst, &job.part_path, mtime).await;
@@ -318,7 +351,7 @@ pub async fn run(
     };
     let stopped = Err(finished(Err(JobError::Stopped)));
     let end = match until_stopped(&token, ctx.prepare(src, dest, &token), stopped).await {
-        Ok((dst, mtime)) => match publish(&dst, &job, mtime).await {
+        Ok((dst, mtime, written)) => match publish(&dst, &job, mtime, &written).await {
             // `published` tells a module that queued this (an edit) the server state it
             // produced, even when the server kept its own mtime.
             Ok((landed, published)) => RunEnd::Finished {
@@ -375,7 +408,7 @@ mod tests {
         job.expect_dest = Some(crate::transfers::model::ABSENT);
         std::fs::write(&job.part_path, b"mine").unwrap();
         std::fs::write(&job.dest.path, b"theirs").unwrap();
-        let r = publish(&Side::Local, &job, 0).await;
+        let r = publish(&Side::Local, &job, 0, &job.part_path).await;
         assert_eq!(
             r.map(|_| ()),
             Err(JobError::Operation(
@@ -398,7 +431,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let job = local_publish_job(&dir);
         std::fs::write(&job.part_path, b"hello").unwrap();
-        let (landed, published) = publish(&Side::Local, &job, 1_600_000_000).await.unwrap();
+        let (landed, published) = publish(&Side::Local, &job, 1_600_000_000, &job.part_path)
+            .await
+            .unwrap();
         assert_eq!(landed, job.dest.path);
         assert_eq!(published, Some((5, 1_600_000_000)));
         let _ = std::fs::remove_dir_all(&dir);

@@ -253,9 +253,18 @@ async fn download(
     stop: &CancellationToken,
 ) -> Result<(u64, i64), String> {
     let part = format!("{local_path}.part");
-    io::copy(src, remote_path, &Side::Local, &part, 0, stop, |_| {})
-        .await
-        .map_err(err_text)?;
+    io::copy(
+        src,
+        remote_path,
+        &Side::Local,
+        &part,
+        0,
+        stop,
+        io::WriteOpts::default(),
+        |_| {},
+    )
+    .await
+    .map_err(err_text)?;
     let stat = local_stat(&part).await?;
     tokio::fs::rename(&part, local_path)
         .await
