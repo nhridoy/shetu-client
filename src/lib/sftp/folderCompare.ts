@@ -18,7 +18,7 @@ export const TOO_MANY = "Too many files to compare; pick a smaller folder";
 
 /** One side of a comparison: a pane's provider and the folder it shows. */
 export interface CompareSide {
-  kind: "local" | "remote";
+  kind: "local" | "remote" | "storage";
   provider: FileProvider;
   root: string;
 }
@@ -46,7 +46,31 @@ export async function loadComparison(
   right: CompareSide,
 ): Promise<CompareRow[]> {
   const [l, r] = await Promise.all([listSide(left), listSide(right)]);
-  return compareFolders(l, r);
+  return compareFolders(l, r, {
+    sizeOnly: left.kind === "storage" || right.kind === "storage",
+  });
+}
+
+/** For a bucket target, its changed rows' times as the files' own (saved with each upload),
+ * so the newer-file check doesn't flag every file a bucket listing dates by upload. */
+export async function withTargetTimes(
+  rows: CompareRow[],
+  direction: Direction,
+  target: CompareSide,
+): Promise<CompareRow[]> {
+  if (target.kind !== "storage") return rows;
+  const bucket = target.provider as unknown as {
+    statTimes(path: string): Promise<{ size: number; mtime: number } | null>;
+  };
+  const side = direction === "right" ? "right" : "left";
+  return Promise.all(
+    rows.map(async (row) => {
+      const there = row[side];
+      if (row.status !== "differs" || !there) return row;
+      const times = await bucket.statTimes(joinPath(target.root, row.path));
+      return times ? { ...row, [side]: { ...there, mtime: times.mtime } } : row;
+    }),
+  );
 }
 
 /** Changed rows whose copy on the target side is newer: Sync would replace them. */

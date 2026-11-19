@@ -94,4 +94,19 @@ describe("useFolderCompare", () => {
     );
     act(() => root.unmount());
   });
+
+  it("a bucket pane is a storage side", async () => {
+    const { sideOf } = await import("./useFolderCompare");
+    useSftpStore.setState({
+      root: {
+        type: "leaf",
+        id: "B",
+        connectionType: "storage",
+        storageAccountId: "acc",
+        size: 100,
+      } as never,
+    });
+    setPath("B", "/photos");
+    expect(sideOf("B")).toMatchObject({ kind: "storage", root: "/photos" });
+  });
 });

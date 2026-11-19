@@ -10,6 +10,7 @@ import {
   loadComparison,
 } from "@/lib/sftp/folderCompare";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
+import { StorageFileProvider } from "@/lib/sftp/storageFs";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
 
@@ -19,6 +20,17 @@ export function sideOf(paneId: string): CompareSide | null {
   const leaf = root ? findLeaf(root, paneId) : null;
   const path = useFileBrowserStore.getState().panes[paneId]?.currentPath;
   if (leaf?.type !== "leaf" || !path) return null;
+  if (leaf.connectionType === "storage") {
+    // A bucket pane's session id is its pane id too.
+    return {
+      kind: "storage",
+      provider: new StorageFileProvider(
+        `storage:${leaf.storageAccountId ?? ""}`,
+        paneId,
+      ),
+      root: path,
+    };
+  }
   if (leaf.connectionType === "local") {
     return {
       kind: "local",
@@ -107,5 +119,5 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
     void rescan();
   }, [rescan]);
 
-  return { rows, loading, error, rescan, cancel, copy, remove };
+  return { rows, sides, loading, error, rescan, cancel, copy, remove };
 }

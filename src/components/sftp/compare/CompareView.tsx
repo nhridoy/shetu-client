@@ -8,7 +8,11 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { useFolderCompare } from "@/hooks/sftp/useFolderCompare";
 import type { CompareEntry, CompareRow } from "@/lib/sftp/compareFolders";
-import { copyable, newerOnTarget } from "@/lib/sftp/folderCompare";
+import {
+  copyable,
+  newerOnTarget,
+  withTargetTimes,
+} from "@/lib/sftp/folderCompare";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
 
@@ -66,7 +70,7 @@ export default function CompareView({
   rightPaneId: string;
   onClose: () => void;
 }) {
-  const { rows, loading, error, rescan, cancel, copy, remove } =
+  const { rows, sides, loading, error, rescan, cancel, copy, remove } =
     useFolderCompare(leftPaneId, rightPaneId);
   const [showSame, setShowSame] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -77,8 +81,14 @@ export default function CompareView({
   );
   const picked = rows.filter((r) => selected.has(r.path));
   /** Copies, after confirming when that would replace newer files on the other side. */
-  const sync = (list: CompareRow[], direction: "right" | "left") => {
-    const newer = newerOnTarget(copyable(list, direction), direction).length;
+  const sync = async (list: CompareRow[], direction: "right" | "left") => {
+    const target = sides?.[direction === "right" ? 1 : 0];
+    const candidates = copyable(list, direction);
+    // A bucket target's listed times are upload times: read the files' own first.
+    const timed = target
+      ? await withTargetTimes(candidates, direction, target)
+      : candidates;
+    const newer = newerOnTarget(timed, direction).length;
     if (
       newer > 0 &&
       !window.confirm(
@@ -115,23 +125,23 @@ export default function CompareView({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => sync(picked, "right")}
+              onClick={() => void sync(picked, "right")}
             >
               Copy selected →
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => sync(picked, "left")}
+              onClick={() => void sync(picked, "left")}
             >
               ← Copy selected
             </Button>
           </>
         )}
-        <Button size="sm" onClick={() => sync(rows, "right")}>
+        <Button size="sm" onClick={() => void sync(rows, "right")}>
           Sync →
         </Button>
-        <Button size="sm" onClick={() => sync(rows, "left")}>
+        <Button size="sm" onClick={() => void sync(rows, "left")}>
           ← Sync
         </Button>
         <Button
@@ -195,7 +205,7 @@ export default function CompareView({
               {right && (
                 <IconButton
                   label="Copy to right"
-                  onClick={() => sync([row], "right")}
+                  onClick={() => void sync([row], "right")}
                 >
                   <ArrowRightIcon className="h-3 w-3" />
                 </IconButton>
@@ -203,7 +213,7 @@ export default function CompareView({
               {left && (
                 <IconButton
                   label="Copy to left"
-                  onClick={() => sync([row], "left")}
+                  onClick={() => void sync([row], "left")}
                 >
                   <ArrowLeftIcon className="h-3 w-3" />
                 </IconButton>

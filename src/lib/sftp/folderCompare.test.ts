@@ -20,6 +20,7 @@ import {
   loadComparison,
   newerOnTarget,
   TOO_MANY,
+  withTargetTimes,
 } from "./folderCompare";
 
 const provider = (over: Partial<FileProvider> = {}) =>
@@ -204,5 +205,38 @@ describe("folderCompare", () => {
     await copyRows([row("empty", "onlyLeft", true)], "right", left, right);
     expect(right.provider.mkdirAll).toHaveBeenCalledWith(["/r/empty"]);
     expect(mocks.transferFiles).not.toHaveBeenCalled();
+  });
+
+  it("reads a bucket target's saved times before the newer-file check", async () => {
+    const statTimes = vi.fn(async () => ({ size: 2, mtime: 100 }));
+    const target: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/r",
+    };
+    // Listed bucket time is the upload time (newer); the saved one matches the source.
+    const rows = [
+      {
+        path: "a.txt",
+        status: "differs" as const,
+        isDir: false,
+        left: entry("a.txt", 1, 100),
+        right: entry("a.txt", 2, 5_000),
+      },
+    ];
+    expect(newerOnTarget(rows, "right")).toHaveLength(1);
+    const timed = await withTargetTimes(rows, "right", target);
+    expect(statTimes).toHaveBeenCalledWith("/r/a.txt");
+    expect(newerOnTarget(timed, "right")).toHaveLength(0);
+  });
+
+  it("leaves other targets' times alone", async () => {
+    const rows = [row("a.txt", "differs")];
+    const side: CompareSide = {
+      kind: "remote",
+      provider: provider(),
+      root: "/r",
+    };
+    expect(await withTargetTimes(rows, "right", side)).toBe(rows);
   });
 });
