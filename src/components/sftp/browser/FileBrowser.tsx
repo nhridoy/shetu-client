@@ -40,6 +40,8 @@ interface FileBrowserProps {
   hostUsername?: string;
   onFileSelect?: (file: FileItem) => void;
   onOpenInEditor?: (file: FileItem | null) => void;
+  /** A bucket pane: host-only actions and the server search are hidden. */
+  kind?: "host" | "storage";
 }
 
 const SFTP_PROGRESS_STEP: Record<string, number> = {
@@ -65,6 +67,7 @@ export default function FileBrowser({
   hostUsername,
   onFileSelect,
   onOpenInEditor,
+  kind = "host",
 }: FileBrowserProps) {
   // ── Store ────────────────────────────────────────────────────────────────
   const paneState = useFileBrowserStore((s) => s.panes[paneId]);
@@ -551,19 +554,23 @@ export default function FileBrowser({
         onNewFolder={ops.handleNewFolder}
         onSearchChange={(q) => {
           actions.setSearchQuery(paneId, q);
-          if (recursiveSearch && q.trim()) {
+          if (kind === "host" && recursiveSearch && q.trim()) {
             ops.handleServerSearch(q);
           }
         }}
         onShowHiddenChange={(v) => actions.setShowHidden(paneId, v)}
         onViewModeChange={(m) => actions.setViewMode(paneId, m)}
-        recursiveSearch={recursiveSearch}
-        onRecursiveSearchChange={(v) => {
-          actions.setRecursiveSearch(paneId, v);
-          if (!v) {
-            ops.refreshFiles();
-          }
-        }}
+        recursiveSearch={kind === "host" && recursiveSearch}
+        onRecursiveSearchChange={
+          kind === "host"
+            ? (v) => {
+                actions.setRecursiveSearch(paneId, v);
+                if (!v) {
+                  ops.refreshFiles();
+                }
+              }
+            : undefined
+        }
         showBackForward
         canNavigateBack={historyIndex > 0}
         canNavigateForward={historyIndex < history.length - 1}
@@ -598,6 +605,7 @@ export default function FileBrowser({
         hostId={hostId}
         hostAddress={hostAddress}
         hostUsername={hostUsername}
+        kind={kind}
         selectedFiles={selectedFiles}
         clipboard={useSftpStore.getState().clipboard}
         renamingPath={paneState?.renamingPath ?? null}

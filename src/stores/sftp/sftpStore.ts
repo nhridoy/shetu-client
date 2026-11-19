@@ -143,13 +143,16 @@ function startTransferListener(
 export interface SftpLeafNode {
   type: "leaf";
   id: string;
-  connectionType: "host" | "local" | null;
+  connectionType: "host" | "local" | "storage" | null;
   hostId?: string;
   hostName?: string;
   hostAddress?: string;
   hostPort?: number;
   hostUsername?: string;
   localPath?: string;
+  /** A bucket pane: the saved storage account it shows. */
+  storageAccountId?: string;
+  storageName?: string;
   size: number;
 }
 
@@ -238,6 +241,7 @@ interface SftpState {
     hostPort?: number,
     hostUsername?: string,
   ) => void;
+  connectStorage: (paneId: string, accountId: string, name: string) => void;
   disconnectPane: (paneId: string) => void;
   setPaneSizes: (splitId: string, sizes: number[]) => void;
   /** Upserts jobs from the transfer manager, by id. */
@@ -443,6 +447,21 @@ export const useSftpStore = create<SftpState>((set, get) => ({
     });
   },
 
+  connectStorage: (paneId, storageAccountId, storageName) => {
+    const root = get().root;
+    if (!root) return;
+    const leaf = findLeafUtil(root, paneId);
+    if (!leaf) return;
+    set({
+      root: replaceNode(root, paneId, {
+        ...leaf,
+        connectionType: "storage",
+        storageAccountId,
+        storageName,
+      }),
+    });
+  },
+
   disconnectPane: (paneId) => {
     const root = get().root;
     if (!root) return;
@@ -458,6 +477,8 @@ export const useSftpStore = create<SftpState>((set, get) => ({
         hostPort: undefined,
         hostUsername: undefined,
         localPath: undefined,
+        storageAccountId: undefined,
+        storageName: undefined,
       }),
     });
   },

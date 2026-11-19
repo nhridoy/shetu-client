@@ -1,5 +1,5 @@
 import { useDraggable } from "@dnd-kit/react";
-import { DesktopTowerIcon, FolderIcon } from "@phosphor-icons/react";
+import { CloudIcon, DesktopTowerIcon, FolderIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import { DropZone } from "@/components/common/DropZone";
 import FileBrowser from "@/components/sftp/browser/FileBrowser";
 import LocalFileBrowser from "@/components/sftp/browser/LocalFileBrowser";
 import SftpHostPicker from "@/components/sftp/picker/SftpHostPicker";
+import StorageAccountPicker from "@/components/sftp/picker/StorageAccountPicker";
 import { Button } from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import PaneHeader from "@/components/ui/PaneHeader";
@@ -51,6 +52,7 @@ export default function SftpPane({
   const setActivePane = useSftpStore((s) => s.setActivePane);
   const connectLocal = useSftpStore((s) => s.connectLocal);
   const [showHostPicker, setShowHostPicker] = useState(false);
+  const [showBucketPicker, setShowBucketPicker] = useState(false);
   const navigate = useNavigate();
   const { confirmIfDirty, dialog } = useDirtyConfirm();
 
@@ -119,7 +121,9 @@ export default function SftpPane({
       ? pane.hostName || pane.hostAddress || "Connected"
       : pane.connectionType === "local"
         ? pane.localPath || "Local"
-        : "New Pane";
+        : pane.connectionType === "storage"
+          ? pane.storageName || "Bucket"
+          : "New Pane";
 
   const sides = ["left", "right", "top", "bottom"] as const;
 
@@ -151,7 +155,14 @@ export default function SftpPane({
 
       {/* Body */}
       <div className="flex-1 min-h-0 relative overflow-hidden">
-        {pane.connectionType === "host" && pane.hostId ? (
+        {pane.connectionType === "storage" && pane.storageAccountId ? (
+          <FileBrowser
+            paneId={pane.id}
+            hostId={`storage:${pane.storageAccountId}`}
+            kind="storage"
+            onFileSelect={() => {}}
+          />
+        ) : pane.connectionType === "host" && pane.hostId ? (
           <FileBrowser
             paneId={pane.id}
             hostId={pane.hostId}
@@ -203,6 +214,17 @@ export default function SftpPane({
                   <FolderIcon className="w-3.5 h-3.5" />
                   Connect Local
                 </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowBucketPicker(true);
+                  }}
+                >
+                  <CloudIcon className="w-3.5 h-3.5" />
+                  Connect Bucket
+                </Button>
               </div>
             </div>
           </div>
@@ -233,6 +255,21 @@ export default function SftpPane({
         <SftpHostPicker
           onConnect={onConnectHost}
           onClose={() => setShowHostPicker(false)}
+        />
+      </Modal>
+      <Modal
+        open={showBucketPicker}
+        onClose={() => setShowBucketPicker(false)}
+        title="Connect Bucket"
+        maxWidth="max-w-lg"
+      >
+        <StorageAccountPicker
+          onConnect={(account) =>
+            useSftpStore
+              .getState()
+              .connectStorage(pane.id, account.id, account.name)
+          }
+          onClose={() => setShowBucketPicker(false)}
         />
       </Modal>
       {dialog}
