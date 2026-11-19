@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 
-import { StorageFileProvider } from "./storageFs";
+import { confirmFolderRename, StorageFileProvider } from "./storageFs";
 
 const entry = (name: string, isDir: boolean, size = 0) => ({
   name,
@@ -77,5 +77,18 @@ describe("StorageFileProvider", () => {
   it("refuses what buckets can't do", async () => {
     await expect(p.chmod("/x", 0o644)).rejects.toThrow(/bucket/);
     await expect(p.copyFile("/a", "/b")).rejects.toThrow(/another pane/);
+  });
+
+  it("asks before renaming a folder, with how many objects move", async () => {
+    h.invoke.mockResolvedValue([
+      entry("a", false),
+      entry("b", false),
+      entry("c", true),
+    ]);
+    const ask = vi.fn(() => false);
+    expect(await confirmFolderRename(p, "/docs", "docs", ask)).toBe(false);
+    expect(ask).toHaveBeenCalledWith(expect.stringContaining("3 items"));
+    ask.mockReturnValue(true);
+    expect(await confirmFolderRename(p, "/docs", "docs", ask)).toBe(true);
   });
 });

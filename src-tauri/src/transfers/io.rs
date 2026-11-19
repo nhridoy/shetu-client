@@ -147,7 +147,44 @@ async fn exists(side: &Side, path: &str) -> Result<bool, JobError> {
 enum Writer {
     Local(tokio::fs::File),
     Sftp(russh_sftp::client::fs::File),
-    Remote(opendal::Writer),
+    Remote(RemoteWriter),
+}
+
+#[cfg(test)]
+pub(crate) static REMOTE_ABORTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// A bucket upload. Pause and cancel drop the run mid-copy, and an OpenDAL writer dropped
+/// without `close`/`abort` leaves its multipart parts billed, so dropping one unfinished
+/// aborts it in the background.
+struct RemoteWriter(Option<opendal::Writer>);
+
+impl RemoteWriter {
+    async fn abort(&mut self) {
+        if let Some(mut w) = self.0.take() {
+            #[cfg(test)]
+            REMOTE_ABORTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Err(e) = w.abort().await {
+                log::warn!("transfers: couldn't abort a bucket upload: {e}");
+            }
+        }
+    }
+}
+
+impl Drop for RemoteWriter {
+    fn drop(&mut self) {
+        if let Some(mut w) = self.0.take() {
+            #[cfg(test)]
+            REMOTE_ABORTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    if let Err(e) = w.abort().await {
+                        log::warn!("transfers: couldn't abort a bucket upload: {e}");
+                    }
+                });
+            }
+        }
+    }
 }
 
 impl Writer {
@@ -156,10 +193,11 @@ impl Writer {
         match self {
             Writer::Local(f) => f.write_all(buf).await.map_err(|e| io_err("write", e)),
             Writer::Sftp(f) => f.write_all(buf).await.map_err(|e| io_err("write", e)),
-            Writer::Remote(w) => w
+            Writer::Remote(RemoteWriter(Some(w))) => w
                 .write(buf.to_vec())
                 .await
                 .map_err(|e| opendal_err("write", e)),
+            Writer::Remote(RemoteWriter(None)) => Err(JobError::Stopped),
         }
     }
 
@@ -175,21 +213,23 @@ impl Writer {
                 f.sync_all().await.map_err(|e| sftp_err("fsync", e))?;
                 f.shutdown().await.map_err(|e| io_err("close", e))
             }
-            Writer::Remote(w) => w
-                .close()
-                .await
-                .map(|_| ())
-                .map_err(|e| opendal_err("write", e)),
+            Writer::Remote(r) => {
+                let Some(w) = r.0.as_mut() else {
+                    return Err(JobError::Stopped);
+                };
+                w.close().await.map_err(|e| opendal_err("write", e))?;
+                // Complete: nothing to abort when dropped.
+                r.0 = None;
+                Ok(())
+            }
         }
     }
 
     /// A bucket upload that won't finish is aborted, so its parts don't stay billed. Best
     /// effort; files need nothing (the `.part` stays for a resume).
     async fn abort(&mut self) {
-        if let Writer::Remote(w) = self {
-            if let Err(e) = w.abort().await {
-                log::warn!("transfers: couldn't abort a bucket upload: {e}");
-            }
+        if let Writer::Remote(r) = self {
+            r.abort().await;
         }
     }
 }
@@ -295,9 +335,9 @@ async fn open_part(
             if opts.if_not_exists && can.write_with_if_not_exists {
                 w = w.if_not_exists(true);
             }
-            Ok(Writer::Remote(
+            Ok(Writer::Remote(RemoteWriter(Some(
                 w.await.map_err(|e| opendal_err("create", e))?,
-            ))
+            ))))
         }
     }
 }
@@ -1057,5 +1097,48 @@ mod tests {
         remove_part(&Side::Local, &part).await;
         assert!(!std::path::Path::new(&part).exists());
         remove_part(&Side::Local, &part).await; // already gone: no panic
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_upload_aborts_it() {
+        let d = Dir::new("rdrop");
+        let src = d.path("src.fifo");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let feeder = {
+            let src = src.clone();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let mut pipe = std::fs::OpenOptions::new().write(true).open(&src).unwrap();
+                pipe.write_all(&[b'x'; 4096]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(800));
+            })
+        };
+        let before = REMOTE_ABORTS.load(std::sync::atomic::Ordering::SeqCst);
+        let op = bucket();
+        // Pause and cancel drop the whole run (the copy future), not just return an error.
+        let run = tokio::spawn(async move {
+            copy(
+                &Side::Local,
+                &src,
+                &Side::Remote(op),
+                "/big.bin",
+                0,
+                &CancellationToken::new(),
+                WriteOpts::default(),
+                |_| {},
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        run.abort();
+        let _ = run.await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(REMOTE_ABORTS.load(std::sync::atomic::Ordering::SeqCst) > before);
+        feeder.join().unwrap();
     }
 }

@@ -12,7 +12,7 @@ import {
   unregisterProvider,
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
-import { StorageFileProvider } from "@/lib/sftp/storageFs";
+import { confirmFolderRename, StorageFileProvider } from "@/lib/sftp/storageFs";
 import {
   ConnectCancelled,
   resolveUsernameOrAsk,
@@ -203,6 +203,12 @@ export function useFileOperations({
       const provider = await ensureProvider();
       const newPath =
         currentPath === "/" ? `/${trimmed}` : `${currentPath}/${trimmed}`;
+      if (
+        provider instanceof StorageFileProvider &&
+        file.type === "directory" &&
+        !(await confirmFolderRename(provider, renamingPath, file.name))
+      )
+        return;
       await provider.moveFile(renamingPath, newPath);
       toast.success(`Renamed to ${trimmed}`);
       clearError();

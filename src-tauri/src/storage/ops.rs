@@ -112,6 +112,22 @@ pub async fn list_tree(
     Ok(out)
 }
 
+/// Lists one entry, to check the bucket can be reached and read. One request, however large
+/// the bucket.
+pub async fn check_access(op: &Operator) -> Result<(), String> {
+    use futures::TryStreamExt;
+    let mut lister = op
+        .lister_with("/")
+        .limit(1)
+        .await
+        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
+    lister
+        .try_next()
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't reach the bucket: {e}"))
+}
+
 /// `(size, mtime)` of an object, `None` when it doesn't exist.
 pub async fn stat(op: &Operator, ui_path: &str) -> Result<Option<(u64, i64)>, String> {
     match op.stat(&to_key(ui_path, false)).await {
@@ -171,6 +187,15 @@ pub(crate) async fn rename_tree_inner(
             .0;
         vec![(to_key(from, false), size, false)]
     };
+    // S3 copy replaces whatever is there: never rename onto an existing object or folder.
+    let taken = if is_dir {
+        !list_dir(op, to).await?.is_empty()
+    } else {
+        stat(op, to).await?.is_some()
+    };
+    if taken {
+        return Err(format!("{to} already exists. Nothing was moved."));
+    }
     if let Some((key, _, _)) = objects.iter().find(|(_, size, _)| *size > limit) {
         return Err(format!(
             "{} is too large to rename in the bucket (over 5 GiB). Nothing was moved.",
@@ -377,5 +402,33 @@ mod tests {
             list_tree(&op, "/d", 3).await.unwrap_err(),
             crate::local_list::TOO_MANY
         );
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_an_existing_name() {
+        let op = folder();
+        put(&op, "a.txt", "A").await;
+        put(&op, "b.txt", "B").await;
+        let err = rename_tree(&op, "/a.txt", "/b.txt", false)
+            .await
+            .unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(read_small(&op, "/a.txt", 10).await.unwrap(), b"A");
+        assert_eq!(read_small(&op, "/b.txt", 10).await.unwrap(), b"B");
+        put(&op, "f/x.txt", "x").await;
+        put(&op, "g/y.txt", "y").await;
+        let err = rename_tree(&op, "/f", "/g", true).await.unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(read_small(&op, "/f/x.txt", 10).await.unwrap(), b"x");
+    }
+
+    #[tokio::test]
+    async fn check_access_reads_one_entry() {
+        let op = memory();
+        assert!(check_access(&op).await.is_ok());
+        for i in 0..5 {
+            put(&op, &format!("{i}.txt"), "x").await;
+        }
+        assert!(check_access(&op).await.is_ok());
     }
 }

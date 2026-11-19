@@ -90,10 +90,7 @@ pub async fn storage_connect(
 ) -> Result<String, String> {
     let account = load_account(&db, &crypto, &account_id)?;
     let op = operator_for(&account)?;
-    op.list_with("/")
-        .limit(1)
-        .await
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
+    ops::check_access(&op).await?;
     let bucket = account.bucket.clone();
     sessions.insert(
         session_id,

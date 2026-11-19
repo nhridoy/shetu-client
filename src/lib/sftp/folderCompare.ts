@@ -51,24 +51,36 @@ export async function loadComparison(
   });
 }
 
-/** For a bucket target, its changed rows' times as the files' own (saved with each upload),
- * so the newer-file check doesn't flag every file a bucket listing dates by upload. */
-export async function withTargetTimes(
+/** Changed rows with each bucket side's times read as the files' own (saved with each upload):
+ * a bucket listing dates objects by upload, which would skew the newer-file check either way. */
+export async function withBucketTimes(
   rows: CompareRow[],
-  direction: Direction,
-  target: CompareSide,
+  left: CompareSide,
+  right: CompareSide,
 ): Promise<CompareRow[]> {
-  if (target.kind !== "storage") return rows;
-  const bucket = target.provider as unknown as {
-    statTimes(path: string): Promise<{ size: number; mtime: number } | null>;
-  };
-  const side = direction === "right" ? "right" : "left";
+  const buckets = (
+    [
+      ["left", left],
+      ["right", right],
+    ] as const
+  ).filter(([, side]) => side.kind === "storage");
+  if (buckets.length === 0) return rows;
   return Promise.all(
     rows.map(async (row) => {
-      const there = row[side];
-      if (row.status !== "differs" || !there) return row;
-      const times = await bucket.statTimes(joinPath(target.root, row.path));
-      return times ? { ...row, [side]: { ...there, mtime: times.mtime } } : row;
+      if (row.status !== "differs") return row;
+      let next = row;
+      for (const [key, side] of buckets) {
+        const there = row[key];
+        if (!there) continue;
+        const bucket = side.provider as unknown as {
+          statTimes(
+            path: string,
+          ): Promise<{ size: number; mtime: number } | null>;
+        };
+        const times = await bucket.statTimes(joinPath(side.root, row.path));
+        if (times) next = { ...next, [key]: { ...there, mtime: times.mtime } };
+      }
+      return next;
     }),
   );
 }

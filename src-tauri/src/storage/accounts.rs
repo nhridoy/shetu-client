@@ -17,6 +17,10 @@ const TEXT_FIELDS: [&str; 7] = [
     "secretAccessKey",
 ];
 const PROVIDERS: [&str; 6] = ["aws", "r2", "b2", "wasabi", "spaces", "custom"];
+/// Per request body or part (8 MiB) — room for a slow uplink.
+pub const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Per whole call — a server-side copy of up to 5 GiB.
+pub const OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 /// A saved account, decrypted. Only Rust ever holds this.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -108,7 +112,11 @@ pub fn operator_for(d: &StorageAccountData) -> Result<Operator, String> {
     Ok(Operator::new(builder)
         .map_err(|e| format!("Couldn't set up the bucket: {e}"))?
         .layer(opendal::layers::RetryLayer::new())
-        .layer(opendal::layers::TimeoutLayer::new()))
+        .layer(
+            opendal::layers::TimeoutLayer::new()
+                .with_timeout(OP_TIMEOUT)
+                .with_io_timeout(IO_TIMEOUT),
+        ))
 }
 
 fn live_payload(
@@ -292,11 +300,7 @@ pub async fn storage_test(
     let (_, payload) = merged(&db, &crypto, id.as_deref(), &patch)?;
     let d = parse(&payload)?;
     validate(&d)?;
-    let op = operator_for(&d)?;
-    op.list_with("/")
-        .limit(1)
-        .await
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
+    super::ops::check_access(&operator_for(&d)?).await?;
     Ok(format!("Connected to {}", d.bucket))
 }
 
@@ -438,5 +442,13 @@ mod tests {
             &json!({"record_type": "storage_accounts"})
         ));
         assert!(!is_storage_ciphertext(&json!({"record_type": "hosts"})));
+    }
+
+    #[test]
+    fn bucket_timeouts_fit_large_parts_and_copies() {
+        // One 8 MiB part per request on a slow uplink, and server-side copies of up to
+        // 5 GiB, must not hit the timeout.
+        assert!(IO_TIMEOUT >= std::time::Duration::from_secs(120));
+        assert!(OP_TIMEOUT >= std::time::Duration::from_secs(600));
     }
 }

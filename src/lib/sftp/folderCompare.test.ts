@@ -20,7 +20,7 @@ import {
   loadComparison,
   newerOnTarget,
   TOO_MANY,
-  withTargetTimes,
+  withBucketTimes,
 } from "./folderCompare";
 
 const provider = (over: Partial<FileProvider> = {}) =>
@@ -225,7 +225,12 @@ describe("folderCompare", () => {
       },
     ];
     expect(newerOnTarget(rows, "right")).toHaveLength(1);
-    const timed = await withTargetTimes(rows, "right", target);
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const timed = await withBucketTimes(rows, local, target);
     expect(statTimes).toHaveBeenCalledWith("/r/a.txt");
     expect(newerOnTarget(timed, "right")).toHaveLength(0);
   });
@@ -237,6 +242,35 @@ describe("folderCompare", () => {
       provider: provider(),
       root: "/r",
     };
-    expect(await withTargetTimes(rows, "right", side)).toBe(rows);
+    expect(await withBucketTimes(rows, side, side)).toBe(rows);
+  });
+
+  it("reads a bucket source's saved times too, so a newer local file still asks", async () => {
+    // The bucket object was uploaded later (listed 5000) from a file last changed at 100;
+    // the local copy was changed at 300, after it.
+    const statTimes = vi.fn(async () => ({ size: 2, mtime: 100 }));
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/b",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const rows = [
+      {
+        path: "a.txt",
+        status: "differs" as const,
+        isDir: false,
+        left: entry("a.txt", 2, 5_000),
+        right: entry("a.txt", 1, 300),
+      },
+    ];
+    expect(newerOnTarget(rows, "right")).toHaveLength(0);
+    const timed = await withBucketTimes(rows, bucket, local);
+    expect(statTimes).toHaveBeenCalledWith("/b/a.txt");
+    expect(newerOnTarget(timed, "right")).toHaveLength(1);
   });
 });

@@ -154,3 +154,16 @@ export class StorageFileProvider extends RemoteFileProviderImpl {
     return unsupported("Search");
   }
 }
+
+/** Renaming a bucket folder copies and deletes every object in it: ask first, with the count. */
+export async function confirmFolderRename(
+  provider: StorageFileProvider,
+  path: string,
+  name: string,
+  ask: (message: string) => boolean = (m) => window.confirm(m),
+): Promise<boolean> {
+  const count = (await provider.listFilesRecursive(path)).length;
+  return ask(
+    `Rename "${name}" and the ${count} items in it? Each object is copied to the new name, then deleted.`,
+  );
+}

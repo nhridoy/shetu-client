@@ -11,7 +11,7 @@ import type { CompareEntry, CompareRow } from "@/lib/sftp/compareFolders";
 import {
   copyable,
   newerOnTarget,
-  withTargetTimes,
+  withBucketTimes,
 } from "@/lib/sftp/folderCompare";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
@@ -82,11 +82,10 @@ export default function CompareView({
   const picked = rows.filter((r) => selected.has(r.path));
   /** Copies, after confirming when that would replace newer files on the other side. */
   const sync = async (list: CompareRow[], direction: "right" | "left") => {
-    const target = sides?.[direction === "right" ? 1 : 0];
     const candidates = copyable(list, direction);
-    // A bucket target's listed times are upload times: read the files' own first.
-    const timed = target
-      ? await withTargetTimes(candidates, direction, target)
+    // A bucket's listed times are upload times: read the files' own first.
+    const timed = sides
+      ? await withBucketTimes(candidates, sides[0], sides[1])
       : candidates;
     const newer = newerOnTarget(timed, direction).length;
     if (
