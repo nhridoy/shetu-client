@@ -116,7 +116,12 @@ impl EditState {
     pub fn find(&self, session_id: &str, remote_path: &str) -> Option<&Edit> {
         self.edits
             .iter()
-            .find(|e| e.session_id == session_id && e.remote_path == remote_path)
+            // A "Not uploaded" edit is never reused: reopening makes a fresh one.
+            .find(|e| {
+                e.session_id == session_id
+                    && e.remote_path == remote_path
+                    && e.status != EditStatus::NotUploaded
+            })
     }
 
     pub fn opened(&mut self, edit: Edit) -> Vec<EditEffect> {
@@ -935,6 +940,20 @@ mod tests {
         s.resolve("e", Choice::KeepServer);
         s.download_failed("e", (99, 300), "offline");
         assert!(s.stop("e", true, Some((12, 200))).is_ok());
+    }
+
+    #[test]
+    fn find_prefers_the_active_edit_of_a_file() {
+        let mut s = EditState::default();
+        let mut old = edit("old");
+        old.unsent = true;
+        s.restore(vec![old], |_| Some(BASE));
+        assert!(
+            s.find("pane-1", "/etc/nginx.conf").is_none(),
+            "Not uploaded isn't reused"
+        );
+        s.opened(edit("new"));
+        assert_eq!(s.find("pane-1", "/etc/nginx.conf").unwrap().id, "new");
     }
 
     #[test]

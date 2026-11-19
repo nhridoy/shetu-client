@@ -391,8 +391,15 @@ async fn wipe_local_data(
     let edits_wiped = edits.wipe().await;
     // Waits until the queue has dropped everything, so nothing is saved back after the wipe.
     transfers.wipe().await;
-    db::wipe_all(&db)?;
-    edits_wiped
+    both(edits_wiped, db::wipe_all(&db))
+}
+
+/// Ok only if both are; otherwise every failure, so none is hidden behind another.
+fn both(a: Result<(), String>, b: Result<(), String>) -> Result<(), String> {
+    match (a, b) {
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+        (a, b) => a.and(b),
+    }
 }
 
 #[tauri::command]
@@ -1263,6 +1270,14 @@ mod lock_session_tests {
 mod shetu_identity_tests {
     use super::device_id_path;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn wipe_reports_every_failure() {
+        assert_eq!(super::both(Ok(()), Ok(())), Ok(()));
+        assert_eq!(super::both(Err("a".into()), Ok(())), Err("a".into()));
+        assert_eq!(super::both(Ok(()), Err("b".into())), Err("b".into()));
+        assert_eq!(super::both(Err("a".into()), Err("b".into())), Err("a; b".into()));
+    }
 
     #[test]
     fn device_id_uses_shetu_local_namespace() {

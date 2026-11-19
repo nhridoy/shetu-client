@@ -42,6 +42,12 @@ enum Msg {
     },
     /// Answered once the file is watched, so the editor opens only after that. Refused (and
     /// its copy deleted) if a wipe ran since the open started (`started`).
+    /// Makes the open's temp folder (see `create_for_open`).
+    CreateDir {
+        id: String,
+        started: u64,
+        reply: oneshot::Sender<Result<PathBuf, String>>,
+    },
     Opened {
         edit: Box<Edit>,
         started: u64,
@@ -117,8 +123,26 @@ pub fn stale_edit_uploads(
         .collect()
 }
 
-/// Adds a just-downloaded edit, unless a sign-out wipe ran while it was being opened: then its
-/// copy is deleted and the open fails.
+/// Makes an open's temp folder, unless a sign-out wipe ran since the open started. Done by the
+/// loop, so no folder appears after a wipe; a wipe during the download deletes it.
+fn create_for_open(root: &Path, id: &str, started: u64, wipes: u64) -> Result<PathBuf, String> {
+    if started != wipes {
+        return Err("Signed out while the file was opening".into());
+    }
+    create_edit_dir(root, id).map_err(|e| e.to_string())
+}
+
+fn drop_open_dir(root: &Path, edit: &Edit) -> Result<(), String> {
+    match Path::new(&edit.local_path).parent() {
+        Some(dir) if inside_root(root, dir) => {
+            std::fs::remove_dir_all(dir).map_err(|e| format!("its copy couldn't be deleted ({e})"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Adds a just-downloaded edit, once it is saved in the list (or a restart would sweep its
+/// folder). Refused, with its copy deleted, if a sign-out wipe ran meanwhile or saving fails.
 fn register_open(
     state: &mut EditState,
     watching: &mut Watching,
@@ -127,15 +151,18 @@ fn register_open(
     started: u64,
     wipes: u64,
 ) -> Result<Vec<EditEffect>, String> {
+    let refuse = |why: String| match drop_open_dir(root, &edit) {
+        Ok(()) => Err(why),
+        Err(e) => Err(format!("{why}; {e}")),
+    };
     if started != wipes {
-        if let Some(dir) = Path::new(&edit.local_path).parent() {
-            if inside_root(root, dir) {
-                let _ = std::fs::remove_dir_all(dir);
-            }
-        }
-        return Err("Signed out while the file was opening".into());
+        return refuse("Signed out while the file was opening".into());
     }
     let mut effects = state.opened(edit.clone());
+    if let Err(e) = save_edits(root, &state.list()) {
+        let _ = state.stop(&edit.id, true, None);
+        return refuse(format!("Couldn't save the list of edits: {e}"));
+    }
     effects.extend(start_watching(watching, state, &edit));
     Ok(effects)
 }
@@ -157,7 +184,6 @@ fn start_watching(watching: &mut Watching, state: &mut EditState, edit: &Edit) -
 #[derive(Clone)]
 pub struct EditManager {
     tx: mpsc::UnboundedSender<Msg>,
-    root: PathBuf,
 }
 
 fn now_ms() -> i64 {
@@ -249,8 +275,8 @@ impl EditManager {
             .join("remote-edits");
         let (tx, rx) = mpsc::unbounded_channel();
         let finished = app.state::<TransferManager>().subscribe_finished();
-        tauri::async_runtime::spawn(run_loop(app, root.clone(), rx, tx.clone(), finished));
-        EditManager { tx, root }
+        tauri::async_runtime::spawn(run_loop(app, root, rx, tx.clone(), finished));
+        EditManager { tx }
     }
 
     async fn ask<T>(&self, msg: impl FnOnce(oneshot::Sender<T>) -> Msg) -> Result<T, String> {
@@ -320,6 +346,10 @@ async fn run_loop(
                 reply,
             } => {
                 let _ = reply.send((state.find(&session_id, &remote_path).cloned(), wipes));
+                Vec::new()
+            }
+            Msg::CreateDir { id, started, reply } => {
+                let _ = reply.send(create_for_open(&root, &id, started, wipes));
                 Vec::new()
             }
             Msg::Opened {
@@ -614,7 +644,13 @@ pub async fn edit_open(
         return Err(format!("large:{}", remote.0));
     }
     let id = uuid::Uuid::new_v4().to_string();
-    let dir = create_edit_dir(&manager.root, &id).map_err(|e| e.to_string())?;
+    let dir = manager
+        .ask(|reply| Msg::CreateDir {
+            id: id.clone(),
+            started,
+            reply,
+        })
+        .await??;
     let local_path = dir
         .join(local_file_name(&remote_path))
         .display()
@@ -726,12 +762,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_open_that_outlived_a_sign_out_is_dropped() {
-        let root = std::env::temp_dir().join(format!("shetu-reg-{}", uuid::Uuid::new_v4()));
-        let dir = create_edit_dir(&root, "e1").unwrap();
-        std::fs::write(dir.join("a.txt"), b"secret").unwrap();
-        let edit = Edit {
+    fn test_edit(dir: &Path) -> Edit {
+        Edit {
             id: "e1".into(),
             session_id: "pane-1".into(),
             host: HostRef {
@@ -753,7 +785,15 @@ mod tests {
             conflict: None,
             error: None,
             downloading: false,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn an_open_that_outlived_a_sign_out_is_dropped() {
+        let root = std::env::temp_dir().join(format!("shetu-reg-{}", uuid::Uuid::new_v4()));
+        let dir = create_edit_dir(&root, "e1").unwrap();
+        std::fs::write(dir.join("a.txt"), b"secret").unwrap();
+        let edit = test_edit(&dir);
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut watching = watch::start(tx);
         let mut state = EditState::default();
@@ -765,6 +805,33 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         assert!(register_open(&mut state, &mut watching, &root, edit, 1, 1).is_ok());
         assert_eq!(state.list().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn an_open_that_cannot_be_saved_is_refused() {
+        let root = std::env::temp_dir().join(format!("shetu-reg-{}", uuid::Uuid::new_v4()));
+        let dir = create_for_open(&root, "e2", 0, 0).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        // The list's temp file can't be written: the edit wouldn't survive a restart.
+        std::fs::create_dir_all(root.join("edits.json.tmp")).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut watching = watch::start(tx);
+        let mut state = EditState::default();
+        let mut edit = test_edit(&dir);
+        edit.id = "e2".into();
+        assert!(register_open(&mut state, &mut watching, &root, edit, 0, 0).is_err());
+        assert!(state.list().is_empty());
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_edit_folder_is_made_after_a_sign_out() {
+        let root = std::env::temp_dir().join(format!("shetu-mk-{}", uuid::Uuid::new_v4()));
+        assert!(create_for_open(&root, "e3", 0, 1).is_err());
+        assert!(!root.exists());
+        assert!(create_for_open(&root, "e3", 1, 1).unwrap().exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

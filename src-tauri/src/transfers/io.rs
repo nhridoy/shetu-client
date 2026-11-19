@@ -287,7 +287,7 @@ pub async fn finish(
 
 /// Sets a file's modified (and accessed) time to `mtime` seconds. Best effort: some servers
 /// refuse `setstat`; the copy is still good, so this only logs.
-async fn set_mtime(side: &Side, path: &str, mtime: i64) {
+pub(crate) async fn set_mtime(side: &Side, path: &str, mtime: i64) {
     match side {
         Side::Local => {
             let path = path.to_string();
@@ -601,7 +601,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = Dir::new("statopt");
         let (src, _) = source(&d);
-        assert_eq!(stat_if_exists(&Side::Local, &d.path("nope")).await.unwrap(), None);
+        assert_eq!(
+            stat_if_exists(&Side::Local, &d.path("nope")).await.unwrap(),
+            None
+        );
         assert!(stat_if_exists(&Side::Local, &src).await.unwrap().is_some());
         let locked = d.path("locked");
         std::fs::create_dir(&locked).unwrap();
