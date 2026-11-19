@@ -75,14 +75,7 @@ fn inline_file(path: &Path, home: &Path, depth: u8, scoped: Option<&str>, out: &
     }
 }
 
-fn inline_text(
-    text: &str,
-    path: &Path,
-    home: &Path,
-    depth: u8,
-    scoped: Option<&str>,
-    out: &mut Inlined,
-) {
+fn inline_text(text: &str, path: &Path, home: &Path, depth: u8, scoped: Option<&str>, out: &mut Inlined) {
     let mut skipping = false;
     let mut had_match = false;
     // Host line whose scope is current; None means all hosts.
@@ -159,9 +152,7 @@ pub(crate) struct ParsedHost {
     pub identity_files: Vec<PathBuf>,
 }
 
-pub(crate) fn parse_hosts(
-    home: &Path,
-) -> Result<(Vec<ParsedHost>, Vec<String>, Vec<String>), String> {
+pub(crate) fn parse_hosts(home: &Path) -> Result<(Vec<ParsedHost>, Vec<String>, Vec<String>), String> {
     let (text, match_files, scoped_files) = sanitize_config(home)?;
     let mut reader = BufReader::new(text.as_bytes());
     let config = SshConfig::default()
@@ -207,15 +198,9 @@ const DEFAULT_KEYS: [&str; 6] = [
 
 fn pick_key(host: &ParsedHost, home: &Path) -> Option<SshConfigKey> {
     let found = if host.identity_files.is_empty() {
-        DEFAULT_KEYS
-            .iter()
-            .map(|n| home.join(".ssh").join(n))
-            .find(|p| p.exists())
+        DEFAULT_KEYS.iter().map(|n| home.join(".ssh").join(n)).find(|p| p.exists())
     } else {
-        host.identity_files
-            .iter()
-            .find(|p| !crate::import::is_network_path(p) && p.exists())
-            .cloned()
+        host.identity_files.iter().find(|p| !crate::import::is_network_path(p) && p.exists()).cloned()
             .or_else(|| host.identity_files.first().cloned())
     };
     found.map(|p| describe_key(&p))
@@ -240,20 +225,14 @@ pub(crate) fn to_preview(home: &Path) -> Result<crate::import::ImportPreview, St
         })
         .collect();
     let note = |files: Vec<String>, reason: &'static str| {
-        files.into_iter().map(move |name| Skipped {
-            name,
-            reason: reason.to_string(),
-        })
+        files.into_iter().map(move |name| Skipped { name, reason: reason.to_string() })
     };
-    let skipped = note(
-        match_files,
-        "Match blocks aren't supported and were ignored",
-    )
-    .chain(note(
-        scoped_files,
-        "Host blocks inside an Include under a Host entry aren't supported and were ignored",
-    ))
-    .collect();
+    let skipped = note(match_files, "Match blocks aren't supported and were ignored")
+        .chain(note(
+            scoped_files,
+            "Host blocks inside an Include under a Host entry aren't supported and were ignored",
+        ))
+        .collect();
     Ok(ImportPreview {
         source: "ssh_config".into(),
         origin: "~/.ssh/config".into(),
@@ -336,11 +315,7 @@ mod tests {
         assert_eq!(find(&hosts, "y").user, None);
         assert_eq!(
             matches,
-            [home
-                .join(".ssh")
-                .join("config")
-                .to_string_lossy()
-                .into_owned()]
+            [home.join(".ssh").join("config").to_string_lossy().into_owned()]
         );
     }
 
@@ -378,10 +353,7 @@ mod tests {
     fn proxy_jump_kept_raw() {
         let home = temp_home(&[("config", "Host z\n  ProxyJump bastion,edge\n")]);
         let (hosts, _, _) = parse_hosts(&home).unwrap();
-        assert_eq!(
-            find(&hosts, "z").proxy_jump.as_deref(),
-            Some("bastion,edge")
-        );
+        assert_eq!(find(&hosts, "z").proxy_jump.as_deref(), Some("bastion,edge"));
     }
 
     fn key_pem(passphrase: Option<&str>) -> (String, String) {
@@ -404,10 +376,7 @@ mod tests {
     #[test]
     fn configured_key_ready_with_fingerprint() {
         let (pem, _) = key_pem(None);
-        let home = temp_home(&[
-            ("config", "Host a\n  IdentityFile ~/.ssh/work\n"),
-            ("work", &pem),
-        ]);
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/work\n"), ("work", &pem)]);
         let k = only_key(&home);
         assert_eq!(k.status, "ready");
         assert!(k.fingerprint.unwrap().starts_with("SHA256:"));
@@ -447,10 +416,7 @@ mod tests {
     #[test]
     fn encrypted_key_without_pub_has_fingerprint() {
         let (pem, _) = key_pem(Some("pw"));
-        let home = temp_home(&[
-            ("config", "Host a\n  IdentityFile ~/.ssh/enc\n"),
-            ("enc", &pem),
-        ]);
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/enc\n"), ("enc", &pem)]);
         let k = only_key(&home);
         assert_eq!(k.status, "encrypted");
         assert_eq!(k.fingerprint.unwrap(), own_fingerprint(&pem));
@@ -459,10 +425,7 @@ mod tests {
     #[test]
     fn include_with_quoted_path_containing_space() {
         let home = temp_home(&[
-            (
-                "config",
-                "Include \"config.d/company hosts.conf\" # trailing\n",
-            ),
+            ("config", "Include \"config.d/company hosts.conf\" # trailing\n"),
             ("config.d/company hosts.conf", "Host corp\n"),
         ]);
         let (hosts, _, _) = parse_hosts(&home).unwrap();
@@ -472,31 +435,19 @@ mod tests {
     #[test]
     fn include_under_host_does_not_leak_to_other_hosts() {
         let home = temp_home(&[
-            (
-                "config",
-                "Host prod\n  Include scoped.conf\nHost dev\n  HostName dev.example.com\n",
-            ),
-            (
-                "scoped.conf",
-                "User produser\nHost *\n  HostName wrong.example.com\n",
-            ),
+            ("config", "Host prod\n  Include scoped.conf\nHost dev\n  HostName dev.example.com\n"),
+            ("scoped.conf", "User produser\nHost *\n  HostName wrong.example.com\n"),
         ]);
         let (hosts, _, scoped) = parse_hosts(&home).unwrap();
         assert_eq!(find(&hosts, "prod").user.as_deref(), Some("produser"));
         assert_eq!(find(&hosts, "dev").hostname, "dev.example.com");
-        assert_eq!(
-            scoped,
-            [home.join(".ssh/scoped.conf").to_string_lossy().into_owned()]
-        );
+        assert_eq!(scoped, [home.join(".ssh/scoped.conf").to_string_lossy().into_owned()]);
     }
 
     #[test]
     fn lines_after_include_stay_in_parent_scope() {
         let home = temp_home(&[
-            (
-                "config",
-                "Host prod\n  HostName p.example.com\n  Include more.conf\n  Port 2200\n",
-            ),
+            ("config", "Host prod\n  HostName p.example.com\n  Include more.conf\n  Port 2200\n"),
             ("more.conf", "Host other\n  HostName o.example.com\n"),
         ]);
         let (hosts, _, _) = parse_hosts(&home).unwrap();
@@ -507,10 +458,7 @@ mod tests {
     #[test]
     fn top_level_include_restores_global_scope() {
         let home = temp_home(&[
-            (
-                "config",
-                "Include a.conf\nUser bob\nHost y\n  HostName y.example.com\n",
-            ),
+            ("config", "Include a.conf\nUser bob\nHost y\n  HostName y.example.com\n"),
             ("a.conf", "Host x\n  HostName x.example.com\n"),
         ]);
         let (hosts, _, _) = parse_hosts(&home).unwrap();
@@ -522,10 +470,7 @@ mod tests {
     fn each_included_file_starts_in_the_parent_scope() {
         // OpenSSH restores the parent scope after every file of one Include line.
         let home = temp_home(&[
-            (
-                "config",
-                "Include a.conf b.conf\nHost y\n  HostName y.example.com\n",
-            ),
+            ("config", "Include a.conf b.conf\nHost y\n  HostName y.example.com\n"),
             ("a.conf", "Host x\n  HostName x.example.com\n"),
             ("b.conf", "User included-user\n"),
         ]);
@@ -542,37 +487,23 @@ mod tests {
 
     #[test]
     fn unreadable_key_is_reported() {
-        let home = temp_home(&[
-            ("config", "Host a\n  IdentityFile ~/.ssh/junk\n"),
-            ("junk", "not a key"),
-        ]);
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/junk\n"), ("junk", "not a key")]);
         assert_eq!(only_key(&home).status, "unreadable");
     }
 
     #[test]
     fn read_key_only_allows_listed_paths() {
         let (pem, _) = key_pem(None);
-        let home = temp_home(&[
-            ("config", "Host a\n  IdentityFile ~/.ssh/work\n"),
-            ("work", &pem),
-        ]);
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/work\n"), ("work", &pem)]);
         let k = only_key(&home);
-        assert_eq!(
-            crate::import::read_key_for("ssh_config", None, &home, &k.path).unwrap(),
-            pem
-        );
+        assert_eq!(crate::import::read_key_for("ssh_config", None, &home, &k.path).unwrap(), pem);
         let cfg = home.join(".ssh/config");
-        assert!(
-            crate::import::read_key_for("ssh_config", None, &home, cfg.to_str().unwrap()).is_err()
-        );
+        assert!(crate::import::read_key_for("ssh_config", None, &home, cfg.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn read_key_rejects_listed_non_key_file() {
-        let home = temp_home(&[
-            ("config", "Host a\n  IdentityFile ~/.ssh/junk\n"),
-            ("junk", "not a key"),
-        ]);
+        let home = temp_home(&[("config", "Host a\n  IdentityFile ~/.ssh/junk\n"), ("junk", "not a key")]);
         let k = only_key(&home);
         assert!(crate::import::read_key_for("ssh_config", None, &home, &k.path).is_err());
     }
@@ -589,10 +520,7 @@ mod tests {
     #[test]
     fn scoped_include_file_is_listed_once() {
         let home = temp_home(&[
-            (
-                "config",
-                "Host a\n  Include s.conf\nHost b\n  Include s.conf\n",
-            ),
+            ("config", "Host a\n  Include s.conf\nHost b\n  Include s.conf\n"),
             ("s.conf", "Host *\n  User u\n"),
         ]);
         let (_, _, scoped) = parse_hosts(&home).unwrap();

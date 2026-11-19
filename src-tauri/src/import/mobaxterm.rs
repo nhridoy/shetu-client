@@ -17,31 +17,17 @@ fn session(name: &str, value: &str, folder: &[String], home: &Path, out: &mut Im
     let fields: Vec<&str> = value.split('#').nth(2).unwrap_or("").split('%').collect();
     let field = |i: usize| fields.get(i).map(|v| v.trim()).filter(|v| !v.is_empty());
     if fields.first() != Some(&"0") {
-        out.skipped.push(Skipped {
-            name: name.into(),
-            reason: "Not an SSH session".into(),
-        });
+        out.skipped.push(Skipped { name: name.into(), reason: "Not an SSH session".into() });
         return;
     }
     let Some(hostname) = field(1) else {
-        out.skipped.push(Skipped {
-            name: name.into(),
-            reason: "No host name".into(),
-        });
+        out.skipped.push(Skipped { name: name.into(), reason: "No host name".into() });
         return;
     };
     if field(8).is_some() {
-        out.skipped.push(Skipped {
-            name: name.into(),
-            reason: "SSH gateway not imported".into(),
-        });
+        out.skipped.push(Skipped { name: name.into(), reason: "SSH gateway not imported".into() });
     }
-    let id = folder
-        .iter()
-        .map(String::as_str)
-        .chain([name])
-        .collect::<Vec<_>>()
-        .join("/");
+    let id = folder.iter().map(String::as_str).chain([name]).collect::<Vec<_>>().join("/");
     out.hosts.push(ImportedHost {
         id,
         name: name.into(),
@@ -56,12 +42,7 @@ fn session(name: &str, value: &str, folder: &[String], home: &Path, out: &mut Im
 }
 
 pub(crate) fn parse(text: &str, origin: &str, home: &Path) -> ImportPreview {
-    let mut out = ImportPreview {
-        source: "mobaxterm".into(),
-        origin: origin.into(),
-        hosts: Vec::new(),
-        skipped: Vec::new(),
-    };
+    let mut out = ImportPreview { source: "mobaxterm".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() };
     for (section, entries) in super::ini::sections(text) {
         if section != "Bookmarks" && !section.starts_with("Bookmarks_") {
             continue;
@@ -69,13 +50,7 @@ pub(crate) fn parse(text: &str, origin: &str, home: &Path) -> ImportPreview {
         let folder: Vec<String> = entries
             .iter()
             .find(|(k, _)| k == "SubRep")
-            .map(|(_, v)| {
-                v.split('\\')
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .map(String::from)
-                    .collect()
-            })
+            .map(|(_, v)| v.split('\\').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect())
             .unwrap_or_default();
         for (name, value) in &entries {
             if name == "SubRep" || name == "ImgNum" {
@@ -92,15 +67,8 @@ pub(crate) fn detected(home: &Path) -> Option<ImportPreview> {
     if !cfg!(windows) {
         return None;
     }
-    let candidates = [
-        dirs::document_dir().map(|d| d.join("MobaXterm")),
-        dirs::config_dir().map(|d| d.join("MobaXterm")),
-    ];
-    let ini = candidates
-        .into_iter()
-        .flatten()
-        .map(|d| d.join("MobaXterm.ini"))
-        .find(|p| p.is_file())?;
+    let candidates = [dirs::document_dir().map(|d| d.join("MobaXterm")), dirs::config_dir().map(|d| d.join("MobaXterm"))];
+    let ini = candidates.into_iter().flatten().map(|d| d.join("MobaXterm.ini")).find(|p| p.is_file())?;
     let text = super::read_source_file(&ini).ok()?;
     let found = parse(&text, &ini.to_string_lossy(), home);
     (!found.hosts.is_empty() || !found.skipped.is_empty()).then_some(found)
@@ -126,10 +94,7 @@ mod tests {
     }
 
     fn host<'a>(p: &'a ImportPreview, name: &str) -> &'a ImportedHost {
-        p.hosts
-            .iter()
-            .find(|h| h.name == name)
-            .unwrap_or_else(|| panic!("{name} in {p:?}"))
+        p.hosts.iter().find(|h| h.name == name).unwrap_or_else(|| panic!("{name} in {p:?}"))
     }
 
     #[test]
@@ -137,26 +102,17 @@ mod tests {
         let p = parse(&sample(), "MobaXterm.ini", Path::new("/home/u"));
         assert_eq!(p.source, "mobaxterm");
         let web = host(&p, "web");
-        assert_eq!(
-            (web.hostname.as_str(), web.port, web.user.as_deref()),
-            ("10.0.0.4", 2222, Some("deploy"))
-        );
+        assert_eq!((web.hostname.as_str(), web.port, web.user.as_deref()), ("10.0.0.4", 2222, Some("deploy")));
         assert_eq!(web.key.as_ref().unwrap().path, r"C:\keys\a.ppk");
         assert!(web.folder.is_empty());
         let db = host(&p, "db");
-        assert_eq!(
-            (db.port, db.user.as_deref(), db.key.is_none()),
-            (22, None, true)
-        );
+        assert_eq!((db.port, db.user.as_deref(), db.key.is_none()), (22, None, true));
     }
 
     #[test]
     fn folders_from_subrep() {
         let p = parse(&sample(), "f", Path::new("/home/u"));
-        assert_eq!(
-            host(&p, "db").folder,
-            vec!["Prod".to_string(), "Web".to_string()]
-        );
+        assert_eq!(host(&p, "db").folder, vec!["Prod".to_string(), "Web".to_string()]);
         assert_eq!(host(&p, "db").id, "Prod/Web/db");
     }
 
@@ -164,29 +120,20 @@ mod tests {
     fn non_ssh_skipped() {
         let p = parse(&sample(), "f", Path::new("/home/u"));
         assert!(p.hosts.iter().all(|h| h.name != "rdp"));
-        assert!(p.skipped.contains(&Skipped {
-            name: "rdp".into(),
-            reason: "Not an SSH session".into()
-        }));
+        assert!(p.skipped.contains(&Skipped { name: "rdp".into(), reason: "Not an SSH session".into() }));
     }
 
     #[test]
     fn gateway_noted() {
         let p = parse(&sample(), "f", Path::new("/home/u"));
         assert_eq!(host(&p, "inner").hostname, "10.1.0.5");
-        assert!(p.skipped.contains(&Skipped {
-            name: "inner".into(),
-            reason: "SSH gateway not imported".into()
-        }));
+        assert!(p.skipped.contains(&Skipped { name: "inner".into(), reason: "SSH gateway not imported".into() }));
     }
 
     #[test]
     fn profile_dir_expands() {
         let p = parse(&sample(), "f", Path::new("/home/u"));
         let key = host(&p, "profile").key.as_ref().unwrap().path.clone();
-        assert!(
-            key.starts_with("/home/u") && key.ends_with("id_ed25519"),
-            "{key}"
-        );
+        assert!(key.starts_with("/home/u") && key.ends_with("id_ed25519"), "{key}");
     }
 }

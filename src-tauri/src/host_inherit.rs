@@ -27,9 +27,7 @@ pub(crate) fn group_chain(
         if chain.len() >= MAX_DEPTH || chain.iter().any(|g| g.id == id) {
             break;
         }
-        let Some(row) = db::get_sync_row(db, Table::Groups, &id).ok().flatten() else {
-            break;
-        };
+        let Some(row) = db::get_sync_row(db, Table::Groups, &id).ok().flatten() else { break };
         if row.deleted_at.is_some() || row.vault_id != host_vault {
             break;
         }
@@ -37,21 +35,13 @@ pub(crate) fn group_chain(
             .session
             .lock()
             .ok()
-            .and_then(|s| {
-                crate::team_keys::decrypt_row_secret(db, &s, &row.data, "groups", &row.vault_id)
-                    .ok()
-            })
+            .and_then(|s| crate::team_keys::decrypt_row_secret(db, &s, &row.data, "groups", &row.vault_id).ok())
             .and_then(|plain| serde_json::from_str::<Value>(&plain).ok())
         else {
             break;
         };
         next = row.parent_id.filter(|p| !p.is_empty());
-        chain.push(GroupLayer {
-            id,
-            name: row.name.unwrap_or_default(),
-            vault_id: row.vault_id,
-            payload,
-        });
+        chain.push(GroupLayer { id, name: row.name.unwrap_or_default(), vault_id: row.vault_id, payload });
     }
     chain
 }
@@ -82,37 +72,20 @@ pub(crate) struct IdentityLogin {
     pub totp_secret: Option<String>,
 }
 
-fn decrypt_payload(
-    db: &LocalDb,
-    crypto: &CryptoState,
-    row: &db::SyncRow,
-    record_type: &str,
-) -> Option<Value> {
+fn decrypt_payload(db: &LocalDb, crypto: &CryptoState, row: &db::SyncRow, record_type: &str) -> Option<Value> {
     let session = crypto.session.lock().ok()?;
-    let plain =
-        crate::team_keys::decrypt_row_secret(db, &session, &row.data, record_type, &row.vault_id)
-            .ok()?;
+    let plain = crate::team_keys::decrypt_row_secret(db, &session, &row.data, record_type, &row.vault_id).ok()?;
     serde_json::from_str(&plain).ok()
 }
 
 /// The identity a host in `vault` may use: present, not deleted, same vault, with a username.
-pub(crate) fn usable_identity(
-    db: &LocalDb,
-    crypto: &CryptoState,
-    id: &str,
-    vault: &str,
-) -> Option<IdentityLogin> {
+pub(crate) fn usable_identity(db: &LocalDb, crypto: &CryptoState, id: &str, vault: &str) -> Option<IdentityLogin> {
     let row = db::get_sync_row(db, Table::Identities, id).ok().flatten()?;
     if row.deleted_at.is_some() || row.vault_id != vault {
         return None;
     }
     let payload = decrypt_payload(db, crypto, &row, "identities")?;
-    let text = |key: &str| {
-        payload[key]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-    };
+    let text = |key: &str| payload[key].as_str().filter(|s| !s.is_empty()).map(String::from);
     Some(IdentityLogin {
         name: row.name.clone().unwrap_or_default(),
         username: text("username")?,
@@ -129,18 +102,14 @@ fn nearest<T>(
     key: &str,
     pick: impl Fn(&Value) -> Option<T>,
 ) -> Option<(T, Option<String>)> {
-    pick(&host[key]).map(|v| (v, None)).or_else(|| {
-        chain
-            .iter()
-            .find_map(|g| pick(&g.payload[key]).map(|v| (v, Some(g.name.clone()))))
-    })
+    pick(&host[key])
+        .map(|v| (v, None))
+        .or_else(|| chain.iter().find_map(|g| pick(&g.payload[key]).map(|v| (v, Some(g.name.clone())))))
 }
 
 fn valid_env_name(name: &str) -> bool {
     let mut ch = name.chars();
-    ch.next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && ch.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    ch.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && ch.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -153,12 +122,7 @@ pub(crate) fn resolve(
     resolve_with(host_payload, host_auth_type, host_key_id, chain, &|_| None)
 }
 
-type Credentials = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<IdentityLogin>,
-);
+type Credentials = (String, Option<String>, Option<String>, Option<IdentityLogin>);
 
 /// `identity` looks up a usable identity by id; an unusable one leaves its level without credentials.
 pub(crate) fn resolve_with(
@@ -171,57 +135,31 @@ pub(crate) fn resolve_with(
     let level = |auth: &str, payload: &Value, key_id: Option<&str>| -> Option<Credentials> {
         if auth == "identity" {
             let login = identity(payload["identityId"].as_str()?)?;
-            return Some((
-                auth.into(),
-                login.password.clone(),
-                login.key_id.clone(),
-                Some(login),
-            ));
+            return Some((auth.into(), login.password.clone(), login.key_id.clone(), Some(login)));
         }
-        Some((
-            auth.into(),
-            payload["password"].as_str().map(String::from),
-            key_id.map(String::from),
-            None,
-        ))
+        Some((auth.into(), payload["password"].as_str().map(String::from), key_id.map(String::from), None))
     };
     // Credentials resolve as one unit: never mix authType / password / keyId across levels.
     let ((auth_type, password, key_id, identity), auth_from) = if host_auth_type == "inherit" {
         chain
             .iter()
             .find_map(|g| {
-                let auth = g.payload["authType"]
-                    .as_str()
-                    .filter(|a| ["password", "key", "both", "none", "identity"].contains(a))?;
-                Some((
-                    level(auth, &g.payload, g.payload["keyId"].as_str())?,
-                    Some(g.name.clone()),
-                ))
+                let auth = g.payload["authType"].as_str().filter(|a| ["password", "key", "both", "none", "identity"].contains(a))?;
+                Some((level(auth, &g.payload, g.payload["keyId"].as_str())?, Some(g.name.clone())))
             })
             .unwrap_or((("none".into(), None, None, None), None))
     } else {
-        let own = level(host_auth_type, host_payload, host_key_id).unwrap_or((
-            "none".into(),
-            None,
-            None,
-            None,
-        ));
+        let own = level(host_auth_type, host_payload, host_key_id).unwrap_or(("none".into(), None, None, None));
         (own, None)
     };
     let uses_password = ["password", "both", "identity"].contains(&auth_type.as_str());
     let uses_key = ["key", "both", "identity"].contains(&auth_type.as_str());
 
     let mut env: Vec<(String, String, Option<String>)> = Vec::new();
-    let levels = chain
-        .iter()
-        .rev()
-        .map(|g| (&g.payload, Some(g.name.clone())))
-        .chain([(host_payload, None)]);
+    let levels = chain.iter().rev().map(|g| (&g.payload, Some(g.name.clone()))).chain([(host_payload, None)]);
     for (payload, from) in levels {
         for row in payload["env"].as_array().into_iter().flatten() {
-            let (Some(name), Some(value)) = (row["name"].as_str(), row["value"].as_str()) else {
-                continue;
-            };
+            let (Some(name), Some(value)) = (row["name"].as_str(), row["value"].as_str()) else { continue };
             if !valid_env_name(name) {
                 continue;
             }
@@ -237,31 +175,20 @@ pub(crate) fn resolve_with(
         // An identity's username wins outright.
         username: match &identity {
             Some(login) => Some((login.username.clone(), auth_from.clone())),
-            None => nearest(host_payload, chain, "username", |v| {
-                v.as_str().filter(|s| !s.is_empty()).map(String::from)
-            }),
+            None => nearest(host_payload, chain, "username", |v| v.as_str().filter(|s| !s.is_empty()).map(String::from)),
         },
-        port: nearest(host_payload, chain, "port", |v| {
-            v.as_u64()
-                .and_then(|p| u16::try_from(p).ok())
-                .filter(|p| *p != 0)
-        })
-        .unwrap_or((22, None)),
+        port: nearest(host_payload, chain, "port", |v| v.as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0))
+            .unwrap_or((22, None)),
         password: password.filter(|_| uses_password),
         key_id: key_id.filter(|_| uses_key),
         auth_type,
         auth_from,
         keepalive_secs: nearest(host_payload, chain, "keepaliveSecs", |v| {
-            v.as_f64()
-                .map(|n| crate::ssh_options::clamp_keepalive(n as i64))
+            v.as_f64().map(|n| crate::ssh_options::clamp_keepalive(n as i64))
         }),
         env,
-        startup: nearest(host_payload, chain, "startup", |v| {
-            (!v.is_null()).then(|| v.clone())
-        })
-        .unwrap_or((Value::Null, None)),
-        forward_agent: nearest(host_payload, chain, "forwardAgent", Value::as_bool)
-            .unwrap_or((false, None)),
+        startup: nearest(host_payload, chain, "startup", |v| (!v.is_null()).then(|| v.clone())).unwrap_or((Value::Null, None)),
+        forward_agent: nearest(host_payload, chain, "forwardAgent", Value::as_bool).unwrap_or((false, None)),
         identity,
     }
 }
@@ -285,16 +212,9 @@ pub fn inherited_host_defaults(
     Ok(defaults(&db, &crypto, group_id.as_deref(), &vault_id))
 }
 
-pub(crate) fn defaults(
-    db: &LocalDb,
-    crypto: &CryptoState,
-    group_id: Option<&str>,
-    vault_id: &str,
-) -> Value {
+pub(crate) fn defaults(db: &LocalDb, crypto: &CryptoState, group_id: Option<&str>, vault_id: &str) -> Value {
     let chain = group_chain(db, crypto, vault_id, group_id);
-    let e = resolve_with(&json!({}), "inherit", None, &chain, &|id| {
-        usable_identity(db, crypto, id, vault_id)
-    });
+    let e = resolve_with(&json!({}), "inherit", None, &chain, &|id| usable_identity(db, crypto, id, vault_id));
     let mut out = json!({
         "hasPassword": e.password.is_some(),
         "startupKind": Value::Null,
@@ -319,11 +239,7 @@ pub(crate) fn defaults(
         out["identityFrom"] = json!(e.auth_from);
         out["identityUsername"] = json!(login.username);
     }
-    if let Some(name) = e
-        .key_id
-        .and_then(|id| usable_key(db, &id, vault_id))
-        .and_then(|k| k.name)
-    {
+    if let Some(name) = e.key_id.and_then(|id| usable_key(db, &id, vault_id)).and_then(|k| k.name) {
         out["keyName"] = json!(name);
     }
     if let Some((secs, from)) = e.keepalive_secs {
@@ -357,27 +273,19 @@ pub(crate) fn defaults(
 }
 
 /// Live hosts and groups in `vault_id` whose own login is the identity (local rows only).
-pub(crate) fn usage(
-    db: &LocalDb,
-    crypto: &CryptoState,
-    identity_id: &str,
-    vault_id: &str,
-) -> (u32, u32) {
-    let uses =
-        |table: Table, record_type: &str, on_identity: &dyn Fn(&db::SyncRow, &Value) -> bool| {
-            db::list_sync_rows(db, table, vault_id, false)
-                .unwrap_or_default()
-                .iter()
-                .filter(|row| {
-                    decrypt_payload(db, crypto, row, record_type)
-                        .is_some_and(|p| p["identityId"] == identity_id && on_identity(row, &p))
-                })
-                .count() as u32
-        };
+pub(crate) fn usage(db: &LocalDb, crypto: &CryptoState, identity_id: &str, vault_id: &str) -> (u32, u32) {
+    let uses = |table: Table, record_type: &str, on_identity: &dyn Fn(&db::SyncRow, &Value) -> bool| {
+        db::list_sync_rows(db, table, vault_id, false)
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| {
+                decrypt_payload(db, crypto, row, record_type)
+                    .is_some_and(|p| p["identityId"] == identity_id && on_identity(row, &p))
+            })
+            .count() as u32
+    };
     (
-        uses(Table::Hosts, "hosts", &|row, _| {
-            row.auth_type.as_deref() == Some("identity")
-        }),
+        uses(Table::Hosts, "hosts", &|row, _| row.auth_type.as_deref() == Some("identity")),
         uses(Table::Groups, "groups", &|_, p| p["authType"] == "identity"),
     )
 }
@@ -405,20 +313,12 @@ mod tests {
     use super::*;
 
     fn layer(name: &str, payload: Value) -> GroupLayer {
-        GroupLayer {
-            id: name.into(),
-            name: name.into(),
-            vault_id: "v".into(),
-            payload,
-        }
+        GroupLayer { id: name.into(), name: name.into(), vault_id: "v".into(), payload }
     }
 
     #[test]
     fn nearest_group_wins_per_field() {
-        let chain = [
-            layer("child", json!({"username": "b"})),
-            layer("parent", json!({"username": "a", "keepaliveSecs": 60})),
-        ];
+        let chain = [layer("child", json!({"username": "b"})), layer("parent", json!({"username": "a", "keepaliveSecs": 60}))];
         let e = resolve(&json!({}), "password", None, &chain);
         assert_eq!(e.username, Some(("b".into(), Some("child".into()))));
         assert_eq!(e.keepalive_secs, Some((60, Some("parent".into()))));
@@ -426,46 +326,26 @@ mod tests {
 
     #[test]
     fn port_inherits_from_group() {
-        let chain = [
-            layer("child", json!({})),
-            layer("parent", json!({"port": 2222})),
-        ];
-        assert_eq!(
-            resolve(&json!({"port": null}), "none", None, &chain).port,
-            (2222, Some("parent".into()))
-        );
+        let chain = [layer("child", json!({})), layer("parent", json!({"port": 2222}))];
+        assert_eq!(resolve(&json!({"port": null}), "none", None, &chain).port, (2222, Some("parent".into())));
         assert_eq!(resolve(&json!({}), "none", None, &[]).port, (22, None));
     }
 
     #[test]
     fn legacy_port_unchanged() {
         let chain = [layer("g", json!({"port": 2222}))];
-        assert_eq!(
-            resolve(&json!({"port": 2200}), "none", None, &chain).port,
-            (2200, None)
-        );
+        assert_eq!(resolve(&json!({"port": 2200}), "none", None, &chain).port, (2200, None));
     }
 
     #[test]
     fn invalid_port_ignored() {
         let chain = [layer("g", json!({"port": 2222}))];
         for bad in [json!(0), json!(70000), json!("22"), json!(-1)] {
-            assert_eq!(
-                resolve(&json!({"port": bad}), "none", None, &chain).port,
-                (2222, Some("g".into())),
-                "{bad}"
-            );
-            assert_eq!(
-                resolve(&json!({"port": bad}), "none", None, &[]).port,
-                (22, None),
-                "{bad}"
-            );
+            assert_eq!(resolve(&json!({"port": bad}), "none", None, &chain).port, (2222, Some("g".into())), "{bad}");
+            assert_eq!(resolve(&json!({"port": bad}), "none", None, &[]).port, (22, None), "{bad}");
         }
         let bad_group = [layer("g", json!({"port": 70000}))];
-        assert_eq!(
-            resolve(&json!({}), "none", None, &bad_group).port,
-            (22, None)
-        );
+        assert_eq!(resolve(&json!({}), "none", None, &bad_group).port, (22, None));
     }
 
     #[test]
@@ -474,35 +354,16 @@ mod tests {
             layer("child", json!({"authType": "key", "keyId": "k1"})),
             layer("parent", json!({"authType": "password", "password": "p"})),
         ];
-        let e = resolve(
-            &json!({"password": "own"}),
-            "inherit",
-            Some("own-key"),
-            &chain,
-        );
-        assert_eq!(
-            (e.auth_type.as_str(), e.key_id.as_deref(), e.password),
-            ("key", Some("k1"), None)
-        );
+        let e = resolve(&json!({"password": "own"}), "inherit", Some("own-key"), &chain);
+        assert_eq!((e.auth_type.as_str(), e.key_id.as_deref(), e.password), ("key", Some("k1"), None));
         assert_eq!(e.auth_from.as_deref(), Some("child"));
     }
 
     #[test]
     fn inherit_without_group_auth_is_none() {
-        let chain = [layer(
-            "g",
-            json!({"username": "u", "password": "p", "keyId": "k"}),
-        )];
-        let e = resolve(
-            &json!({"password": "own"}),
-            "inherit",
-            Some("own-key"),
-            &chain,
-        );
-        assert_eq!(
-            (e.auth_type.as_str(), e.password, e.key_id, e.auth_from),
-            ("none", None, None, None)
-        );
+        let chain = [layer("g", json!({"username": "u", "password": "p", "keyId": "k"}))];
+        let e = resolve(&json!({"password": "own"}), "inherit", Some("own-key"), &chain);
+        assert_eq!((e.auth_type.as_str(), e.password, e.key_id, e.auth_from), ("none", None, None, None));
         assert_eq!(resolve(&json!({}), "inherit", None, &[]).auth_type, "none");
     }
 
@@ -510,45 +371,18 @@ mod tests {
     fn host_own_auth_ignores_groups() {
         let chain = [layer("g", json!({"authType": "key", "keyId": "k"}))];
         let e = resolve(&json!({"password": "own"}), "password", None, &chain);
-        assert_eq!(
-            (
-                e.auth_type.as_str(),
-                e.password.as_deref(),
-                e.key_id,
-                e.auth_from
-            ),
-            ("password", Some("own"), None, None)
-        );
+        assert_eq!((e.auth_type.as_str(), e.password.as_deref(), e.key_id, e.auth_from), ("password", Some("own"), None, None));
     }
 
     #[test]
     fn env_merges_root_first_host_last() {
         let chain = [
             layer("child", json!({"env": [{"name": "B", "value": "2"}]})),
-            layer(
-                "parent",
-                json!({"env": [{"name": "A", "value": "1"}, {"name": "B", "value": "1"}, {"name": "1BAD", "value": "x"}]}),
-            ),
+            layer("parent", json!({"env": [{"name": "A", "value": "1"}, {"name": "B", "value": "1"}, {"name": "1BAD", "value": "x"}]})),
         ];
-        let e = resolve(
-            &json!({"env": [{"name": "C", "value": "3"}, {"name": "A", "value": "9"}]}),
-            "none",
-            None,
-            &chain,
-        );
-        let got: Vec<_> = e
-            .env
-            .iter()
-            .map(|(n, v, f)| (n.as_str(), v.as_str(), f.as_deref()))
-            .collect();
-        assert_eq!(
-            got,
-            vec![
-                ("A", "9", None),
-                ("B", "2", Some("child")),
-                ("C", "3", None)
-            ]
-        );
+        let e = resolve(&json!({"env": [{"name": "C", "value": "3"}, {"name": "A", "value": "9"}]}), "none", None, &chain);
+        let got: Vec<_> = e.env.iter().map(|(n, v, f)| (n.as_str(), v.as_str(), f.as_deref())).collect();
+        assert_eq!(got, vec![("A", "9", None), ("B", "2", Some("child")), ("C", "3", None)]);
     }
 
     #[test]
@@ -563,14 +397,8 @@ mod tests {
     #[test]
     fn host_off_beats_group_on() {
         let chain = [layer("g", json!({"forwardAgent": true}))];
-        assert_eq!(
-            resolve(&json!({"forwardAgent": false}), "none", None, &chain).forward_agent,
-            (false, None)
-        );
-        assert_eq!(
-            resolve(&json!({}), "none", None, &chain).forward_agent,
-            (true, Some("g".into()))
-        );
+        assert_eq!(resolve(&json!({"forwardAgent": false}), "none", None, &chain).forward_agent, (false, None));
+        assert_eq!(resolve(&json!({}), "none", None, &chain).forward_agent, (true, Some("g".into())));
     }
 
     #[test]
@@ -580,28 +408,12 @@ mod tests {
         let chain = [layer("g", json!({}))];
         let e = resolve(&host, "both", Some("k"), &chain);
         assert_eq!(e.username, Some(("u".into(), None)));
-        assert_eq!(
-            (
-                e.auth_type.as_str(),
-                e.password.as_deref(),
-                e.key_id.as_deref(),
-                e.auth_from
-            ),
-            ("both", Some("p"), Some("k"), None)
-        );
+        assert_eq!((e.auth_type.as_str(), e.password.as_deref(), e.key_id.as_deref(), e.auth_from), ("both", Some("p"), Some("k"), None));
         assert_eq!(e.keepalive_secs, Some((30, None)));
         assert_eq!(e.forward_agent, (true, None));
         assert_eq!(e.env, vec![("X".into(), "1".into(), None)]);
         assert_eq!(e.startup, (json!({"command": "ls"}), None));
         let bare = resolve(&json!({}), "none", None, &[]);
-        assert_eq!(
-            (
-                bare.username,
-                bare.keepalive_secs,
-                bare.forward_agent,
-                bare.startup
-            ),
-            (None, None, (false, None), (Value::Null, None))
-        );
+        assert_eq!((bare.username, bare.keepalive_secs, bare.forward_agent, bare.startup), (None, None, (false, None), (Value::Null, None)));
     }
 }

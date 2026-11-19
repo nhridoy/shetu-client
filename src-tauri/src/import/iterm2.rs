@@ -51,13 +51,7 @@ pub(crate) fn parse_ssh_command(cmd: &str) -> Option<SshTarget> {
     if !(program == "ssh" || program.ends_with("/ssh")) {
         return None;
     }
-    let mut target = SshTarget {
-        user: None,
-        host: String::new(),
-        port: None,
-        key: None,
-        jump: None,
-    };
+    let mut target = SshTarget { user: None, host: String::new(), port: None, key: None, jump: None };
     let mut destination: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -103,22 +97,13 @@ pub(crate) fn parse_ssh_command(cmd: &str) -> Option<SshTarget> {
 }
 
 pub(crate) fn parse_profiles(profiles: &[serde_json::Value], origin: &str) -> ImportPreview {
-    let mut out = ImportPreview {
-        source: "iterm2".into(),
-        origin: origin.into(),
-        hosts: Vec::new(),
-        skipped: Vec::new(),
-    };
+    let mut out = ImportPreview { source: "iterm2".into(), origin: origin.into(), hosts: Vec::new(), skipped: Vec::new() };
     for profile in profiles {
         let text = |k: &str| profile[k].as_str().map(str::trim).filter(|s| !s.is_empty());
         // Most profiles are local shells; only ssh commands are hosts, the rest aren't worth listing.
         // iTerm2 ignores Command unless Custom Command is on; "No" means a login shell.
-        let Some(command) = text("Command").filter(|_| text("Custom Command") != Some("No")) else {
-            continue;
-        };
-        let Some(t) = parse_ssh_command(command) else {
-            continue;
-        };
+        let Some(command) = text("Command").filter(|_| text("Custom Command") != Some("No")) else { continue };
+        let Some(t) = parse_ssh_command(command) else { continue };
         let name = text("Name").unwrap_or(&t.host).to_string();
         out.hosts.push(ImportedHost {
             id: text("Guid").map_or_else(|| name.clone(), String::from),
@@ -128,8 +113,7 @@ pub(crate) fn parse_profiles(profiles: &[serde_json::Value], origin: &str) -> Im
             user: t.user,
             key: t.key.map(|k| {
                 let path = match k.strip_prefix("~/") {
-                    Some(rest) => dirs::home_dir()
-                        .map_or(k.clone(), |h| h.join(rest).to_string_lossy().into_owned()),
+                    Some(rest) => dirs::home_dir().map_or(k.clone(), |h| h.join(rest).to_string_lossy().into_owned()),
                     None => k,
                 };
                 super::describe_key(Path::new(&path))
@@ -147,30 +131,14 @@ pub(crate) fn parse_profiles(profiles: &[serde_json::Value], origin: &str) -> Im
     // `-J` names a host; link it to the profile in this import that connects there, if any.
     let bare = |s: &str| {
         let host = s.rsplit_once('@').map_or(s, |(_, h)| h);
-        host.rsplit_once(':')
-            .map_or(host, |(h, _)| h)
-            .to_ascii_lowercase()
+        host.rsplit_once(':').map_or(host, |(h, _)| h).to_ascii_lowercase()
     };
-    let targets: Vec<(String, String, String)> = out
-        .hosts
-        .iter()
-        .map(|h| {
-            (
-                h.id.clone(),
-                h.name.to_ascii_lowercase(),
-                h.hostname.to_ascii_lowercase(),
-            )
-        })
-        .collect();
+    let targets: Vec<(String, String, String)> =
+        out.hosts.iter().map(|h| (h.id.clone(), h.name.to_ascii_lowercase(), h.hostname.to_ascii_lowercase())).collect();
     for host in &mut out.hosts {
-        let Some(jump) = host.jump.as_deref().filter(|j| !j.contains(',')) else {
-            continue;
-        };
+        let Some(jump) = host.jump.as_deref().filter(|j| !j.contains(',')) else { continue };
         let wanted = bare(jump);
-        if let Some((id, _, _)) = targets
-            .iter()
-            .find(|(id, name, hostname)| *id != host.id && (*name == wanted || *hostname == wanted))
-        {
+        if let Some((id, _, _)) = targets.iter().find(|(id, name, hostname)| *id != host.id && (*name == wanted || *hostname == wanted)) {
             host.jump = Some(id.clone());
         }
     }
@@ -179,12 +147,8 @@ pub(crate) fn parse_profiles(profiles: &[serde_json::Value], origin: &str) -> Im
 
 /// `{"Profiles": [...]}`, as iTerm2's JSON export and DynamicProfiles files hold them.
 pub(crate) fn parse_json(text: &str, origin: &str) -> Result<ImportPreview, String> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| format!("Couldn't read the iTerm2 profiles: {e}"))?;
-    let profiles = value["Profiles"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("Couldn't read the iTerm2 profiles: {e}"))?;
+    let profiles = value["Profiles"].as_array().map(Vec::as_slice).unwrap_or_default();
     Ok(parse_profiles(profiles, origin))
 }
 
@@ -198,12 +162,7 @@ pub(crate) fn detected(home: &Path) -> Option<ImportPreview> {
     if let Ok(bytes) = super::read_limited(&prefs, super::SOURCE_LIMIT) {
         if let Ok(value) = plist::Value::from_reader(std::io::Cursor::new(bytes)) {
             if let Ok(json) = serde_json::to_value(&value) {
-                profiles.extend(
-                    json["New Bookmarks"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default(),
-                );
+                profiles.extend(json["New Bookmarks"].as_array().cloned().unwrap_or_default());
             }
         }
     }
@@ -224,57 +183,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn target(
-        user: Option<&str>,
-        host: &str,
-        port: Option<u16>,
-        key: Option<&str>,
-        jump: Option<&str>,
-    ) -> SshTarget {
-        SshTarget {
-            user: user.map(String::from),
-            host: host.into(),
-            port,
-            key: key.map(String::from),
-            jump: jump.map(String::from),
-        }
+    fn target(user: Option<&str>, host: &str, port: Option<u16>, key: Option<&str>, jump: Option<&str>) -> SshTarget {
+        SshTarget { user: user.map(String::from), host: host.into(), port, key: key.map(String::from), jump: jump.map(String::from) }
     }
 
     #[test]
     fn ssh_command_variants() {
-        assert_eq!(
-            parse_ssh_command("ssh deploy@10.0.0.4"),
-            Some(target(Some("deploy"), "10.0.0.4", None, None, None))
-        );
+        assert_eq!(parse_ssh_command("ssh deploy@10.0.0.4"), Some(target(Some("deploy"), "10.0.0.4", None, None, None)));
         assert_eq!(
             parse_ssh_command(r#"ssh -p 2222 -i "~/k a" web"#),
             Some(target(None, "web", Some(2222), Some("~/k a"), None))
         );
         assert_eq!(
-            parse_ssh_command(
-                "ssh -l root -o StrictHostKeyChecking=no -L 8080:localhost:80 host uptime"
-            ),
+            parse_ssh_command("ssh -l root -o StrictHostKeyChecking=no -L 8080:localhost:80 host uptime"),
             Some(target(Some("root"), "host", None, None, None))
         );
-        assert_eq!(
-            parse_ssh_command("ssh -J bastion inner"),
-            Some(target(None, "inner", None, None, Some("bastion")))
-        );
+        assert_eq!(parse_ssh_command("ssh -J bastion inner"), Some(target(None, "inner", None, None, Some("bastion"))));
         // A chain is kept so the summary can say it isn't supported.
-        assert_eq!(
-            parse_ssh_command("ssh -J a,b inner"),
-            Some(target(None, "inner", None, None, Some("a,b")))
-        );
-        assert_eq!(
-            parse_ssh_command("/usr/bin/ssh -4tA h"),
-            Some(target(None, "h", None, None, None))
-        );
+        assert_eq!(parse_ssh_command("ssh -J a,b inner"), Some(target(None, "inner", None, None, Some("a,b"))));
+        assert_eq!(parse_ssh_command("/usr/bin/ssh -4tA h"), Some(target(None, "h", None, None, None)));
         assert_eq!(parse_ssh_command("bash"), None);
         assert_eq!(parse_ssh_command("ssh -p"), None);
-        assert_eq!(
-            parse_ssh_command("ssh 'unterminated"),
-            Some(target(None, "unterminated", None, None, None))
-        );
+        assert_eq!(parse_ssh_command("ssh 'unterminated"), Some(target(None, "unterminated", None, None, None)));
     }
 
     #[test]
@@ -291,10 +221,7 @@ mod tests {
         assert_eq!(p.source, "iterm2");
         assert_eq!(p.hosts.len(), 1);
         let web = &p.hosts[0];
-        assert_eq!(
-            (web.name.as_str(), web.id.as_str(), web.hostname.as_str()),
-            ("web", "g1", "10.0.0.4")
-        );
+        assert_eq!((web.name.as_str(), web.id.as_str(), web.hostname.as_str()), ("web", "g1", "10.0.0.4"));
         assert_eq!((web.port, web.user.as_deref()), (2222, Some("deploy")));
         assert_eq!(web.tags, vec!["prod".to_string(), "web".to_string()]);
     }

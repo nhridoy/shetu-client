@@ -60,10 +60,7 @@ impl SftpSessions {
     }
 
     /// The host a session is connected to, and its SFTP handle.
-    pub fn session_info(
-        &self,
-        id: &str,
-    ) -> Option<(crate::transfers::model::HostRef, Arc<RusshSftp>)> {
+    pub fn session_info(&self, id: &str) -> Option<(crate::transfers::model::HostRef, Arc<RusshSftp>)> {
         let map = self.sessions.lock().ok()?;
         let s = map.get(id)?;
         Some((
@@ -136,10 +133,7 @@ impl SftpSessions {
 
     /// Forgets a session at once, so no one can look it up; close it with `close_session`.
     pub fn take(&self, session_id: &str) -> Option<SftpSession> {
-        self.sessions
-            .lock()
-            .ok()
-            .and_then(|mut m| m.remove(session_id))
+        self.sessions.lock().ok().and_then(|mut m| m.remove(session_id))
     }
 }
 
@@ -214,10 +208,8 @@ pub async fn sftp_connect(
         Arc::clone(&ssh_sessions.known_hosts),
         Arc::clone(&ssh_sessions.pending_keys),
         false,
-    )
-    .with_prompts(&ssh_sessions.pending_prompts);
-    let ssh = crate::ssh::connect_authenticated(handler, &config, Some((&app_handle, &session_id)))
-        .await?;
+    ).with_prompts(&ssh_sessions.pending_prompts);
+    let ssh = crate::ssh::connect_authenticated(handler, &config, Some((&app_handle, &session_id))).await?;
 
     crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
     let sftp = open_sftp_from_handle(&ssh).await?;
@@ -272,8 +264,7 @@ pub async fn connect_saved_session(
     let crypto = app.state::<crate::CryptoState>();
     let ssh_sessions = app.state::<crate::ssh::SshSessions>();
     let sftp_sessions = app.state::<SftpSessions>();
-    let route =
-        crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
+    let route = crate::ssh_route::resolve_saved_route_as(&db, &crypto, &host_id, username.as_deref())?;
     let config = &route.target;
 
     // Check if we already have an SFTP session for this session_id
@@ -307,26 +298,13 @@ pub async fn connect_saved_session(
         Arc::clone(&ssh_sessions.known_hosts),
         Arc::clone(&ssh_sessions.pending_keys),
         false,
-    )
-    .with_prompts(&ssh_sessions.pending_prompts);
+    ).with_prompts(&ssh_sessions.pending_prompts);
     let bastion_config = route.bastion.as_ref().unwrap_or(config);
     let bastion_handler = crate::ssh::SshHandler::new(
-        bastion_config.host.clone(),
-        bastion_config.port,
-        session_id.clone(),
-        app_handle.clone(),
-        Arc::clone(&ssh_sessions.known_hosts),
-        Arc::clone(&ssh_sessions.pending_keys),
-        false,
-    )
-    .with_prompts(&ssh_sessions.pending_prompts);
-    let connection = crate::ssh_route::connect_saved_route(
-        &route,
-        handler,
-        bastion_handler,
-        Some((&app_handle, &session_id)),
-    )
-    .await?;
+        bastion_config.host.clone(), bastion_config.port, session_id.clone(), app_handle.clone(),
+        Arc::clone(&ssh_sessions.known_hosts), Arc::clone(&ssh_sessions.pending_keys), false,
+    ).with_prompts(&ssh_sessions.pending_prompts);
+    let connection = crate::ssh_route::connect_saved_route(&route, handler, bastion_handler, Some((&app_handle, &session_id))).await?;
 
     crate::ssh::emit_progress(&app_handle, &session_id, "sftp_channel");
     let sftp = open_sftp_from_handle(&connection.target).await?;
@@ -376,11 +354,7 @@ fn join_sftp_path(parent: &str, name: &str) -> String {
     format!("{}/{}", parent.trim_end_matches('/'), name)
 }
 
-fn attrs_to_entry(
-    name: String,
-    path: String,
-    attrs: &russh_sftp::client::fs::Metadata,
-) -> SftpEntry {
+fn attrs_to_entry(name: String, path: String, attrs: &russh_sftp::client::fs::Metadata) -> SftpEntry {
     SftpEntry {
         name,
         path,
@@ -412,10 +386,7 @@ pub async fn sftp_list(
     sftp_sessions: tauri::State<'_, SftpSessions>,
 ) -> Result<Vec<SftpEntry>, String> {
     let sftp = get_sftp(&sftp_sessions, &session_id)?;
-    let read_dir = sftp
-        .read_dir(&path)
-        .await
-        .map_err(|e| format!("list: {e}"))?;
+    let read_dir = sftp.read_dir(&path).await.map_err(|e| format!("list: {e}"))?;
 
     let entries = read_dir
         .filter_map(|entry| {
@@ -435,10 +406,7 @@ pub async fn sftp_stat(
     sftp_sessions: tauri::State<'_, SftpSessions>,
 ) -> Result<SftpEntry, String> {
     let sftp = get_sftp(&sftp_sessions, &session_id)?;
-    let attrs = sftp
-        .metadata(&path)
-        .await
-        .map_err(|e| format!("stat: {e}"))?;
+    let attrs = sftp.metadata(&path).await.map_err(|e| format!("stat: {e}"))?;
     let name = path.split('/').last().unwrap_or("").to_string();
 
     Ok(attrs_to_entry(name, path, &attrs))
@@ -461,10 +429,7 @@ pub async fn sftp_read(
         .map_err(|e| format!("seek: {e}"))?;
 
     let mut buf = vec![0u8; len as usize];
-    let n = file
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("read: {e}"))?;
+    let n = file.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
     buf.truncate(n);
     Ok(buf)
 }
@@ -497,7 +462,9 @@ pub async fn sftp_write(
     file.write_all(&data)
         .await
         .map_err(|e| format!("write: {e}"))?;
-    file.sync_all().await.map_err(|e| format!("fsync: {e}"))?;
+    file.sync_all()
+        .await
+        .map_err(|e| format!("fsync: {e}"))?;
 
     Ok(())
 }
@@ -584,7 +551,9 @@ async fn sftp_delete_recursive(
             .await
             .map_err(|e| format!("rmdir: {e}"))
     } else {
-        sftp.remove_file(path).await.map_err(|e| format!("rm: {e}"))
+        sftp.remove_file(path)
+            .await
+            .map_err(|e| format!("rm: {e}"))
     }
 }
 

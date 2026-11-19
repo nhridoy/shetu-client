@@ -66,22 +66,8 @@ static HIDDEN: RwLock<(Vec<String>, Option<Regex>)> = RwLock::new((Vec::new(), N
 // Defaults shared by millions of machines identify no one; hiding them would
 // turn "root cause" into "[redacted] cause".
 const DEFAULT_NAMES: &[&str] = &[
-    "root",
-    "admin",
-    "administrator",
-    "ubuntu",
-    "debian",
-    "centos",
-    "fedora",
-    "ec2-user",
-    "azureuser",
-    "opc",
-    "user",
-    "guest",
-    "git",
-    "pi",
-    "vagrant",
-    "localhost",
+    "root", "admin", "administrator", "ubuntu", "debian", "centos", "fedora", "ec2-user",
+    "azureuser", "opc", "user", "guest", "git", "pi", "vagrant", "localhost",
 ];
 // Fields of decrypted records that name a machine or account.
 const RECORD_FIELDS: &[&str] = &["address", "username", "destination_host"];
@@ -345,10 +331,7 @@ fn clear_dir_files(dir: &Path) -> Vec<String> {
 }
 
 fn truncate(path: &Path) -> std::io::Result<()> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)?
-        .set_len(0)
+    std::fs::OpenOptions::new().write(true).open(path)?.set_len(0)
 }
 
 /// Wipes known hosts and logs; returns log files that could not be emptied
@@ -414,11 +397,8 @@ mod tests {
         let dir = tmp_dir("readonly");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("locked.log"), "x").unwrap();
-        std::fs::set_permissions(
-            dir.join("locked.log"),
-            std::fs::Permissions::from_mode(0o444),
-        )
-        .unwrap();
+        std::fs::set_permissions(dir.join("locked.log"), std::fs::Permissions::from_mode(0o444))
+            .unwrap();
         let is_root = std::process::Command::new("id")
             .arg("-u")
             .output()
@@ -426,10 +406,7 @@ mod tests {
         let failed = clear_dir_files(&dir);
         if !is_root {
             assert_eq!(failed, vec!["locked.log".to_string()]);
-            assert_eq!(
-                std::fs::read_to_string(dir.join("locked.log")).unwrap(),
-                "x"
-            );
+            assert_eq!(std::fs::read_to_string(dir.join("locked.log")).unwrap(), "x");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

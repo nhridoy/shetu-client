@@ -10,18 +10,13 @@ async fn bounded<F>(attempt: F) -> Option<Agent>
 where
     F: std::future::Future<Output = Result<Agent, russh::keys::Error>>,
 {
-    tokio::time::timeout(Duration::from_secs(2), attempt)
-        .await
-        .ok()?
-        .ok()
+    tokio::time::timeout(Duration::from_secs(2), attempt).await.ok()?.ok()
 }
 
 #[cfg(unix)]
 pub(crate) async fn connect_agent(override_path: &str) -> Option<Agent> {
     let path = if override_path.is_empty() {
-        std::env::var("SSH_AUTH_SOCK")
-            .ok()
-            .filter(|p| !p.is_empty())?
+        std::env::var("SSH_AUTH_SOCK").ok().filter(|p| !p.is_empty())?
     } else {
         override_path.to_string()
     };
@@ -31,14 +26,8 @@ pub(crate) async fn connect_agent(override_path: &str) -> Option<Agent> {
 #[cfg(windows)]
 pub(crate) async fn connect_agent(override_path: &str) -> Option<Agent> {
     // A non-empty override is a named-pipe path on Windows.
-    let pipe = if override_path.is_empty() {
-        r"\\.\pipe\openssh-ssh-agent"
-    } else {
-        override_path
-    };
-    if let Some(agent) =
-        bounded(async { Ok(AgentClient::connect_named_pipe(pipe).await?.dynamic()) }).await
-    {
+    let pipe = if override_path.is_empty() { r"\\.\pipe\openssh-ssh-agent" } else { override_path };
+    if let Some(agent) = bounded(async { Ok(AgentClient::connect_named_pipe(pipe).await?.dynamic()) }).await {
         return Some(agent);
     }
     if !override_path.is_empty() {
@@ -77,9 +66,7 @@ mod tests {
         });
         tokio::spawn(russh::keys::agent::server::serve(Box::pin(incoming), Allow));
 
-        let mut agent = connect_agent(sock.to_str().unwrap())
-            .await
-            .expect("agent connects");
+        let mut agent = connect_agent(sock.to_str().unwrap()).await.expect("agent connects");
         let key = PrivateKey::random(&mut rand10::rng(), Algorithm::Ed25519).unwrap();
         agent.add_identity(&key, &[]).await.unwrap();
         let ids = agent.request_identities().await.unwrap();

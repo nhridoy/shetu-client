@@ -404,12 +404,7 @@ pub(crate) fn import_team_grant_in_transaction(
         )?;
         tx.execute(
             "INSERT INTO team_vault_keys (vault_id,team_id,epoch,wrapped_key) VALUES (?1,?2,?3,?4)",
-            rusqlite::params![
-                context.vault_id,
-                context.team_id,
-                context.epoch,
-                wrapped_key
-            ],
+            rusqlite::params![context.vault_id, context.team_id, context.epoch, wrapped_key],
         )
         .map_err(|e| e.to_string())?;
     }

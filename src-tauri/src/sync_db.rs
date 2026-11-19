@@ -50,12 +50,7 @@ fn expected_fields(table: Table) -> &'static [&'static str] {
         Table::Hosts => &["os", "auth_type", "tags", "color", "group_id", "key_id"],
         Table::Keys => &["description", "key_type", "fingerprint", "public_key"],
         Table::Snippets => &["description", "tags"],
-        Table::Identities
-        | Table::Workspaces
-        | Table::Presets
-        | Table::SessionHistory
-        | Table::SessionOutputChunks
-        | Table::SessionPreferences => &[],
+        Table::Identities | Table::Workspaces | Table::Presets | Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => &[],
         Table::PortForwards => &["host_id", "mode"],
     }
 }
@@ -240,8 +235,7 @@ pub fn adopt_pending_device(db: &LocalDb, device_id: &str) -> Result<(), String>
     uuid::Uuid::parse_str(device_id).map_err(|_| "invalid device ID")?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut stmt = tx
-        .prepare("SELECT table_name, record_id, operation_id FROM outbox WHERE device_id != ?1")
+    let mut stmt = tx.prepare("SELECT table_name, record_id, operation_id FROM outbox WHERE device_id != ?1")
         .map_err(|e| e.to_string())?;
     let entries = stmt
         .query_map([device_id], |r| {
@@ -329,16 +323,13 @@ pub fn pending_batch(
                  o.queued_at, o.table_name, o.record_id LIMIT ?2")
         .map_err(|e| e.to_string())?;
     let entries = stmt
-        .query_map(
-            params![vault_id, limit.min(100) as i64, lacks_identities(db)],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
+        .query_map(params![vault_id, limit.min(100) as i64, lacks_identities(db)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
@@ -471,8 +462,7 @@ pub fn list_revoked_pending_edits(db: &LocalDb) -> Result<Vec<RevokedVaultEdits>
 
 /// Set after a server rejected the identities table; cleared on restart so an upgraded server is retried.
 fn lacks_identities(db: &LocalDb) -> bool {
-    db.server_lacks_identities
-        .load(std::sync::atomic::Ordering::Relaxed)
+    db.server_lacks_identities.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn pending_count(db: &LocalDb, vault_id: &str) -> Result<usize, String> {
@@ -657,12 +647,9 @@ pub fn apply_pull_page_with_rotation(
         } else {
             false
         };
-        let history_tombstone_wins =
-            matches!(
-                table,
-                Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences
-            ) && local.as_ref().is_some_and(|row| row.deleted_at.is_some())
-                && remote.deleted_at.is_none();
+        let history_tombstone_wins = matches!(table, Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences)
+            && local.as_ref().is_some_and(|row| row.deleted_at.is_some())
+            && remote.deleted_at.is_none();
         if !pending_local
             && !history_tombstone_wins
             && (active_boundary.is_some()
@@ -1193,70 +1180,21 @@ mod vault_delete_tests {
         };
         super::super::local_mutate(&db, Table::Vaults, &vault_row, &device).unwrap();
         let vault_create = pending_batch(&db, &vault, 10).unwrap()[0].clone();
-        ack_push_results(
-            &db,
-            &vault,
-            &[PushResult {
-                operation_id: vault_create.operation_id,
-                fate: "accepted".into(),
-                canonical_record: vault_create.record,
-                cursor: 1,
-            }],
-        )
-        .unwrap();
-        let identity = SyncRow {
-            id: Uuid::new_v4().to_string(),
-            vault_id: vault.clone(),
-            name: Some("i".into()),
-            data: seal("identities"),
-            ..Default::default()
-        };
+        ack_push_results(&db, &vault, &[PushResult { operation_id: vault_create.operation_id, fate: "accepted".into(), canonical_record: vault_create.record, cursor: 1 }]).unwrap();
+        let identity = SyncRow { id: Uuid::new_v4().to_string(), vault_id: vault.clone(), name: Some("i".into()), data: seal("identities"), ..Default::default() };
         super::super::local_mutate(&db, Table::Identities, &identity, &device).unwrap();
-        super::super::local_mutate(
-            &db,
-            Table::Hosts,
-            &SyncRow {
-                id: Uuid::new_v4().to_string(),
-                vault_id: vault.clone(),
-                name: Some("h".into()),
-                data: seal("hosts"),
-                ..Default::default()
-            },
-            &device,
-        )
-        .unwrap();
+        super::super::local_mutate(&db, Table::Hosts, &SyncRow { id: Uuid::new_v4().to_string(), vault_id: vault.clone(), name: Some("h".into()), data: seal("hosts"), ..Default::default() }, &device).unwrap();
         assert_eq!(pending_count(&db, &vault).unwrap(), 2);
-        db.server_lacks_identities
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(pending_count(&db, &vault).unwrap(), 1);
         let batch = pending_batch(&db, &vault, 10).unwrap();
-        assert_eq!(
-            batch.iter().map(|o| o.table.as_str()).collect::<Vec<_>>(),
-            ["hosts"]
-        );
+        assert_eq!(batch.iter().map(|o| o.table.as_str()).collect::<Vec<_>>(), ["hosts"]);
         // A deleted vault no longer waits on identity tombstones the server can't take.
         let host_op = batch[0].clone();
-        ack_push_results(
-            &db,
-            &vault,
-            &[PushResult {
-                operation_id: host_op.operation_id,
-                fate: "accepted".into(),
-                canonical_record: host_op.record,
-                cursor: 2,
-            }],
-        )
-        .unwrap();
+        ack_push_results(&db, &vault, &[PushResult { operation_id: host_op.operation_id, fate: "accepted".into(), canonical_record: host_op.record, cursor: 2 }]).unwrap();
         super::super::tombstone_vault_with_descendants(&db, &vault, &device).unwrap();
-        let tables: Vec<_> = pending_batch(&db, &vault, 10)
-            .unwrap()
-            .into_iter()
-            .map(|o| o.table)
-            .collect();
-        assert!(
-            tables.contains(&"vaults".to_string()) || tables.contains(&"hosts".to_string()),
-            "{tables:?}"
-        );
+        let tables: Vec<_> = pending_batch(&db, &vault, 10).unwrap().into_iter().map(|o| o.table).collect();
+        assert!(tables.contains(&"vaults".to_string()) || tables.contains(&"hosts".to_string()), "{tables:?}");
         assert!(!tables.contains(&"identities".to_string()));
     }
 
