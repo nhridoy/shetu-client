@@ -64,6 +64,7 @@ log = "0.4"
 regex = "1"
 notify = "8"
 tauri-plugin-single-instance = "2"
+opendal = { version = "0.59", default-features = false, features = ["services-s3", "services-memory", "executors-tokio", "http-transport-reqwest-rustls-no-provider", "layers-retry", "layers-timeout"] }
 
 [features]
 default = ["custom-protocol"]
