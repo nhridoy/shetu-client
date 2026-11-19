@@ -32,6 +32,7 @@ import { useKeyStore } from "@/stores/keys/keyStore";
 import { useSessionStore } from "@/stores/sessions/sessionStore";
 import { useTabGroupStore } from "@/stores/sessions/tabGroupStore";
 import { useSnippetStore } from "@/stores/snippets/snippetStore";
+import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import {
   SYNC_COMPLETED_EVENT,
   TEAM_ACCESS_REVOKED_EVENT,
@@ -186,6 +187,7 @@ export default function Layout() {
         useKeyStore.getState().fetchKeys(currentVaultId),
         useSnippetStore.getState().fetchSnippets(currentVaultId),
         useIdentityStore.getState().fetchIdentities(currentVaultId),
+        useStorageAccountStore.getState().fetchStorageAccounts(currentVaultId),
         useWorkspaceStore.getState().fetchWorkspaces(currentVaultId),
         useTabGroupStore.getState().fetchTabGroups(currentVaultId),
       ]);

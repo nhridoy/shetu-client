@@ -1,8 +1,9 @@
 import { useId, useState } from "react";
 import IdentityList from "@/components/identities/IdentityList";
 import KeyList from "@/components/keys/lists/KeyList";
+import StorageAccountList from "@/components/storage/StorageAccountList";
 
-const TABS = ["Keys", "Identities"] as const;
+const TABS = ["Keys", "Identities", "Storage"] as const;
 
 export default function KeysPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Keys");
@@ -43,8 +44,10 @@ export default function KeysPage() {
         >
           {name === "Keys" ? (
             <KeyList onNewKeyParam={() => setTab("Keys")} />
-          ) : (
+          ) : name === "Identities" ? (
             <IdentityList />
+          ) : (
+            <StorageAccountList />
           )}
         </div>
       ))}
