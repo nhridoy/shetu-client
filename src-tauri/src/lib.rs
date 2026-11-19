@@ -1750,9 +1750,27 @@ fn wrap_dek(state: tauri::State<'_, CryptoState>) -> Result<String, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// A second launch shows the running copy instead: its main window, or the splash screen
+/// while the main window is still loading.
+fn focus_running_window(app: &tauri::AppHandle) {
+    let window = app
+        .get_webview_window("main")
+        .filter(|w| w.is_visible().unwrap_or(false))
+        .or_else(|| app.get_webview_window("splashscreen"));
+    if let Some(window) = window {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     logging::install_panic_hook();
     tauri::Builder::default()
+        // First, so a second launch exits before anything else starts: two copies would share
+        // the edit folders, the transfer queue and the database without knowing of each other.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_running_window(app)
+        }))
         .plugin(logging::plugin())
         .plugin(logging::init_plugin())
         .plugin(tauri_plugin_keyring_store::init())
