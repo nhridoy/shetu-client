@@ -917,17 +917,25 @@ mod tests {
             settled_stat(&p, Duration::from_millis(20), 3).await,
             Some((1, local_mtime(&path)))
         );
+        // An editor that keeps saving: each version is swapped in whole (never seen half
+        // written) and is a different size, on its own thread so test scheduling can't pause it.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {
-            let path = path.clone();
-            tokio::spawn(async move {
-                for i in 0..40 {
-                    std::fs::write(&path, vec![b'y'; i + 2]).unwrap();
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+            let (path, stop) = (path.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let tmp = path.with_extension("tmp");
+                let mut size = 2;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::fs::write(&tmp, vec![b'y'; size]).unwrap();
+                    std::fs::rename(&tmp, &path).unwrap();
+                    size += 1;
+                    std::thread::sleep(Duration::from_millis(2));
                 }
             })
         };
         assert_eq!(settled_stat(&p, Duration::from_millis(20), 3).await, None);
-        writer.await.unwrap();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
