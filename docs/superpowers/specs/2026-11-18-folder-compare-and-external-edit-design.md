@@ -322,7 +322,9 @@ through it, so progress, resume, retries and the Transfers panel come for free.
 - A 1 s debounce plus a stability check.
 - The 50 MB confirmation.
 - Re-opening reuses the edit.
-- Edits don't survive a restart; temp copies are wiped on stop, sign-out, quit and startup.
+- Only unsent edits survive a restart (as "Not uploaded"). Temp copies are deleted on Stop
+  and sign-out; at startup only folders with nothing unsent (and unchanged on disk) are
+  deleted; quitting deletes nothing. If the saved list can't be read, nothing is deleted.
 - "Open with…" remembers the app per extension.
 - SaveAsCopy leaves the baseline unchanged, so the next save asks again.
 - After the builder check:

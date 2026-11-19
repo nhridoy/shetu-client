@@ -16,13 +16,71 @@ pub fn create_edit_dir(root: &Path, id: &str) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Writes the list atomically (temp file, then rename).
+/// Writes the list atomically (temp file, then rename), readable only by this user: the root
+/// may be the shared temp folder.
 pub fn save_edits(root: &Path, edits: &[Edit]) -> Result<(), String> {
-    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(root).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
     let json = serde_json::to_vec_pretty(edits).map_err(|e| e.to_string())?;
     let tmp = root.join(format!("{LIST_FILE}.tmp"));
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&tmp).map_err(|e| e.to_string())?, &json)
+        .map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, root.join(LIST_FILE)).map_err(|e| e.to_string())
+}
+
+const UNREADABLE: &str = "edits.json.unreadable";
+
+/// The saved list at startup, and whether stale folders may be deleted. An unreadable list is
+/// moved aside and kept; while it exists nothing is deleted, since its folders may hold unsent
+/// work no list names any more.
+pub fn load_for_startup(root: &Path) -> (Vec<Edit>, bool) {
+    let loaded = load_edits(root);
+    if let Err(e) = &loaded {
+        log::warn!("edits: could not read the saved list: {e}");
+        let aside = root.join(format!(
+            "{UNREADABLE}-{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let _ = std::fs::rename(root.join(LIST_FILE), aside);
+    }
+    let quarantined = std::fs::read_dir(root).is_ok_and(|dirs| {
+        dirs.flatten()
+            .any(|d| d.file_name().to_string_lossy().starts_with(UNREADABLE))
+    });
+    let may_sweep = loaded.is_ok() && !quarantined;
+    (loaded.unwrap_or_default(), may_sweep)
+}
+
+/// The temp copy's file name: the remote one, with characters Windows (or a path) would read
+/// specially replaced, so it always lands inside its edit folder.
+pub fn local_file_name(remote_path: &str) -> String {
+    let name = remote_path.rsplit('/').next().unwrap_or_default();
+    let safe: String = name
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    if safe.is_empty() || safe == "." || safe == ".." {
+        "file".into()
+    } else {
+        safe
+    }
 }
 
 /// The saved list; none saved yet is an empty list.
@@ -146,6 +204,55 @@ mod tests {
             watch_target(&edit()),
             Some((PathBuf::from("/tmp/x/e"), "nginx.conf".to_string()))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_list_and_its_folder_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = root();
+        std::fs::set_permissions(&r, std::fs::Permissions::from_mode(0o755)).unwrap();
+        save_edits(&r, &[edit()]).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&r), 0o700);
+        assert_eq!(mode(&r.join(LIST_FILE)), 0o600);
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn local_names_are_safe_on_every_platform() {
+        assert_eq!(local_file_name("/srv/nginx.conf"), "nginx.conf");
+        assert_eq!(local_file_name("/srv/..\\..\\evil"), ".._.._evil");
+        assert_eq!(local_file_name("/srv/a:b*c?.txt"), "a_b_c_.txt");
+        assert_eq!(local_file_name("/srv/.."), "file");
+        assert_eq!(local_file_name("/"), "file");
+    }
+
+    #[test]
+    fn an_unreadable_list_is_kept_and_blocks_cleanup_until_looked_at() {
+        let r = root();
+        std::fs::write(r.join(LIST_FILE), b"{not json").unwrap();
+        let (edits, may_sweep) = load_for_startup(&r);
+        assert!(edits.is_empty());
+        assert!(!may_sweep);
+        // Later saves don't make the old folders deletable.
+        save_edits(&r, &[]).unwrap();
+        assert!(!load_for_startup(&r).1);
+        let kept = std::fs::read_dir(&r).unwrap().flatten().any(|d| {
+            d.file_name()
+                .to_string_lossy()
+                .starts_with("edits.json.unreadable")
+        });
+        assert!(kept, "the unreadable list is kept for recovery");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn a_readable_list_allows_cleanup() {
+        let r = root();
+        save_edits(&r, &[edit()]).unwrap();
+        assert_eq!(load_for_startup(&r), (vec![edit()], true));
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[cfg(unix)]

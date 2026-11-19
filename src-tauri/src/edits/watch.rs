@@ -68,11 +68,9 @@ fn spawn_debouncer(
                 }
             };
             tokio::select! {
-                Some(path) = events.recv() => {
-                    if let Some(id) = key(&path).and_then(|k| files.get(&k)) {
-                        due.insert(id.clone(), tokio::time::Instant::now() + QUIET);
-                    }
-                }
+                // Commands first: a mapping sent before watching starts is in place before that
+                // folder's first event is looked at.
+                biased;
                 Some(cmd) = cmd_rx.recv() => match cmd {
                     Cmd::Watch { id, dir, file } => {
                         if let Some(k) = key(&dir.join(&file)) {
@@ -84,6 +82,11 @@ fn spawn_debouncer(
                         due.remove(&id);
                     }
                 },
+                Some(path) = events.recv() => {
+                    if let Some(id) = key(&path).and_then(|k| files.get(&k)) {
+                        due.insert(id.clone(), tokio::time::Instant::now() + QUIET);
+                    }
+                }
                 _ = wake => {
                     let now = tokio::time::Instant::now();
                     let ready: Vec<String> =
@@ -150,6 +153,12 @@ impl Watching {
 
     /// Starts watching; false when neither the OS watcher nor polling could take the folder.
     pub fn watch(&mut self, id: &str, dir: &Path, file: &str) -> bool {
+        // Mapped before watching starts, so a save in the first instant isn't dropped.
+        let _ = self.cmds.send(Cmd::Watch {
+            id: id.into(),
+            dir: dir.into(),
+            file: file.into(),
+        });
         let by_os = match self.watcher.as_mut() {
             Some(w) => match w.watch(dir, RecursiveMode::NonRecursive) {
                 Ok(()) => true,
@@ -171,12 +180,8 @@ impl Watching {
                     false
                 }
             };
-        if watched {
-            let _ = self.cmds.send(Cmd::Watch {
-                id: id.into(),
-                dir: dir.into(),
-                file: file.into(),
-            });
+        if !watched {
+            let _ = self.cmds.send(Cmd::Unwatch { id: id.into() });
         }
         watched
     }
@@ -195,6 +200,25 @@ impl Watching {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_event_right_after_watch_is_not_lost() {
+        // The mapping is sent before the event, as `watch` does; the debouncer must take it first.
+        for _ in 0..20 {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (events, cmds) = spawn_debouncer(tx);
+            let dir = PathBuf::from("/x/e9");
+            cmds.send(Cmd::Watch {
+                id: "e9".into(),
+                dir: dir.clone(),
+                file: "a.txt".into(),
+            })
+            .unwrap();
+            events.send(dir.join("a.txt")).unwrap();
+            let got = tokio::time::timeout(QUIET * 3, rx.recv()).await;
+            assert_eq!(got.ok().flatten().as_deref(), Some("e9"));
+        }
+    }
 
     #[tokio::test]
     async fn polling_only_still_sees_saves() {

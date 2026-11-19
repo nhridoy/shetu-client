@@ -70,7 +70,10 @@ export function toCompareEntries(
   root: string,
   items: FileItem[],
 ): CompareEntry[] {
-  const normalize = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  // Only Windows local paths use `\` as a separator; on POSIX it is part of a file name.
+  const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(root);
+  const normalize = (p: string) =>
+    (windows ? p.replace(/\\/g, "/") : p).replace(/\/+$/, "");
   const base = `${normalize(root)}/`;
   return items
     .map((item) => {

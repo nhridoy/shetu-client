@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/Button";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import type { SftpPaneNode } from "@/stores/sftp/sftpStore";
@@ -14,8 +15,10 @@ export function leavesOf(
 /** Compare this pane's folder with another pane's: the other one when there are two, a
  * picker when there are more. */
 export default function CompareButton({ paneId }: { paneId: string }) {
-  const others = useSftpStore((s) =>
-    leavesOf(s.root).filter((l) => l.id !== paneId && l.connectionType),
+  const others = useSftpStore(
+    useShallow((s) =>
+      leavesOf(s.root).filter((l) => l.id !== paneId && l.connectionType),
+    ),
   );
   const openCompare = useSftpStore((s) => s.openCompare);
   const [picking, setPicking] = useState(false);

@@ -77,6 +77,23 @@ describe("compareFolders", () => {
     expect(compareFolders([d("both")], [d("both")])).toEqual([]);
   });
 
+  it("keeps a backslash that is part of a remote file name", () => {
+    const item: FileItem = {
+      name: "a\\b.txt",
+      path: "/srv/a\\b.txt",
+      type: "file",
+      size: 1,
+      permissions: "",
+      owner: "",
+      group: "",
+      modifiedAt: new Date(0).toISOString(),
+      isHidden: false,
+    };
+    expect(toCompareEntries("/srv", [item]).map((e) => e.path)).toEqual([
+      "a\\b.txt",
+    ]);
+  });
+
   it("normalises backslash paths from local listings", () => {
     const item = (path: string, type: FileItem["type"]): FileItem => ({
       name: path.split("\\").pop() ?? path,

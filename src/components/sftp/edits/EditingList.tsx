@@ -35,7 +35,11 @@ export default function EditingList() {
 
   const stop = (edit: RemoteEdit) => {
     if (edit.unsent) setStopping(edit);
-    else stopEdit(edit.id, false).catch(report);
+    // A save not seen yet is still unsent: Rust checks the file and asks the same question.
+    else
+      stopEdit(edit.id, false).catch((e) =>
+        e === "unsent" ? setStopping(edit) : report(e),
+      );
   };
 
   if (edits.length === 0) return null;

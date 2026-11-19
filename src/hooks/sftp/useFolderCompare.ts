@@ -39,6 +39,7 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  /** The folders the shown rows came from: actions use these, not a scan still loading. */
   const sides = useRef<[CompareSide, CompareSide] | null>(null);
 
   const rescan = useCallback(async () => {
@@ -48,15 +49,18 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
       setError("Both panes must be open to compare");
       return;
     }
-    sides.current = [left, right];
     const mine = ++generation.current;
     setLoading(true);
     setError(null);
     try {
       const next = await loadComparison(left, right);
-      if (mine === generation.current) setRows(next);
+      if (mine === generation.current) {
+        sides.current = [left, right];
+        setRows(next);
+      }
     } catch (e) {
       if (mine === generation.current) {
+        sides.current = null;
         setRows([]);
         setError(e instanceof Error ? e.message : String(e));
       }

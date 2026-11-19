@@ -59,9 +59,11 @@ pub enum EditEffect {
         replace: bool,
         expect: Option<(u64, i64)>,
     },
-    /// KeepServer: copy the server file over the temp copy.
+    /// KeepServer: copy the server file over the temp copy. `shown` is the server version the
+    /// user chose to keep, restored as the conflict if the download fails.
     Download {
         edit_id: String,
+        shown: (u64, i64),
     },
     /// Look up the server copy (after an upload was refused as a conflict).
     StatRemote {
@@ -282,25 +284,67 @@ impl EditState {
         ]
     }
 
-    pub fn resolve(&mut self, id: &str, choice: Choice, remote_now: (u64, i64)) -> Vec<EditEffect> {
+    /// Acts once per conflict: the first choice takes it, later clicks find none.
+    pub fn resolve(&mut self, id: &str, choice: Choice) -> Vec<EditEffect> {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
+        if e.status != EditStatus::Conflict {
+            return Vec::new();
+        }
+        let Some(shown) = e.conflict.take() else {
+            return Vec::new();
+        };
         match choice {
+            // Replaces only the server version the user was shown: a newer one asks again.
+            // (0, 0) is "the server file was gone": nothing there to protect.
             Choice::Overwrite => {
-                e.conflict = None;
-                // Expect what the server holds now, so a change made after this still asks.
-                vec![Self::upload(e, true, Some(remote_now)), EditEffect::Changed]
+                let expect = (shown != (0, 0)).then_some(shown);
+                vec![Self::upload(e, true, expect), EditEffect::Changed]
             }
             Choice::KeepServer => vec![EditEffect::Download {
                 edit_id: e.id.clone(),
+                shown,
             }],
             Choice::SaveAsCopy => {
-                e.conflict = None;
                 e.saving_copy = true;
                 vec![Self::upload(e, false, None), EditEffect::Changed]
             }
         }
+    }
+
+    /// KeepServer's download failed: say why and ask again.
+    pub fn download_failed(
+        &mut self,
+        id: &str,
+        shown: (u64, i64),
+        message: &str,
+    ) -> Vec<EditEffect> {
+        let Some(e) = self.get_mut(id) else {
+            return Vec::new();
+        };
+        e.conflict = Some(shown);
+        e.error = Some(message.to_string());
+        vec![EditEffect::Changed]
+    }
+
+    /// The server couldn't be asked after a refused upload: kept unsent with the reason, so
+    /// Upload (which raises the conflict again) still works.
+    pub fn conflict_check_failed(&mut self, id: &str, message: &str) -> Vec<EditEffect> {
+        let Some(e) = self.get_mut(id) else {
+            return Vec::new();
+        };
+        if e.status == EditStatus::Conflict && e.conflict.is_none() {
+            e.status = EditStatus::Watching;
+        }
+        e.unsent = true;
+        e.error = Some(message.to_string());
+        vec![EditEffect::Changed]
+    }
+
+    /// A save check that read the server before an upload landed: its reading is out of date.
+    pub fn stale_check(&self, id: &str, seen_baseline: (u64, i64)) -> bool {
+        self.get(id).is_some_and(|e| e.baseline != seen_baseline)
     }
 
     pub fn downloaded(
@@ -334,11 +378,22 @@ impl EditState {
         vec![Self::upload(e, true, Some(baseline)), EditEffect::Changed]
     }
 
-    pub fn stop(&mut self, id: &str, discard: bool) -> Result<Vec<EditEffect>, String> {
+    /// `local_now` is the temp file on disk now: a save not seen yet still counts as unsent.
+    pub fn stop(
+        &mut self,
+        id: &str,
+        discard: bool,
+        local_now: Option<(u64, i64)>,
+    ) -> Result<Vec<EditEffect>, String> {
         let Some(e) = self.get(id) else {
             return Ok(Vec::new());
         };
-        if e.unsent && !discard {
+        // A queued upload can't be taken back: it would publish after the edit is gone.
+        if e.status == EditStatus::Uploading {
+            return Err("Wait for the upload to finish, then stop".into());
+        }
+        let unseen = local_now.is_some_and(|l| l != e.last_local);
+        if (e.unsent || unseen) && !discard {
             return Err("unsent".into());
         }
         let local_dir = local_dir(&e.local_path);
@@ -352,9 +407,19 @@ impl EditState {
         ])
     }
 
-    pub fn restore(&mut self, saved: Vec<Edit>) -> Vec<EditEffect> {
+    /// `local_now` reads each temp file: one saved after the last check (e.g. just before quitting)
+    /// is kept as unsent.
+    pub fn restore(
+        &mut self,
+        saved: Vec<Edit>,
+        local_now: impl Fn(&Edit) -> Option<(u64, i64)>,
+    ) -> Vec<EditEffect> {
         let mut effects = Vec::new();
         for mut e in saved {
+            if let Some(now) = local_now(&e).filter(|now| *now != e.last_local) {
+                e.last_local = now;
+                e.unsent = true;
+            }
             if e.unsent {
                 e.status = EditStatus::NotUploaded;
                 e.job = None;
@@ -475,11 +540,10 @@ mod tests {
     fn own_download_is_not_a_save() {
         let mut s = opened();
         s.saved("e", (12, 200), Some((99, 300)));
-        assert!(s
-            .resolve("e", Choice::KeepServer, (99, 300))
-            .contains(&Download {
-                edit_id: "e".into()
-            }));
+        assert!(s.resolve("e", Choice::KeepServer).contains(&Download {
+            edit_id: "e".into(),
+            shown: (99, 300)
+        }));
         s.downloaded("e", (99, 301), (99, 300));
         assert!(s.saved("e", (99, 301), Some((99, 300))).is_empty());
         let e = s.get("e").unwrap();
@@ -549,22 +613,11 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_expects_the_current_server_state() {
-        let mut s = opened();
-        s.saved("e", (12, 200), Some((99, 300)));
-        assert_eq!(
-            uploads(&s.resolve("e", Choice::Overwrite, (99, 305))),
-            vec![(true, Some((99, 305)))]
-        );
-        assert_eq!(s.get("e").unwrap().conflict, None);
-    }
-
-    #[test]
     fn save_as_copy_keeps_baseline_and_next_save_conflicts() {
         let mut s = opened();
         s.saved("e", (12, 200), Some((99, 300)));
         assert_eq!(
-            uploads(&s.resolve("e", Choice::SaveAsCopy, (99, 300))),
+            uploads(&s.resolve("e", Choice::SaveAsCopy)),
             vec![(false, None)]
         );
         s.enqueued("e", "job-1".into());
@@ -582,8 +635,8 @@ mod tests {
     fn stop_with_unsent_needs_discard() {
         let mut s = opened();
         s.saved("e", (12, 200), Some((99, 300)));
-        assert_eq!(s.stop("e", false), Err("unsent".to_string()));
-        let fx = s.stop("e", true).unwrap();
+        assert_eq!(s.stop("e", false, None), Err("unsent".to_string()));
+        let fx = s.stop("e", true, None).unwrap();
         assert!(fx.contains(&Remove {
             edit_id: "e".into(),
             local_dir: "/cache/remote-edits/e".into()
@@ -591,7 +644,7 @@ mod tests {
         assert!(s.list().is_empty());
         let mut s = opened();
         assert!(
-            s.stop("e", false).is_ok(),
+            s.stop("e", false, None).is_ok(),
             "nothing unsent: stops without asking"
         );
     }
@@ -604,7 +657,7 @@ mod tests {
         unsent.status = EditStatus::Uploading;
         unsent.job = Some("job-9".into());
         unsent.dirty = true;
-        let fx = s.restore(vec![unsent, edit("sent")]);
+        let fx = s.restore(vec![unsent, edit("sent")], |_| None);
         assert!(fx.contains(&Remove {
             edit_id: "sent".into(),
             local_dir: "/cache/remote-edits/sent".into()
@@ -677,7 +730,7 @@ mod tests {
     fn save_during_save_as_copy_stays_unsent() {
         let mut s = opened();
         s.saved("e", (12, 200), Some((99, 300)));
-        s.resolve("e", Choice::SaveAsCopy, (99, 300));
+        s.resolve("e", Choice::SaveAsCopy);
         s.enqueued("e", "job-1".into());
         s.saved("e", (14, 220), Some((99, 300)));
         let fx = s.job_finished("job-1", JobStatus::Done, None, Some((12, 200)));
@@ -688,7 +741,7 @@ mod tests {
         let e = s.get("e").unwrap();
         assert!(e.unsent);
         assert_eq!(e.baseline, BASE);
-        assert!(s.stop("e", false).is_err(), "Stop still asks");
+        assert!(s.stop("e", false, None).is_err(), "Stop still asks");
     }
 
     #[test]
@@ -698,6 +751,129 @@ mod tests {
         s.enqueued("e", "job-1".into());
         assert!(uploads(&s.upload_now("e")).is_empty());
         assert_eq!(s.get("e").unwrap().job.as_deref(), Some("job-1"));
+    }
+
+    #[test]
+    fn a_conflict_is_resolved_once() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        assert_eq!(uploads(&s.resolve("e", Choice::Overwrite)).len(), 1);
+        assert!(
+            s.resolve("e", Choice::KeepServer).is_empty(),
+            "second click does nothing"
+        );
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        assert!(!s.resolve("e", Choice::KeepServer).is_empty());
+        assert!(s.resolve("e", Choice::Overwrite).is_empty());
+    }
+
+    #[test]
+    fn overwrite_replaces_only_the_server_version_shown() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        assert_eq!(
+            uploads(&s.resolve("e", Choice::Overwrite)),
+            vec![(true, Some((99, 300)))]
+        );
+        // The server file was gone when asked: nothing to protect.
+        let mut s = opened();
+        s.saved("e", (12, 200), None);
+        assert_eq!(
+            uploads(&s.resolve("e", Choice::Overwrite)),
+            vec![(true, None)]
+        );
+    }
+
+    #[test]
+    fn failed_keep_server_reports_and_still_asks() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        s.resolve("e", Choice::KeepServer);
+        s.download_failed("e", (99, 300), "Connection closed");
+        let e = s.get("e").unwrap();
+        assert_eq!(
+            (e.status, e.conflict, e.unsent, e.error.as_deref()),
+            (
+                EditStatus::Conflict,
+                Some((99, 300)),
+                true,
+                Some("Connection closed")
+            )
+        );
+        assert!(
+            !s.resolve("e", Choice::KeepServer).is_empty(),
+            "can choose again"
+        );
+    }
+
+    #[test]
+    fn a_conflict_check_that_cannot_reach_the_server_stays_actionable() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        s.job_finished("job-1", JobStatus::Failed, Some(DEST_CHANGED.into()), None);
+        s.conflict_check_failed("e", "Connection closed");
+        let e = s.get("e").unwrap();
+        assert_eq!(
+            (e.status, e.unsent, e.error.as_deref()),
+            (EditStatus::Watching, true, Some("Connection closed"))
+        );
+        assert_eq!(uploads(&s.upload_now("e")), vec![(true, Some(BASE))]);
+    }
+
+    #[test]
+    fn stop_checks_the_file_on_disk() {
+        let mut s = opened();
+        assert_eq!(
+            s.stop("e", false, Some((12, 200))),
+            Err("unsent".to_string()),
+            "saved but not seen yet"
+        );
+        assert!(s.stop("e", false, Some(BASE)).is_ok());
+    }
+
+    #[test]
+    fn stop_waits_for_a_running_upload() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        assert!(
+            s.stop("e", true, Some((12, 200))).is_err(),
+            "even with Discard"
+        );
+        assert!(s.get("e").is_some());
+    }
+
+    #[test]
+    fn restore_keeps_a_sent_edit_changed_on_disk() {
+        let mut s = EditState::default();
+        let fx = s.restore(vec![edit("changed"), edit("same")], |e| {
+            Some(if e.id == "changed" { (12, 200) } else { BASE })
+        });
+        assert!(fx.contains(&Remove {
+            edit_id: "same".into(),
+            local_dir: "/cache/remote-edits/same".into()
+        }));
+        let e = s.get("changed").unwrap();
+        assert_eq!(
+            (e.status, e.unsent, e.last_local),
+            (EditStatus::NotUploaded, true, (12, 200))
+        );
+    }
+
+    #[test]
+    fn a_save_check_from_before_an_upload_landed_is_stale() {
+        let mut s = opened();
+        assert!(!s.stale_check("e", BASE));
+        s.saved("e", (12, 200), Some(BASE));
+        s.enqueued("e", "job-1".into());
+        s.job_finished("job-1", JobStatus::Done, None, Some((12, 200)));
+        assert!(
+            s.stale_check("e", BASE),
+            "server read before the upload: look again"
+        );
+        assert!(!s.stale_check("e", (12, 200)));
     }
 
     #[test]

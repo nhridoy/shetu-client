@@ -70,6 +70,15 @@ afterEach(() => {
 });
 
 describe("EditingList", () => {
+  it("asks before discarding a save Shetu hadn't seen yet", async () => {
+    useSftpStore.setState({ edits: [edit()] });
+    api.stopEdit.mockRejectedValueOnce("unsent");
+    await render(<EditingList />);
+    await click("Stop");
+    expect(api.stopEdit).toHaveBeenCalledWith("e", false);
+    expect(text()).toContain("Changes not uploaded");
+  });
+
   it("shows each edit with its status", async () => {
     useSftpStore.setState({
       edits: [

@@ -2,7 +2,8 @@
 //! background work (stats, downloads, uploads) talk to it by message.
 
 use super::files::{
-    create_edit_dir, inside_root, load_edits, save_edits, sweep_targets, watch_target,
+    create_edit_dir, inside_root, load_for_startup, local_file_name, save_edits, sweep_targets,
+    watch_target,
 };
 use super::state::{needs_confirm, Choice, Edit, EditEffect, EditState, EditStatus};
 use super::watch::{self, Watching};
@@ -40,10 +41,6 @@ enum Msg {
     },
     Opened(Box<Edit>),
     List(oneshot::Sender<Vec<Edit>>),
-    Get {
-        id: String,
-        reply: oneshot::Sender<Option<Edit>>,
-    },
     Stop {
         id: String,
         discard: bool,
@@ -52,7 +49,6 @@ enum Msg {
     Resolve {
         id: String,
         choice: Choice,
-        remote_now: (u64, i64),
     },
     UploadNow(String),
     Wipe(oneshot::Sender<()>),
@@ -62,6 +58,8 @@ enum Msg {
         id: String,
         local: (u64, i64),
         remote: Option<(u64, i64)>,
+        /// The edit's baseline when the server was read.
+        seen: (u64, i64),
     },
     SavedOffline {
         id: String,
@@ -81,15 +79,29 @@ enum Msg {
         local: (u64, i64),
         remote: (u64, i64),
     },
+    DownloadFailed {
+        id: String,
+        shown: (u64, i64),
+        error: String,
+    },
+    ConflictCheckFailed {
+        id: String,
+        error: String,
+    },
 }
 
-/// Queued uploads from an earlier run whose source is one of our temp copies: their edits come
-/// back as "Not uploaded" (the user re-uploads), so these must not run on their own.
+const NO_CONNECTION: &str = "Connection closed — reopen the pane";
+
+/// Queued uploads from an earlier run (created before `started_ms`) whose source is one of our
+/// temp copies: their edits come back as "Not uploaded" (the user re-uploads), so these must not
+/// run on their own. Uploads queued in this run are left alone.
 pub fn stale_edit_uploads(
     jobs: &[crate::transfers::model::TransferJob],
     root: &Path,
+    started_ms: i64,
 ) -> Vec<String> {
     jobs.iter()
+        .filter(|j| j.created_at < started_ms)
         .filter(|j| j.kind == JobKind::Upload && j.src.host.is_none())
         .filter(|j| !matches!(j.status, JobStatus::Done | JobStatus::Cancelled))
         .filter(|j| Path::new(&j.src.path).starts_with(root))
@@ -138,6 +150,32 @@ fn session_for(
 
 async fn local_stat(path: &str) -> Result<(u64, i64), String> {
     io::stat(&Side::Local, path).await.map_err(err_text)
+}
+
+/// The temp file on disk now, read in place (the loop must not wait); same form as `io::stat`.
+fn local_now(path: &str) -> Option<(u64, i64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let mtime = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64);
+    Some((m.len(), mtime))
+}
+
+/// The file's size and time once they hold across one `gap`, trying `tries` times; None while
+/// it is still being written (the watcher reports it again once it goes quiet) or unreadable.
+async fn settled_stat(path: &str, gap: Duration, tries: u32) -> Option<(u64, i64)> {
+    let mut last = local_stat(path).await.ok()?;
+    for _ in 0..tries {
+        tokio::time::sleep(gap).await;
+        let again = local_stat(path).await.ok()?;
+        if again == last {
+            return Some(again);
+        }
+        last = again;
+    }
+    None
 }
 
 fn err_text(e: JobError) -> String {
@@ -205,19 +243,18 @@ async fn run_loop(
     tx: mpsc::UnboundedSender<Msg>,
     mut finished: mpsc::UnboundedReceiver<JobFinished>,
 ) {
+    let started_ms = now_ms();
     let mut state = EditState::default();
     let (settled_tx, mut settled) = mpsc::unbounded_channel();
     let mut watching = watch::start(settled_tx);
 
-    // Unsent edits survive a restart (listed as Not uploaded); everything else is cleaned up.
-    // If the list can't be read, nothing is deleted: unsent work may be in those folders.
-    let loaded = load_edits(&root);
-    if let Err(e) = &loaded {
-        log::warn!("edits: could not read the saved list: {e}");
-    }
-    let mut effects = state.restore(loaded.clone().unwrap_or_default());
+    // Unsent edits survive a restart (listed as Not uploaded), and so do ones changed on disk
+    // since they were last seen; everything else is cleaned up. If the list can't be read,
+    // nothing is deleted: unsent work may be in those folders.
+    let (loaded, may_sweep) = load_for_startup(&root);
+    let mut effects = state.restore(loaded, |e| local_now(&e.local_path));
     let keep: Vec<String> = state.list().into_iter().map(|e| e.id).collect();
-    for dir in sweep_targets(&root, loaded.is_ok().then_some(keep.as_slice())) {
+    for dir in sweep_targets(&root, may_sweep.then_some(keep.as_slice())) {
         let _ = std::fs::remove_dir_all(dir);
     }
     // Watched again, so that once uploaded (or reopened) their saves upload as usual.
@@ -231,7 +268,7 @@ async fn run_loop(
     let edits_root = root.clone();
     tauri::async_runtime::spawn(async move {
         if let Ok(jobs) = transfers.list().await {
-            for id in stale_edit_uploads(&jobs, &edits_root) {
+            for id in stale_edit_uploads(&jobs, &edits_root, started_ms) {
                 transfers.cancel(id);
             }
         }
@@ -263,25 +300,20 @@ async fn run_loop(
                 let _ = reply.send(state.list());
                 Vec::new()
             }
-            Msg::Get { id, reply } => {
-                let _ = reply.send(state.get(&id).cloned());
-                Vec::new()
+            Msg::Stop { id, discard, reply } => {
+                let on_disk = state.get(&id).and_then(|e| local_now(&e.local_path));
+                match state.stop(&id, discard, on_disk) {
+                    Ok(effects) => {
+                        let _ = reply.send(Ok(()));
+                        effects
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                        Vec::new()
+                    }
+                }
             }
-            Msg::Stop { id, discard, reply } => match state.stop(&id, discard) {
-                Ok(effects) => {
-                    let _ = reply.send(Ok(()));
-                    effects
-                }
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                    Vec::new()
-                }
-            },
-            Msg::Resolve {
-                id,
-                choice,
-                remote_now,
-            } => state.resolve(&id, choice, remote_now),
+            Msg::Resolve { id, choice } => state.resolve(&id, choice),
             Msg::UploadNow(id) => state.upload_now(&id),
             Msg::Wipe(reply) => {
                 let effects = state.wipe();
@@ -296,7 +328,16 @@ async fn run_loop(
                 }
                 Vec::new()
             }
-            Msg::Saved { id, local, remote } => state.saved(&id, local, remote),
+            // The server was read before an upload landed: read it again.
+            Msg::Saved { id, seen, .. } if state.stale_check(&id, seen) => {
+                if let Some(edit) = state.get(&id).cloned() {
+                    tauri::async_runtime::spawn(check_save(app.clone(), tx.clone(), edit));
+                }
+                Vec::new()
+            }
+            Msg::Saved {
+                id, local, remote, ..
+            } => state.saved(&id, local, remote),
             Msg::SavedOffline { id, local } => state.saved_offline(&id, local),
             Msg::EnqueueFailed { job_id, error } => {
                 state.job_finished(&job_id, JobStatus::Failed, Some(error), None)
@@ -306,6 +347,8 @@ async fn run_loop(
             }
             Msg::RemoteStat { id, remote } => state.conflict_found(&id, remote),
             Msg::Downloaded { id, local, remote } => state.downloaded(&id, local, remote),
+            Msg::DownloadFailed { id, shown, error } => state.download_failed(&id, shown, &error),
+            Msg::ConflictCheckFailed { id, error } => state.conflict_check_failed(&id, &error),
         };
         apply(&app, &root, &tx, &mut state, &mut watching, effects);
     }
@@ -313,21 +356,10 @@ async fn run_loop(
 
 /// After a quiet second: wait until the temp file stops changing, then look at the server copy.
 async fn check_save(app: tauri::AppHandle, tx: mpsc::UnboundedSender<Msg>, edit: Edit) {
-    let mut local = match local_stat(&edit.local_path).await {
-        Ok(stat) => stat,
-        Err(_) => return,
-    };
     // An editor may still be writing: act only on a size and time that hold for a moment.
-    for _ in 0..8 {
-        tokio::time::sleep(STABLE_GAP).await;
-        let Ok(again) = local_stat(&edit.local_path).await else {
-            return;
-        };
-        if again == local {
-            break;
-        }
-        local = again;
-    }
+    let Some(local) = settled_stat(&edit.local_path, STABLE_GAP, 8).await else {
+        return;
+    };
     let Some(sftp) = session_for(&app, &edit.host, &edit.session_id) else {
         let _ = tx.send(Msg::SavedOffline { id: edit.id, local });
         return;
@@ -344,6 +376,7 @@ async fn check_save(app: tauri::AppHandle, tx: mpsc::UnboundedSender<Msg>, edit:
         id: edit.id,
         local,
         remote,
+        seen: edit.baseline,
     });
 }
 
@@ -420,35 +453,36 @@ fn apply(
                     }
                 });
             }
-            EditEffect::Download { edit_id } => {
+            EditEffect::Download { edit_id, shown } => {
                 let Some(edit) = state.get(&edit_id).cloned() else {
                     continue;
                 };
                 let (app, tx) = (app.clone(), tx.clone());
                 tauri::async_runtime::spawn(async move {
-                    let Some(sftp) = session_for(&app, &edit.host, &edit.session_id) else {
-                        return;
-                    };
-                    // The server state is read before downloading: a change made meanwhile then
-                    // shows up as a conflict on the next save instead of being overwritten.
-                    let Ok(remote) =
-                        io::stat(&Side::Sftp(Arc::clone(&sftp)), &edit.remote_path).await
-                    else {
-                        return;
-                    };
-                    if download(sftp, &edit.remote_path, &edit.local_path)
-                        .await
-                        .is_err()
-                    {
-                        return;
+                    let result = async {
+                        let sftp = session_for(&app, &edit.host, &edit.session_id)
+                            .ok_or(NO_CONNECTION.to_string())?;
+                        // The server state is read before downloading: a change made meanwhile
+                        // then shows up as a conflict on the next save instead of being lost.
+                        let remote = io::stat(&Side::Sftp(Arc::clone(&sftp)), &edit.remote_path)
+                            .await
+                            .map_err(err_text)?;
+                        download(sftp, &edit.remote_path, &edit.local_path).await?;
+                        let local = local_stat(&edit.local_path).await?;
+                        Ok::<_, String>((local, remote))
                     }
-                    let Ok(local) = local_stat(&edit.local_path).await else {
-                        return;
-                    };
-                    let _ = tx.send(Msg::Downloaded {
-                        id: edit.id,
-                        local,
-                        remote,
+                    .await;
+                    let _ = tx.send(match result {
+                        Ok((local, remote)) => Msg::Downloaded {
+                            id: edit.id,
+                            local,
+                            remote,
+                        },
+                        Err(error) => Msg::DownloadFailed {
+                            id: edit.id,
+                            shown,
+                            error: format!("Couldn't get the server version: {error}"),
+                        },
                     });
                 });
             }
@@ -458,15 +492,24 @@ fn apply(
                 };
                 let (app, tx) = (app.clone(), tx.clone());
                 tauri::async_runtime::spawn(async move {
-                    let Some(sftp) = session_for(&app, &edit.host, &edit.session_id) else {
-                        return;
+                    let msg = match session_for(&app, &edit.host, &edit.session_id) {
+                        None => Err(NO_CONNECTION.to_string()),
+                        Some(sftp) => match io::stat(&Side::Sftp(sftp), &edit.remote_path).await {
+                            Ok(remote) => Ok(remote),
+                            // Gone from the server: (0, 0), as for a save.
+                            Err(JobError::Operation(_)) => Ok((0, 0)),
+                            Err(e) => Err(err_text(e)),
+                        },
                     };
-                    let remote = io::stat(&Side::Sftp(sftp), &edit.remote_path)
-                        .await
-                        .unwrap_or((0, 0));
-                    let _ = tx.send(Msg::RemoteStat {
-                        id: edit.id,
-                        remote,
+                    let _ = tx.send(match msg {
+                        Ok(remote) => Msg::RemoteStat {
+                            id: edit.id,
+                            remote,
+                        },
+                        Err(error) => Msg::ConflictCheckFailed {
+                            id: edit.id,
+                            error: format!("Upload refused and the server couldn't be checked ({error}) — try Upload again"),
+                        },
                     });
                 });
             }
@@ -520,7 +563,10 @@ pub async fn edit_open(
     }
     let id = uuid::Uuid::new_v4().to_string();
     let dir = create_edit_dir(&manager.root, &id).map_err(|e| e.to_string())?;
-    let local_path = dir.join(file_name(&remote_path)).display().to_string();
+    let local_path = dir
+        .join(local_file_name(&remote_path))
+        .display()
+        .to_string();
     if let Err(e) = download(sftp, &remote_path, &local_path).await {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
@@ -564,37 +610,10 @@ pub async fn edit_stop(id: String, discard: bool, manager: Mgr<'_>) -> Result<()
 }
 
 #[tauri::command]
-pub async fn edit_resolve(
-    id: String,
-    choice: Choice,
-    manager: Mgr<'_>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let edit = manager
-        .ask(|reply| Msg::Get {
-            id: id.clone(),
-            reply,
-        })
-        .await?
-        .ok_or("No such edit")?;
-    // Overwrite must expect what the server holds now, so a change made after this still asks.
-    let remote_now = match choice {
-        Choice::Overwrite => {
-            let sftp = session_for(&app, &edit.host, &edit.session_id)
-                .ok_or("Connection closed — reopen the pane")?;
-            io::stat(&Side::Sftp(sftp), &edit.remote_path)
-                .await
-                .map_err(err_text)?
-        }
-        _ => edit.baseline,
-    };
+pub fn edit_resolve(id: String, choice: Choice, manager: Mgr<'_>) -> Result<(), String> {
     manager
         .tx
-        .send(Msg::Resolve {
-            id,
-            choice,
-            remote_now,
-        })
+        .send(Msg::Resolve { id, choice })
         .map_err(|_| "Editing stopped".to_string())
 }
 
@@ -628,8 +647,58 @@ mod tests {
             upload("d", "/cache/remote-edits/e3/y.conf", JobStatus::Failed),
         ];
         assert_eq!(
-            stale_edit_uploads(&jobs, root),
+            stale_edit_uploads(&jobs, root, i64::MAX),
             vec!["a".to_string(), "d".to_string()]
         );
+    }
+
+    #[test]
+    fn uploads_queued_this_run_are_not_stale() {
+        let mut j = test_job("new", JobStatus::Queued);
+        j.kind = JobKind::Upload;
+        j.src.path = "/cache/remote-edits/e1/nginx.conf".into();
+        j.src.host = None;
+        j.created_at = 2_000;
+        let root = Path::new("/cache/remote-edits");
+        assert!(stale_edit_uploads(std::slice::from_ref(&j), root, 1_000).is_empty());
+        assert_eq!(
+            stale_edit_uploads(&[j], root, 3_000),
+            vec!["new".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_still_being_written_is_not_settled() {
+        let dir = std::env::temp_dir().join(format!("shetu-stable-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, b"x").unwrap();
+        let p = path.display().to_string();
+        assert_eq!(
+            settled_stat(&p, Duration::from_millis(20), 3).await,
+            Some((1, local_mtime(&path)))
+        );
+        let writer = {
+            let path = path.clone();
+            tokio::spawn(async move {
+                for i in 0..40 {
+                    std::fs::write(&path, vec![b'y'; i + 2]).unwrap();
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        };
+        assert_eq!(settled_stat(&p, Duration::from_millis(20), 3).await, None);
+        writer.await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn local_mtime(path: &Path) -> i64 {
+        std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
     }
 }

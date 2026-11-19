@@ -360,7 +360,7 @@ it("asks before deleting and only offers delete on target-only rows")
   - one `notify::RecommendedWatcher` watching each edit's folder (not the file);
   - events for the edit's file name, including a rename over it, restart a 1 s timer; then two stats 250 ms apart; if they're equal, stat the remote through the session (`SftpSessions::session_info`) and send `saved`.
   - If the session is gone, mark the edit with the error "Connection closed — reopen the pane" and still record the save as unsent.
-- **Startup:** `restore` from `edits.json`, delete remote-edits folders that aren't kept, start watching nothing (Not uploaded entries are idle).
+- **Startup:** `restore` from `edits.json`; keep unsent edits and ones changed on disk since last seen (listed as Not uploaded), delete only the other remote-edits folders, and none at all if the list can't be read. Quitting deletes nothing.
 - **Opening:** use `app.opener().open_path(local_path, app)`.
 
 - [ ] **Step 1: Write the failing tests** (pure helpers only; the loop is glue):
