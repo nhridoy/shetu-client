@@ -308,6 +308,7 @@ mod tests {
     use std::sync::Mutex;
 
     const DEVICE: &str = "6f1c1b2e-6b7a-4c1e-9a65-1f2a3b4c5d6e";
+    const SECRET: &str = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY";
 
     fn fixture() -> (db::LocalDb, CryptoState) {
         let mut keys = crypto::KeySession::new();
@@ -335,7 +336,7 @@ mod tests {
 
     fn new_account() -> Value {
         json!({"provider": "aws", "region": "us-east-1", "bucket": "backups",
-               "accessKeyId": "AKIA", "secretAccessKey": "s1"})
+               "accessKeyId": "AKIA", "secretAccessKey": SECRET})
     }
 
     #[test]
@@ -374,13 +375,13 @@ mod tests {
     fn save_then_view_hides_the_secret() {
         let (db, crypto) = fixture();
         let row = save(&db, &crypto, None, "v1", "Backups", &new_account(), DEVICE).unwrap();
-        assert!(!row.data.contains("s1"));
+        assert!(!row.data.contains(SECRET));
         let v = view(&db, &crypto, &row.id).unwrap();
         assert!(v.has_secret);
         assert_eq!((v.provider.as_str(), v.bucket.as_str()), ("aws", "backups"));
         let text = serde_json::to_string(&v).unwrap();
         assert!(
-            !text.contains("\"s1\"") && !text.contains("secretAccessKey"),
+            !text.contains(SECRET) && !text.contains("secretAccessKey"),
             "{text}"
         );
     }
@@ -402,7 +403,7 @@ mod tests {
         let d = load_account(&db, &crypto, &row.id).unwrap();
         assert_eq!(
             (d.secret_access_key.as_str(), d.bucket.as_str()),
-            ("s1", "photos")
+            (SECRET, "photos")
         );
     }
 
