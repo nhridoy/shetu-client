@@ -8,6 +8,7 @@ export type TableName =
   | "keys"
   | "snippets"
   | "identities"
+  | "storage_accounts"
   | "workspaces"
   | "presets"
   | "port_forwards";

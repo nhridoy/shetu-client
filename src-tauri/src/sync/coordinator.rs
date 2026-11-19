@@ -203,21 +203,7 @@ pub async fn run_sync_cycle(
                 true,
             )
         };
-        let response = match push(&pending).await {
-            Err(err) => match without_tables_old_servers_reject(&err, &pending) {
-                // Identities stay queued, out of the batch and the pending count, until a restart retries them.
-                Some(kept) if !kept.is_empty() => {
-                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
-                    push(&kept).await?
-                }
-                Some(_) => {
-                    db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
-                    return finish_cycle(vault_id, db, crypto, http).await;
-                }
-                None => return Err(err),
-            },
-            ok => ok?,
-        };
+        let response = push(&pending).await?;
         let reply: PushReply = serde_json::from_str(&response.body)
             .map_err(|_| local_error("invalid sync push response".into()))?;
         ack_push_results(db, vault_id, &reply.results).map_err(local_error)?;
@@ -240,51 +226,10 @@ async fn finish_cycle(
     })
 }
 
-/// Tables newer than some self-hosted servers; those reject the whole push batch.
-const TABLES_OLD_SERVERS_REJECT: &[&str] = &["identities"];
-
-/// When an older server rejected the batch for an unknown table, the batch without those tables.
-fn without_tables_old_servers_reject(
-    err: &HttpErrorKind,
-    ops: &[PendingOperation],
-) -> Option<Vec<PendingOperation>> {
-    let HttpErrorKind::Http(400, body) = err else {
-        return None;
-    };
-    if crate::http::server_reason(body).as_deref() != Some("unknown sync table") {
-        return None;
-    }
-    let kept: Vec<_> = ops
-        .iter()
-        .filter(|op| !TABLES_OLD_SERVERS_REJECT.contains(&op.table.as_str()))
-        .cloned()
-        .collect();
-    (kept.len() < ops.len()).then_some(kept)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn old_server_unknown_table_drops_identities_only() {
-        let op = |table: &str| crate::db::sync_db::PendingOperation {
-            operation_id: "o".into(),
-            table: table.into(),
-            record: json!({}),
-        };
-        let ops = vec![op("hosts"), op("identities")];
-        let unknown = HttpErrorKind::Http(400, r#"{"error":"unknown sync table"}"#.into());
-        let kept = without_tables_old_servers_reject(&unknown, &ops).unwrap();
-        assert_eq!(
-            kept.iter().map(|o| o.table.as_str()).collect::<Vec<_>>(),
-            ["hosts"]
-        );
-        let other = HttpErrorKind::Http(400, r#"{"error":"bad record"}"#.into());
-        assert!(without_tables_old_servers_reject(&other, &ops).is_none());
-        let only_hosts = vec![op("hosts")];
-        assert!(without_tables_old_servers_reject(&unknown, &only_hosts).is_none());
-    }
     use std::time::Duration;
 
     #[tokio::test]

@@ -32,6 +32,7 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
         "keys",
         "snippets",
         "identities",
+        "storage_accounts",
         "workspaces",
         "presets",
         "session_history",
@@ -51,8 +52,6 @@ pub fn wipe_all(db: &LocalDb) -> Result<(), String> {
 
 pub struct LocalDb {
     pub conn: Mutex<Connection>,
-    /// The sync server rejected the identities table (older self-hosted server).
-    pub server_lacks_identities: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1545,6 +1544,22 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_identities_vault ON identities(vault_id, sort_order);
 
+        CREATE TABLE IF NOT EXISTS storage_accounts (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1,
+            vault_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            edited_at TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            operation_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_storage_accounts_vault ON storage_accounts(vault_id, sort_order);
+
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1,
@@ -1650,7 +1665,6 @@ pub fn open(path: &str) -> Result<LocalDb, String> {
     migrate_port_forward_fk(&conn)?;
     Ok(LocalDb {
         conn: Mutex::new(conn),
-        server_lacks_identities: Default::default(),
     })
 }
 
@@ -1755,6 +1769,7 @@ fn migrate_sync_schema(conn: &Connection) -> Result<(), String> {
         "keys",
         "snippets",
         "identities",
+        "storage_accounts",
         "workspaces",
         "presets",
         "session_history",
@@ -1918,6 +1933,7 @@ fn table_cols(table: Table) -> &'static str {
         Table::Keys       => "name, description, key_type, fingerprint, public_key, sort_order, data",
         Table::Snippets   => "name, description, tags, sort_order, data",
         Table::Identities => "name, sort_order, data",
+        Table::StorageAccounts => "name, sort_order, data",
         Table::Workspaces => "name, sort_order, data",
         Table::Presets    => "name, sort_order, data",
         Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => "name, sort_order, data",
@@ -1965,6 +1981,7 @@ fn migrate_timestamps(conn: &Connection) -> Result<(), String> {
         ("keys", &["created_at", "updated_at", "deleted_at"]),
         ("snippets", &["created_at", "updated_at", "deleted_at"]),
         ("identities", &["created_at", "updated_at", "deleted_at"]),
+        ("storage_accounts", &["created_at", "updated_at", "deleted_at"]),
         ("workspaces", &["created_at", "updated_at", "deleted_at"]),
         ("presets", &["created_at", "updated_at", "deleted_at"]),
         (
@@ -2144,6 +2161,7 @@ impl Table {
             "keys" => Ok(Table::Keys),
             "snippets" => Ok(Table::Snippets),
             "identities" => Ok(Table::Identities),
+            "storage_accounts" => Ok(Table::StorageAccounts),
             "workspaces" => Ok(Table::Workspaces),
             "presets" => Ok(Table::Presets),
             "session_history" => Ok(Table::SessionHistory),
@@ -2161,6 +2179,7 @@ impl Table {
             Table::Keys => "keys",
             Table::Snippets => "snippets",
             Table::Identities => "identities",
+            Table::StorageAccounts => "storage_accounts",
             Table::Workspaces => "workspaces",
             Table::Presets => "presets",
             Table::SessionHistory => "session_history",
@@ -2441,6 +2460,7 @@ pub fn tombstone_vault_with_descendants(
         Table::Keys,
         Table::Snippets,
         Table::Identities,
+        Table::StorageAccounts,
         Table::Workspaces,
         Table::Presets,
         Table::SessionHistory,
@@ -2630,6 +2650,7 @@ pub enum Table {
     Keys,
     Snippets,
     Identities,
+    StorageAccounts,
     Workspaces,
     Presets,
     SessionHistory,
@@ -3094,6 +3115,7 @@ mod tests {
             "keys",
             "snippets",
             "identities",
+            "storage_accounts",
             "workspaces",
             "presets",
             "session_history",
@@ -3198,11 +3220,20 @@ mod tests {
         conn.execute(
             "INSERT INTO identities (id, vault_id, created_at, updated_at, name) VALUES ('i1', 'v1', 1, 1, 'deploy')", [],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO storage_accounts (id, vault_id, created_at, updated_at, name) VALUES ('s1', 'v1', 1, 1, 'backups')", [],
+        ).unwrap();
         drop(conn);
         wipe_all(&db).unwrap();
         let conn = db.conn.lock().unwrap();
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM storage_accounts", [], |r| r
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -3548,6 +3579,11 @@ mod tests {
         );
         assert_eq!(Table::parse("identities").unwrap(), Table::Identities);
         assert_eq!(Table::Identities.as_str(), "identities");
+        assert_eq!(
+            Table::parse("storage_accounts").unwrap(),
+            Table::StorageAccounts
+        );
+        assert_eq!(Table::StorageAccounts.as_str(), "storage_accounts");
         assert_eq!(outbox_pending(&db).unwrap().len(), 4);
 
         outbox_remove(&db, Table::Snippets, "s1").unwrap();
@@ -3700,8 +3736,7 @@ mod tests {
         migrate_sync_schema(&conn).unwrap();
         let db = LocalDb {
             conn: Mutex::new(conn),
-            server_lacks_identities: Default::default(),
-        };
+            };
 
         let vault = SyncRow {
             id: "v1".into(),
