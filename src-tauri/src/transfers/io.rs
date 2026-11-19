@@ -51,6 +51,27 @@ pub async fn stat(side: &Side, path: &str) -> Result<(u64, i64), JobError> {
     }
 }
 
+/// Like `stat`, but a missing file is `None`; any other failure (e.g. permission denied) is
+/// an error, never taken for absence.
+pub async fn stat_if_exists(side: &Side, path: &str) -> Result<Option<(u64, i64)>, JobError> {
+    let missing = match side {
+        Side::Local => match tokio::fs::metadata(path).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(io_err("stat", e)),
+            Ok(_) => false,
+        },
+        Side::Sftp(s) => match s.metadata(path).await {
+            Err(e) if is_sftp_not_found(&e) => true,
+            Err(e) => return Err(sftp_err("stat", e)),
+            Ok(_) => false,
+        },
+    };
+    if missing {
+        return Ok(None);
+    }
+    stat(side, path).await.map(Some)
+}
+
 pub async fn part_len(side: &Side, part: &str) -> Result<Option<u64>, JobError> {
     match side {
         Side::Local => match tokio::fs::metadata(part).await {
@@ -572,6 +593,23 @@ mod tests {
             stat(&Side::Local, &d.path("nope")).await,
             Err(JobError::Operation(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stat_if_exists_tells_missing_from_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("statopt");
+        let (src, _) = source(&d);
+        assert_eq!(stat_if_exists(&Side::Local, &d.path("nope")).await.unwrap(), None);
+        assert!(stat_if_exists(&Side::Local, &src).await.unwrap().is_some());
+        let locked = d.path("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let inside = format!("{locked}/f");
+        let r = stat_if_exists(&Side::Local, &inside).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(r.is_err(), "a denied stat is not absence: {r:?}");
     }
 
     #[tokio::test]

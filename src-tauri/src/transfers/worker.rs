@@ -251,11 +251,7 @@ impl Ctx<'_> {
 /// `mtime` is the source's time when it was copied (it may have changed since queueing).
 async fn publish(dst: &Side, job: &TransferJob, mtime: i64) -> Result<String, JobError> {
     if job.expect_dest.is_some() {
-        let actual = match io::stat(dst, &job.dest.path).await {
-            Ok(found) => Some(found),
-            Err(JobError::Operation(_)) => None,
-            Err(e) => return Err(e),
-        };
+        let actual = io::stat_if_exists(dst, &job.dest.path).await?;
         check_expected_dest(job.expect_dest, actual)?;
     }
     io::finish(dst, &job.part_path, &job.dest.path, job.replace, mtime).await

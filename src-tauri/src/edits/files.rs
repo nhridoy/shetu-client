@@ -102,11 +102,10 @@ pub fn local_file_name(remote_path: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_ascii_uppercase();
+    let port: Vec<char> = stem.chars().skip(3).collect();
     let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.as_bytes()[3].is_ascii_digit()
-            && stem.as_bytes()[3] != b'0');
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(port[..], ['1'..='9' | '¹' | '²' | '³']));
     if safe.is_empty() {
         "file".into()
     } else if device {
@@ -195,6 +194,7 @@ mod tests {
             saving_copy: false,
             conflict: Some((99, 300)),
             error: None,
+            downloading: false,
         }
     }
 
@@ -268,6 +268,13 @@ mod tests {
         assert_eq!(local_file_name("/srv/com1.log"), "_com1.log");
         assert_eq!(local_file_name("/srv/notes. "), "notes");
         assert_eq!(local_file_name("/srv/console.txt"), "console.txt");
+    }
+
+    #[test]
+    fn superscript_device_names_are_reserved_too() {
+        assert_eq!(local_file_name("/srv/COM¹.txt"), "_COM¹.txt");
+        assert_eq!(local_file_name("/srv/lpt³"), "_lpt³");
+        assert_eq!(local_file_name("/srv/COM⁴.txt"), "COM⁴.txt");
     }
 
     #[test]

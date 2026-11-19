@@ -75,6 +75,7 @@ import { toast } from "sonner";
 import { resetDevice } from "@/lib/account/resetDevice";
 import { authApi } from "@/lib/api/auth";
 import { reportDevice } from "@/lib/api/devices";
+import { wipeLocalData } from "../../lib/db/db";
 import { startOAuthFlow } from "../../lib/oauth/oauth";
 import { handleRevokedSession, useAuthStore } from "./authStore";
 
@@ -215,6 +216,17 @@ describe("revoked-device checks and newer sessions", () => {
     answer({ status: "active", device_revoked: true });
     await revoked;
     expect(resetDevice).not.toHaveBeenCalled();
+  });
+
+  it("tells the person when sign-out couldn't clear local data", async () => {
+    vi.mocked(wipeLocalData).mockRejectedValueOnce(
+      new Error("Couldn't delete the remote-edit copies: busy"),
+    );
+    await useAuthStore.getState().logout();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.stringContaining("remote-edit copies"),
+    );
   });
 
   it("a sign-out during the pre-sign-in check cancels the sign-in", async () => {

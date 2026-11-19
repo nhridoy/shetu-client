@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   loadComparison: vi.fn(),
@@ -36,7 +36,7 @@ function Probe() {
 }
 
 describe("useFolderCompare", () => {
-  it("acts on the folders the rows came from while a newer scan is loading", async () => {
+  beforeEach(() => {
     useSftpStore.setState({
       root: {
         type: "split",
@@ -48,6 +48,9 @@ describe("useFolderCompare", () => {
         ],
       } as never,
     });
+  });
+
+  it("acts on the folders the rows came from while a newer scan is loading", async () => {
     setPath("L", "/old");
     setPath("R", "/right");
     const row = { path: "x.txt", status: "onlyLeft", isDir: false } as const;

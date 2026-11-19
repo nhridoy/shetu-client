@@ -48,6 +48,9 @@ pub struct Edit {
     pub saving_copy: bool,
     pub conflict: Option<(u64, i64)>,
     pub error: Option<String>,
+    /// Keep-server's download is running: it replaces the temp file, so Stop waits for it.
+    #[serde(default)]
+    pub downloading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,7 +183,7 @@ impl EditState {
 
     /// A save while the edit's connection is gone: kept as unsent with an error, never taken
     /// for a conflict.
-    pub fn saved_offline(&mut self, id: &str, local: (u64, i64)) -> Vec<EditEffect> {
+    pub fn saved_offline(&mut self, id: &str, local: (u64, i64), message: &str) -> Vec<EditEffect> {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
@@ -189,7 +192,7 @@ impl EditState {
         }
         e.last_local = local;
         e.unsent = true;
-        e.error = Some("Connection closed — reopen the pane, then Upload".into());
+        e.error = Some(message.to_string());
         vec![EditEffect::Changed]
     }
 
@@ -299,10 +302,13 @@ impl EditState {
             // Replaces only the server version the user was shown (or, if it was gone, only
             // while it still is): a newer one is refused and asks again.
             Choice::Overwrite => vec![Self::upload(e, true, Some(shown)), EditEffect::Changed],
-            Choice::KeepServer => vec![EditEffect::Download {
-                edit_id: e.id.clone(),
-                shown,
-            }],
+            Choice::KeepServer => {
+                e.downloading = true;
+                vec![EditEffect::Download {
+                    edit_id: e.id.clone(),
+                    shown,
+                }]
+            }
             Choice::SaveAsCopy => {
                 e.saving_copy = true;
                 vec![Self::upload(e, false, None), EditEffect::Changed]
@@ -320,6 +326,7 @@ impl EditState {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
+        e.downloading = false;
         e.conflict = Some(shown);
         e.error = Some(message.to_string());
         vec![EditEffect::Changed]
@@ -353,6 +360,7 @@ impl EditState {
         let Some(e) = self.get_mut(id) else {
             return Vec::new();
         };
+        e.downloading = false;
         e.baseline = remote;
         e.last_local = local;
         e.unsent = false;
@@ -389,6 +397,9 @@ impl EditState {
         // A queued upload can't be taken back: it would publish after the edit is gone.
         if e.status == EditStatus::Uploading {
             return Err("Wait for the upload to finish, then stop".into());
+        }
+        if e.downloading {
+            return Err("Wait for the server version to download, then stop".into());
         }
         // Unreadable counts too: an editor may be between moving the old file aside and
         // renaming the new one in.
@@ -430,6 +441,7 @@ impl EditState {
                 e.uploading = None;
                 e.dirty = false;
                 e.saving_copy = false;
+                e.downloading = false;
                 self.edits.push(e);
             } else {
                 effects.push(EditEffect::Remove {
@@ -485,6 +497,7 @@ mod tests {
             saving_copy: false,
             conflict: None,
             error: None,
+            downloading: false,
         }
     }
 
@@ -691,7 +704,11 @@ mod tests {
     #[test]
     fn a_save_without_a_connection_is_unsent_not_a_conflict() {
         let mut s = opened();
-        let fx = s.saved_offline("e", (12, 200));
+        let fx = s.saved_offline(
+            "e",
+            (12, 200),
+            "Connection closed — reopen the pane, then Upload",
+        );
         assert!(!fx
             .iter()
             .any(|f| matches!(f, Conflict { .. } | Upload { .. })));
@@ -724,7 +741,7 @@ mod tests {
         let mut s = opened();
         s.saved("e", (12, 200), Some(BASE));
         s.enqueued("e", "job-1".into());
-        s.saved_offline("e", (14, 220));
+        s.saved_offline("e", (14, 220), "offline");
         let fx = s.job_finished("job-1", JobStatus::Done, None, Some((12, 200)));
         assert_eq!(uploads(&fx), vec![(true, Some((12, 200)))]);
         assert!(s.get("e").unwrap().unsent);
@@ -900,6 +917,24 @@ mod tests {
         let fx = s.restore(vec![edit("gone")], |_| None);
         assert!(!fx.iter().any(|f| matches!(f, Remove { .. })));
         assert_eq!(s.get("gone").unwrap().status, EditStatus::NotUploaded);
+    }
+
+    #[test]
+    fn stop_waits_for_a_keep_server_download() {
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        s.resolve("e", Choice::KeepServer);
+        assert!(
+            s.stop("e", true, Some((12, 200))).is_err(),
+            "even with Discard"
+        );
+        s.downloaded("e", (99, 301), (99, 300));
+        assert!(s.stop("e", false, Some((99, 301))).is_ok());
+        let mut s = opened();
+        s.saved("e", (12, 200), Some((99, 300)));
+        s.resolve("e", Choice::KeepServer);
+        s.download_failed("e", (99, 300), "offline");
+        assert!(s.stop("e", true, Some((12, 200))).is_ok());
     }
 
     #[test]

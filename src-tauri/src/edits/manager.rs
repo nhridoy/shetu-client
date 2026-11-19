@@ -34,13 +34,19 @@ struct ConflictView {
 }
 
 enum Msg {
+    /// Also answers how many sign-out wipes have run, so an open can tell if one ran meanwhile.
     Find {
         session_id: String,
         remote_path: String,
-        reply: oneshot::Sender<Option<Edit>>,
+        reply: oneshot::Sender<(Option<Edit>, u64)>,
     },
-    /// Answered once the file is watched, so the editor opens only after that.
-    Opened(Box<Edit>, oneshot::Sender<()>),
+    /// Answered once the file is watched, so the editor opens only after that. Refused (and
+    /// its copy deleted) if a wipe ran since the open started (`started`).
+    Opened {
+        edit: Box<Edit>,
+        started: u64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     List(oneshot::Sender<Vec<Edit>>),
     Stop {
         id: String,
@@ -65,6 +71,7 @@ enum Msg {
     SavedOffline {
         id: String,
         local: (u64, i64),
+        error: String,
     },
     EnqueueFailed {
         job_id: String,
@@ -108,6 +115,29 @@ pub fn stale_edit_uploads(
         .filter(|j| Path::new(&j.src.path).starts_with(root))
         .map(|j| j.id.clone())
         .collect()
+}
+
+/// Adds a just-downloaded edit, unless a sign-out wipe ran while it was being opened: then its
+/// copy is deleted and the open fails.
+fn register_open(
+    state: &mut EditState,
+    watching: &mut Watching,
+    root: &Path,
+    edit: Edit,
+    started: u64,
+    wipes: u64,
+) -> Result<Vec<EditEffect>, String> {
+    if started != wipes {
+        if let Some(dir) = Path::new(&edit.local_path).parent() {
+            if inside_root(root, dir) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+        return Err("Signed out while the file was opening".into());
+    }
+    let mut effects = state.opened(edit.clone());
+    effects.extend(start_watching(watching, state, &edit));
+    Ok(effects)
 }
 
 /// Watches an edit's temp file; if that's impossible, the edit says so (saves won't upload).
@@ -245,6 +275,7 @@ async fn run_loop(
     mut finished: mpsc::UnboundedReceiver<JobFinished>,
 ) {
     let started_ms = now_ms();
+    let mut wipes: u64 = 0;
     let mut state = EditState::default();
     let (settled_tx, mut settled) = mpsc::unbounded_channel();
     let mut watching = watch::start(settled_tx);
@@ -288,16 +319,23 @@ async fn run_loop(
                 remote_path,
                 reply,
             } => {
-                let _ = reply.send(state.find(&session_id, &remote_path).cloned());
+                let _ = reply.send((state.find(&session_id, &remote_path).cloned(), wipes));
                 Vec::new()
             }
-            Msg::Opened(edit, reply) => {
-                let edit = *edit;
-                let mut effects = state.opened(edit.clone());
-                effects.extend(start_watching(&mut watching, &mut state, &edit));
-                let _ = reply.send(());
-                effects
-            }
+            Msg::Opened {
+                edit,
+                started,
+                reply,
+            } => match register_open(&mut state, &mut watching, &root, *edit, started, wipes) {
+                Ok(effects) => {
+                    let _ = reply.send(Ok(()));
+                    effects
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    Vec::new()
+                }
+            },
             Msg::List(reply) => {
                 let _ = reply.send(state.list());
                 Vec::new()
@@ -318,6 +356,7 @@ async fn run_loop(
             Msg::Resolve { id, choice } => state.resolve(&id, choice),
             Msg::UploadNow(id) => state.upload_now(&id),
             Msg::Wipe(reply) => {
+                wipes += 1;
                 let effects = state.wipe();
                 apply(&app, &root, &tx, &mut state, &mut watching, effects);
                 let _ = reply.send(remove_root(&root));
@@ -339,7 +378,7 @@ async fn run_loop(
             Msg::Saved {
                 id, local, remote, ..
             } => state.saved(&id, local, remote),
-            Msg::SavedOffline { id, local } => state.saved_offline(&id, local),
+            Msg::SavedOffline { id, local, error } => state.saved_offline(&id, local, &error),
             Msg::EnqueueFailed { job_id, error } => {
                 state.job_finished(&job_id, JobStatus::Failed, Some(error), None)
             }
@@ -362,14 +401,26 @@ async fn check_save(app: tauri::AppHandle, tx: mpsc::UnboundedSender<Msg>, edit:
         return;
     };
     let Some(sftp) = session_for(&app, &edit.host, &edit.session_id) else {
-        let _ = tx.send(Msg::SavedOffline { id: edit.id, local });
+        let _ = tx.send(Msg::SavedOffline {
+            id: edit.id,
+            local,
+            error: format!("{NO_CONNECTION}, then Upload"),
+        });
         return;
     };
-    let remote = match io::stat(&Side::Sftp(sftp), &edit.remote_path).await {
-        Ok(stat) => Some(stat),
-        Err(JobError::Operation(_)) => None,
-        Err(_) => {
-            let _ = tx.send(Msg::SavedOffline { id: edit.id, local });
+    // Missing is a real answer (the save raises a conflict); a failed check keeps the save
+    // unsent with the reason.
+    let remote = match io::stat_if_exists(&Side::Sftp(sftp), &edit.remote_path).await {
+        Ok(remote) => remote,
+        Err(e) => {
+            let _ = tx.send(Msg::SavedOffline {
+                id: edit.id,
+                local,
+                error: format!(
+                    "Couldn't check the server copy ({}) — use Upload",
+                    err_text(e)
+                ),
+            });
             return;
         }
     };
@@ -496,12 +547,11 @@ fn apply(
                 tauri::async_runtime::spawn(async move {
                     let msg = match session_for(&app, &edit.host, &edit.session_id) {
                         None => Err(NO_CONNECTION.to_string()),
-                        Some(sftp) => match io::stat(&Side::Sftp(sftp), &edit.remote_path).await {
-                            Ok(remote) => Ok(remote),
-                            // Gone from the server, as for a save.
-                            Err(JobError::Operation(_)) => Ok(ABSENT),
-                            Err(e) => Err(err_text(e)),
-                        },
+                        // Gone from the server is ABSENT, as for a save.
+                        Some(sftp) => io::stat_if_exists(&Side::Sftp(sftp), &edit.remote_path)
+                            .await
+                            .map(|r| r.unwrap_or(ABSENT))
+                            .map_err(err_text),
                     };
                     let _ = tx.send(match msg {
                         Ok(remote) => Msg::RemoteStat {
@@ -542,7 +592,7 @@ pub async fn edit_open(
             .map_err(|e| format!("Couldn't open the file: {e}"))
     };
     // Already editing this file from this pane: open the same copy again.
-    let existing = manager
+    let (existing, started) = manager
         .ask(|reply| Msg::Find {
             session_id: session_id.clone(),
             remote_path: remote_path.clone(),
@@ -592,11 +642,16 @@ pub async fn edit_open(
         saving_copy: false,
         conflict: None,
         error: None,
+        downloading: false,
     };
     // Watched before the editor opens: a save made right away isn't missed.
     manager
-        .ask(|reply| Msg::Opened(Box::new(edit.clone()), reply))
-        .await?;
+        .ask(|reply| Msg::Opened {
+            edit: Box::new(edit.clone()),
+            started,
+            reply,
+        })
+        .await??;
     open(&local_path)?;
     Ok(edit)
 }
@@ -669,6 +724,48 @@ mod tests {
             stale_edit_uploads(&[j], root, 3_000),
             vec!["new".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn an_open_that_outlived_a_sign_out_is_dropped() {
+        let root = std::env::temp_dir().join(format!("shetu-reg-{}", uuid::Uuid::new_v4()));
+        let dir = create_edit_dir(&root, "e1").unwrap();
+        std::fs::write(dir.join("a.txt"), b"secret").unwrap();
+        let edit = Edit {
+            id: "e1".into(),
+            session_id: "pane-1".into(),
+            host: HostRef {
+                host_id: Some("h1".into()),
+                host: "web-01".into(),
+                port: 22,
+                username: "me".into(),
+            },
+            remote_path: "/srv/a.txt".into(),
+            local_path: dir.join("a.txt").display().to_string(),
+            baseline: (6, 100),
+            last_local: (6, 100),
+            unsent: false,
+            status: EditStatus::Watching,
+            job: None,
+            uploading: None,
+            dirty: false,
+            saving_copy: false,
+            conflict: None,
+            error: None,
+            downloading: false,
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut watching = watch::start(tx);
+        let mut state = EditState::default();
+        let late = register_open(&mut state, &mut watching, &root, edit.clone(), 0, 1);
+        assert!(late.is_err());
+        assert!(!dir.exists(), "the copy made after sign-out is deleted");
+        assert!(state.list().is_empty());
+        let dir = create_edit_dir(&root, "e1").unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        assert!(register_open(&mut state, &mut watching, &root, edit, 1, 1).is_ok());
+        assert_eq!(state.list().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
