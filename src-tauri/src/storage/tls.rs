@@ -8,6 +8,10 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::sync::{Arc, Mutex};
 
+/// Why a background transfer to a server with an untrusted certificate stops (it never prompts).
+pub const CERT_UNTRUSTED: &str =
+    "The server's certificate isn't trusted — open the account to review it";
+
 /// A certificate's SHA-256, lowercase hex: what the user compares and what an account pins.
 pub fn sha256_hex(der: &[u8]) -> String {
     use sha2::{Digest, Sha256};

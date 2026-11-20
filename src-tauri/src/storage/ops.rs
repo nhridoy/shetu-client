@@ -115,17 +115,20 @@ pub async fn list_tree(
 /// Lists one entry, to check the bucket can be reached and read. One request, however large
 /// the bucket.
 pub async fn check_access(op: &Operator) -> Result<(), String> {
-    use futures::TryStreamExt;
-    let mut lister = op
-        .lister_with("/")
-        .limit(1)
+    check_access_raw(op)
         .await
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
-    lister
+        .map_err(|e| format!("Couldn't reach the bucket: {e}"))
+}
+
+/// `check_access` keeping OpenDAL's error, so a certificate failure can be told apart.
+pub async fn check_access_raw(op: &Operator) -> Result<(), opendal::Error> {
+    use futures::TryStreamExt;
+    op.lister_with("/")
+        .limit(1)
+        .await?
         .try_next()
         .await
         .map(|_| ())
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))
 }
 
 /// `(size, mtime)` of an object, `None` when it doesn't exist.
@@ -195,6 +198,14 @@ pub(crate) async fn rename_tree_inner(
     };
     if taken {
         return Err(format!("{to} already exists. Nothing was moved."));
+    }
+    // A server that can move (WebDAV) renames a file in one request: no copy, no size limit.
+    // (OpenDAL renames files only; a WebDAV folder moves through `webdav::move_dir`.)
+    if !is_dir && op.info().capability().rename {
+        return op
+            .rename(&to_key(from, false), &to_key(to, false))
+            .await
+            .map_err(|e| err("rename", e));
     }
     if let Some((key, _, _)) = objects.iter().find(|(_, size, _)| *size > limit) {
         return Err(format!(
@@ -430,5 +441,20 @@ mod tests {
             put(&op, &format!("{i}.txt"), "x").await;
         }
         assert!(check_access(&op).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rename_uses_native_move_when_supported() {
+        let op = folder();
+        assert!(op.info().capability().rename);
+        put(&op, "a.txt", "a").await;
+        rename_tree(&op, "/a.txt", "/b.txt", false).await.unwrap();
+        assert_eq!(read_small(&op, "/b.txt", 10).await.unwrap(), b"a");
+        assert_eq!(stat(&op, "/a.txt").await.unwrap(), None);
+        put(&op, "c.txt", "c").await;
+        let err = rename_tree(&op, "/b.txt", "/c.txt", false)
+            .await
+            .unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
     }
 }

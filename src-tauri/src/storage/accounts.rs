@@ -151,14 +151,107 @@ pub fn operator_for(d: &StorageAccountData) -> Result<Operator, String> {
     if virtual_host {
         builder = builder.enable_virtual_host_style();
     }
-    Ok(Operator::new(builder)
-        .map_err(|e| format!("Couldn't set up the bucket: {e}"))?
-        .layer(opendal::layers::RetryLayer::new())
-        .layer(
-            opendal::layers::TimeoutLayer::new()
-                .with_timeout(OP_TIMEOUT)
-                .with_io_timeout(IO_TIMEOUT),
-        ))
+    Ok(layered(
+        Operator::new(builder).map_err(|e| format!("Couldn't set up the bucket: {e}"))?,
+    ))
+}
+
+fn layered(op: Operator) -> Operator {
+    op.layer(opendal::layers::RetryLayer::new()).layer(
+        opendal::layers::TimeoutLayer::new()
+            .with_timeout(OP_TIMEOUT)
+            .with_io_timeout(IO_TIMEOUT),
+    )
+}
+
+/// The account's storage side: an S3 operator, or a WebDAV one with its upload target. A
+/// pinned certificate gives the WebDAV operator (and uploads) their own trusting client.
+pub fn remote_for(d: &StorageAccountData) -> Result<super::Remote, String> {
+    if d.provider != "webdav" {
+        return Ok(super::Remote {
+            op: operator_for(d)?,
+            dav: None,
+        });
+    }
+    let base = webdav_url(d)?;
+    let url = tauri::Url::parse(&base).map_err(|e| format!("Bad URL {base}: {e}"))?;
+    let endpoint = format!(
+        "{}://{}",
+        url.scheme(),
+        url.host_str().ok_or("The URL has no host")?
+    ) + &url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let username = d.username.clone().unwrap_or_default();
+    let builder = opendal::services::Webdav::default()
+        .endpoint(&endpoint)
+        .root(url.path())
+        .username(&username)
+        .password(&d.password);
+    let mut op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
+    let client = super::tls::client_for(d.trusted_cert_sha256.as_deref())?;
+    if d.trusted_cert_sha256.is_some() {
+        let transport = opendal_http_transport_reqwest::ReqwestTransport::new(client.clone());
+        op = op.with_context(
+            opendal::OperationContext::new()
+                .with_http_transport(opendal::HttpTransporter::new(transport)),
+        );
+    }
+    Ok(super::Remote {
+        op: layered(op),
+        dav: Some(std::sync::Arc::new(super::webdav::DavTarget {
+            base: if base.ends_with('/') {
+                base
+            } else {
+                format!("{base}/")
+            },
+            username,
+            password: d.password.clone(),
+            client,
+        })),
+    })
+}
+
+/// The error a connect returns when the server's certificate needs the user's decision; the
+/// web side reads it after the `cert:` prefix.
+pub fn cert_payload(kind: &str, host: &str, sha256: &str, previous: Option<&str>) -> String {
+    format!(
+        "cert:{}",
+        serde_json::json!({ "kind": kind, "host": host, "sha256": sha256, "previous": previous })
+    )
+}
+
+/// For an `https` WebDAV account whose connection failed on its certificate: the certificate
+/// the server presents, as a trust question (`untrusted`, or `changed` from the pinned one).
+pub async fn cert_error(d: &StorageAccountData, e: &opendal::Error) -> Option<String> {
+    if d.provider != "webdav" || !super::tls::is_cert_error(e) {
+        return None;
+    }
+    let url = tauri::Url::parse(&webdav_url(d).ok()?).ok()?;
+    let host = url.host_str()?.to_string();
+    let port = url.port_or_known_default()?;
+    let sha = super::tls::probe(&host, port).await.ok()?;
+    let previous = d.trusted_cert_sha256.as_deref();
+    let kind = if previous.is_some() {
+        "changed"
+    } else {
+        "untrusted"
+    };
+    Some(cert_payload(
+        kind,
+        &format!("{host}:{port}"),
+        &sha,
+        previous,
+    ))
+}
+
+/// Lists one entry; a certificate the user must decide on comes back as a `cert:` error.
+pub async fn check_account_access(d: &StorageAccountData, op: &Operator) -> Result<(), String> {
+    match super::ops::check_access_raw(op).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(match cert_error(d, &e).await {
+            Some(question) => question,
+            None => format!("Couldn't connect: {e}"),
+        }),
+    }
 }
 
 fn live_payload(
@@ -356,8 +449,11 @@ pub async fn storage_test(
     let (_, payload) = merged(&db, &crypto, id.as_deref(), &patch)?;
     let d = parse(&payload)?;
     validate(&d)?;
-    super::ops::check_access(&operator_for(&d)?).await?;
-    Ok(format!("Connected to {}", d.bucket))
+    check_account_access(&d, &remote_for(&d)?.op).await?;
+    Ok(match d.provider.as_str() {
+        "webdav" => format!("Connected to {}", webdav_url(&d)?),
+        _ => format!("Connected to {}", d.bucket),
+    })
 }
 
 #[cfg(test)]
@@ -640,6 +736,37 @@ mod tests {
                 .unwrap()
                 .trusted_cert_sha256,
             None
+        );
+    }
+
+    #[test]
+    fn remote_for_webdav_builds_with_a_put_target() {
+        let mut d = dav("other");
+        d.url = Some("http://127.0.0.1:1/dav/".into());
+        let r = remote_for(&d).unwrap();
+        assert_eq!(
+            r.dav.as_ref().map(|t| t.base.as_str()),
+            Some("http://127.0.0.1:1/dav/")
+        );
+        assert_eq!(r.op.info().scheme().to_string(), "webdav");
+        let s3 = remote_for(&data("aws")).unwrap();
+        assert!(s3.dav.is_none());
+    }
+
+    #[test]
+    fn cert_error_formats_the_dialog_payload() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let parsed = |s: String| -> Value {
+            serde_json::from_str(s.strip_prefix("cert:").expect("cert: prefix")).unwrap()
+        };
+        assert_eq!(
+            parsed(cert_payload("changed", "nas.lan:5006", &b, Some(&a))),
+            json!({"kind": "changed", "host": "nas.lan:5006", "sha256": b, "previous": a})
+        );
+        assert_eq!(
+            parsed(cert_payload("untrusted", "nas.lan:443", &b, None)),
+            json!({"kind": "untrusted", "host": "nas.lan:443", "sha256": b, "previous": null})
         );
     }
 }

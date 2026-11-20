@@ -142,7 +142,7 @@ impl Ctx<'_> {
             return self
                 .app
                 .state::<crate::storage::sessions::StorageSessions>()
-                .operator_for_ref(self.app, r)
+                .remote_for_ref(self.app, r)
                 .map(Side::Remote)
                 .map_err(|e| finished(Err(JobError::Operation(e))));
         }
