@@ -12,3 +12,6 @@ Every change Shetu made to these files is listed here.
   ("<folder> doesn't exist on the server") and is never created (upstream sent `MKD`).
 - Connection pools are capped at `MAX_CONNECTIONS` (4, upstream 64) and shared by `pool_key`
   across operators; `forget_pools` drops them.
+- Listing and stat go through `listing.rs` (new): `MLSD` when `FEAT` advertises it (exact times),
+  else `LIST -a` (dot-files), else `LIST`; `.`/`..` are skipped; MLSD's `type=OS.unix=slink:` is
+  read as a link; each symlink is resolved once with `SIZE` (a size = file, otherwise folder).

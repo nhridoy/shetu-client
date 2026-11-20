@@ -65,6 +65,8 @@ pub struct FtpCore {
     info: ServiceInfo,
     capability: Capability,
     pool: Arc<bounded::Pool<Manager>>,
+    /// Shetu: whether the server lists with MLSD (learned once, from FEAT).
+    pub mlsd: std::sync::OnceLock<bool>,
 }
 
 impl FtpCore {
@@ -79,6 +81,7 @@ impl FtpCore {
             info,
             capability,
             pool,
+            mlsd: std::sync::OnceLock::new(),
         }
     }
 

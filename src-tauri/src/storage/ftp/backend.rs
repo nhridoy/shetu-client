@@ -17,12 +17,10 @@
 // under the License.
 
 use std::fmt::Debug;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use http::Uri;
 use log::debug;
-use suppaftp::list::File;
 use suppaftp::tokio_rustls::rustls::ClientConfig;
 use suppaftp::types::Response;
 use suppaftp::FtpError;
@@ -270,21 +268,12 @@ impl Service for FtpBackend {
 
     async fn stat(&self, _ctx: &OperationContext, path: &str, _: OpStat) -> Result<RpStat> {
         let file = self.ftp_stat(path).await?;
-
-        let mode = if file.is_file() {
-            EntryMode::FILE
-        } else if file.is_directory() {
-            EntryMode::DIR
+        let mut meta = if file.dir {
+            MetadataBuilder::dir()
         } else {
-            EntryMode::Unknown
+            MetadataBuilder::file(file.size)
         };
-
-        let mut meta = match mode {
-            EntryMode::FILE => MetadataBuilder::file(file.size() as u64),
-            EntryMode::DIR => MetadataBuilder::dir(),
-            EntryMode::Unknown => MetadataBuilder::unknown(),
-        };
-        meta.last_modified(Timestamp::try_from(file.modified())?);
+        meta.last_modified(Timestamp::try_from(file.modified)?);
 
         Ok(RpStat::new(meta.build()))
     }
@@ -355,30 +344,15 @@ impl Service for FtpBackend {
 }
 
 impl FtpBackend {
-    pub async fn ftp_stat(&self, path: &str) -> Result<File> {
-        let mut ftp_stream = self.core.ftp_connect(Operation::Stat).await?;
-
+    /// Shetu: stats through the same listing as `list` (dot-files, symlinks, MLSD times).
+    pub async fn ftp_stat(&self, path: &str) -> Result<super::listing::Entry> {
         let (parent, basename) = (get_parent(path), get_basename(path));
-
-        let pathname = if parent == "/" { None } else { Some(parent) };
-
-        let resp = ftp_stream.list(pathname).await.map_err(format_ftp_error)?;
-
-        // Get stat of file.
-        let mut files = resp
+        let name = basename.trim_end_matches('/');
+        super::listing::list_dir(&self.core, parent)
+            .await?
             .into_iter()
-            .filter_map(|file| File::from_str(file.as_str()).ok())
-            .filter(|f| f.name() == basename.trim_end_matches('/'))
-            .collect::<Vec<File>>();
-
-        if files.is_empty() {
-            Err(Error::new(
-                ErrorKind::NotFound,
-                "file is not found during list",
-            ))
-        } else {
-            Ok(files.remove(0))
-        }
+            .find(|f| f.name == name)
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, "file is not found during list"))
     }
 }
 

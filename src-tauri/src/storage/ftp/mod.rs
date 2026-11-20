@@ -13,6 +13,7 @@ mod config;
 mod core;
 mod deleter;
 mod lister;
+mod listing;
 mod reader;
 mod writer;
 
@@ -140,5 +141,77 @@ mod tests {
         let pin = crate::storage::tls::sha256_hex(&der);
         assert_eq!(op(Some(&pin), "pinned").list("/").await.unwrap().len(), 1);
         assert!(op(None, "unpinned").list("/").await.is_err());
+    }
+
+    async fn entries(op: &Operator, dir: &str) -> Vec<(String, u64)> {
+        let mut seen: Vec<(String, u64)> = op
+            .list(dir)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.path() != dir)
+            .map(|e| (e.path().to_string(), e.metadata().content_length()))
+            .collect();
+        seen.sort();
+        seen
+    }
+
+    #[tokio::test]
+    async fn dot_files_are_listed() {
+        for mlsd in [true, false] {
+            let fake = FakeFtp::start(FakeOpts {
+                mlsd,
+                ..FakeOpts::default()
+            })
+            .await;
+            fake.put("/.htaccess", Node::File(b"deny".to_vec()));
+            fake.put("/a.txt", Node::File(b"abc".to_vec()));
+            assert_eq!(
+                entries(&plain(&fake), "/").await,
+                vec![(".htaccess".into(), 4), ("a.txt".into(), 3)],
+                "mlsd {mlsd}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_falls_back_to_plain_list() {
+        let fake = FakeFtp::start(FakeOpts {
+            mlsd: false,
+            list_a: false,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/a.txt", Node::File(b"abc".to_vec()));
+        assert_eq!(entries(&plain(&fake), "/").await, vec![("a.txt".into(), 3)]);
+    }
+
+    #[tokio::test]
+    async fn symlinks_resolve_to_file_or_folder() {
+        for mlsd in [true, false] {
+            let fake = FakeFtp::start(FakeOpts {
+                mlsd,
+                ..FakeOpts::default()
+            })
+            .await;
+            fake.put("/a.txt", Node::File(b"abc".to_vec()));
+            fake.put("/public_html", Node::Dir);
+            fake.put("/www", Node::Link("/public_html".into()));
+            fake.put("/latest", Node::Link("/a.txt".into()));
+            let got = entries(&plain(&fake), "/").await;
+            assert!(got.contains(&("www/".into(), 0)), "mlsd {mlsd}: {got:?}");
+            assert!(got.contains(&("latest".into(), 3)), "mlsd {mlsd}: {got:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mlsd_times_are_exact() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        fake.put("/a.txt", Node::File(b"abc".to_vec()));
+        let meta = plain(&fake).stat("a.txt").await.unwrap();
+        assert_eq!(
+            meta.last_modified().unwrap().to_string(),
+            "2024-01-02T03:04:05Z"
+        );
     }
 }

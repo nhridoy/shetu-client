@@ -197,14 +197,8 @@ impl FtpLazyLister {
 
     async fn inner(&mut self) -> Result<&mut FtpLister> {
         if self.inner.is_none() {
-            let mut ftp_stream = self.core.ftp_connect(Operation::List).await?;
-
-            let pathname = if self.path == "/" {
-                None
-            } else {
-                Some(self.path.as_str())
-            };
-            let files = ftp_stream.list(pathname).await.map_err(format_ftp_error)?;
+            // Shetu: MLSD / LIST -a / LIST, with symlinks resolved.
+            let files = super::listing::list_dir(&self.core, &self.path).await?;
 
             self.inner = Some(FtpLister::new(
                 if self.path == "/" { "" } else { &self.path },

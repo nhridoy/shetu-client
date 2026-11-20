@@ -16,22 +16,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::str;
-use std::str::FromStr;
 use std::vec::IntoIter;
 
-use suppaftp::list::File;
-
+use super::listing::Entry;
 use opendal::raw::*;
 use opendal::*;
 
 pub struct FtpLister {
     path: String,
-    file_iter: IntoIter<String>,
+    file_iter: IntoIter<Entry>,
 }
 
 impl FtpLister {
-    pub fn new(path: &str, files: Vec<String>) -> Self {
+    pub fn new(path: &str, files: Vec<Entry>) -> Self {
         Self {
             path: path.to_string(),
             file_iter: files.into_iter(),
@@ -41,32 +38,20 @@ impl FtpLister {
 
 impl oio::List for FtpLister {
     async fn next(&mut self) -> Result<Option<oio::Entry>> {
-        let de = match self.file_iter.next() {
-            Some(file_str) => File::from_str(file_str.as_str()).map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "parse file from response").set_source(e)
-            })?,
-            None => return Ok(None),
+        let Some(de) = self.file_iter.next() else {
+            return Ok(None);
         };
-
-        let path = self.path.to_string() + de.name();
-
-        let mut meta = if de.is_file() {
-            MetadataBuilder::file(de.size() as u64)
-        } else if de.is_directory() {
+        let path = self.path.to_string() + &de.name;
+        let mut meta = if de.dir {
             MetadataBuilder::dir()
         } else {
-            MetadataBuilder::unknown()
+            MetadataBuilder::file(de.size)
         };
-        meta.last_modified(Timestamp::try_from(de.modified())?);
-
-        let entry = if de.is_file() {
-            oio::Entry::new(&path, meta.build())
-        } else if de.is_directory() {
-            oio::Entry::new(&format!("{}/", path), meta.build())
+        meta.last_modified(Timestamp::try_from(de.modified)?);
+        Ok(Some(if de.dir {
+            oio::Entry::new(&format!("{path}/"), meta.build())
         } else {
             oio::Entry::new(&path, meta.build())
-        };
-
-        Ok(Some(entry))
+        }))
     }
 }
