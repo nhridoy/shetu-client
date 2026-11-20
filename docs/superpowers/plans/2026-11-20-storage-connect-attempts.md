@@ -66,7 +66,7 @@
 - [ ] **Step 2: Run and see it fail**
   Run: `bunx vitest run src/hooks/sftp/useFileOperations.test.tsx`. Expected: the new quiet-stop test fails (error modal shown / error set).
 
-- [ ] **Step 3: Implement** — in the storage branch, wrap each `connect()` so a rejection while `disconnectsRef.current !== started` becomes `ConnectCancelled("The pane was closed")`; after a successful connect with a changed counter, throw `ConnectCancelled` without invoking `storage_disconnect` (Rust never kept the session... except when the connect finished before the disconnect: then `disconnect` itself already removed it). Remove the `getProvider` guard and the cleanup `invoke`; drop the `getProvider` import if unused.
+- [ ] **Step 3: Implement** — in the storage branch, wrap each `connect()` so a rejection while `disconnectsRef.current !== started` becomes `ConnectCancelled("The pane was closed")`; after a successful connect with a changed counter, throw `ConnectCancelled` without invoking `storage_disconnect`: a connect that finished before the disconnect had its session removed by that disconnect, and one that finished after was refused by Rust. Remove the `getProvider` guard and the cleanup `invoke`; drop the `getProvider` import if unused.
 
 - [ ] **Step 4: Run and see it pass**
   Run: `bunx vitest run` and `bunx tsc --noEmit -p .`. Expected: all pass, tsc clean.
