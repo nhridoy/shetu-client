@@ -44,10 +44,12 @@ pub fn build_job(
         src: Endpoint {
             path: new.src_path.clone(),
             host: src_host,
+            storage: None,
         },
         dest: Endpoint {
             path: new.dest_path.clone(),
             host: dest_host,
+            storage: None,
         },
         replace: new.replace,
         src_size: snapshot.0,
@@ -471,6 +473,22 @@ fn apply(
 
 type Mgr<'a> = tauri::State<'a, TransferManager>;
 
+/// What a pane's session id resolved to.
+enum PaneEnd {
+    Host(HostRef),
+    Storage(StorageRef),
+}
+
+impl PaneEnd {
+    fn split(end: Option<PaneEnd>) -> (Option<HostRef>, Option<StorageRef>) {
+        match end {
+            Some(PaneEnd::Host(h)) => (Some(h), None),
+            Some(PaneEnd::Storage(r)) => (None, Some(r)),
+            None => (None, None),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn transfer_enqueue(
     jobs: Vec<NewJob>,
@@ -480,14 +498,17 @@ pub async fn transfer_enqueue(
     // Read before the slow part; a wipe meanwhile makes the enqueue be refused.
     let epoch = manager.ask(Msg::Epoch).await?;
     let sessions = app.state::<crate::sftp::SftpSessions>();
-    let lookup = |sid: &Option<String>| -> Result<Option<(HostRef, Side)>, String> {
-        match sid {
-            None => Ok(None),
-            Some(sid) => sessions
-                .session_info(sid)
-                .map(|(host, sftp)| Some((host, Side::Sftp(sftp))))
-                .ok_or_else(|| "SFTP session not found".to_string()),
+    let buckets = app.state::<crate::storage::sessions::StorageSessions>();
+    // A pane's session id names an SFTP session or an open bucket; none is this computer.
+    let lookup = |sid: &Option<String>| -> Result<Option<(PaneEnd, Side)>, String> {
+        let Some(sid) = sid else { return Ok(None) };
+        if let Some((host, sftp)) = sessions.session_info(sid) {
+            return Ok(Some((PaneEnd::Host(host), Side::Sftp(sftp))));
         }
+        if let Some((r, op)) = buckets.get(sid) {
+            return Ok(Some((PaneEnd::Storage(r), Side::Remote(op))));
+        }
+        Err("SFTP session not found".to_string())
     };
     let now = now_ms();
     let mut built = Vec::new();
@@ -498,7 +519,11 @@ pub async fn transfer_enqueue(
         let src_side = src.as_ref().map_or(&Side::Local, |(_, side)| side);
         // One unreadable file (a broken symlink, a file deleted meanwhile) fails on its own.
         let stat = io::stat(src_side, &new.src_path).await;
-        let job = job_for_stat(new, src.map(|(h, _)| h), dest.map(|(h, _)| h), stat, now);
+        let (src_host, src_storage) = PaneEnd::split(src.map(|(e, _)| e));
+        let (dest_host, dest_storage) = PaneEnd::split(dest.map(|(e, _)| e));
+        let mut job = job_for_stat(new, src_host, dest_host, stat, now);
+        job.src.storage = src_storage;
+        job.dest.storage = dest_storage;
         prefer.push((
             job.id.clone(),
             (new.src_session_id.clone(), new.dest_session_id.clone()),
@@ -633,14 +658,16 @@ mod tests {
             j.src,
             Endpoint {
                 path: "/r/a.tar".into(),
-                host: Some(host())
+                host: Some(host()),
+                storage: None,
             }
         );
         assert_eq!(
             j.dest,
             Endpoint {
                 path: "/l/a.tar".into(),
-                host: None
+                host: None,
+                storage: None,
             }
         );
         assert_eq!(j.part_path, part_path("/l/a.tar", &j.id));

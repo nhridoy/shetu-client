@@ -10,6 +10,7 @@ mod live;
 mod local_list;
 mod export;
 mod identities;
+mod storage;
 mod import;
 mod http;
 mod keys;
@@ -384,8 +385,10 @@ async fn wipe_local_data(
     forwarding: tauri::State<'_, forwarding::runtime::ForwardingState>,
     transfers: tauri::State<'_, transfers::manager::TransferManager>,
     edits: tauri::State<'_, edits::manager::EditManager>,
+    storage: tauri::State<'_, storage::sessions::StorageSessions>,
 ) -> Result<(), String> {
     forwarding.stop_all();
+    storage.clear();
     // Edits first: once their temp copies are gone, no edit upload can start from them. A
     // failure is reported after the rest of the wipe has still run.
     let edits_wiped = edits.wipe().await;
@@ -1396,9 +1399,13 @@ fn decrypt_secret(
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let header: serde_json::Value =
         serde_json::from_str(&payload).map_err(|_| "invalid ciphertext".to_string())?;
-    // Identity secrets stay in Rust; the frontend uses identity_view / identity_save.
+    // Identity and storage-account secrets stay in Rust; the frontend uses their view / save
+    // commands.
     if identities::is_identity_ciphertext(&header) {
         return Err("identity records are not readable here".into());
+    }
+    if storage::accounts::is_storage_ciphertext(&header) {
+        return Err("storage account records are not readable here".into());
     }
     if header.get("v").and_then(serde_json::Value::as_u64) == Some(2) {
         let table = header
@@ -1865,6 +1872,7 @@ pub fn run() {
             api_url: Mutex::new(None),
         })
         .manage(live::LiveState::default())
+        .manage(storage::sessions::StorageSessions::default())
         .manage(CancelTokens {
             tokens: Mutex::new(HashMap::new()),
         })
@@ -1893,6 +1901,19 @@ pub fn run() {
             host_inherit::identity_usage,
             identities::identity_view,
             identities::identity_save,
+            storage::accounts::storage_account_view,
+            storage::accounts::storage_account_save,
+            storage::accounts::storage_test,
+            storage::sessions::storage_connect,
+            storage::sessions::storage_disconnect,
+            storage::sessions::storage_list,
+            storage::sessions::storage_list_recursive,
+            storage::sessions::storage_stat,
+            storage::sessions::storage_mkdir,
+            storage::sessions::storage_delete,
+            storage::sessions::storage_rename,
+            storage::sessions::storage_read,
+            storage::sessions::storage_write,
             update::update_installation_kind,
             device_info,
             get_device_id,

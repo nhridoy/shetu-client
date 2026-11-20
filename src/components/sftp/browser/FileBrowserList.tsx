@@ -57,6 +57,25 @@ export interface FileBrowserActions {
   onOpenInEditor?: (file: FileItem | null) => void;
 }
 
+/** Actions a bucket pane can't offer: opening in an editor or app, and permissions. */
+const HOST_ONLY = [
+  "onPermissions",
+  "onOpenInEditor",
+  "onOpenWithDefault",
+  "onOpenWith",
+] as const;
+
+/** The context-menu actions for a pane kind (a bucket drops the host-only ones). */
+export function forPaneKind<T extends object>(
+  kind: "host" | "storage",
+  actions: T,
+): T {
+  if (kind === "host") return actions;
+  const kept = { ...actions } as Record<string, unknown>;
+  for (const key of HOST_ONLY) delete kept[key];
+  return kept as T;
+}
+
 interface FileBrowserListProps {
   isLoading: boolean;
   sortedFiles: FileItem[];
@@ -70,6 +89,7 @@ interface FileBrowserListProps {
   hostId: string;
   hostAddress?: string;
   hostUsername?: string;
+  kind?: "host" | "storage";
   selectedFiles: Set<string>;
   clipboard: { paths: string[] } | null;
   renamingPath: string | null;
@@ -103,6 +123,7 @@ export default function FileBrowserList({
   setRenamingPath,
   setRenameValue,
   actions,
+  kind = "host",
 }: FileBrowserListProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -135,7 +156,7 @@ export default function FileBrowserList({
     return buildContextMenuItems(
       contextMenu.file,
       clipboard,
-      {
+      forPaneKind(kind, {
         handleDoubleClick: actions.handleDoubleClick,
         handleDownload: actions.handleDownload,
         onCopy: actions.handleCopy,
@@ -149,7 +170,7 @@ export default function FileBrowserList({
         onOpenInEditor: actions.onOpenInEditor,
         onOpenWithDefault: (f) => void openFromPane(paneId, f.path, false),
         onOpenWith: (f) => void openFromPane(paneId, f.path, true),
-      },
+      }),
       (path, name) => {
         setRenamingPath(path);
         setRenameValue(name);
@@ -163,6 +184,7 @@ export default function FileBrowserList({
     setRenamingPath,
     setRenameValue,
     selectedFiles,
+    kind,
     paneId,
   ]);
 

@@ -7,9 +7,39 @@ use tokio_util::sync::CancellationToken;
 pub enum Side {
     Local,
     Sftp(Arc<russh_sftp::client::SftpSession>),
+    /// A bucket. Paths are UI paths (`/a/b.txt`); an upload writes the final key directly.
+    Remote(opendal::Operator),
 }
 
 const CHUNK: usize = 64 * 1024;
+/// Part size for bucket uploads. Fixed, so every part but the last is exactly this long
+/// (R2 requires it).
+const REMOTE_PART: usize = 8 * 1024 * 1024;
+
+/// How an upload to a bucket is written. Ignored for other destinations.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteOpts {
+    /// Saved as the object's `mtime` metadata (the source's own time), when non-zero.
+    pub mtime: i64,
+    /// Refuse to write over an existing key (`DEST_CHANGED`), where the service supports it.
+    pub if_not_exists: bool,
+}
+
+fn key(path: &str) -> String {
+    crate::storage::ops::to_key(path, false)
+}
+
+/// Bucket errors by what a retry can fix: the request itself (missing, refused, invalid) is
+/// an operation error; anything else (network, rate limits, server trouble) is retried.
+pub fn opendal_err(op: &str, e: opendal::Error) -> JobError {
+    use opendal::ErrorKind::*;
+    match e.kind() {
+        ConditionNotMatch => JobError::Operation(DEST_CHANGED.into()),
+        NotFound | PermissionDenied | ConfigInvalid | IsADirectory | NotADirectory
+        | Unsupported => JobError::Operation(format!("{op}: {e}")),
+        _ => JobError::Connection(format!("{op}: {e}")),
+    }
+}
 
 fn io_err(op: &str, e: std::io::Error) -> JobError {
     match classify_io(&e) {
@@ -48,6 +78,13 @@ pub async fn stat(side: &Side, path: &str) -> Result<(u64, i64), JobError> {
             let m = s.metadata(path).await.map_err(|e| sftp_err("stat", e))?;
             Ok((m.len(), m.mtime.map_or(0, i64::from)))
         }
+        Side::Remote(op) => {
+            let m = op
+                .stat(&key(path))
+                .await
+                .map_err(|e| opendal_err("stat", e))?;
+            Ok((m.content_length(), crate::storage::ops::mtime_of(&m)))
+        }
     }
 }
 
@@ -63,6 +100,11 @@ pub async fn stat_if_exists(side: &Side, path: &str) -> Result<Option<(u64, i64)
         Side::Sftp(s) => match s.metadata(path).await {
             Err(e) if is_sftp_not_found(&e) => true,
             Err(e) => return Err(sftp_err("stat", e)),
+            Ok(_) => false,
+        },
+        Side::Remote(op) => match op.stat(&key(path)).await {
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => true,
+            Err(e) => return Err(opendal_err("stat", e)),
             Ok(_) => false,
         },
     };
@@ -84,6 +126,8 @@ pub async fn part_len(side: &Side, part: &str) -> Result<Option<u64>, JobError> 
             Err(e) if is_sftp_not_found(&e) => Ok(None),
             Err(e) => Err(sftp_err("stat part", e)),
         },
+        // An upload to a bucket never keeps a partial object: it always starts over.
+        Side::Remote(_) => Ok(None),
     }
 }
 
@@ -93,35 +137,102 @@ async fn exists(side: &Side, path: &str) -> Result<bool, JobError> {
             .await
             .map_err(|e| io_err("stat", e)),
         Side::Sftp(s) => s.try_exists(path).await.map_err(|e| sftp_err("stat", e)),
+        Side::Remote(op) => op
+            .exists(&key(path))
+            .await
+            .map_err(|e| opendal_err("stat", e)),
     }
 }
 
 enum Writer {
     Local(tokio::fs::File),
     Sftp(russh_sftp::client::fs::File),
+    Remote(RemoteWriter),
+}
+
+#[cfg(test)]
+pub(crate) static REMOTE_ABORTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// A bucket upload. Pause and cancel drop the run mid-copy, and an OpenDAL writer dropped
+/// without `close`/`abort` leaves its multipart parts billed, so dropping one unfinished
+/// aborts it in the background.
+struct RemoteWriter(Option<opendal::Writer>);
+
+impl RemoteWriter {
+    /// The writer stays owned until the abort finishes: if this is dropped mid-abort (a pause
+    /// during a slow abort), `Drop` still aborts it.
+    async fn abort(&mut self) {
+        if let Some(w) = self.0.as_mut() {
+            #[cfg(test)]
+            REMOTE_ABORTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Err(e) = w.abort().await {
+                log::warn!("transfers: couldn't abort a bucket upload: {e}");
+            }
+        }
+        self.0 = None;
+    }
+}
+
+impl Drop for RemoteWriter {
+    fn drop(&mut self) {
+        if let Some(mut w) = self.0.take() {
+            #[cfg(test)]
+            REMOTE_ABORTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    if let Err(e) = w.abort().await {
+                        log::warn!("transfers: couldn't abort a bucket upload: {e}");
+                    }
+                });
+            }
+        }
+    }
 }
 
 impl Writer {
-    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), JobError> {
         use tokio::io::AsyncWriteExt;
         match self {
-            Writer::Local(f) => f.write_all(buf).await,
-            Writer::Sftp(f) => f.write_all(buf).await,
+            Writer::Local(f) => f.write_all(buf).await.map_err(|e| io_err("write", e)),
+            Writer::Sftp(f) => f.write_all(buf).await.map_err(|e| io_err("write", e)),
+            Writer::Remote(RemoteWriter(Some(w))) => w
+                .write(buf.to_vec())
+                .await
+                .map_err(|e| opendal_err("write", e)),
+            Writer::Remote(RemoteWriter(None)) => Err(JobError::Stopped),
         }
     }
 
-    async fn close(self) -> Result<(), JobError> {
+    async fn close(&mut self) -> Result<(), JobError> {
         use tokio::io::AsyncWriteExt;
         match self {
-            Writer::Local(mut f) => {
+            Writer::Local(f) => {
                 f.flush().await.map_err(|e| io_err("write", e))?;
                 f.sync_all().await.map_err(|e| io_err("fsync", e))
             }
-            Writer::Sftp(mut f) => {
+            Writer::Sftp(f) => {
                 f.flush().await.map_err(|e| io_err("write", e))?;
                 f.sync_all().await.map_err(|e| sftp_err("fsync", e))?;
                 f.shutdown().await.map_err(|e| io_err("close", e))
             }
+            Writer::Remote(r) => {
+                let Some(w) = r.0.as_mut() else {
+                    return Err(JobError::Stopped);
+                };
+                w.close().await.map_err(|e| opendal_err("write", e))?;
+                // Complete: nothing to abort when dropped.
+                r.0 = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// A bucket upload that won't finish is aborted, so its parts don't stay billed. Best
+    /// effort; files need nothing (the `.part` stays for a resume).
+    async fn abort(&mut self) {
+        if let Writer::Remote(r) = self {
+            r.abort().await;
         }
     }
 }
@@ -154,11 +265,28 @@ async fn open_source(
             }
             Ok(Box::new(f))
         }
+        Side::Remote(op) => {
+            use tokio_util::compat::FuturesAsyncReadCompatExt;
+            let reader = op
+                .reader_with(&key(path))
+                .await
+                .map_err(|e| opendal_err("open", e))?
+                .into_futures_async_read(offset..)
+                .await
+                .map_err(|e| opendal_err("open", e))?;
+            Ok(Box::new(reader.compat()))
+        }
     }
 }
 
 /// Opens the `.part` file: truncated when starting from zero, otherwise positioned at `offset`.
-async fn open_part(side: &Side, part: &str, offset: u64) -> Result<Writer, JobError> {
+/// For a bucket, `part` is the final key and the object appears only once it is complete.
+async fn open_part(
+    side: &Side,
+    part: &str,
+    offset: u64,
+    opts: WriteOpts,
+) -> Result<Writer, JobError> {
     use russh_sftp::protocol::OpenFlags;
     use std::io::SeekFrom;
     use tokio::io::AsyncSeekExt;
@@ -197,11 +325,29 @@ async fn open_part(side: &Side, part: &str, offset: u64) -> Result<Writer, JobEr
             }
             Ok(Writer::Sftp(f))
         }
+        Side::Remote(op) => {
+            let can = op.info().capability();
+            let path = key(part);
+            let mut w = op.writer_with(&path).chunk(REMOTE_PART);
+            if opts.mtime > 0 && can.write_with_user_metadata {
+                w = w.user_metadata([(
+                    crate::storage::ops::MTIME_KEY.to_string(),
+                    opts.mtime.to_string(),
+                )]);
+            }
+            if opts.if_not_exists && can.write_with_if_not_exists {
+                w = w.if_not_exists(true);
+            }
+            Ok(Writer::Remote(RemoteWriter(Some(
+                w.await.map_err(|e| opendal_err("create", e))?,
+            ))))
+        }
     }
 }
 
 /// Copies `src_path` into `part` from `offset`. Every read and write races `stop`, so a pause
 /// or cancel takes effect even when the connection hangs. `progress` gets the bytes in `part`.
+#[allow(clippy::too_many_arguments)]
 pub async fn copy(
     src: &Side,
     src_path: &str,
@@ -209,35 +355,43 @@ pub async fn copy(
     part: &str,
     offset: u64,
     stop: &CancellationToken,
+    opts: WriteOpts,
     mut progress: impl FnMut(u64),
 ) -> Result<(), JobError> {
     use tokio::io::AsyncReadExt;
     let mut reader = open_source(src, src_path, offset).await?;
-    let mut writer = open_part(dst, part, offset).await?;
+    let mut writer = open_part(dst, part, offset, opts).await?;
     let mut buf = vec![0u8; CHUNK];
     let mut written = offset;
-    loop {
-        let n = tokio::select! {
-            biased;
-            _ = stop.cancelled() => return Err(JobError::Stopped),
-            r = reader.read(&mut buf) => r.map_err(|e| io_err("read", e))?,
-        };
-        if n == 0 {
-            break;
+    let result = async {
+        loop {
+            let n = tokio::select! {
+                biased;
+                _ = stop.cancelled() => return Err(JobError::Stopped),
+                r = reader.read(&mut buf) => r.map_err(|e| io_err("read", e))?,
+            };
+            if n == 0 {
+                break;
+            }
+            tokio::select! {
+                biased;
+                _ = stop.cancelled() => return Err(JobError::Stopped),
+                r = writer.write_all(&buf[..n]) => r?,
+            }
+            written += n as u64;
+            progress(written);
         }
         tokio::select! {
             biased;
-            _ = stop.cancelled() => return Err(JobError::Stopped),
-            r = writer.write_all(&buf[..n]) => r.map_err(|e| io_err("write", e))?,
+            _ = stop.cancelled() => Err(JobError::Stopped),
+            r = writer.close() => r,
         }
-        written += n as u64;
-        progress(written);
     }
-    tokio::select! {
-        biased;
-        _ = stop.cancelled() => Err(JobError::Stopped),
-        r = writer.close() => r,
+    .await;
+    if result.is_err() {
+        writer.abort().await;
     }
+    result
 }
 
 /// Moves the finished `.part` into place and returns where it landed. Without an approved
@@ -249,6 +403,10 @@ pub async fn finish(
     replace: bool,
     mtime: i64,
 ) -> Result<String, JobError> {
+    // A bucket upload already wrote its final key (see `remote_target`).
+    if matches!(dst, Side::Remote(_)) {
+        return Ok(part.to_string());
+    }
     // The `.part` gets the source's time before it is published; the rename keeps it.
     if mtime > 0 {
         set_mtime(dst, part, mtime).await;
@@ -281,6 +439,8 @@ pub async fn finish(
                 .await
                 .map_err(|e| sftp_err("rename", e))?;
         }
+        // Returned above: a bucket upload is already in place.
+        Side::Remote(_) => {}
     }
     Ok(target)
 }
@@ -314,6 +474,8 @@ pub(crate) async fn set_mtime(side: &Side, path: &str, mtime: i64) {
                 log::warn!("transfers: could not keep the modified time: {e}");
             }
         }
+        // A bucket sets its own time; the source's travels in the `mtime` metadata.
+        Side::Remote(_) => {}
     }
 }
 
@@ -419,6 +581,8 @@ pub async fn discard_part(side: &Side, part: &str) -> Result<(), JobError> {
             Err(e) if !is_sftp_not_found(&e) => Err(sftp_err("remove part", e)),
             _ => Ok(()),
         },
+        // No partial objects in a bucket (an unfinished upload is aborted).
+        Side::Remote(_) => Ok(()),
     }
 }
 
@@ -431,13 +595,170 @@ pub async fn remove_part(side: &Side, part: &str) {
         Side::Sftp(s) => {
             let _ = s.remove_file(part).await;
         }
+        Side::Remote(_) => {}
     }
+}
+
+/// Where an upload to a bucket writes: `dest` when replacing, otherwise the first free name
+/// (the same naming as files get).
+pub async fn remote_target(dst: &Side, dest: &str, replace: bool) -> Result<String, JobError> {
+    if replace {
+        return Ok(dest.to_string());
+    }
+    let mut target = dest.to_string();
+    let mut tried = std::collections::HashSet::new();
+    while exists(dst, &target).await? {
+        tried.insert(target.clone());
+        target = free_name(dest, |p| tried.contains(p));
+    }
+    Ok(target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn bucket() -> opendal::Operator {
+        opendal::Operator::new(opendal::services::Memory::default()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_stat_and_missing() {
+        let op = bucket();
+        op.write("a/b.txt", b"hello".to_vec()).await.unwrap();
+        let side = Side::Remote(op);
+        assert_eq!(stat_if_exists(&side, "/none").await.unwrap(), None);
+        assert_eq!(
+            stat_if_exists(&side, "/a/b.txt")
+                .await
+                .unwrap()
+                .map(|s| s.0),
+            Some(5)
+        );
+        assert!(matches!(
+            stat(&side, "/none").await,
+            Err(JobError::Operation(_))
+        ));
+        assert_eq!(part_len(&side, "/a/b.txt").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn download_from_remote_resumes_from_offset() {
+        let d = Dir::new("rdl");
+        let op = bucket();
+        op.write("obj", b"0123456789".to_vec()).await.unwrap();
+        let part = d.path("obj.part");
+        std::fs::write(&part, b"012").unwrap();
+        copy(
+            &Side::Remote(op),
+            "/obj",
+            &Side::Local,
+            &part,
+            3,
+            &CancellationToken::new(),
+            WriteOpts::default(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), b"0123456789");
+    }
+
+    #[tokio::test]
+    async fn upload_to_remote_writes_the_key_directly() {
+        let d = Dir::new("rup");
+        let src = d.path("src.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        let op = bucket();
+        let side = Side::Remote(op.clone());
+        copy(
+            &Side::Local,
+            &src,
+            &side,
+            "/up/a.txt",
+            0,
+            &CancellationToken::new(),
+            WriteOpts {
+                mtime: 1_700_000_000,
+                if_not_exists: false,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(op.read("up/a.txt").await.unwrap().to_vec(), b"payload");
+        let keys = op.list_with("").recursive(true).await.unwrap();
+        assert!(
+            keys.iter().all(|e| !e.path().ends_with(".part")),
+            "no .part object"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_upload_leaves_no_object() {
+        let d = Dir::new("rstop");
+        let src = d.path("src.txt");
+        std::fs::write(&src, vec![b'x'; 300_000]).unwrap();
+        let op = bucket();
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let r = copy(
+            &Side::Local,
+            &src,
+            &Side::Remote(op.clone()),
+            "/big.bin",
+            0,
+            &stop,
+            WriteOpts::default(),
+            |_| {},
+        )
+        .await;
+        assert_eq!(r, Err(JobError::Stopped));
+        assert!(!op.exists("big.bin").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remote_target_picks_a_free_name_without_replace() {
+        let op = bucket();
+        op.write("a.txt", b"x".to_vec()).await.unwrap();
+        let side = Side::Remote(op);
+        assert_eq!(
+            remote_target(&side, "/a.txt", true).await.unwrap(),
+            "/a.txt"
+        );
+        assert_eq!(
+            remote_target(&side, "/a.txt", false).await.unwrap(),
+            "/a (copy).txt"
+        );
+        assert_eq!(
+            remote_target(&side, "/b.txt", false).await.unwrap(),
+            "/b.txt"
+        );
+    }
+
+    #[test]
+    fn opendal_err_classes() {
+        use opendal::{Error, ErrorKind};
+        let class = |k| opendal_err("x", Error::new(k, "m"));
+        for k in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::ConfigInvalid,
+            ErrorKind::IsADirectory,
+            ErrorKind::NotADirectory,
+            ErrorKind::Unsupported,
+        ] {
+            assert!(matches!(class(k), JobError::Operation(_)), "{k:?}");
+        }
+        assert_eq!(
+            class(ErrorKind::ConditionNotMatch),
+            JobError::Operation(DEST_CHANGED.into())
+        );
+        for k in [ErrorKind::RateLimited, ErrorKind::Unexpected] {
+            assert!(matches!(class(k), JobError::Connection(_)), "{k:?}");
+        }
+    }
 
     struct Dir(PathBuf);
     impl Dir {
@@ -476,6 +797,7 @@ mod tests {
             &part,
             0,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |n| seen.push(n),
         )
         .await
@@ -504,6 +826,7 @@ mod tests {
             &part,
             40,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |n| {
                 first.get_or_insert(n);
             },
@@ -528,6 +851,7 @@ mod tests {
             &part,
             0,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |_| {},
         )
         .await
@@ -542,7 +866,17 @@ mod tests {
         let part = d.path("out.part");
         let stop = CancellationToken::new();
         stop.cancel();
-        let r = copy(&Side::Local, &src, &Side::Local, &part, 0, &stop, |_| {}).await;
+        let r = copy(
+            &Side::Local,
+            &src,
+            &Side::Local,
+            &part,
+            0,
+            &stop,
+            WriteOpts::default(),
+            |_| {},
+        )
+        .await;
         assert_eq!(r, Err(JobError::Stopped));
         assert!(std::path::Path::new(&part).exists());
     }
@@ -582,6 +916,7 @@ mod tests {
             &d.path("o.part"),
             0,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |_| {},
         )
         .await;
@@ -722,6 +1057,7 @@ mod tests {
             &part,
             0,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |_| {},
         )
         .await
@@ -745,6 +1081,7 @@ mod tests {
             &part,
             0,
             &CancellationToken::new(),
+            WriteOpts::default(),
             |_| {},
         )
         .await
@@ -763,5 +1100,48 @@ mod tests {
         remove_part(&Side::Local, &part).await;
         assert!(!std::path::Path::new(&part).exists());
         remove_part(&Side::Local, &part).await; // already gone: no panic
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_upload_aborts_it() {
+        let d = Dir::new("rdrop");
+        let src = d.path("src.fifo");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+        let feeder = {
+            let src = src.clone();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let mut pipe = std::fs::OpenOptions::new().write(true).open(&src).unwrap();
+                pipe.write_all(&[b'x'; 4096]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(800));
+            })
+        };
+        let before = REMOTE_ABORTS.load(std::sync::atomic::Ordering::SeqCst);
+        let op = bucket();
+        // Pause and cancel drop the whole run (the copy future), not just return an error.
+        let run = tokio::spawn(async move {
+            copy(
+                &Side::Local,
+                &src,
+                &Side::Remote(op),
+                "/big.bin",
+                0,
+                &CancellationToken::new(),
+                WriteOpts::default(),
+                |_| {},
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        run.abort();
+        let _ = run.await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(REMOTE_ABORTS.load(std::sync::atomic::Ordering::SeqCst) > before);
+        feeder.join().unwrap();
     }
 }

@@ -12,6 +12,7 @@ import {
   unregisterProvider,
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
+import { confirmFolderRename, StorageFileProvider } from "@/lib/sftp/storageFs";
 import {
   ConnectCancelled,
   resolveUsernameOrAsk,
@@ -75,6 +76,19 @@ export function useFileOperations({
 
       connectingRef.current = (async () => {
         try {
+          // A bucket pane: "storage:<accountId>"; Rust opens the bucket under the pane id.
+          if (hostId.startsWith("storage:")) {
+            await invoke("storage_connect", {
+              sessionId: paneId,
+              accountId: hostId.slice("storage:".length),
+            });
+            const provider = new StorageFileProvider(hostId, paneId);
+            providerRef.current = provider;
+            registerProvider(paneId, provider);
+            await useSftpStore.getState().ensureTransferListener();
+            clearError();
+            return provider;
+          }
           if (hostId.startsWith("direct_")) {
             await invoke("sftp_connect", {
               sessionId: paneId,
@@ -127,10 +141,13 @@ export function useFileOperations({
     providerRef.current = null;
     unregisterProvider(paneId);
     await stopEditsForSession(paneId, useSftpStore.getState().edits);
-    await invoke("sftp_disconnect", { sessionId: paneId }).catch(() => {});
+    await invoke(
+      hostId.startsWith("storage:") ? "storage_disconnect" : "sftp_disconnect",
+      { sessionId: paneId },
+    ).catch(() => {});
     actions.resetPane(paneId, "/");
     useSftpStore.getState().disconnectPane(paneId);
-  }, [paneId]);
+  }, [paneId, hostId]);
 
   const refreshFiles = useCallback(async () => {
     const provider = providerRef.current;
@@ -186,6 +203,12 @@ export function useFileOperations({
       const provider = await ensureProvider();
       const newPath =
         currentPath === "/" ? `/${trimmed}` : `${currentPath}/${trimmed}`;
+      if (
+        provider instanceof StorageFileProvider &&
+        file.type === "directory" &&
+        !(await confirmFolderRename(provider, renamingPath, file.name))
+      )
+        return;
       await provider.moveFile(renamingPath, newPath);
       toast.success(`Renamed to ${trimmed}`);
       clearError();

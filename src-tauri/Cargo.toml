@@ -50,7 +50,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 russh = { version = "0.62", default-features = false, features = ["ring", "rsa", "flate2"] }
 ssh-key = { version = "=0.7.0-rc.11", features = ["getrandom"] }
 russh-sftp = "2.4"
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["compat"] }
 futures = "0.3"
 libc = "0.2"
 gethostname = "1.1"
@@ -64,6 +64,7 @@ log = "0.4"
 regex = "1"
 notify = "8"
 tauri-plugin-single-instance = "2"
+opendal = { version = "0.59", default-features = false, features = ["services-s3", "services-memory", "executors-tokio", "http-transport-reqwest-rustls-no-provider", "layers-retry", "layers-timeout"] }
 
 [features]
 default = ["custom-protocol"]
@@ -87,3 +88,4 @@ tokio = { version = "1.53.1", features = ["test-util"] }
 # Test-only: hand-build .ppk fixtures (no puttygen available).
 aes = "0.9"
 cbc = "0.2"
+opendal = { version = "0.59", default-features = false, features = ["services-fs", "executors-tokio"] }

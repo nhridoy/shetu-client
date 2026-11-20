@@ -5,10 +5,15 @@ import {
   XIcon,
 } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { useFolderCompare } from "@/hooks/sftp/useFolderCompare";
 import type { CompareEntry, CompareRow } from "@/lib/sftp/compareFolders";
-import { copyable, newerOnTarget } from "@/lib/sftp/folderCompare";
+import {
+  copyable,
+  newerOnTarget,
+  withBucketTimes,
+} from "@/lib/sftp/folderCompare";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
 
@@ -25,9 +30,13 @@ function paneLabel(paneId: string): string {
   const leaf = root ? findLeaf(root, paneId) : null;
   const path = useFileBrowserStore.getState().panes[paneId]?.currentPath ?? "";
   const name =
-    leaf?.type === "leaf" && leaf.connectionType === "host"
-      ? (leaf.hostName ?? "Host")
-      : "Local";
+    leaf?.type !== "leaf"
+      ? "Local"
+      : leaf.connectionType === "host"
+        ? (leaf.hostName ?? "Host")
+        : leaf.connectionType === "storage"
+          ? (leaf.storageName ?? "Bucket")
+          : "Local";
   return `${name}: ${path}`;
 }
 
@@ -66,7 +75,7 @@ export default function CompareView({
   rightPaneId: string;
   onClose: () => void;
 }) {
-  const { rows, loading, error, rescan, cancel, copy, remove } =
+  const { rows, sides, loading, error, rescan, cancel, copy, remove } =
     useFolderCompare(leftPaneId, rightPaneId);
   const [showSame, setShowSame] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -77,8 +86,20 @@ export default function CompareView({
   );
   const picked = rows.filter((r) => selected.has(r.path));
   /** Copies, after confirming when that would replace newer files on the other side. */
-  const sync = (list: CompareRow[], direction: "right" | "left") => {
-    const newer = newerOnTarget(copyable(list, direction), direction).length;
+  const sync = async (list: CompareRow[], direction: "right" | "left") => {
+    const candidates = copyable(list, direction);
+    // A bucket's listed times are upload times: read the files' own first. If that fails,
+    // the newer-file check can't run, so nothing is copied.
+    let timed = candidates;
+    try {
+      if (sides) timed = await withBucketTimes(candidates, sides[0], sides[1]);
+    } catch (err) {
+      toast.error(
+        `Couldn't check file times: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    const newer = newerOnTarget(timed, direction).length;
     if (
       newer > 0 &&
       !window.confirm(
@@ -115,23 +136,23 @@ export default function CompareView({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => sync(picked, "right")}
+              onClick={() => void sync(picked, "right")}
             >
               Copy selected →
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => sync(picked, "left")}
+              onClick={() => void sync(picked, "left")}
             >
               ← Copy selected
             </Button>
           </>
         )}
-        <Button size="sm" onClick={() => sync(rows, "right")}>
+        <Button size="sm" onClick={() => void sync(rows, "right")}>
           Sync →
         </Button>
-        <Button size="sm" onClick={() => sync(rows, "left")}>
+        <Button size="sm" onClick={() => void sync(rows, "left")}>
           ← Sync
         </Button>
         <Button
@@ -195,7 +216,7 @@ export default function CompareView({
               {right && (
                 <IconButton
                   label="Copy to right"
-                  onClick={() => sync([row], "right")}
+                  onClick={() => void sync([row], "right")}
                 >
                   <ArrowRightIcon className="h-3 w-3" />
                 </IconButton>
@@ -203,7 +224,7 @@ export default function CompareView({
               {left && (
                 <IconButton
                   label="Copy to left"
-                  onClick={() => sync([row], "left")}
+                  onClick={() => void sync([row], "left")}
                 >
                   <ArrowLeftIcon className="h-3 w-3" />
                 </IconButton>

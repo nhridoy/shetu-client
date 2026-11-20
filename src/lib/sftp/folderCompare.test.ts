@@ -16,10 +16,12 @@ import {
   type CompareSide,
   copyable,
   copyRows,
+  deleteEntry,
   listSide,
   loadComparison,
   newerOnTarget,
   TOO_MANY,
+  withBucketTimes,
 } from "./folderCompare";
 
 const provider = (over: Partial<FileProvider> = {}) =>
@@ -204,5 +206,120 @@ describe("folderCompare", () => {
     await copyRows([row("empty", "onlyLeft", true)], "right", left, right);
     expect(right.provider.mkdirAll).toHaveBeenCalledWith(["/r/empty"]);
     expect(mocks.transferFiles).not.toHaveBeenCalled();
+  });
+
+  it("reads a bucket target's saved times before the newer-file check", async () => {
+    const statTimes = vi.fn(async () => ({ size: 2, mtime: 100 }));
+    const target: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/r",
+    };
+    // Listed bucket time is the upload time (newer); the saved one matches the source.
+    const rows = [
+      {
+        path: "a.txt",
+        status: "differs" as const,
+        isDir: false,
+        left: entry("a.txt", 1, 100),
+        right: entry("a.txt", 2, 5_000),
+      },
+    ];
+    expect(newerOnTarget(rows, "right")).toHaveLength(1);
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const timed = await withBucketTimes(rows, local, target);
+    expect(statTimes).toHaveBeenCalledWith("/r/a.txt");
+    expect(newerOnTarget(timed, "right")).toHaveLength(0);
+  });
+
+  it("leaves other targets' times alone", async () => {
+    const rows = [row("a.txt", "differs")];
+    const side: CompareSide = {
+      kind: "remote",
+      provider: provider(),
+      root: "/r",
+    };
+    expect(await withBucketTimes(rows, side, side)).toBe(rows);
+  });
+
+  it("reads a bucket source's saved times too, so a newer local file still asks", async () => {
+    // The bucket object was uploaded later (listed 5000) from a file last changed at 100;
+    // the local copy was changed at 300, after it.
+    const statTimes = vi.fn(async () => ({ size: 2, mtime: 100 }));
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/b",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const rows = [
+      {
+        path: "a.txt",
+        status: "differs" as const,
+        isDir: false,
+        left: entry("a.txt", 2, 5_000),
+        right: entry("a.txt", 1, 300),
+      },
+    ];
+    expect(newerOnTarget(rows, "right")).toHaveLength(0);
+    const timed = await withBucketTimes(rows, bucket, local);
+    expect(statTimes).toHaveBeenCalledWith("/b/a.txt");
+    expect(newerOnTarget(timed, "right")).toHaveLength(1);
+  });
+
+  it("joins bucket keys with / even when a name holds a backslash", async () => {
+    const statTimes = vi.fn(async () => null);
+    const removeFile = vi.fn(async () => {});
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes, removeFile } as never),
+      root: "/r",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    await withBucketTimes([row("a\\b.txt", "differs")], local, bucket);
+    expect(statTimes).toHaveBeenCalledWith("/r/a\\b.txt");
+    await deleteEntry(bucket, "a\\b.txt");
+    expect(removeFile).toHaveBeenCalledWith("/r/a\\b.txt");
+  });
+
+  it("asks a bucket for a few times at once, not all", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const statTimes = vi.fn(async () => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return null;
+    });
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/r",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const rows = Array.from({ length: 40 }, (_, i) =>
+      row(`f${i}.txt`, "differs"),
+    );
+    const out = await withBucketTimes(rows, local, bucket);
+    expect(statTimes).toHaveBeenCalledTimes(40);
+    expect(most).toBeLessThanOrEqual(8);
+    expect(out.map((r) => r.path)).toEqual(rows.map((r) => r.path));
   });
 });

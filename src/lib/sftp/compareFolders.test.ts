@@ -116,4 +116,17 @@ describe("compareFolders", () => {
       { path: "a/b.txt", isDir: false, size: 5, mtime: 1_700_000_000 },
     ]);
   });
+
+  it("size-only: same size with different times is the same", () => {
+    const l = [{ path: "a.txt", isDir: false, size: 5, mtime: 100 }];
+    const r = [{ path: "a.txt", isDir: false, size: 5, mtime: 9_999 }];
+    expect(compareFolders(l, r, { sizeOnly: true })[0].status).toBe("same");
+    expect(compareFolders(l, r)[0].status).toBe("differs");
+  });
+
+  it("size-only: a different size still differs", () => {
+    const l = [{ path: "a.txt", isDir: false, size: 5, mtime: 100 }];
+    const r = [{ path: "a.txt", isDir: false, size: 6, mtime: 100 }];
+    expect(compareFolders(l, r, { sizeOnly: true })[0].status).toBe("differs");
+  });
 });

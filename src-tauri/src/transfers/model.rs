@@ -16,12 +16,23 @@ pub struct HostRef {
     pub username: String,
 }
 
+/// A saved S3 account and the bucket a transfer end is in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageRef {
+    pub account_id: String,
+    pub bucket: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub path: String,
-    /// None = this computer.
+    /// None (with no `storage`) = this computer.
     pub host: Option<HostRef>,
+    /// A bucket end. Older saved jobs have none.
+    #[serde(default)]
+    pub storage: Option<StorageRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +194,12 @@ pub fn free_name(dest: &str, exists: impl Fn(&str) -> bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_without_storage_field_still_parses() {
+        let e: Endpoint = serde_json::from_str(r#"{"path":"/a","host":null}"#).unwrap();
+        assert_eq!(e.storage, None);
+    }
     use russh_sftp::client::error::Error as SftpError;
     use russh_sftp::protocol::{Status, StatusCode};
 

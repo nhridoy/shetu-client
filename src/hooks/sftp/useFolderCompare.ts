@@ -10,6 +10,7 @@ import {
   loadComparison,
 } from "@/lib/sftp/folderCompare";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
+import { StorageFileProvider } from "@/lib/sftp/storageFs";
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
 import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
 
@@ -19,6 +20,17 @@ export function sideOf(paneId: string): CompareSide | null {
   const leaf = root ? findLeaf(root, paneId) : null;
   const path = useFileBrowserStore.getState().panes[paneId]?.currentPath;
   if (leaf?.type !== "leaf" || !path) return null;
+  if (leaf.connectionType === "storage") {
+    // A bucket pane's session id is its pane id too.
+    return {
+      kind: "storage",
+      provider: new StorageFileProvider(
+        `storage:${leaf.storageAccountId ?? ""}`,
+        paneId,
+      ),
+      root: path,
+    };
+  }
   if (leaf.connectionType === "local") {
     return {
       kind: "local",
@@ -34,13 +46,36 @@ export function sideOf(paneId: string): CompareSide | null {
   };
 }
 
+/** What a pane is connected to; a change means the rows no longer describe it. */
+function connectionOf(paneId: string): string {
+  const root = useSftpStore.getState().root;
+  const leaf = root ? findLeaf(root, paneId) : null;
+  if (leaf?.type !== "leaf") return "";
+  return [
+    leaf.connectionType,
+    leaf.hostId,
+    leaf.storageAccountId,
+    leaf.localPath,
+  ].join("|");
+}
+
 export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
-  // The rows and the folders they came from, set together: every action uses the folders of
-  // the rows it was rendered with.
+  // A pane that reconnects elsewhere (another host or bucket) is listed again, so no row or
+  // action can apply one connection's paths to another.
+  const connections = useSftpStore(
+    () => `${connectionOf(leftPaneId)}#${connectionOf(rightPaneId)}`,
+  );
+  // The rows, the folders they came from and the connections they were listed on, set
+  // together: every action uses the folders of the rows it was rendered with.
   const [shown, setShown] = useState<{
     rows: CompareRow[];
     sides: [CompareSide, CompareSide] | null;
-  }>({ rows: [], sides: null });
+    connections: string;
+  }>({ rows: [], sides: null, connections: "" });
+  const current = useCallback(
+    () => `${connectionOf(leftPaneId)}#${connectionOf(rightPaneId)}`,
+    [leftPaneId, rightPaneId],
+  );
   const { rows, sides } = shown;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,21 +89,36 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
       return;
     }
     const mine = ++generation.current;
+    const listedOn = current();
+    // Rows from another connection go at once, not when this scan finishes.
+    setShown((s) =>
+      s.connections === listedOn
+        ? s
+        : { rows: [], sides: null, connections: listedOn },
+    );
     setLoading(true);
     setError(null);
     try {
       const next = await loadComparison(left, right);
       if (mine === generation.current)
-        setShown({ rows: next, sides: [left, right] });
+        setShown({ rows: next, sides: [left, right], connections: listedOn });
     } catch (e) {
       if (mine === generation.current) {
-        setShown({ rows: [], sides: null });
+        setShown({ rows: [], sides: null, connections: listedOn });
         setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [leftPaneId, rightPaneId]);
+  }, [leftPaneId, rightPaneId, current]);
+
+  /** The rows' connections are still the panes' own; an action from before a reconnect stops
+   * here instead of applying one connection's paths to another. */
+  const stillListed = useCallback(() => {
+    if (current() === shown.connections) return true;
+    toast.warning("A pane connected somewhere else; comparing again");
+    return false;
+  }, [current, shown.connections]);
 
   /** Drops the scan in flight: its result is ignored. */
   const cancel = useCallback(() => {
@@ -78,9 +128,15 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
 
   const copy = useCallback(
     async (picked: CompareRow[], direction: Direction) => {
-      if (!sides) return;
+      if (!sides || !stillListed()) return;
       const [left, right] = sides;
-      const results = await copyRows(picked, direction, left, right);
+      const results = await copyRows(
+        picked,
+        direction,
+        left,
+        right,
+        () => current() === shown.connections,
+      );
       const failed = results.filter((r) => r.error).length;
       const waiting = results.filter((r) => r.action === "waiting").length;
       const copied = results.length - failed - waiting;
@@ -89,23 +145,24 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
       else if (copied > 0) toast.success(`Copied ${copied} files`);
       await rescan();
     },
-    [rescan, sides],
+    [rescan, sides, stillListed, current, shown.connections],
   );
 
   const remove = useCallback(
     async (row: CompareRow) => {
-      if (!sides) return;
+      if (!sides || !stillListed()) return;
       const [left, right] = sides;
       const side = row.status === "onlyLeft" ? left : right;
       await deleteEntry(side, row.path);
       await rescan();
     },
-    [rescan, sides],
+    [rescan, sides, stillListed],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a connection change rescans
   useEffect(() => {
     void rescan();
-  }, [rescan]);
+  }, [rescan, connections]);
 
-  return { rows, loading, error, rescan, cancel, copy, remove };
+  return { rows, sides, loading, error, rescan, cancel, copy, remove };
 }

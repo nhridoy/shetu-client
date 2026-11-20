@@ -94,4 +94,58 @@ describe("useFolderCompare", () => {
     );
     act(() => root.unmount());
   });
+
+  it("a bucket pane is a storage side", async () => {
+    const { sideOf } = await import("./useFolderCompare");
+    useSftpStore.setState({
+      root: {
+        type: "leaf",
+        id: "B",
+        connectionType: "storage",
+        storageAccountId: "acc",
+        size: 100,
+      } as never,
+    });
+    setPath("B", "/photos");
+    expect(sideOf("B")).toMatchObject({ kind: "storage", root: "/photos" });
+  });
+
+  it("drops the rows and refuses old actions once a pane reconnects elsewhere", async () => {
+    setPath("L", "/a");
+    setPath("R", "/right");
+    const row = { path: "z.txt", status: "onlyLeft", isDir: false } as const;
+    mocks.loadComparison.mockResolvedValueOnce([row]);
+    mocks.deleteEntry.mockClear();
+    const root = createRoot(
+      document.body.appendChild(document.createElement("div")),
+    );
+    await act(async () => root.render(<Probe />));
+    const old = api;
+    expect(old?.rows).toEqual([row]);
+    // L reconnects to a bucket; its rescan is still loading.
+    mocks.loadComparison.mockReturnValue(new Promise(() => {}));
+    await act(async () =>
+      useSftpStore.setState({
+        root: {
+          type: "split",
+          id: "s",
+          direction: "horizontal",
+          children: [
+            {
+              type: "leaf",
+              id: "L",
+              connectionType: "storage",
+              storageAccountId: "b2",
+              size: 50,
+            },
+            { type: "leaf", id: "R", connectionType: "local", size: 50 },
+          ],
+        } as never,
+      }),
+    );
+    expect(api?.rows).toEqual([]);
+    await act(async () => void (await old?.remove(row)));
+    expect(mocks.deleteEntry).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
 });

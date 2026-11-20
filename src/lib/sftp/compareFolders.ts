@@ -26,8 +26,13 @@ export interface CompareRow {
 /** Modified times this close count as equal (SFTP keeps whole seconds; filesystems round). */
 const TIME_TOLERANCE_S = 2;
 
-function sameFile(a: CompareEntry, b: CompareEntry): boolean {
-  return a.size === b.size && Math.abs(a.mtime - b.mtime) <= TIME_TOLERANCE_S;
+function sameFile(
+  a: CompareEntry,
+  b: CompareEntry,
+  sizeOnly: boolean,
+): boolean {
+  if (a.size !== b.size) return false;
+  return sizeOnly || Math.abs(a.mtime - b.mtime) <= TIME_TOLERANCE_S;
 }
 
 /**
@@ -38,6 +43,8 @@ function sameFile(a: CompareEntry, b: CompareEntry): boolean {
 export function compareFolders(
   left: CompareEntry[],
   right: CompareEntry[],
+  /** A bucket side lists upload times, not the files' own: compare by size only. */
+  { sizeOnly = false }: { sizeOnly?: boolean } = {},
 ): CompareRow[] {
   const byPath = (entries: CompareEntry[]) =>
     new Map(entries.map((e) => [e.path, e]));
@@ -52,7 +59,11 @@ export function compareFolders(
     if (a && b) {
       if (a.isDir && b.isDir) continue;
       const status: CompareStatus =
-        a.isDir !== b.isDir ? "conflict" : sameFile(a, b) ? "same" : "differs";
+        a.isDir !== b.isDir
+          ? "conflict"
+          : sameFile(a, b, sizeOnly)
+            ? "same"
+            : "differs";
       rows.push({ path, status, isDir: a.isDir && b.isDir, left: a, right: b });
     } else if (a) {
       if (a.isDir && hasChildren(left, path)) continue;

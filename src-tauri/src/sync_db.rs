@@ -50,7 +50,13 @@ fn expected_fields(table: Table) -> &'static [&'static str] {
         Table::Hosts => &["os", "auth_type", "tags", "color", "group_id", "key_id"],
         Table::Keys => &["description", "key_type", "fingerprint", "public_key"],
         Table::Snippets => &["description", "tags"],
-        Table::Identities | Table::Workspaces | Table::Presets | Table::SessionHistory | Table::SessionOutputChunks | Table::SessionPreferences => &[],
+        Table::Identities
+        | Table::StorageAccounts
+        | Table::Workspaces
+        | Table::Presets
+        | Table::SessionHistory
+        | Table::SessionOutputChunks
+        | Table::SessionPreferences => &[],
         Table::PortForwards => &["host_id", "mode"],
     }
 }
@@ -311,19 +317,17 @@ pub fn pending_batch(
     let mut stmt = conn.prepare("SELECT o.table_name, o.record_id, o.operation_id FROM outbox o
         WHERE o.vault_id = ?1
           AND NOT EXISTS (SELECT 1 FROM sync_cancelled_vaults c WHERE c.vault_id = o.vault_id)
-          AND NOT (?3 AND o.table_name = 'identities')
           AND (
             o.table_name <> 'vaults'
             OR EXISTS (SELECT 1 FROM vaults v WHERE v.id = o.record_id AND v.deleted_at IS NULL)
-            OR NOT EXISTS (SELECT 1 FROM outbox child WHERE child.vault_id = o.vault_id AND child.table_name <> 'vaults'
-                           AND NOT (?3 AND child.table_name = 'identities'))
+            OR NOT EXISTS (SELECT 1 FROM outbox child WHERE child.vault_id = o.vault_id AND child.table_name <> 'vaults')
         )
         ORDER BY CASE WHEN o.table_name = 'vaults' AND EXISTS (SELECT 1 FROM vaults v WHERE v.id = o.record_id AND v.deleted_at IS NULL) THEN -1
                       WHEN o.table_name = 'vaults' THEN 1 ELSE 0 END,
                  o.queued_at, o.table_name, o.record_id LIMIT ?2")
         .map_err(|e| e.to_string())?;
     let entries = stmt
-        .query_map(params![vault_id, limit.min(100) as i64, lacks_identities(db)], |r| {
+        .query_map(params![vault_id, limit.min(100) as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -460,17 +464,11 @@ pub fn list_revoked_pending_edits(db: &LocalDb) -> Result<Vec<RevokedVaultEdits>
     Ok(result)
 }
 
-/// Set after a server rejected the identities table; cleared on restart so an upgraded server is retried.
-fn lacks_identities(db: &LocalDb) -> bool {
-    db.server_lacks_identities.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn pending_count(db: &LocalDb, vault_id: &str) -> Result<usize, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT COUNT(*) FROM outbox o WHERE o.vault_id = ?1 AND NOT EXISTS (SELECT 1 FROM sync_cancelled_vaults c WHERE c.vault_id = o.vault_id)
-           AND NOT (?2 AND o.table_name = 'identities')",
-        params![vault_id, lacks_identities(db)],
+        "SELECT COUNT(*) FROM outbox o WHERE o.vault_id = ?1 AND NOT EXISTS (SELECT 1 FROM sync_cancelled_vaults c WHERE c.vault_id = o.vault_id)",
+        params![vault_id],
         |r| r.get::<_, i64>(0),
     )
     .map(|n| n as usize)
@@ -672,6 +670,7 @@ pub fn apply_pull_page_with_rotation(
             Table::Keys,
             Table::Snippets,
             Table::Identities,
+            Table::StorageAccounts,
             Table::Workspaces,
             Table::Presets,
             Table::SessionHistory,
@@ -1163,39 +1162,6 @@ mod vault_delete_tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn identities_leave_the_queue_once_the_server_lacks_the_table() {
-        let db = super::super::open(":memory:").unwrap();
-        let vault = Uuid::new_v4().to_string();
-        let device = Uuid::new_v4().to_string();
-        let vault_row = SyncRow {
-            id: vault.clone(),
-            owner_id: Some(Uuid::new_v4().to_string()),
-            name: Some("Personal".into()),
-            kind: Some("personal".into()),
-            data: "{}".into(),
-            ..Default::default()
-        };
-        super::super::local_mutate(&db, Table::Vaults, &vault_row, &device).unwrap();
-        let vault_create = pending_batch(&db, &vault, 10).unwrap()[0].clone();
-        ack_push_results(&db, &vault, &[PushResult { operation_id: vault_create.operation_id, fate: "accepted".into(), canonical_record: vault_create.record, cursor: 1 }]).unwrap();
-        let identity = SyncRow { id: Uuid::new_v4().to_string(), vault_id: vault.clone(), name: Some("i".into()), data: seal("identities"), ..Default::default() };
-        super::super::local_mutate(&db, Table::Identities, &identity, &device).unwrap();
-        super::super::local_mutate(&db, Table::Hosts, &SyncRow { id: Uuid::new_v4().to_string(), vault_id: vault.clone(), name: Some("h".into()), data: seal("hosts"), ..Default::default() }, &device).unwrap();
-        assert_eq!(pending_count(&db, &vault).unwrap(), 2);
-        db.server_lacks_identities.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(pending_count(&db, &vault).unwrap(), 1);
-        let batch = pending_batch(&db, &vault, 10).unwrap();
-        assert_eq!(batch.iter().map(|o| o.table.as_str()).collect::<Vec<_>>(), ["hosts"]);
-        // A deleted vault no longer waits on identity tombstones the server can't take.
-        let host_op = batch[0].clone();
-        ack_push_results(&db, &vault, &[PushResult { operation_id: host_op.operation_id, fate: "accepted".into(), canonical_record: host_op.record, cursor: 2 }]).unwrap();
-        super::super::tombstone_vault_with_descendants(&db, &vault, &device).unwrap();
-        let tables: Vec<_> = pending_batch(&db, &vault, 10).unwrap().into_iter().map(|o| o.table).collect();
-        assert!(tables.contains(&"vaults".to_string()) || tables.contains(&"hosts".to_string()), "{tables:?}");
-        assert!(!tables.contains(&"identities".to_string()));
     }
 
     #[test]

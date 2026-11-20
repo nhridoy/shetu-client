@@ -258,12 +258,12 @@ describe("IdentityList", () => {
 });
 
 describe("KeysPage", () => {
-  it("has Keys and Identities tabs", async () => {
+  it("has Keys, Identities and Storage tabs", async () => {
     await render(<KeysPage />);
     const tabs = [...document.querySelectorAll('[role="tab"]')].map(
       (t) => t.textContent,
     );
-    expect(tabs).toEqual(["Keys", "Identities"]);
+    expect(tabs).toEqual(["Keys", "Identities", "Storage"]);
     await act(async () =>
       (document.querySelectorAll('[role="tab"]')[1] as HTMLElement).click(),
     );

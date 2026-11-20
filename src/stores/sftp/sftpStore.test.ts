@@ -179,3 +179,23 @@ describe("sftpStore transfers mirror", () => {
     ]);
   });
 });
+
+describe("sftpStore bucket panes", () => {
+  it("connects a pane to a bucket and clears it on disconnect", async () => {
+    const { useSftpStore, findLeaf } = await import("./sftpStore");
+    useSftpStore.setState({
+      root: { type: "leaf", id: "p1", connectionType: null, size: 100 },
+    });
+    useSftpStore.getState().connectStorage("p1", "acc-1", "Backups");
+    const leaf = findLeaf(useSftpStore.getState().root as never, "p1");
+    expect(leaf).toMatchObject({
+      connectionType: "storage",
+      storageAccountId: "acc-1",
+      storageName: "Backups",
+    });
+    useSftpStore.getState().disconnectPane("p1");
+    const after = findLeaf(useSftpStore.getState().root as never, "p1");
+    expect(after).toMatchObject({ connectionType: null });
+    expect(after).not.toHaveProperty("storageAccountId", "acc-1");
+  });
+});
