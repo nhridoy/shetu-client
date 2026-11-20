@@ -85,6 +85,7 @@ pub struct DavUpload {
     /// The declared `Content-Length`, and how much has been sent against it.
     len: Option<u64>,
     sent: u64,
+    held: Option<Vec<u8>>,
     /// How long the server may stop reading (or answering) before the upload fails.
     stall: std::time::Duration,
 }
@@ -139,6 +140,7 @@ impl DavTarget {
             stopped,
             len: opts.len,
             sent: 0,
+            held: None,
             stall,
         }
     }
@@ -161,10 +163,13 @@ impl DavUpload {
         }
     }
 
-    pub async fn send(&mut self, chunk: Vec<u8>) -> Result<(), crate::transfers::model::JobError> {
-        let Some(tx) = self.tx.as_ref() else {
+    pub async fn send(
+        &mut self,
+        mut chunk: Vec<u8>,
+    ) -> Result<(), crate::transfers::model::JobError> {
+        if self.tx.is_none() {
             return Err(crate::transfers::model::JobError::Stopped);
-        };
+        }
         self.sent += chunk.len() as u64;
         if self.len.is_some_and(|len| self.sent > len) {
             self.abort();
@@ -172,6 +177,21 @@ impl DavUpload {
                 RESIZED.into(),
             ));
         }
+        // The last byte waits for `finish`: a file that grows past its length then never
+        // reaches the server whole (with all its bytes, the server would keep the cut file).
+        if self.len == Some(self.sent) && !chunk.is_empty() {
+            self.held = chunk.pop().map(|b| vec![b]);
+            if chunk.is_empty() {
+                return Ok(());
+            }
+        }
+        self.push(chunk).await
+    }
+
+    async fn push(&mut self, chunk: Vec<u8>) -> Result<(), crate::transfers::model::JobError> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Err(crate::transfers::model::JobError::Stopped);
+        };
         let Ok(sent) = tokio::time::timeout(self.stall, tx.send(Ok(chunk))).await else {
             self.abort();
             return Err(crate::transfers::model::JobError::Connection(
@@ -198,6 +218,9 @@ impl DavUpload {
             return Err(crate::transfers::model::JobError::Connection(
                 RESIZED.into(),
             ));
+        }
+        if let Some(last) = self.held.take() {
+            self.push(last).await?;
         }
         self.tx = None;
         let stall = self.stall;
@@ -250,13 +273,30 @@ pub async fn check_folder(t: &DavTarget) -> Result<(), String> {
         .await
         .map_err(|e| format!("Couldn't connect: {e}"))?;
     match res.status().as_u16() {
-        200 | 207 => Ok(()),
+        // A file answers too: only a collection is a folder.
+        200 | 207 => {
+            let body = res
+                .text()
+                .await
+                .map_err(|e| format!("Couldn't connect: {e}"))?;
+            if is_collection(&body) {
+                Ok(())
+            } else {
+                Err(format!("{} is a file, not a folder", t.base))
+            }
+        }
         404 => Err(format!("{} doesn't exist on the server", t.base)),
         code => Err(format!(
             "Couldn't open {}: the server answered {code}",
             t.base
         )),
     }
+}
+
+/// Whether a `PROPFIND` answer's resource type is a collection, under any namespace prefix.
+fn is_collection(xml: &str) -> bool {
+    let xml = xml.to_ascii_lowercase();
+    xml.contains("<collection") || xml.contains(":collection")
 }
 
 /// Moves a file or a whole folder in one WebDAV `MOVE`, never over an existing one.
@@ -329,6 +369,14 @@ pub(crate) mod tests {
     /// A plain-HTTP server that answers every request with `status` and records it, reading
     /// `Content-Length` and chunked bodies to the end.
     pub(crate) async fn dav_server(status: u16) -> (u16, Arc<Mutex<Vec<Seen>>>) {
+        dav_server_body(status, "").await
+    }
+
+    /// Answers every request with `status` and `body`.
+    pub(crate) async fn dav_server_body(
+        status: u16,
+        body: &'static str,
+    ) -> (u16, Arc<Mutex<Vec<Seen>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -410,7 +458,8 @@ pub(crate) mod tests {
                         complete,
                     });
                     let reply = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
                     );
                     let _ = tcp.write_all(reply.as_bytes()).await;
                 });
@@ -732,5 +781,56 @@ pub(crate) mod tests {
         );
         up.send(vec![1u8; 10]).await.unwrap();
         assert!(up.finish().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_file_that_grows_after_its_length_never_lands() {
+        let (port, seen) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/grows.log",
+            crate::transfers::io::WriteOpts {
+                len: Some(10),
+                ..Default::default()
+            },
+        );
+        up.send(vec![1u8; 10]).await.unwrap();
+        // Time for a server to take the whole declared body, before the source shows more.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(up.send(vec![1u8; 1]).await.is_err());
+        drop(up);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !seen.lock().unwrap().iter().any(|s| s.complete),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exact_length_upload_still_lands() {
+        let (port, seen) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/exact.bin",
+            crate::transfers::io::WriteOpts {
+                len: Some(10),
+                ..Default::default()
+            },
+        );
+        up.send(vec![1u8; 4]).await.unwrap();
+        up.send(vec![2u8; 6]).await.unwrap();
+        up.finish().await.unwrap();
+        let got = seen.lock().unwrap()[0].clone();
+        assert!(got.complete && got.body_len == 10, "{got:?}");
+    }
+
+    const FILE_PROPS: &str = r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href><d:propstat><d:prop><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+    const FOLDER_PROPS: &str = r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>/dav/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+    #[tokio::test]
+    async fn the_account_url_must_be_a_folder() {
+        let (port, _) = dav_server_body(207, FILE_PROPS).await;
+        assert!(check_folder(&target(port)).await.is_err());
+        let (port, _) = dav_server_body(207, FOLDER_PROPS).await;
+        assert!(check_folder(&target(port)).await.is_ok());
     }
 }

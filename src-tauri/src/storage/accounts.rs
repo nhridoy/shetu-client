@@ -421,7 +421,10 @@ pub fn save(
         vault_id: vault_id.to_string(),
         ..Default::default()
     });
-    row.name = Some(name.to_string());
+    // An empty name (a pin-only save) keeps the stored one.
+    if !name.trim().is_empty() || row.name.is_none() {
+        row.name = Some(name.to_string());
+    }
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
     row.data = crate::team_keys::encrypt_row_secret(
         db,
@@ -869,5 +872,22 @@ mod tests {
                 d.provider
             );
         }
+    }
+
+    #[test]
+    fn an_empty_name_keeps_the_stored_one() {
+        let (db, crypto) = fixture();
+        let row = save(&db, &crypto, None, "v1", "Backups", &new_account(), DEVICE).unwrap();
+        let again = save(
+            &db,
+            &crypto,
+            Some(&row.id),
+            "v1",
+            "",
+            &json!({"trustedCertSha256": "ab"}),
+            DEVICE,
+        )
+        .unwrap();
+        assert_eq!(again.name.as_deref(), Some("Backups"));
     }
 }

@@ -26,7 +26,7 @@ import {
   fileBrowserActions,
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
-import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
+import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
@@ -106,14 +106,11 @@ export function useFileOperations({
                 throw new Error("The server's certificate isn't trusted");
               if (disconnectsRef.current !== started)
                 throw new ConnectCancelled("The pane was closed");
-              // Save rewrites the name: keep the account's current one.
-              const root = useSftpStore.getState().root;
-              const leaf = root ? findLeaf(root, paneId) : null;
+              // An empty name keeps the stored one (the pane's may be stale).
               const name =
                 useStorageAccountStore
                   .getState()
-                  .accounts?.find((a) => a.id === accountId)?.name ??
-                (leaf?.type === "leaf" ? (leaf.storageName ?? "") : "");
+                  .accounts?.find((a) => a.id === accountId)?.name ?? "";
               const saved = await accounts.save(accountId, name, {
                 trustedCertSha256: prompt.sha256,
               });
@@ -122,7 +119,16 @@ export function useFileOperations({
                   useStorageAccountStore.getState().error ??
                     "Couldn't save the certificate",
                 );
+              if (disconnectsRef.current !== started)
+                throw new ConnectCancelled("The pane was closed");
               kind = await connect();
+            }
+            // Closed while connecting: drop the session the connect just opened.
+            if (disconnectsRef.current !== started) {
+              await invoke("storage_disconnect", { sessionId: paneId }).catch(
+                () => {},
+              );
+              throw new ConnectCancelled("The pane was closed");
             }
             const provider = new StorageFileProvider(hostId, paneId);
             provider.kind = kind === "webdav" ? "webdav" : "s3";

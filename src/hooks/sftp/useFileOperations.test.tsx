@@ -100,7 +100,8 @@ it("trusting a certificate on connect saves the pin and retries", async () => {
   await act(async () => {
     await ops.ensureProvider();
   });
-  expect(save).toHaveBeenCalledWith("a1", "NAS", { trustedCertSha256: sha });
+  // Not in the loaded list: an empty name, which Rust reads as "keep the stored one".
+  expect(save).toHaveBeenCalledWith("a1", "", { trustedCertSha256: sha });
   expect(connects).toBe(2);
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
@@ -194,6 +195,73 @@ it("a pane disconnected during the certificate question doesn't save or reconnec
   });
   expect(save).not.toHaveBeenCalled();
   expect(connects).toBe(1);
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("a disconnect while the pin is saving stops before the retry", async () => {
+  let releaseSave!: (ok: boolean) => void;
+  const save = vi.fn(() => new Promise<boolean>((r) => (releaseSave = r)));
+  let connects = 0;
+  mocks.invoke.mockImplementation((async (cmd: string) => {
+    if (cmd === "storage_connect" && connects++ === 0) throw certQuestion;
+    return cmd === "storage_connect" ? "webdav" : undefined;
+  }) as never);
+  useStorageAccountStore.setState({ save, accounts: [] } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = ops.ensureProvider().catch((e) => e);
+  });
+  expect(save).toHaveBeenCalled();
+  await act(async () => {
+    await ops.disconnect();
+  });
+  await act(async () => {
+    releaseSave(true);
+    await pending;
+  });
+  expect(connects).toBe(1);
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("a disconnect during the retry closes the session it reopened", async () => {
+  let releaseRetry!: (kind: string) => void;
+  let connects = 0;
+  const calls: string[] = [];
+  mocks.invoke.mockImplementation(((cmd: string) => {
+    calls.push(cmd);
+    if (cmd !== "storage_connect") return Promise.resolve(undefined);
+    if (connects++ === 0) return Promise.reject(certQuestion);
+    return new Promise<string>((r) => (releaseRetry = r));
+  }) as never);
+  useStorageAccountStore.setState({
+    save: vi.fn(async () => true),
+    accounts: [],
+  } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = ops.ensureProvider().catch((e) => e);
+  });
+  expect(connects).toBe(2);
+  await act(async () => {
+    await ops.disconnect();
+  });
+  let result: unknown;
+  await act(async () => {
+    releaseRetry("webdav");
+    result = await pending;
+  });
+  expect(result).toBeInstanceOf(mocks.ConnectCancelled);
+  expect(calls.lastIndexOf("storage_disconnect")).toBeGreaterThan(
+    calls.lastIndexOf("storage_connect"),
+  );
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
 });
