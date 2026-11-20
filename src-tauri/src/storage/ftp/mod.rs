@@ -423,6 +423,11 @@ mod tests {
         w.write(b"new".to_vec()).await.unwrap();
         let cut = tokio::time::timeout(std::time::Duration::from_millis(250), w.close()).await;
         assert!(cut.is_err(), "the close should still be running");
+        assert!(
+            fake.names().iter().any(|n| n.contains(".shetu-old-")),
+            "the cut must come after the old file was moved aside: {:?}",
+            fake.names()
+        );
         (fake, w)
     }
 
@@ -463,7 +468,8 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_abort_still_recovers() {
         let (fake, mut w) = cut_replace(FakeOpts::default()).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(1), w.abort()).await;
+        let cut = tokio::time::timeout(std::time::Duration::from_millis(1), w.abort()).await;
+        assert!(cut.is_err(), "the abort should have been cut short");
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         target_kept(&fake);
     }
@@ -498,5 +504,52 @@ mod tests {
         }
         let listed = tokio::time::timeout(std::time::Duration::from_secs(5), op.list("/")).await;
         assert!(matches!(listed, Ok(Ok(_))), "{listed:?}");
+        // The server stored each upload; clean-up still deletes them on fresh connections.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(fake.names().is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_missing_file_is_fine_without_size() {
+        let fake = FakeFtp::start(FakeOpts {
+            no_size: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        plain(&fake).delete("nope.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_finds_the_backup_without_size() {
+        let (fake, mut w) = cut_replace(FakeOpts {
+            no_size: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        target_kept(&fake);
+    }
+
+    #[tokio::test]
+    async fn a_lost_move_reply_keeps_the_backup_for_recovery() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            vanish_after_rnto: Some(".shetu-old-".into()),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        let mut w = plain(&fake).writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        assert!(w.close().await.is_err());
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"old".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
     }
 }

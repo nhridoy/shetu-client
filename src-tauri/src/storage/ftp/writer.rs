@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use asyncband::pool::bounded;
 use bytes::Buf;
-use suppaftp::{FtpError, FtpResult, Status};
+use suppaftp::FtpError;
+
+use super::listing::exists;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
@@ -119,10 +121,16 @@ impl FtpWriter {
         let backup = temp_beside(&target, "old-");
         self.backup = Some(backup.clone());
         let conn = self.conn()?;
-        if conn.rename(&target, &backup).await.is_err() {
-            let _ = conn.rm(tmp).await;
-            self.backup = None;
-            return Err(format_ftp_error(first));
+        match conn.rename(&target, &backup).await {
+            Ok(()) => {}
+            // Refused: the old file is still at the target.
+            Err(FtpError::UnexpectedResponse(_)) => {
+                let _ = conn.rm(tmp).await;
+                self.backup = None;
+                return Err(format_ftp_error(first));
+            }
+            // No answer: the move may have happened, so recovery reconciles it.
+            Err(e) => return Err(format_ftp_error(e)),
         }
         if let Err(e) = conn.rename(tmp, &target).await {
             if conn.rename(&backup, &target).await.is_ok() {
@@ -182,22 +190,23 @@ async fn abandon(
     backup: Option<String>,
     publishing: bool,
 ) {
+    let mut conn = conn;
     if !publishing {
-        if let Some(mut conn) = conn {
-            if timeout(CLEANUP_LIMIT, cleanup(&mut conn, data, tmp))
-                .await
-                .is_err()
-            {
-                // Still mid-command: never back to the pool.
-                drop(conn.detach());
-            }
+        let Some(mut c) = conn.take() else {
+            return;
+        };
+        match timeout(CLEANUP_LIMIT, cleanup(&mut c, data, tmp.clone())).await {
+            Ok(()) => return,
+            // Still mid-command: never back to the pool. The server may have stored the temp
+            // file anyway, so delete it on fresh connections below.
+            Err(_) => drop(c.detach()),
         }
-        return;
+    } else {
+        if let Some(c) = conn.take() {
+            drop(c.detach());
+        }
+        drop(data);
     }
-    if let Some(conn) = conn {
-        drop(conn.detach());
-    }
-    drop(data);
     for attempt in 0..RECOVERY_TRIES {
         if attempt > 0 {
             tokio::time::sleep(RETRY_BASE * 2u32.pow(attempt - 1)).await;
@@ -205,7 +214,7 @@ async fn abandon(
         let Ok(mut conn) = core.ftp_connect(Operation::Write).await else {
             continue;
         };
-        let step = recover(&mut conn, &target, backup.as_deref(), tmp.as_deref());
+        let step = recover(&core, &mut conn, &target, backup.as_deref(), tmp.as_deref());
         match timeout(CLEANUP_LIMIT, step).await {
             Ok(Ok(())) => return,
             Ok(Err(_)) => {}
@@ -216,36 +225,32 @@ async fn abandon(
 }
 
 /// Puts the old file back if the target is missing (else drops the backup), and deletes the
-/// temp file. An error means the server couldn't be asked; the caller tries again.
+/// temp file. Presence comes from folder listings (not `SIZE`, which some servers lack or
+/// refuse). An error means the server couldn't be asked; the caller tries again.
 async fn recover(
+    core: &FtpCore,
     conn: &mut bounded::Object<Manager>,
     target: &str,
     backup: Option<&str>,
     tmp: Option<&str>,
-) -> FtpResult<()> {
+) -> Result<()> {
     if let Some(backup) = backup {
-        if exists(conn, backup).await? {
-            if exists(conn, target).await? {
-                conn.rm(backup).await?;
+        if exists(core, backup).await? {
+            if exists(core, target).await? {
+                conn.rm(backup).await.map_err(format_ftp_error)?;
             } else {
-                conn.rename(backup, target).await?;
+                conn.rename(backup, target)
+                    .await
+                    .map_err(format_ftp_error)?;
             }
         }
     }
     if let Some(tmp) = tmp {
-        if exists(conn, tmp).await? {
-            conn.rm(tmp).await?;
+        if exists(core, tmp).await? {
+            conn.rm(tmp).await.map_err(format_ftp_error)?;
         }
     }
     Ok(())
-}
-
-async fn exists(conn: &mut bounded::Object<Manager>, path: &str) -> FtpResult<bool> {
-    match conn.size(path).await {
-        Ok(_) => Ok(true),
-        Err(FtpError::UnexpectedResponse(r)) if r.status == Status::FileUnavailable => Ok(false),
-        Err(e) => Err(e),
-    }
 }
 
 /// Lets the server finish the cut transfer (so the temp file exists), then deletes it.

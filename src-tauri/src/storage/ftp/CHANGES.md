@@ -38,3 +38,7 @@ Every change Shetu made to these files is listed here.
 - Upload clean-up runs in its own task (cancelling an abort can't drop it), bounds each wait
   (30 s), detaches connections left mid-command, and retries a cut publish's recovery with
   backoff; a failed rollback keeps its backup for that recovery.
+- Presence checks (delete's 550 check, upload recovery) use the folder listing, not `SIZE`,
+  which some servers lack or refuse. A clean-up that times out still deletes the temp file on
+  fresh connections. An unanswered move-aside keeps the backup record for recovery. A download
+  cancelled while waiting for its final reply detaches its connection.

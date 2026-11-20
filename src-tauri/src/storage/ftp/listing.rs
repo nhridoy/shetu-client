@@ -122,6 +122,17 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// Whether `path` (OpenDAL's, relative to the root) is in its folder's listing. Works on
+/// servers without `SIZE`, and for folders; a missing parent folder means "no".
+pub async fn exists(core: &FtpCore, path: &str) -> Result<bool> {
+    let name = get_basename(path).trim_end_matches('/');
+    match list_dir(core, get_parent(path)).await {
+        Ok(entries) => Ok(entries.iter().any(|e| e.name == name)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -44,6 +44,8 @@ pub struct FtpReadStream {
     /// Shetu: the bytes asked for (`u64::MAX` = to the end) and read so far.
     want: u64,
     got: u64,
+    /// Waiting for the final reply: a cancel here leaves the connection mid-command.
+    finalizing: bool,
 }
 
 /// # Safety
@@ -78,6 +80,7 @@ impl FtpReadStream {
             buf: BytesMut::new(),
             want: size,
             got: 0,
+            finalizing: false,
         })
     }
 }
@@ -86,7 +89,7 @@ impl Drop for FtpReadStream {
     /// Shetu: a transfer that wasn't finalized leaves its connection mid-command; it must
     /// never go back to the pool.
     fn drop(&mut self) {
-        if self.data_stream.is_some() {
+        if self.data_stream.is_some() || self.finalizing {
             if let Some(conn) = self.ftp_stream.take() {
                 drop(conn.detach());
             }
@@ -106,9 +109,11 @@ impl oio::ReadStream for FtpReadStream {
         // that's the whole file (226) or an aborted transfer (426).
         if n == 0 && self.got < self.want {
             if let (Some(data), Some(conn)) = (self.data_stream.take(), self.ftp_stream.as_mut()) {
+                self.finalizing = true;
                 conn.finalize_retr_stream(data)
                     .await
                     .map_err(format_ftp_error)?;
+                self.finalizing = false;
             }
         }
         Ok(Buffer::from(self.buf.split_to(n).freeze()))

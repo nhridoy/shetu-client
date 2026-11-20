@@ -55,24 +55,13 @@ impl oio::OneShotDelete for FtpDeleter {
                 status: Status::FileUnavailable,
                 ..
             })) => {
-                let still_there = if path.ends_with('/') {
-                    ftp_stream.nlst(Some(&path)).await.map(|_| ())
-                } else {
-                    ftp_stream.size(&path).await.map(|_| ())
-                };
-                match still_there {
-                    Ok(()) => {
-                        return Err(Error::new(
-                            ErrorKind::PermissionDenied,
-                            "the server refused to delete it",
-                        )
-                        .with_context("path", &path))
-                    }
-                    Err(FtpError::UnexpectedResponse(Response {
-                        status: Status::FileUnavailable,
-                        ..
-                    })) => (),
-                    Err(e) => return Err(format_ftp_error(e)),
+                drop(ftp_stream);
+                if super::listing::exists(&self.core, &path).await? {
+                    return Err(Error::new(
+                        ErrorKind::PermissionDenied,
+                        "the server refused to delete it",
+                    )
+                    .with_context("path", &path));
                 }
             }
             Err(e) => {

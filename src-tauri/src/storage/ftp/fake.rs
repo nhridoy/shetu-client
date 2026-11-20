@@ -41,6 +41,10 @@ pub struct FakeOpts {
     pub fail_rnto: Option<(String, Arc<AtomicUsize>)>,
     /// Take a `STOR`'s data, then never answer.
     pub silent_after_stor: bool,
+    /// Answer `SIZE` with 502 (not implemented).
+    pub no_size: bool,
+    /// After doing an `RNTO` onto a path containing this, drop the connection unanswered.
+    pub vanish_after_rnto: Option<String>,
 }
 
 impl Default for FakeOpts {
@@ -57,6 +61,8 @@ impl Default for FakeOpts {
             retr_abort_after: None,
             fail_rnto: None,
             silent_after_stor: false,
+            no_size: false,
+            vanish_after_rnto: None,
         }
     }
 }
@@ -487,6 +493,7 @@ impl Session {
                     }
                 }
                 "SIZE" if self.opts.drop_on_size => return,
+                "SIZE" if self.opts.no_size => self.say("502 SIZE not implemented").await,
                 "SIZE" => match self.resolved(&join(&self.cwd, &arg)) {
                     Some(Node::File(b)) => self.say(&format!("213 {}", b.len())).await,
                     _ => self.say("550 Could not get file size").await,
@@ -530,12 +537,15 @@ impl Session {
                         continue;
                     }
                     if self.opts.silent_after_stor {
+                        // Stores the file, then never confirms; ends when the client hangs up.
                         self.say("150 Ok to send data").await;
                         if let Some(mut data) = self.data().await {
-                            let mut sink = Vec::new();
-                            let _ = data.read_to_end(&mut sink).await;
+                            let mut bytes = Vec::new();
+                            let _ = data.read_to_end(&mut bytes).await;
+                            self.fs.lock().unwrap().insert(path, Node::File(bytes));
                         }
-                        std::future::pending::<()>().await;
+                        while self.read_line().await.is_some() {}
+                        return;
                     }
                     if let Some(bytes) = self.receive_data().await {
                         let mut fs = self.fs.lock().unwrap();
@@ -637,6 +647,15 @@ impl Session {
                     };
                     if let Some(delay) = self.opts.rnto_delay {
                         tokio::time::sleep(delay).await;
+                    }
+                    if moved
+                        && self
+                            .opts
+                            .vanish_after_rnto
+                            .as_ref()
+                            .is_some_and(|m| to.contains(m.as_str()))
+                    {
+                        return;
                     }
                     if moved {
                         self.say("250 Rename successful").await
