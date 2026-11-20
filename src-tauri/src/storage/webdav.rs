@@ -81,6 +81,8 @@ type Chunk = Result<Vec<u8>, std::io::Error>;
 pub struct DavUpload {
     tx: Option<tokio::sync::mpsc::Sender<Chunk>>,
     reply: Option<tokio::task::JoinHandle<Result<u16, reqwest013::Error>>>,
+    /// An empty file's request, sent only once `finish` confirms the source is still empty.
+    deferred: Option<reqwest013::RequestBuilder>,
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The declared `Content-Length`, and how much has been sent against it.
     len: Option<u64>,
@@ -133,10 +135,16 @@ impl DavTarget {
         if let Some(len) = opts.len {
             req = req.header(reqwest013::header::CONTENT_LENGTH, len);
         }
-        let reply = tokio::spawn(async move { req.send().await.map(|r| r.status().as_u16()) });
+        // `Content-Length: 0` is complete on arrival: nothing to hold back, so wait for `finish`.
+        let (reply, deferred) = if opts.len == Some(0) {
+            (None, Some(req))
+        } else {
+            (Some(put(req)), None)
+        };
         DavUpload {
             tx: Some(tx),
-            reply: Some(reply),
+            reply,
+            deferred,
             stopped,
             len: opts.len,
             sent: 0,
@@ -144,6 +152,10 @@ impl DavTarget {
             stall,
         }
     }
+}
+
+fn put(req: reqwest013::RequestBuilder) -> tokio::task::JoinHandle<Result<u16, reqwest013::Error>> {
+    tokio::spawn(async move { req.send().await.map(|r| r.status().as_u16()) })
 }
 
 impl DavUpload {
@@ -223,6 +235,9 @@ impl DavUpload {
             self.push(last).await?;
         }
         self.tx = None;
+        if let Some(req) = self.deferred.take() {
+            self.reply = Some(put(req));
+        }
         let stall = self.stall;
         match tokio::time::timeout(stall, self.outcome()).await {
             Ok(done) => done,
@@ -294,9 +309,29 @@ pub async fn check_folder(t: &DavTarget) -> Result<(), String> {
 }
 
 /// Whether a `PROPFIND` answer's resource type is a collection, under any namespace prefix.
+/// Walks the tags (text can't hold a raw `<`), so only a `collection` element inside the first
+/// `resourcetype` counts. Depth 0 answers for the requested resource alone.
 fn is_collection(xml: &str) -> bool {
     let xml = xml.to_ascii_lowercase();
-    xml.contains("<collection") || xml.contains(":collection")
+    let mut inside = false;
+    for tag in xml.split('<').skip(1) {
+        let tag = tag.split('>').next().unwrap_or_default();
+        let closing = tag.starts_with('/');
+        let name = tag.trim_start_matches('/');
+        let name = name
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or_default();
+        let local = name.rsplit(':').next().unwrap_or_default();
+        match (local, inside) {
+            ("resourcetype", false) if !closing && !tag.ends_with('/') => inside = true,
+            ("resourcetype", false) if !closing => return false,
+            ("resourcetype", true) => return false,
+            ("collection", true) if !closing => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Moves a file or a whole folder in one WebDAV `MOVE`, never over an existing one.
@@ -832,5 +867,52 @@ pub(crate) mod tests {
         assert!(check_folder(&target(port)).await.is_err());
         let (port, _) = dav_server_body(207, FOLDER_PROPS).await;
         assert!(check_folder(&target(port)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_empty_file_that_grows_sends_nothing() {
+        let (port, seen) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/was-empty.log",
+            crate::transfers::io::WriteOpts {
+                len: Some(0),
+                ..Default::default()
+            },
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(up.send(vec![1u8; 1]).await.is_err());
+        drop(up);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_file_still_uploads() {
+        let (port, seen) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/empty.txt",
+            crate::transfers::io::WriteOpts {
+                len: Some(0),
+                ..Default::default()
+            },
+        );
+        up.finish().await.unwrap();
+        let got = seen.lock().unwrap()[0].clone();
+        assert!(got.line.starts_with("PUT /dav/empty.txt"), "{got:?}");
+        assert_eq!(got.header("content-length"), Some("0"));
+    }
+
+    #[test]
+    fn only_a_collection_resource_type_is_a_folder() {
+        assert!(!is_collection(FILE_PROPS));
+        assert!(is_collection(FOLDER_PROPS));
+        let named = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:displayname>notes:collection</d:displayname><d:resourcetype/></d:prop></d:propstat></d:response></d:multistatus>"#;
+        assert!(!is_collection(named));
+        let bare = r#"<multistatus xmlns="DAV:"><response><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response></multistatus>"#;
+        assert!(is_collection(bare));
     }
 }
