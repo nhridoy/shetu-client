@@ -112,25 +112,23 @@ pub async fn list_tree(
     Ok(out)
 }
 
-/// Lists one entry, to check the bucket can be reached and read. One request, however large
-/// the bucket.
-pub async fn check_access(op: &Operator) -> Result<(), String> {
+/// Lists one entry, to check the storage can be reached and read. One request, however large
+/// it is. Keeps OpenDAL's error, so a certificate failure can be told apart.
+pub async fn check_access_raw(op: &Operator) -> Result<(), opendal::Error> {
     use futures::TryStreamExt;
-    let mut lister = op
-        .lister_with("/")
+    op.lister_with("/")
         .limit(1)
-        .await
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))?;
-    lister
+        .await?
         .try_next()
         .await
         .map(|_| ())
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))
 }
 
 /// `(size, mtime)` of an object, `None` when it doesn't exist.
 pub async fn stat(op: &Operator, ui_path: &str) -> Result<Option<(u64, i64)>, String> {
     match op.stat(&to_key(ui_path, false)).await {
+        // A folder reads as absent: callers take None for "a folder" (WebDAV stats folders).
+        Ok(meta) if meta.is_dir() => Ok(None),
         Ok(meta) => Ok(Some((meta.content_length(), mtime_of(&meta)))),
         Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(err("stat", e)),
@@ -425,10 +423,18 @@ mod tests {
     #[tokio::test]
     async fn check_access_reads_one_entry() {
         let op = memory();
-        assert!(check_access(&op).await.is_ok());
+        assert!(check_access_raw(&op).await.is_ok());
         for i in 0..5 {
             put(&op, &format!("{i}.txt"), "x").await;
         }
-        assert!(check_access(&op).await.is_ok());
+        assert!(check_access_raw(&op).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stat_reports_a_folder_as_absent() {
+        // Callers read None as "a folder" (WebDAV stats folders too).
+        let op = folder();
+        op.create_dir("docs/").await.unwrap();
+        assert_eq!(stat(&op, "/docs").await.unwrap(), None);
     }
 }

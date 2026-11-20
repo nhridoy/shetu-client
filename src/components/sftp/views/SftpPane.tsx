@@ -223,7 +223,7 @@ export default function SftpPane({
                   }}
                 >
                   <CloudIcon className="w-3.5 h-3.5" />
-                  Connect Bucket
+                  Connect Storage
                 </Button>
               </div>
             </div>
@@ -260,7 +260,7 @@ export default function SftpPane({
       <Modal
         open={showBucketPicker}
         onClose={() => setShowBucketPicker(false)}
-        title="Connect Bucket"
+        title="Connect Storage"
         maxWidth="max-w-lg"
       >
         <StorageAccountPicker

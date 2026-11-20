@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 
-import { confirmFolderRename, StorageFileProvider } from "./storageFs";
+import {
+  confirmFolderRename,
+  needsRenameConfirm,
+  StorageFileProvider,
+} from "./storageFs";
 
 const entry = (name: string, isDir: boolean, size = 0) => ({
   name,
@@ -102,5 +106,17 @@ describe("StorageFileProvider", () => {
     await p.mkdir("/new");
     for (const [, args] of h.invoke.mock.calls)
       expect(args).toMatchObject({ sessionId: "pane-7", accountId: "a1" });
+  });
+
+  it("asks before renaming only for buckets", () => {
+    const dir = { type: "directory" } as never;
+    const file = { type: "file" } as never;
+    const bucket = new StorageFileProvider("storage:a1", "pane-7");
+    bucket.kind = "s3";
+    const server = new StorageFileProvider("storage:a2", "pane-8");
+    server.kind = "webdav";
+    expect(needsRenameConfirm(bucket, dir)).toBe(true);
+    expect(needsRenameConfirm(bucket, file)).toBe(false);
+    expect(needsRenameConfirm(server, dir)).toBe(false);
   });
 });

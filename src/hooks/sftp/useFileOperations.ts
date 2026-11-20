@@ -12,7 +12,12 @@ import {
   unregisterProvider,
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
-import { confirmFolderRename, StorageFileProvider } from "@/lib/sftp/storageFs";
+import {
+  confirmFolderRename,
+  needsRenameConfirm,
+  StorageFileProvider,
+} from "@/lib/sftp/storageFs";
+import { parseCertError, requestCertTrust } from "@/lib/storage/certTrust";
 import {
   ConnectCancelled,
   resolveUsernameOrAsk,
@@ -22,6 +27,7 @@ import {
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
+import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface UseFileOperationsParams {
@@ -67,6 +73,8 @@ export function useFileOperations({
   // ── SFTP Provider ──────────────────────────────────────────────────────
   const providerRef = useRef<RemoteFileProviderImpl | null>(null);
   const connectingRef = useRef<Promise<RemoteFileProviderImpl> | null>(null);
+  // Bumped by disconnect, so a connect waiting on the user can tell it was abandoned.
+  const disconnectsRef = useRef(0);
 
   const ensureProvider =
     useCallback(async (): Promise<RemoteFileProviderImpl> => {
@@ -78,11 +86,54 @@ export function useFileOperations({
         try {
           // A bucket pane: "storage:<accountId>"; Rust opens the bucket under the pane id.
           if (hostId.startsWith("storage:")) {
-            await invoke("storage_connect", {
-              sessionId: paneId,
-              accountId: hostId.slice("storage:".length),
-            });
+            const accountId = hostId.slice("storage:".length);
+            const started = disconnectsRef.current;
+            // Answers the account's provider.
+            const connect = () =>
+              invoke<string>("storage_connect", {
+                sessionId: paneId,
+                accountId,
+              });
+            const accounts = useStorageAccountStore.getState();
+            let kind: string;
+            try {
+              kind = await connect();
+            } catch (err) {
+              // A server certificate the user hasn't decided on: ask, pin it, try again.
+              const prompt = parseCertError(err);
+              if (!prompt) throw err;
+              if (!(await requestCertTrust(prompt)))
+                throw new Error("The server's certificate isn't trusted");
+              if (disconnectsRef.current !== started)
+                throw new ConnectCancelled("The pane was closed");
+              // An empty name keeps the stored one (the pane's may be stale).
+              const name =
+                useStorageAccountStore
+                  .getState()
+                  .accounts?.find((a) => a.id === accountId)?.name ?? "";
+              const saved = await accounts.save(accountId, name, {
+                trustedCertSha256: prompt.sha256,
+              });
+              if (!saved)
+                throw new Error(
+                  useStorageAccountStore.getState().error ??
+                    "Couldn't save the certificate",
+                );
+              if (disconnectsRef.current !== started)
+                throw new ConnectCancelled("The pane was closed");
+              kind = await connect();
+            }
+            // Closed while connecting: drop the session the connect just opened, unless a
+            // newer connect in this pane already owns it.
+            if (disconnectsRef.current !== started) {
+              if (!getProvider(paneId))
+                await invoke("storage_disconnect", { sessionId: paneId }).catch(
+                  () => {},
+                );
+              throw new ConnectCancelled("The pane was closed");
+            }
             const provider = new StorageFileProvider(hostId, paneId);
+            provider.kind = kind === "webdav" ? "webdav" : "s3";
             providerRef.current = provider;
             registerProvider(paneId, provider);
             await useSftpStore.getState().ensureTransferListener();
@@ -138,6 +189,7 @@ export function useFileOperations({
     ]);
 
   const disconnect = useCallback(async () => {
+    disconnectsRef.current += 1;
     providerRef.current = null;
     unregisterProvider(paneId);
     await stopEditsForSession(paneId, useSftpStore.getState().edits);
@@ -205,7 +257,7 @@ export function useFileOperations({
         currentPath === "/" ? `/${trimmed}` : `${currentPath}/${trimmed}`;
       if (
         provider instanceof StorageFileProvider &&
-        file.type === "directory" &&
+        needsRenameConfirm(provider, file) &&
         !(await confirmFolderRename(provider, renamingPath, file.name))
       )
         return;

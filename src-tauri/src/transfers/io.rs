@@ -1,6 +1,7 @@
 //! Reading and writing one side of a transfer: `.part` files, resume offsets, the final rename.
 
 use super::model::*;
+use crate::storage::Remote;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -8,13 +9,21 @@ pub enum Side {
     Local,
     Sftp(Arc<russh_sftp::client::SftpSession>),
     /// A bucket. Paths are UI paths (`/a/b.txt`); an upload writes the final key directly.
-    Remote(opendal::Operator),
+    Remote(Remote),
 }
 
 const CHUNK: usize = 64 * 1024;
 /// Part size for bucket uploads. Fixed, so every part but the last is exactly this long
 /// (R2 requires it).
 const REMOTE_PART: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+impl Side {
+    /// A storage side with no WebDAV upload target.
+    pub fn remote(op: opendal::Operator) -> Side {
+        Side::Remote(Remote { op, dav: None })
+    }
+}
 
 /// How an upload to a bucket is written. Ignored for other destinations.
 #[derive(Debug, Clone, Copy, Default)]
@@ -23,6 +32,9 @@ pub struct WriteOpts {
     pub mtime: i64,
     /// Refuse to write over an existing key (`DEST_CHANGED`), where the service supports it.
     pub if_not_exists: bool,
+    /// The body's exact length, sent as `Content-Length` (WebDAV), so a cut upload never
+    /// looks finished to the server.
+    pub len: Option<u64>,
 }
 
 fn key(path: &str) -> String {
@@ -33,6 +45,10 @@ fn key(path: &str) -> String {
 /// an operation error; anything else (network, rate limits, server trouble) is retried.
 pub fn opendal_err(op: &str, e: opendal::Error) -> JobError {
     use opendal::ErrorKind::*;
+    // A server whose certificate isn't trusted won't become trusted by retrying.
+    if crate::storage::tls::is_cert_error(&e) {
+        return JobError::Operation(crate::storage::tls::CERT_UNTRUSTED.into());
+    }
     match e.kind() {
         ConditionNotMatch => JobError::Operation(DEST_CHANGED.into()),
         NotFound | PermissionDenied | ConfigInvalid | IsADirectory | NotADirectory
@@ -78,7 +94,7 @@ pub async fn stat(side: &Side, path: &str) -> Result<(u64, i64), JobError> {
             let m = s.metadata(path).await.map_err(|e| sftp_err("stat", e))?;
             Ok((m.len(), m.mtime.map_or(0, i64::from)))
         }
-        Side::Remote(op) => {
+        Side::Remote(Remote { op, .. }) => {
             let m = op
                 .stat(&key(path))
                 .await
@@ -102,7 +118,7 @@ pub async fn stat_if_exists(side: &Side, path: &str) -> Result<Option<(u64, i64)
             Err(e) => return Err(sftp_err("stat", e)),
             Ok(_) => false,
         },
-        Side::Remote(op) => match op.stat(&key(path)).await {
+        Side::Remote(Remote { op, .. }) => match op.stat(&key(path)).await {
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => true,
             Err(e) => return Err(opendal_err("stat", e)),
             Ok(_) => false,
@@ -137,7 +153,7 @@ async fn exists(side: &Side, path: &str) -> Result<bool, JobError> {
             .await
             .map_err(|e| io_err("stat", e)),
         Side::Sftp(s) => s.try_exists(path).await.map_err(|e| sftp_err("stat", e)),
-        Side::Remote(op) => op
+        Side::Remote(Remote { op, .. }) => op
             .exists(&key(path))
             .await
             .map_err(|e| opendal_err("stat", e)),
@@ -148,6 +164,8 @@ enum Writer {
     Local(tokio::fs::File),
     Sftp(russh_sftp::client::fs::File),
     Remote(RemoteWriter),
+    /// A WebDAV upload, streamed as one PUT (OpenDAL's WebDAV writer buffers the whole file).
+    Dav(crate::storage::webdav::DavUpload),
 }
 
 #[cfg(test)]
@@ -201,6 +219,7 @@ impl Writer {
                 .await
                 .map_err(|e| opendal_err("write", e)),
             Writer::Remote(RemoteWriter(None)) => Err(JobError::Stopped),
+            Writer::Dav(u) => u.send(buf.to_vec()).await,
         }
     }
 
@@ -225,14 +244,17 @@ impl Writer {
                 r.0 = None;
                 Ok(())
             }
+            Writer::Dav(u) => u.finish().await,
         }
     }
 
     /// A bucket upload that won't finish is aborted, so its parts don't stay billed. Best
     /// effort; files need nothing (the `.part` stays for a resume).
     async fn abort(&mut self) {
-        if let Writer::Remote(r) = self {
-            r.abort().await;
+        match self {
+            Writer::Remote(r) => r.abort().await,
+            Writer::Dav(u) => u.abort(),
+            _ => {}
         }
     }
 }
@@ -265,7 +287,7 @@ async fn open_source(
             }
             Ok(Box::new(f))
         }
-        Side::Remote(op) => {
+        Side::Remote(Remote { op, .. }) => {
             use tokio_util::compat::FuturesAsyncReadCompatExt;
             let reader = op
                 .reader_with(&key(path))
@@ -325,7 +347,12 @@ async fn open_part(
             }
             Ok(Writer::Sftp(f))
         }
-        Side::Remote(op) => {
+        Side::Remote(Remote { op, dav }) => {
+            // WebDAV streams its own PUT (and never writes metadata, which OpenDAL would send
+            // as a separate PROPPATCH that some servers refuse).
+            if let Some(dav) = dav {
+                return Ok(Writer::Dav(dav.start_put(part, opts)));
+            }
             let can = op.info().capability();
             let path = key(part);
             let mut w = op.writer_with(&path).chunk(REMOTE_PART);
@@ -627,7 +654,7 @@ mod tests {
     async fn remote_stat_and_missing() {
         let op = bucket();
         op.write("a/b.txt", b"hello".to_vec()).await.unwrap();
-        let side = Side::Remote(op);
+        let side = Side::remote(op);
         assert_eq!(stat_if_exists(&side, "/none").await.unwrap(), None);
         assert_eq!(
             stat_if_exists(&side, "/a/b.txt")
@@ -651,7 +678,7 @@ mod tests {
         let part = d.path("obj.part");
         std::fs::write(&part, b"012").unwrap();
         copy(
-            &Side::Remote(op),
+            &Side::remote(op),
             "/obj",
             &Side::Local,
             &part,
@@ -671,7 +698,7 @@ mod tests {
         let src = d.path("src.txt");
         std::fs::write(&src, b"payload").unwrap();
         let op = bucket();
-        let side = Side::Remote(op.clone());
+        let side = Side::remote(op.clone());
         copy(
             &Side::Local,
             &src,
@@ -682,6 +709,7 @@ mod tests {
             WriteOpts {
                 mtime: 1_700_000_000,
                 if_not_exists: false,
+                len: None,
             },
             |_| {},
         )
@@ -706,7 +734,7 @@ mod tests {
         let r = copy(
             &Side::Local,
             &src,
-            &Side::Remote(op.clone()),
+            &Side::remote(op.clone()),
             "/big.bin",
             0,
             &stop,
@@ -722,7 +750,7 @@ mod tests {
     async fn remote_target_picks_a_free_name_without_replace() {
         let op = bucket();
         op.write("a.txt", b"x".to_vec()).await.unwrap();
-        let side = Side::Remote(op);
+        let side = Side::remote(op);
         assert_eq!(
             remote_target(&side, "/a.txt", true).await.unwrap(),
             "/a.txt"
@@ -1128,7 +1156,7 @@ mod tests {
             copy(
                 &Side::Local,
                 &src,
-                &Side::Remote(op),
+                &Side::remote(op),
                 "/big.bin",
                 0,
                 &CancellationToken::new(),
@@ -1143,5 +1171,21 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(REMOTE_ABORTS.load(std::sync::atomic::Ordering::SeqCst) > before);
         feeder.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn untrusted_certificate_fails_a_job_plainly() {
+        let (port, _) = crate::storage::tls::tests::self_signed_server().await;
+        let err = crate::storage::tls::client_for(None)
+            .unwrap()
+            .get(format!("https://localhost:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let wrapped = opendal::Error::new(opendal::ErrorKind::Unexpected, "send").set_source(err);
+        assert_eq!(
+            opendal_err("write", wrapped),
+            JobError::Operation(crate::storage::tls::CERT_UNTRUSTED.into())
+        );
     }
 }

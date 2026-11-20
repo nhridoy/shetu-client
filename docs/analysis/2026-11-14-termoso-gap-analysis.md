@@ -82,7 +82,7 @@ Termius-style client notice it.
 | Transfer resume + persistent queue | M | high |
 | Folder compare / watch-and-upload | M | med |
 | S3-compatible buckets (AWS, MinIO, R2, B2) — **done** (2026-11-19, `feat/s3`) | L | med |
-| WebDAV | M–L | low–med |
+| WebDAV — **done** (2026-11-20, `feat/webdav`) | M–L | low–med |
 
 ### E. Hosts & import (client)
 | Feature | Size | Value |

@@ -11,7 +11,8 @@ export type StorageProvider =
   | "b2"
   | "wasabi"
   | "spaces"
-  | "custom";
+  | "custom"
+  | "webdav";
 
 /** List entry: plaintext columns only. Secrets never live in store state. */
 export interface StorageAccount {
@@ -29,6 +30,11 @@ export interface StorageAccountView {
   pathStyle: boolean;
   r2AccountId: string | null;
   accessKeyId: string;
+  webdavKind?: "nextcloud" | "other" | null;
+  server?: string | null;
+  url?: string | null;
+  username?: string | null;
+  trustedCertSha256?: string | null;
   hasSecret: boolean;
 }
 
@@ -42,6 +48,13 @@ export type StorageAccountPatch = Partial<{
   r2AccountId: string;
   accessKeyId: string;
   secretAccessKey: string;
+  webdavKind: "nextcloud" | "other";
+  server: string;
+  url: string;
+  username: string;
+  password: string;
+  /** `null` forgets a trusted certificate. */
+  trustedCertSha256: string | null;
 }>;
 
 interface StorageAccountState {

@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
+import CertTrustDialog from "./CertTrustDialog";
 import StorageAccountList from "./StorageAccountList";
 import StorageAccountModal from "./StorageAccountModal";
 
@@ -195,5 +196,130 @@ describe("StorageAccountModal", () => {
     );
     expect(text()).toContain("Couldn't load this account");
     expect(button("Save")?.disabled).toBe(true);
+  });
+
+  it("shows WebDAV fields and builds the Nextcloud address", async () => {
+    await render(<StorageAccountModal account="new" onClose={() => {}} />);
+    await act(async () => setValue("provider", "webdav"));
+    expect((field("webdavKind") as HTMLSelectElement).value).toBe("nextcloud");
+    await act(async () => setValue("server", "cloud.example.com"));
+    expect((field("davUrl") as HTMLInputElement).value).toBe(
+      "https://cloud.example.com/remote.php/webdav/",
+    );
+    expect((field("davUrl") as HTMLInputElement).readOnly).toBe(true);
+    expect(field("username")).not.toBeNull();
+    expect(field("password")).not.toBeNull();
+    expect(field("bucket")).toBeNull();
+    expect(field("accessKeyId")).toBeNull();
+    expect(text()).not.toContain("lifecycle rule");
+    await act(async () => setValue("webdavKind", "other"));
+    expect((field("url") as HTMLInputElement).readOnly).toBe(false);
+    expect(field("server")).toBeNull();
+  });
+
+  it("trusting a certificate during a test keeps it in the form until Save", async () => {
+    const question = `cert:${JSON.stringify({ kind: "untrusted", host: "nas.lan:5006", sha256: "ab".repeat(32), previous: null })}`;
+    test
+      .mockRejectedValueOnce(question)
+      .mockResolvedValueOnce("Connected to nas");
+    await render(
+      <>
+        <StorageAccountModal account="new" onClose={() => {}} />
+        <CertTrustDialog />
+      </>,
+    );
+    await act(async () => setValue("provider", "webdav"));
+    await act(async () => setValue("webdavKind", "other"));
+    await act(async () => setValue("url", "https://nas.lan:5006/dav/"));
+    await act(async () => button("Test connection")?.click());
+    expect(text()).toContain("ab".repeat(4));
+    await act(async () => button("Trust")?.click());
+    expect(test).toHaveBeenCalledTimes(2);
+    expect((test.mock.calls[1] as unknown[])[1]).toMatchObject({
+      trustedCertSha256: "ab".repeat(32),
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(text()).toContain("Connected to nas");
+  });
+
+  it("locks the form while a connection test waits on the certificate question", async () => {
+    const question = `cert:${JSON.stringify({ kind: "untrusted", host: "nas.lan:5006", sha256: "ab".repeat(32), previous: null })}`;
+    test.mockRejectedValueOnce(question);
+    await render(
+      <>
+        <StorageAccountModal account="new" onClose={() => {}} />
+        <CertTrustDialog />
+      </>,
+    );
+    await act(async () => setValue("provider", "webdav"));
+    await act(async () => setValue("webdavKind", "other"));
+    await act(async () => setValue("url", "https://nas.lan:5006/dav/"));
+    await act(async () => button("Test connection")?.click());
+    expect(field("url")?.closest("fieldset")?.disabled).toBe(true);
+    // The certificate dialog's Cancel (rendered after the form's own).
+    const cancels = [...document.querySelectorAll("button")].filter(
+      (b) => b.textContent?.trim() === "Cancel",
+    );
+    await act(async () => cancels.at(-1)?.click());
+    expect(field("url")?.closest("fieldset")?.disabled).toBe(false);
+  });
+
+  it("doesn't call another provider's secret saved", async () => {
+    useStorageAccountStore.setState({
+      view: (id: string) => h.invoke("storage_account_view", { id }),
+    } as never);
+    h.invoke.mockResolvedValue({
+      provider: "b2",
+      endpoint: null,
+      region: "us-west-004",
+      bucket: "photos",
+      pathStyle: false,
+      r2AccountId: null,
+      accessKeyId: "K004",
+      hasSecret: true,
+    });
+    await render(
+      <StorageAccountModal
+        account={{ id: "s1", name: "Photos", vaultId: "v1" }}
+        onClose={() => {}}
+      />,
+    );
+    expect(text()).toContain("Saved");
+    await act(async () => setValue("provider", "webdav"));
+    expect(text()).not.toContain("Saved");
+  });
+
+  it("shows a trusted certificate and can forget it", async () => {
+    useStorageAccountStore.setState({
+      save,
+      test,
+      view: async () => ({
+        provider: "webdav",
+        endpoint: null,
+        region: "",
+        bucket: "",
+        pathStyle: false,
+        r2AccountId: null,
+        accessKeyId: "",
+        webdavKind: "other",
+        server: null,
+        url: "https://nas.lan/dav/",
+        username: "me",
+        trustedCertSha256: "cd".repeat(32),
+        hasSecret: true,
+      }),
+    } as never);
+    await render(
+      <StorageAccountModal
+        account={{ id: "s9", name: "NAS", vaultId: "v1" }}
+        onClose={() => {}}
+      />,
+    );
+    expect(text()).toContain("cdcdcdcd");
+    await act(async () => button("Forget")?.click());
+    await act(async () => button("Save")?.click());
+    expect((save.mock.calls[0] as unknown[])[2]).toMatchObject({
+      trustedCertSha256: null,
+    });
   });
 });

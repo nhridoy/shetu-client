@@ -1,11 +1,11 @@
 //! Open bucket panes (pane id → operator) and the commands a bucket pane uses.
 
-use super::accounts::{load_account, operator_for};
+use super::accounts::{check_account_access, load_account, remote_for};
 use super::ops::{self, StorageEntry};
+use super::Remote;
 use crate::db::LocalDb;
 use crate::transfers::model::StorageRef;
 use crate::CryptoState;
-use opendal::Operator;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -15,24 +15,24 @@ const READ_MAX: u64 = 10 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct StorageSessions {
-    open: Mutex<HashMap<String, (StorageRef, Operator)>>,
+    open: Mutex<HashMap<String, (StorageRef, Remote)>>,
     /// Advanced by every sign-out, under the `open` lock.
     generation: std::sync::atomic::AtomicU64,
 }
 
-/// An operator for a saved account's bucket, built from the encrypted store.
+/// A saved account's storage side, built from the encrypted store.
 pub fn operator_from_store(
     db: &LocalDb,
     crypto: &CryptoState,
     r: &StorageRef,
-) -> Result<Operator, String> {
+) -> Result<Remote, String> {
     let mut account = load_account(db, crypto, &r.account_id)?;
     account.bucket = r.bucket.clone();
-    operator_for(&account)
+    remote_for(&account)
 }
 
 impl StorageSessions {
-    pub fn get(&self, sid: &str) -> Option<(StorageRef, Operator)> {
+    pub fn get(&self, sid: &str) -> Option<(StorageRef, Remote)> {
         self.open.lock().ok()?.get(sid).cloned()
     }
 
@@ -43,7 +43,7 @@ impl StorageSessions {
 
     /// Stores a session only if no sign-out happened since `started`, so a connect still in
     /// flight at sign-out can't leave a bucket (and its credentials) open afterwards.
-    pub fn insert_if(&self, started: u64, sid: String, r: StorageRef, op: Operator) -> bool {
+    pub fn insert_if(&self, started: u64, sid: String, r: StorageRef, op: Remote) -> bool {
         let Ok(mut open) = self.open.lock() else {
             return false;
         };
@@ -70,11 +70,7 @@ impl StorageSessions {
     }
 
     /// An operator for a transfer end: an open pane's on that bucket, else a new one.
-    pub fn operator_for_ref(
-        &self,
-        app: &tauri::AppHandle,
-        r: &StorageRef,
-    ) -> Result<Operator, String> {
+    pub fn remote_for_ref(&self, app: &tauri::AppHandle, r: &StorageRef) -> Result<Remote, String> {
         let open = self.open.lock().ok().and_then(|o| {
             o.values()
                 .find(|(seen, _)| seen == r)
@@ -88,9 +84,14 @@ impl StorageSessions {
 
     /// The pane's operator, only if the pane still shows `account_id`: a call already in flight
     /// when the pane reconnected to another bucket must not act on that one.
-    fn op(&self, sid: &str, account_id: &str) -> Result<Operator, String> {
+    fn op(&self, sid: &str, account_id: &str) -> Result<opendal::Operator, String> {
+        self.remote(sid, account_id).map(|r| r.op)
+    }
+
+    /// The pane's storage side, only if the pane still shows `account_id`.
+    fn remote(&self, sid: &str, account_id: &str) -> Result<Remote, String> {
         match self.get(sid) {
-            Some((r, op)) if r.account_id == account_id => Ok(op),
+            Some((r, remote)) if r.account_id == account_id => Ok(remote),
             Some(_) => Err("The pane now shows another bucket".to_string()),
             None => Err("Bucket not open — reconnect the pane".to_string()),
         }
@@ -99,7 +100,7 @@ impl StorageSessions {
 
 type Sessions<'a> = tauri::State<'a, StorageSessions>;
 
-/// Opens a pane on an account's bucket after checking it can be listed. Returns the bucket.
+/// Opens a pane on an account's storage after checking it can be listed. Returns the provider.
 #[tauri::command]
 pub async fn storage_connect(
     session_id: String,
@@ -110,9 +111,9 @@ pub async fn storage_connect(
 ) -> Result<String, String> {
     let started = sessions.generation();
     let account = load_account(&db, &crypto, &account_id)?;
-    let op = operator_for(&account)?;
-    ops::check_access(&op).await?;
-    let bucket = account.bucket.clone();
+    let op = remote_for(&account)?;
+    check_account_access(&account, &op).await?;
+    let provider = account.provider.clone();
     let r = StorageRef {
         account_id,
         bucket: account.bucket,
@@ -120,7 +121,7 @@ pub async fn storage_connect(
     if !sessions.insert_if(started, session_id, r, op) {
         return Err("Signed out while the bucket was opening".into());
     }
-    Ok(bucket)
+    Ok(provider)
 }
 
 #[tauri::command]
@@ -189,7 +190,12 @@ pub async fn storage_rename(
     is_dir: bool,
     sessions: Sessions<'_>,
 ) -> Result<(), String> {
-    ops::rename_tree(&sessions.op(&session_id, &account_id)?, &from, &to, is_dir).await
+    let remote = sessions.remote(&session_id, &account_id)?;
+    match &remote.dav {
+        // A server move: one request, and never over an existing name (OpenDAL's overwrites).
+        Some(dav) => super::webdav::move_path(dav, &from, &to, is_dir).await,
+        None => ops::rename_tree(&remote.op, &from, &to, is_dir).await,
+    }
 }
 
 #[tauri::command]
@@ -232,7 +238,7 @@ mod tests {
             bucket: "b".into(),
         };
         assert_eq!(
-            operator_from_store(&db, &crypto, &missing).unwrap_err(),
+            operator_from_store(&db, &crypto, &missing).err().unwrap(),
             "storage account not found"
         );
         let row = super::super::accounts::save(
@@ -251,7 +257,11 @@ mod tests {
             bucket: "queued-bucket".into(),
         };
         assert_eq!(
-            operator_from_store(&db, &crypto, &r).unwrap().info().name(),
+            operator_from_store(&db, &crypto, &r)
+                .unwrap()
+                .op
+                .info()
+                .name(),
             "queued-bucket"
         );
     }
@@ -259,7 +269,10 @@ mod tests {
     #[test]
     fn sessions_open_and_forget() {
         let s = StorageSessions::default();
-        let op = Operator::new(opendal::services::Memory::default()).unwrap();
+        let op = Remote {
+            op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            dav: None,
+        };
         let r = StorageRef {
             account_id: "a".into(),
             bucket: "b".into(),
@@ -274,7 +287,10 @@ mod tests {
     #[test]
     fn a_connect_from_before_sign_out_is_not_kept() {
         let s = StorageSessions::default();
-        let op = || Operator::new(opendal::services::Memory::default()).unwrap();
+        let op = || Remote {
+            op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            dav: None,
+        };
         let r = StorageRef {
             account_id: "a".into(),
             bucket: "b".into(),
@@ -291,7 +307,10 @@ mod tests {
     #[test]
     fn a_call_for_one_account_never_reaches_another() {
         let s = StorageSessions::default();
-        let op = Operator::new(opendal::services::Memory::default()).unwrap();
+        let op = Remote {
+            op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            dav: None,
+        };
         let r = StorageRef {
             account_id: "bucket-b".into(),
             bucket: "b".into(),

@@ -142,7 +142,7 @@ impl Ctx<'_> {
             return self
                 .app
                 .state::<crate::storage::sessions::StorageSessions>()
-                .operator_for_ref(self.app, r)
+                .remote_for_ref(self.app, r)
                 .map(Side::Remote)
                 .map_err(|e| finished(Err(JobError::Operation(e))));
         }
@@ -222,6 +222,7 @@ impl Ctx<'_> {
         let opts = io::WriteOpts {
             mtime: current.1,
             if_not_exists: job.expect_dest == Some(ABSENT),
+            len: matches!(dst, Side::Remote(_)).then(|| current.0.saturating_sub(offset)),
         };
         let started = Instant::now();
         let mut emit = Throttle::new(PROGRESS_EMIT_MS);

@@ -1,4 +1,5 @@
-//! S3 storage accounts. Secrets stay in Rust: the form sees a view without the secret key.
+//! Storage accounts (S3 buckets, WebDAV servers). Secrets stay in Rust: the form sees a view
+//! without the secret key or password.
 
 use crate::db::{self, LocalDb, SyncRow, Table};
 use crate::CryptoState;
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 const RECORD: &str = "storage_accounts";
-const TEXT_FIELDS: [&str; 7] = [
+const TEXT_FIELDS: [&str; 13] = [
     "provider",
     "endpoint",
     "region",
@@ -15,8 +16,14 @@ const TEXT_FIELDS: [&str; 7] = [
     "r2AccountId",
     "accessKeyId",
     "secretAccessKey",
+    "webdavKind",
+    "server",
+    "url",
+    "username",
+    "password",
+    "trustedCertSha256",
 ];
-const PROVIDERS: [&str; 6] = ["aws", "r2", "b2", "wasabi", "spaces", "custom"];
+const PROVIDERS: [&str; 7] = ["aws", "r2", "b2", "wasabi", "spaces", "custom", "webdav"];
 /// Per request body or part (8 MiB) — room for a slow uplink.
 pub const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// Per whole call — a server-side copy of up to 5 GiB.
@@ -34,9 +41,17 @@ pub struct StorageAccountData {
     pub r2_account_id: Option<String>,
     pub access_key_id: String,
     pub secret_access_key: String,
+    /// WebDAV: `"nextcloud"` (built from `server`) or `"other"` (a full `url`).
+    pub webdav_kind: Option<String>,
+    pub server: Option<String>,
+    pub url: Option<String>,
+    pub username: Option<String>,
+    pub password: String,
+    /// A self-signed server certificate the user trusted (SHA-256, lowercase hex).
+    pub trusted_cert_sha256: Option<String>,
 }
 
-/// What the account form may see: everything but the secret key.
+/// What the account form may see: everything but the secret key or password.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageAccountView {
@@ -47,6 +62,11 @@ pub struct StorageAccountView {
     pub path_style: bool,
     pub r2_account_id: Option<String>,
     pub access_key_id: String,
+    pub webdav_kind: Option<String>,
+    pub server: Option<String>,
+    pub url: Option<String>,
+    pub username: Option<String>,
+    pub trusted_cert_sha256: Option<String>,
     pub has_secret: bool,
 }
 
@@ -62,7 +82,43 @@ fn non_empty(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// The S3 endpoint for a provider preset, or the custom one.
+/// A WebDAV account's full URL: Nextcloud/ownCloud's legacy `/remote.php/webdav/` (it needs no
+/// internal user ID, so email logins work), or the URL given.
+pub fn webdav_url(d: &StorageAccountData) -> Result<String, String> {
+    if d.webdav_kind.as_deref() == Some("nextcloud") {
+        let server = non_empty(&d.server).ok_or("Server is required")?;
+        let host = server
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        if host.is_empty() {
+            return Err("Server is required".into());
+        }
+        return checked_url(format!("https://{host}/remote.php/webdav/"));
+    }
+    let url = non_empty(&d.url).ok_or("URL is required")?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("The URL must start with http:// or https://".into());
+    }
+    checked_url(url.to_string())
+}
+
+/// A server folder URL: a host, and no sign-in, query or fragment (paths are appended to it).
+fn checked_url(url: String) -> Result<String, String> {
+    let u = tauri::Url::parse(&url).map_err(|e| format!("Bad URL {url}: {e}"))?;
+    if u.host_str().is_none_or(str::is_empty) {
+        return Err("The URL has no host".into());
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("Put the username and password in their own fields, not in the URL".into());
+    }
+    if u.query().is_some() || u.fragment().is_some() {
+        return Err("The URL can't have a ? or # part".into());
+    }
+    Ok(url)
+}
+
+/// The endpoint for a provider preset, the custom one, or a WebDAV server.
 pub fn endpoint_for(d: &StorageAccountData) -> Result<String, String> {
     let region = || {
         Some(d.region.trim())
@@ -81,6 +137,7 @@ pub fn endpoint_for(d: &StorageAccountData) -> Result<String, String> {
         "custom" => non_empty(&d.endpoint)
             .ok_or("Endpoint is required")?
             .to_string(),
+        "webdav" => webdav_url(d)?,
         other => return Err(format!("Unknown provider: {other}")),
     })
 }
@@ -109,14 +166,117 @@ pub fn operator_for(d: &StorageAccountData) -> Result<Operator, String> {
     if virtual_host {
         builder = builder.enable_virtual_host_style();
     }
-    Ok(Operator::new(builder)
-        .map_err(|e| format!("Couldn't set up the bucket: {e}"))?
-        .layer(opendal::layers::RetryLayer::new())
-        .layer(
-            opendal::layers::TimeoutLayer::new()
-                .with_timeout(OP_TIMEOUT)
-                .with_io_timeout(IO_TIMEOUT),
-        ))
+    Ok(layered(
+        Operator::new(builder).map_err(|e| format!("Couldn't set up the bucket: {e}"))?,
+        super::tls::client_for(None)?,
+    ))
+}
+
+/// OpenDAL installs no default HTTP transport without `auto-register-services`: every
+/// operator gets the app's own client (rustls/ring, platform roots, the account's pin).
+fn layered(op: Operator, client: reqwest013::Client) -> Operator {
+    let transport = opendal_http_transport_reqwest::ReqwestTransport::new(client);
+    op.with_context(
+        opendal::OperationContext::new()
+            .with_http_transport(opendal::HttpTransporter::new(transport)),
+    )
+    .layer(opendal::layers::RetryLayer::new())
+    .layer(
+        opendal::layers::TimeoutLayer::new()
+            .with_timeout(OP_TIMEOUT)
+            .with_io_timeout(IO_TIMEOUT),
+    )
+}
+
+/// The account's storage side: an S3 operator, or a WebDAV one with its upload target. A
+/// pinned certificate gives the WebDAV operator (and uploads) their own trusting client.
+pub fn remote_for(d: &StorageAccountData) -> Result<super::Remote, String> {
+    if d.provider != "webdav" {
+        return Ok(super::Remote {
+            op: operator_for(d)?,
+            dav: None,
+        });
+    }
+    let base = webdav_url(d)?;
+    let url = tauri::Url::parse(&base).map_err(|e| format!("Bad URL {base}: {e}"))?;
+    let endpoint = format!(
+        "{}://{}",
+        url.scheme(),
+        url.host_str().ok_or("The URL has no host")?
+    ) + &url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let username = d.username.clone().unwrap_or_default();
+    let builder = opendal::services::Webdav::default()
+        .endpoint(&endpoint)
+        // OpenDAL encodes the root itself; the parsed path is already encoded.
+        .root(&crate::import::encoding::percent_decode(url.path()))
+        .username(&username)
+        .password(&d.password);
+    let op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
+    let client = super::tls::client_for(d.trusted_cert_sha256.as_deref())?;
+    Ok(super::Remote {
+        op: layered(op, client.clone()),
+        dav: Some(std::sync::Arc::new(super::webdav::DavTarget {
+            base: if base.ends_with('/') {
+                base
+            } else {
+                format!("{base}/")
+            },
+            username,
+            password: d.password.clone(),
+            client,
+        })),
+    })
+}
+
+/// The error a connect returns when the server's certificate needs the user's decision; the
+/// web side reads it after the `cert:` prefix.
+pub fn cert_payload(kind: &str, host: &str, sha256: &str, previous: Option<&str>) -> String {
+    format!(
+        "cert:{}",
+        serde_json::json!({ "kind": kind, "host": host, "sha256": sha256, "previous": previous })
+    )
+}
+
+/// For an `https` WebDAV account whose connection failed on its certificate: the certificate
+/// the server presents, as a trust question (`untrusted`, or `changed` from the pinned one).
+pub async fn cert_error(d: &StorageAccountData, e: &opendal::Error) -> Option<String> {
+    if d.provider != "webdav" || !super::tls::is_cert_error(e) {
+        return None;
+    }
+    let url = tauri::Url::parse(&webdav_url(d).ok()?).ok()?;
+    let host = url.host_str()?.to_string();
+    let port = url.port_or_known_default()?;
+    let sha = super::tls::probe(&host, port).await.ok()?;
+    let previous = d.trusted_cert_sha256.as_deref();
+    let kind = if previous.is_some() {
+        "changed"
+    } else {
+        "untrusted"
+    };
+    Some(cert_payload(
+        kind,
+        &format!("{host}:{port}"),
+        &sha,
+        previous,
+    ))
+}
+
+/// Lists one entry; a certificate the user must decide on comes back as a `cert:` error.
+pub async fn check_account_access(
+    d: &StorageAccountData,
+    remote: &super::Remote,
+) -> Result<(), String> {
+    match super::ops::check_access_raw(&remote.op).await {
+        // OpenDAL lists a missing WebDAV folder as empty: the folder itself must exist.
+        Ok(()) => match &remote.dav {
+            Some(dav) => super::webdav::check_folder(dav).await,
+            None => Ok(()),
+        },
+        Err(e) => Err(match cert_error(d, &e).await {
+            Some(question) => question,
+            None => format!("Couldn't connect: {e}"),
+        }),
+    }
 }
 
 fn live_payload(
@@ -154,10 +314,19 @@ pub fn load_account(
     parse(&payload)
 }
 
+/// Whether the current provider's own secret is stored.
+fn has_secret(d: &StorageAccountData) -> bool {
+    if d.provider == "webdav" {
+        !d.password.is_empty()
+    } else {
+        !d.secret_access_key.is_empty()
+    }
+}
+
 pub fn view(db: &LocalDb, crypto: &CryptoState, id: &str) -> Option<StorageAccountView> {
     let d = load_account(db, crypto, id).ok()?;
     Some(StorageAccountView {
-        has_secret: !d.secret_access_key.is_empty(),
+        has_secret: has_secret(&d),
         provider: d.provider,
         endpoint: d.endpoint,
         region: d.region,
@@ -165,6 +334,11 @@ pub fn view(db: &LocalDb, crypto: &CryptoState, id: &str) -> Option<StorageAccou
         path_style: d.path_style,
         r2_account_id: d.r2_account_id,
         access_key_id: d.access_key_id,
+        webdav_kind: d.webdav_kind,
+        server: d.server,
+        url: d.url,
+        username: d.username,
+        trusted_cert_sha256: d.trusted_cert_sha256,
     })
 }
 
@@ -190,6 +364,15 @@ fn apply_patch(payload: &mut Map<String, Value>, patch: &Value) {
 fn validate(d: &StorageAccountData) -> Result<(), String> {
     if !PROVIDERS.contains(&d.provider.as_str()) {
         return Err(format!("Unknown provider: {}", d.provider));
+    }
+    if d.provider == "webdav" {
+        if non_empty(&d.username).is_none() {
+            return Err("Username is required".into());
+        }
+        if d.password.is_empty() {
+            return Err("Password is required".into());
+        }
+        return webdav_url(d).map(|_| ());
     }
     if d.bucket.trim().is_empty() {
         return Err("Bucket is required".into());
@@ -238,7 +421,10 @@ pub fn save(
         vault_id: vault_id.to_string(),
         ..Default::default()
     });
-    row.name = Some(name.to_string());
+    // An empty name (a pin-only save) keeps the stored one.
+    if !name.trim().is_empty() || row.name.is_none() {
+        row.name = Some(name.to_string());
+    }
     let session = crypto.session.lock().map_err(|e| e.to_string())?;
     row.data = crate::team_keys::encrypt_row_secret(
         db,
@@ -300,8 +486,11 @@ pub async fn storage_test(
     let (_, payload) = merged(&db, &crypto, id.as_deref(), &patch)?;
     let d = parse(&payload)?;
     validate(&d)?;
-    super::ops::check_access(&operator_for(&d)?).await?;
-    Ok(format!("Connected to {}", d.bucket))
+    check_account_access(&d, &remote_for(&d)?).await?;
+    Ok(match d.provider.as_str() {
+        "webdav" => format!("Connected to {}", webdav_url(&d)?),
+        _ => format!("Connected to {}", d.bucket),
+    })
 }
 
 #[cfg(test)]
@@ -450,5 +639,255 @@ mod tests {
         // 5 GiB, must not hit the timeout.
         assert!(IO_TIMEOUT >= std::time::Duration::from_secs(120));
         assert!(OP_TIMEOUT >= std::time::Duration::from_secs(600));
+    }
+
+    fn dav(kind: &str) -> StorageAccountData {
+        StorageAccountData {
+            provider: "webdav".into(),
+            webdav_kind: Some(kind.into()),
+            username: Some("me".into()),
+            password: "pw-secret-value".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nextcloud_url_normalises_server() {
+        let url = |server: &str| {
+            let mut d = dav("nextcloud");
+            d.server = Some(server.into());
+            webdav_url(&d)
+        };
+        assert_eq!(
+            url("cloud.example.com").unwrap(),
+            "https://cloud.example.com/remote.php/webdav/"
+        );
+        assert_eq!(
+            url("https://cloud.example.com:8443/").unwrap(),
+            "https://cloud.example.com:8443/remote.php/webdav/"
+        );
+        assert_eq!(
+            url("nas.lan/nextcloud").unwrap(),
+            "https://nas.lan/nextcloud/remote.php/webdav/"
+        );
+        assert!(url("  ").is_err());
+    }
+
+    #[test]
+    fn other_webdav_url_is_used_as_given() {
+        let url = |u: &str| {
+            let mut d = dav("other");
+            d.url = Some(u.into());
+            webdav_url(&d)
+        };
+        assert_eq!(
+            url("http://192.168.1.5:5005/dav/").unwrap(),
+            "http://192.168.1.5:5005/dav/"
+        );
+        let err = url("ftp://x").unwrap_err();
+        assert!(err.contains("http://"), "{err}");
+        assert!(url("").is_err());
+    }
+
+    #[test]
+    fn webdav_save_validates_by_kind() {
+        let (db, crypto) = fixture();
+        let base = json!({"provider": "webdav", "webdavKind": "other",
+                          "url": "https://dav.example.com/", "username": "me",
+                          "password": "pw-secret-value"});
+        assert!(
+            save(&db, &crypto, None, "v1", "Dav", &base, DEVICE).is_ok(),
+            "no bucket needed"
+        );
+        for missing in ["username", "password"] {
+            let mut p = base.clone();
+            p.as_object_mut().unwrap().remove(missing);
+            assert!(
+                save(&db, &crypto, None, "v1", "Dav", &p, DEVICE).is_err(),
+                "{missing}"
+            );
+        }
+        let nc = json!({"provider": "webdav", "webdavKind": "nextcloud", "username": "me",
+                        "password": "pw-secret-value"});
+        assert!(
+            save(&db, &crypto, None, "v1", "Dav", &nc, DEVICE).is_err(),
+            "server"
+        );
+    }
+
+    #[test]
+    fn webdav_view_hides_the_password() {
+        let (db, crypto) = fixture();
+        let row = save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "Dav",
+            &json!({"provider": "webdav", "webdavKind": "nextcloud", "server": "cloud.example.com",
+                    "username": "me", "password": "pw-secret-value"}),
+            DEVICE,
+        )
+        .unwrap();
+        let v = view(&db, &crypto, &row.id).unwrap();
+        assert!(v.has_secret);
+        assert_eq!(v.username.as_deref(), Some("me"));
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(!text.contains("pw-secret-value"), "{text}");
+    }
+
+    #[test]
+    fn null_trusted_cert_clears_the_pin() {
+        let (db, crypto) = fixture();
+        let pin = "a".repeat(64);
+        let row = save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "Dav",
+            &json!({"provider": "webdav", "webdavKind": "other", "url": "https://nas.lan/dav/",
+                    "username": "me", "password": "pw-secret-value", "trustedCertSha256": pin}),
+            DEVICE,
+        )
+        .unwrap();
+        assert_eq!(
+            load_account(&db, &crypto, &row.id)
+                .unwrap()
+                .trusted_cert_sha256
+                .as_deref(),
+            Some(pin.as_str())
+        );
+        save(
+            &db,
+            &crypto,
+            Some(&row.id),
+            "v1",
+            "Dav",
+            &json!({"trustedCertSha256": null}),
+            DEVICE,
+        )
+        .unwrap();
+        assert_eq!(
+            load_account(&db, &crypto, &row.id)
+                .unwrap()
+                .trusted_cert_sha256,
+            None
+        );
+    }
+
+    #[test]
+    fn remote_for_webdav_builds_with_a_put_target() {
+        let mut d = dav("other");
+        d.url = Some("http://127.0.0.1:1/dav/".into());
+        let r = remote_for(&d).unwrap();
+        assert_eq!(
+            r.dav.as_ref().map(|t| t.base.as_str()),
+            Some("http://127.0.0.1:1/dav/")
+        );
+        assert_eq!(r.op.info().scheme().to_string(), "webdav");
+        let s3 = remote_for(&data("aws")).unwrap();
+        assert!(s3.dav.is_none());
+    }
+
+    #[test]
+    fn cert_error_formats_the_dialog_payload() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let parsed = |s: String| -> Value {
+            serde_json::from_str(s.strip_prefix("cert:").expect("cert: prefix")).unwrap()
+        };
+        assert_eq!(
+            parsed(cert_payload("changed", "nas.lan:5006", &b, Some(&a))),
+            json!({"kind": "changed", "host": "nas.lan:5006", "sha256": b, "previous": a})
+        );
+        assert_eq!(
+            parsed(cert_payload("untrusted", "nas.lan:443", &b, None)),
+            json!({"kind": "untrusted", "host": "nas.lan:443", "sha256": b, "previous": null})
+        );
+    }
+
+    #[test]
+    fn a_webdav_path_with_spaces_is_not_encoded_twice() {
+        let mut d = dav("other");
+        d.url = Some("https://nas.lan/My%20Files/J%C3%BCrgen/".into());
+        let r = remote_for(&d).unwrap();
+        assert_eq!(r.op.info().root(), "/My Files/Jürgen/");
+        d.url = Some("https://nas.lan/My Files/".into());
+        assert_eq!(remote_for(&d).unwrap().op.info().root(), "/My Files/");
+    }
+
+    #[test]
+    fn webdav_url_refuses_unusable_urls() {
+        let url = |u: &str| {
+            let mut d = dav("other");
+            d.url = Some(u.into());
+            webdav_url(&d)
+        };
+        for bad in [
+            "https://me:pw@nas.lan/dav/",
+            "https://nas.lan/dav/?x=1",
+            "https://nas.lan/dav/#top",
+            "https://",
+            "https://:443/dav/",
+        ] {
+            assert!(url(bad).is_err(), "{bad}");
+        }
+        assert!(url("https://nas.lan/dav/").is_ok());
+        assert!(url("http://[::1]:8443/dav/").is_ok());
+    }
+
+    #[test]
+    fn has_secret_follows_the_provider() {
+        let mut d = dav("other");
+        d.password = String::new();
+        d.secret_access_key = "left-from-s3".into();
+        assert!(!has_secret(&d));
+    }
+
+    #[tokio::test]
+    async fn a_missing_webdav_root_fails_the_check() {
+        let (port, _) = crate::storage::webdav::tests::dav_server(404).await;
+        let mut d = dav("other");
+        d.url = Some(format!("http://127.0.0.1:{port}/missing/"));
+        let r = remote_for(&d).unwrap();
+        assert!(check_account_access(&d, &r).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn every_account_gets_an_http_transport() {
+        // Without auto-register-services OpenDAL installs no default transport.
+        let (port, _) = crate::storage::webdav::tests::dav_server(404).await;
+        let mut s3 = data("custom");
+        s3.endpoint = Some(format!("http://127.0.0.1:{port}"));
+        s3.path_style = true;
+        let mut webdav = dav("other");
+        webdav.url = Some(format!("http://127.0.0.1:{port}/dav/"));
+        for d in [s3, webdav] {
+            let r = remote_for(&d).unwrap();
+            let got = super::super::ops::check_access_raw(&r.op).await;
+            assert!(
+                !format!("{got:?}").contains("not installed"),
+                "{}: {got:?}",
+                d.provider
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_name_keeps_the_stored_one() {
+        let (db, crypto) = fixture();
+        let row = save(&db, &crypto, None, "v1", "Backups", &new_account(), DEVICE).unwrap();
+        let again = save(
+            &db,
+            &crypto,
+            Some(&row.id),
+            "v1",
+            "",
+            &json!({"trustedCertSha256": "ab"}),
+            DEVICE,
+        )
+        .unwrap();
+        assert_eq!(again.name.as_deref(), Some("Backups"));
     }
 }
