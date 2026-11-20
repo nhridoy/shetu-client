@@ -19,6 +19,10 @@ vi.mock("@/lib/terminal/agentForwarding", () => ({
   ConnectCancelled: mocks.ConnectCancelled,
 }));
 
+import {
+  registerProvider,
+  unregisterProvider,
+} from "@/lib/sftp/providerRegistry";
 import { requestCertTrust } from "@/lib/storage/certTrust";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
@@ -262,6 +266,43 @@ it("a disconnect during the retry closes the session it reopened", async () => {
   expect(calls.lastIndexOf("storage_disconnect")).toBeGreaterThan(
     calls.lastIndexOf("storage_connect"),
   );
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("a stale retry leaves alone the session a newer connect opened in the pane", async () => {
+  let releaseRetry!: (kind: string) => void;
+  let connects = 0;
+  const calls: string[] = [];
+  mocks.invoke.mockImplementation(((cmd: string) => {
+    calls.push(cmd);
+    if (cmd !== "storage_connect") return Promise.resolve(undefined);
+    if (connects++ === 0) return Promise.reject(certQuestion);
+    return new Promise<string>((r) => (releaseRetry = r));
+  }) as never);
+  useStorageAccountStore.setState({
+    save: vi.fn(async () => true),
+    accounts: [],
+  } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = ops.ensureProvider().catch((e) => e);
+  });
+  await act(async () => {
+    await ops.disconnect();
+  });
+  // A newer connect in the same pane finished first.
+  registerProvider("p2", {} as never);
+  const before = calls.filter((c) => c === "storage_disconnect").length;
+  await act(async () => {
+    releaseRetry("webdav");
+    await pending;
+  });
+  expect(calls.filter((c) => c === "storage_disconnect").length).toBe(before);
+  unregisterProvider("p2");
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
 });

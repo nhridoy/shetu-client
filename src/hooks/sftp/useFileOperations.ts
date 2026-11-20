@@ -123,11 +123,13 @@ export function useFileOperations({
                 throw new ConnectCancelled("The pane was closed");
               kind = await connect();
             }
-            // Closed while connecting: drop the session the connect just opened.
+            // Closed while connecting: drop the session the connect just opened, unless a
+            // newer connect in this pane already owns it.
             if (disconnectsRef.current !== started) {
-              await invoke("storage_disconnect", { sessionId: paneId }).catch(
-                () => {},
-              );
+              if (!getProvider(paneId))
+                await invoke("storage_disconnect", { sessionId: paneId }).catch(
+                  () => {},
+                );
               throw new ConnectCancelled("The pane was closed");
             }
             const provider = new StorageFileProvider(hostId, paneId);
