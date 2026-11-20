@@ -112,15 +112,8 @@ pub async fn list_tree(
     Ok(out)
 }
 
-/// Lists one entry, to check the bucket can be reached and read. One request, however large
-/// the bucket.
-pub async fn check_access(op: &Operator) -> Result<(), String> {
-    check_access_raw(op)
-        .await
-        .map_err(|e| format!("Couldn't reach the bucket: {e}"))
-}
-
-/// `check_access` keeping OpenDAL's error, so a certificate failure can be told apart.
+/// Lists one entry, to check the storage can be reached and read. One request, however large
+/// it is. Keeps OpenDAL's error, so a certificate failure can be told apart.
 pub async fn check_access_raw(op: &Operator) -> Result<(), opendal::Error> {
     use futures::TryStreamExt;
     op.lister_with("/")
@@ -436,11 +429,11 @@ mod tests {
     #[tokio::test]
     async fn check_access_reads_one_entry() {
         let op = memory();
-        assert!(check_access(&op).await.is_ok());
+        assert!(check_access_raw(&op).await.is_ok());
         for i in 0..5 {
             put(&op, &format!("{i}.txt"), "x").await;
         }
-        assert!(check_access(&op).await.is_ok());
+        assert!(check_access_raw(&op).await.is_ok());
     }
 
     #[tokio::test]

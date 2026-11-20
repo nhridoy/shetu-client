@@ -17,8 +17,9 @@ const CHUNK: usize = 64 * 1024;
 /// (R2 requires it).
 const REMOTE_PART: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
 impl Side {
-    /// A storage side with no WebDAV upload target (S3, tests).
+    /// A storage side with no WebDAV upload target.
     pub fn remote(op: opendal::Operator) -> Side {
         Side::Remote(Remote { op, dav: None })
     }
