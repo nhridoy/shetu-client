@@ -23,3 +23,7 @@ Every change Shetu made to these files is listed here.
 - `rename` is supported (`RNFR`/`RNTO`) for files and folders (upstream: unsupported).
 - A server that answers `AUTH TLS` with an error fails with `AUTH_TLS_REFUSED`; an FTPS account
   is never used as plain FTP.
+- A publish cut short (pause, cancel, timeout) recovers on a fresh connection: the moved-aside old
+  file goes back if the target is missing, and the backup and temp files are deleted.
+- A relative root is sent to `CWD` as typed (from where the login lands), not made absolute.
+- `530`/`532` (login refused) map to `PermissionDenied`, so they aren't retried as connection errors.

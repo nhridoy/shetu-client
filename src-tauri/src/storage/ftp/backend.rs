@@ -150,14 +150,14 @@ impl Builder for FtpBuilder {
             ));
         }
 
-        // Shetu: an empty root means "where the login lands" (no CWD at all).
-        let cwd = self
-            .config
-            .root
-            .as_deref()
-            .filter(|r| !r.is_empty())
-            .map(normalize_root);
-        let root = cwd.clone().unwrap_or_else(|| "/".to_string());
+        // Shetu: an empty root means "where the login lands" (no CWD at all); a relative one
+        // starts from there too, so it's sent as typed.
+        let typed = self.config.root.as_deref().filter(|r| !r.is_empty());
+        let cwd = typed.map(|r| match r.trim_end_matches('/') {
+            "" => "/".to_string(),
+            r => r.to_string(),
+        });
+        let root = typed.map(normalize_root).unwrap_or_else(|| "/".to_string());
 
         let user = match &self.config.user {
             None => "".to_string(),

@@ -150,7 +150,7 @@ impl FtpLazyWriter {
 
             // Shetu: the temp file sits beside the target, not in the root.
             let tmp_path = (!self.append).then(|| super::writer::temp_beside(&self.path, ""));
-            let w = FtpWriter::new(ftp_stream, self.path.clone(), tmp_path);
+            let w = FtpWriter::new(self.core.clone(), ftp_stream, self.path.clone(), tmp_path);
             self.inner = Some(w);
         }
 

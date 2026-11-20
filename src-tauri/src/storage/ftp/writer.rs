@@ -16,12 +16,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
+
 use asyncband::pool::bounded;
 use bytes::Buf;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
 use super::core::format_ftp_error;
+use super::core::FtpCore;
 use super::core::Manager;
 use opendal::raw::*;
 use opendal::*;
@@ -36,6 +39,12 @@ pub struct FtpWriter {
     started: bool,
     /// Shetu: closed or aborted; nothing left to clean up.
     done: bool,
+    /// Shetu: for recovery on a fresh connection when a publish is cut short.
+    core: Arc<FtpCore>,
+    /// Shetu: publishing began (a cut here leaves the old connection mid-command).
+    publishing: bool,
+    /// Shetu: where the old target was (or is being) moved aside, until it's deleted.
+    backup: Option<String>,
 }
 
 /// # Safety
@@ -53,6 +62,7 @@ pub fn temp_beside(path: &str, tag: &str) -> String {
 
 impl FtpWriter {
     pub fn new(
+        core: Arc<FtpCore>,
         ftp_stream: bounded::Object<Manager>,
         target_path: String,
         tmp_path: Option<String>,
@@ -64,6 +74,9 @@ impl FtpWriter {
             data_stream: None,
             started: false,
             done: false,
+            core,
+            publishing: false,
+            backup: None,
         }
     }
 
@@ -94,37 +107,82 @@ impl FtpWriter {
     /// Puts the finished temp file at the target. If the server won't rename onto an existing
     /// file, the old one is moved aside first and put back if anything fails.
     async fn publish(&mut self, tmp: &str) -> Result<()> {
+        self.publishing = true;
         let target = self.target_path.clone();
-        let conn = self.conn()?;
-        let Err(first) = conn.rename(tmp, &target).await else {
+        let Err(first) = self.conn()?.rename(tmp, &target).await else {
             return Ok(());
         };
+        // Recorded before the move, so a cut mid-command can still put the old file back.
         let backup = temp_beside(&target, "old-");
+        self.backup = Some(backup.clone());
+        let conn = self.conn()?;
         if conn.rename(&target, &backup).await.is_err() {
             let _ = conn.rm(tmp).await;
+            self.backup = None;
             return Err(format_ftp_error(first));
         }
         if let Err(e) = conn.rename(tmp, &target).await {
             let _ = conn.rename(&backup, &target).await;
             let _ = conn.rm(tmp).await;
+            self.backup = None;
             return Err(format_ftp_error(e));
         }
         let _ = conn.rm(&backup).await;
+        self.backup = None;
         Ok(())
     }
 
     /// Ends a started upload that won't be published and deletes its temp file.
     async fn discard(&mut self) {
         self.done = true;
-        let (Some(mut conn), data) = (self.ftp_stream.take(), self.data_stream.take()) else {
-            return;
-        };
-        cleanup(
-            &mut conn,
-            data,
+        self.abandoned().await;
+    }
+
+    fn abandoned(&mut self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        abandon(
+            self.core.clone(),
+            self.ftp_stream.take(),
+            self.data_stream.take(),
+            self.target_path.clone(),
             self.tmp_path.clone().filter(|_| self.started),
+            self.backup.take(),
+            self.publishing,
         )
-        .await;
+    }
+}
+
+/// Cleans up an upload that won't finish. A cut publish may have left its connection
+/// mid-command, so it recovers on a fresh one: the old file goes back if the target is gone.
+async fn abandon(
+    core: Arc<FtpCore>,
+    conn: Option<bounded::Object<Manager>>,
+    data: Option<Box<dyn AsyncWrite + Sync + Send + Unpin + 'static>>,
+    target: String,
+    tmp: Option<String>,
+    backup: Option<String>,
+    publishing: bool,
+) {
+    if !publishing {
+        if let Some(mut conn) = conn {
+            cleanup(&mut conn, data, tmp).await;
+        }
+        return;
+    }
+    drop((conn, data));
+    let Ok(mut conn) = core.ftp_connect(Operation::Write).await else {
+        return;
+    };
+    if let Some(backup) = backup {
+        if conn.size(&backup).await.is_ok() {
+            if conn.size(&target).await.is_ok() {
+                let _ = conn.rm(&backup).await;
+            } else {
+                let _ = conn.rename(&backup, &target).await;
+            }
+        }
+    }
+    if let Some(tmp) = tmp {
+        let _ = conn.rm(&tmp).await;
     }
 }
 
@@ -147,15 +205,9 @@ impl Drop for FtpWriter {
         if self.done || !self.started || self.tmp_path.is_none() {
             return;
         }
-        let (Some(mut conn), data, tmp) = (
-            self.ftp_stream.take(),
-            self.data_stream.take(),
-            self.tmp_path.clone(),
-        ) else {
-            return;
-        };
+        let abandoned = self.abandoned();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move { cleanup(&mut conn, data, tmp).await });
+            rt.spawn(abandoned);
         }
     }
 }

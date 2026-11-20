@@ -29,6 +29,10 @@ pub struct FakeOpts {
     pub tls: Option<Arc<rustls::ServerConfig>>,
     /// Answer `AUTH TLS` with 502.
     pub refuse_auth_tls: bool,
+    /// The folder a login lands in.
+    pub home: String,
+    /// Wait this long before answering `RNTO` (after doing it).
+    pub rnto_delay: Option<std::time::Duration>,
 }
 
 impl Default for FakeOpts {
@@ -39,6 +43,8 @@ impl Default for FakeOpts {
             refuse_rnto_over_existing: false,
             tls: None,
             refuse_auth_tls: false,
+            home: "/".into(),
+            rnto_delay: None,
         }
     }
 }
@@ -98,7 +104,7 @@ impl FakeFtp {
                     opts: opts.clone(),
                     log: l.clone(),
                     fs: f.clone(),
-                    cwd: "/".into(),
+                    cwd: opts.home.clone(),
                     pasv: None,
                     rest: 0,
                     rnfr: None,
@@ -570,6 +576,9 @@ impl Session {
                             true
                         }
                     };
+                    if let Some(delay) = self.opts.rnto_delay {
+                        tokio::time::sleep(delay).await;
+                    }
                     if moved {
                         self.say("250 Rename successful").await
                     } else {

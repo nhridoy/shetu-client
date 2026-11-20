@@ -205,6 +205,15 @@ mod err {
             FtpError::UnexpectedResponse(ref resp) if resp.status == Status::FileUnavailable => {
                 (ErrorKind::NotFound, false)
             }
+            // Shetu: a refused login won't pass on retry (and retries can lock the address out).
+            FtpError::UnexpectedResponse(ref resp)
+                if matches!(
+                    resp.status,
+                    Status::NotLoggedIn | Status::StoringNeedAccount
+                ) =>
+            {
+                (ErrorKind::PermissionDenied, false)
+            }
             // Allow retry bad response.
             FtpError::BadResponse => (ErrorKind::Unexpected, true),
             _ => (ErrorKind::Unexpected, false),

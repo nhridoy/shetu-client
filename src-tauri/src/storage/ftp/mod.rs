@@ -300,4 +300,63 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert!(fake.names().is_empty(), "{:?}", fake.names());
     }
+
+    #[tokio::test]
+    async fn a_relative_root_starts_from_the_login_folder() {
+        let fake = FakeFtp::start(FakeOpts {
+            home: "/home/me".into(),
+            ..FakeOpts::default()
+        })
+        .await;
+        for dir in ["/home", "/home/me", "/home/me/public_html"] {
+            fake.put(dir, Node::Dir);
+        }
+        fake.put("/home/me/public_html/a.txt", Node::File(b"abc".to_vec()));
+        let op = with(&fake, "public_html", "relative-root");
+        assert_eq!(entries(&op, "/").await, vec![("a.txt".into(), 3)]);
+    }
+
+    #[tokio::test]
+    async fn a_pause_while_replacing_keeps_a_file_at_the_target() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            rnto_delay: Some(std::time::Duration::from_millis(150)),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        let op = plain(&fake);
+        let mut w = op.writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        // Cut the close after the old file was moved aside, before the new one is in.
+        let cut = tokio::time::timeout(std::time::Duration::from_millis(250), w.close()).await;
+        assert!(cut.is_err(), "the close should still be running");
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        assert!(
+            matches!(fake.get("/site/index.html"), Some(Node::File(_))),
+            "{:?}",
+            fake.names()
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_not_retried() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        let op = Operator::new(
+            Ftp::default()
+                .endpoint(&format!("ftp://127.0.0.1:{}", fake.port))
+                .user("me")
+                .password("nope"),
+        )
+        .unwrap();
+        let err = op.list("/").await.unwrap_err();
+        assert_eq!(err.kind(), opendal::ErrorKind::PermissionDenied, "{err}");
+        assert!(matches!(
+            crate::transfers::io::opendal_err("list", err),
+            crate::transfers::model::JobError::Operation(_)
+        ));
+    }
 }
