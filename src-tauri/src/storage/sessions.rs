@@ -16,6 +16,8 @@ const READ_MAX: u64 = 10 * 1024 * 1024;
 #[derive(Default)]
 pub struct StorageSessions {
     open: Mutex<HashMap<String, (StorageRef, Operator)>>,
+    /// Advanced by every sign-out, under the `open` lock.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 /// An operator for a saved account's bucket, built from the encrypted store.
@@ -34,10 +36,22 @@ impl StorageSessions {
         self.open.lock().ok()?.get(sid).cloned()
     }
 
-    pub fn insert(&self, sid: String, r: StorageRef, op: Operator) {
-        if let Ok(mut open) = self.open.lock() {
-            open.insert(sid, (r, op));
+    /// Taken when a connect starts; see `insert_if`.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Stores a session only if no sign-out happened since `started`, so a connect still in
+    /// flight at sign-out can't leave a bucket (and its credentials) open afterwards.
+    pub fn insert_if(&self, started: u64, sid: String, r: StorageRef, op: Operator) -> bool {
+        let Ok(mut open) = self.open.lock() else {
+            return false;
+        };
+        if self.generation() != started {
+            return false;
         }
+        open.insert(sid, (r, op));
+        true
     }
 
     pub fn remove(&self, sid: &str) {
@@ -50,6 +64,8 @@ impl StorageSessions {
     pub fn clear(&self) {
         if let Ok(mut open) = self.open.lock() {
             open.clear();
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -88,18 +104,18 @@ pub async fn storage_connect(
     crypto: tauri::State<'_, CryptoState>,
     sessions: Sessions<'_>,
 ) -> Result<String, String> {
+    let started = sessions.generation();
     let account = load_account(&db, &crypto, &account_id)?;
     let op = operator_for(&account)?;
     ops::check_access(&op).await?;
     let bucket = account.bucket.clone();
-    sessions.insert(
-        session_id,
-        StorageRef {
-            account_id,
-            bucket: account.bucket,
-        },
-        op,
-    );
+    let r = StorageRef {
+        account_id,
+        bucket: account.bucket,
+    };
+    if !sessions.insert_if(started, session_id, r, op) {
+        return Err("Signed out while the bucket was opening".into());
+    }
     Ok(bucket)
 }
 
@@ -236,10 +252,27 @@ mod tests {
             account_id: "a".into(),
             bucket: "b".into(),
         };
-        s.insert("pane-1".into(), r.clone(), op);
+        assert!(s.insert_if(s.generation(), "pane-1".into(), r.clone(), op));
         assert_eq!(s.get("pane-1").map(|(seen, _)| seen), Some(r));
         s.clear();
         assert!(s.get("pane-1").is_none());
         assert!(s.op("pane-1").is_err());
+    }
+
+    #[test]
+    fn a_connect_from_before_sign_out_is_not_kept() {
+        let s = StorageSessions::default();
+        let op = || Operator::new(opendal::services::Memory::default()).unwrap();
+        let r = StorageRef {
+            account_id: "a".into(),
+            bucket: "b".into(),
+        };
+        let started = s.generation();
+        s.clear();
+        assert!(!s.insert_if(started, "pane-1".into(), r.clone(), op()));
+        assert!(s.get("pane-1").is_none());
+        let started = s.generation();
+        assert!(s.insert_if(started, "pane-1".into(), r, op()));
+        assert!(s.get("pane-1").is_some());
     }
 }

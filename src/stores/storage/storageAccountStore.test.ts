@@ -74,4 +74,36 @@ describe("storageAccountStore", () => {
     expect(deleteRow).toHaveBeenCalledWith("storage_accounts", "s1");
     expect(useStorageAccountStore.getState().accounts).toEqual([]);
   });
+
+  it("drops one vault's accounts when another vault is shown", async () => {
+    useStorageAccountStore.setState({
+      accounts: [{ id: "s1", name: "Backups", vaultId: "v1" }],
+    });
+    useVaultStore.setState({ currentVaultId: "v2" });
+    vi.mocked(listRows).mockRejectedValueOnce(new Error("offline"));
+    await useStorageAccountStore.getState().fetchStorageAccounts();
+    expect(useStorageAccountStore.getState().accounts).toEqual([]);
+    useStorageAccountStore.setState({
+      accounts: [{ id: "s1", name: "Backups", vaultId: "v1" }],
+    });
+    useVaultStore.setState({ currentVaultId: null });
+    await useStorageAccountStore.getState().fetchStorageAccounts();
+    expect(useStorageAccountStore.getState().accounts).toEqual([]);
+  });
+
+  it("a save that lands after a vault switch doesn't join the new vault's list", async () => {
+    let finish: (v: unknown) => void = () => {};
+    h.invoke.mockImplementationOnce(
+      () => new Promise((r) => (finish = r)) as never,
+    );
+    const saving = useStorageAccountStore
+      .getState()
+      .save(null, "Backups", { bucket: "b" });
+    await Promise.resolve();
+    useVaultStore.setState({ currentVaultId: "v2" });
+    useStorageAccountStore.setState({ accounts: [] });
+    finish(row);
+    await saving;
+    expect(useStorageAccountStore.getState().accounts).toEqual([]);
+  });
 });

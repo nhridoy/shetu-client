@@ -15,6 +15,7 @@ import type { FileItem } from "@/types/sftp/sftpTypes";
 
 export const COMPARE_CAP = 20000;
 export const TOO_MANY = "Too many files to compare; pick a smaller folder";
+const BUCKET_STATS_AT_ONCE = 8;
 
 /** One side of a comparison: a pane's provider and the folder it shows. */
 export interface CompareSide {
@@ -65,10 +66,15 @@ export async function withBucketTimes(
     ] as const
   ).filter(([, side]) => side.kind === "storage");
   if (buckets.length === 0) return rows;
-  return Promise.all(
-    rows.map(async (row) => {
-      if (row.status !== "differs") return row;
-      let next = row;
+  const out = [...rows];
+  let next = 0;
+  // A few requests at a time: thousands of changed rows mustn't all hit the bucket at once.
+  const worker = async () => {
+    while (next < out.length) {
+      const i = next++;
+      const row = out[i];
+      if (row.status !== "differs") continue;
+      let timed = row;
       for (const [key, side] of buckets) {
         const there = row[key];
         if (!there) continue;
@@ -77,12 +83,15 @@ export async function withBucketTimes(
             path: string,
           ): Promise<{ size: number; mtime: number } | null>;
         };
-        const times = await bucket.statTimes(joinPath(side.root, row.path));
-        if (times) next = { ...next, [key]: { ...there, mtime: times.mtime } };
+        const times = await bucket.statTimes(under(side, row.path));
+        if (times)
+          timed = { ...timed, [key]: { ...there, mtime: times.mtime } };
       }
-      return next;
-    }),
-  );
+      out[i] = timed;
+    }
+  };
+  await Promise.all(Array.from({ length: BUCKET_STATS_AT_ONCE }, worker));
+  return out;
 }
 
 /** Changed rows whose copy on the target side is newer: Sync would replace them. */
@@ -108,7 +117,13 @@ export function copyable(
 }
 
 const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
-const under = (root: string, rel: string) => (rel ? joinPath(root, rel) : root);
+/** A row's path on a side. Bucket keys always use `/` (a `\\` there is part of a name). */
+const under = (side: CompareSide, rel: string) =>
+  !rel
+    ? side.root
+    : side.kind === "storage"
+      ? `${side.root.replace(/\/+$/, "")}/${rel}`
+      : joinPath(side.root, rel);
 
 /** Copies rows across, keeping their relative paths. Changed files replace the target (the
  * arrow was the user's explicit choice); new files never overwrite anything. Never deletes. */
@@ -129,7 +144,7 @@ export async function copyRows(
     (a, b) => a.split("/").length - b.split("/").length,
   );
   if (dirs.length > 0)
-    await to.provider.mkdirAll(dirs.map((d) => under(to.root, d)));
+    await to.provider.mkdirAll(dirs.map((d) => under(to, d)));
 
   const groups = new Map<string, CompareRow[]>();
   for (const r of picked.filter((r) => !r.isDir)) {
@@ -140,7 +155,7 @@ export async function copyRows(
   for (const [parent, group] of groups) {
     const files: FileItem[] = group.map((r) => {
       const e = (direction === "right" ? r.left : r.right) as CompareEntry;
-      const path = under(from.root, r.path);
+      const path = under(from, r.path);
       return {
         name: r.path.split("/").pop() ?? r.path,
         path,
@@ -156,14 +171,14 @@ export async function copyRows(
     const overrides = new Map(
       group
         .filter((r) => r.status === "differs")
-        .map((r) => [under(from.root, r.path), { action: "replace" as const }]),
+        .map((r) => [under(from, r.path), { action: "replace" as const }]),
     );
     results.push(
       ...(await transferFiles({
         source: from.provider,
         dest: to.provider,
         files,
-        destPath: under(to.root, parent),
+        destPath: under(to, parent),
         mode: "copy",
         overrides,
         silent: true,
@@ -178,5 +193,5 @@ export async function deleteEntry(
   side: CompareSide,
   path: string,
 ): Promise<void> {
-  await side.provider.removeFile(under(side.root, path));
+  await side.provider.removeFile(under(side, path));
 }

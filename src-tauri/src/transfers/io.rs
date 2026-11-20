@@ -160,14 +160,17 @@ pub(crate) static REMOTE_ABORTS: std::sync::atomic::AtomicUsize =
 struct RemoteWriter(Option<opendal::Writer>);
 
 impl RemoteWriter {
+    /// The writer stays owned until the abort finishes: if this is dropped mid-abort (a pause
+    /// during a slow abort), `Drop` still aborts it.
     async fn abort(&mut self) {
-        if let Some(mut w) = self.0.take() {
+        if let Some(w) = self.0.as_mut() {
             #[cfg(test)]
             REMOTE_ABORTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Err(e) = w.abort().await {
                 log::warn!("transfers: couldn't abort a bucket upload: {e}");
             }
         }
+        self.0 = None;
     }
 }
 

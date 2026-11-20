@@ -46,7 +46,25 @@ export function sideOf(paneId: string): CompareSide | null {
   };
 }
 
+/** What a pane is connected to; a change means the rows no longer describe it. */
+function connectionOf(paneId: string): string {
+  const root = useSftpStore.getState().root;
+  const leaf = root ? findLeaf(root, paneId) : null;
+  if (leaf?.type !== "leaf") return "";
+  return [
+    leaf.connectionType,
+    leaf.hostId,
+    leaf.storageAccountId,
+    leaf.localPath,
+  ].join("|");
+}
+
 export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
+  // A pane that reconnects elsewhere (another host or bucket) is listed again, so no row or
+  // action can apply one connection's paths to another.
+  const connections = useSftpStore(
+    () => `${connectionOf(leftPaneId)}#${connectionOf(rightPaneId)}`,
+  );
   // The rows and the folders they came from, set together: every action uses the folders of
   // the rows it was rendered with.
   const [shown, setShown] = useState<{
@@ -115,9 +133,10 @@ export function useFolderCompare(leftPaneId: string, rightPaneId: string) {
     [rescan, sides],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a connection change rescans
   useEffect(() => {
     void rescan();
-  }, [rescan]);
+  }, [rescan, connections]);
 
   return { rows, sides, loading, error, rescan, cancel, copy, remove };
 }

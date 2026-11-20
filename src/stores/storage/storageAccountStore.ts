@@ -74,6 +74,9 @@ export const useStorageAccountStore = create<StorageAccountState>(
 
     fetchStorageAccounts: async (vaultId) => {
       const vid = vaultId ?? useVaultStore.getState().currentVaultId;
+      // Another vault's (or no vault's) accounts are never shown, even if this fetch fails.
+      if (!vid || get().accounts.some((a) => a.vaultId !== vid))
+        set({ accounts: [] });
       if (!vid) return;
       try {
         const rows = await listRows("storage_accounts", vid);
@@ -106,6 +109,9 @@ export const useStorageAccountStore = create<StorageAccountState>(
           deviceId: await getDeviceId(),
         });
         notifyLocalMutation("storage_accounts", row.vault_id);
+        // The user moved to another vault meanwhile: its list isn't this account's.
+        if (row.vault_id !== useVaultStore.getState().currentVaultId)
+          return true;
         const saved = fromRow(row);
         set({
           accounts: id

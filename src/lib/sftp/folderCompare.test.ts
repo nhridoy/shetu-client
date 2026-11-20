@@ -16,6 +16,7 @@ import {
   type CompareSide,
   copyable,
   copyRows,
+  deleteEntry,
   listSide,
   loadComparison,
   newerOnTarget,
@@ -272,5 +273,53 @@ describe("folderCompare", () => {
     const timed = await withBucketTimes(rows, bucket, local);
     expect(statTimes).toHaveBeenCalledWith("/b/a.txt");
     expect(newerOnTarget(timed, "right")).toHaveLength(1);
+  });
+
+  it("joins bucket keys with / even when a name holds a backslash", async () => {
+    const statTimes = vi.fn(async () => null);
+    const removeFile = vi.fn(async () => {});
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes, removeFile } as never),
+      root: "/r",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    await withBucketTimes([row("a\\b.txt", "differs")], local, bucket);
+    expect(statTimes).toHaveBeenCalledWith("/r/a\\b.txt");
+    await deleteEntry(bucket, "a\\b.txt");
+    expect(removeFile).toHaveBeenCalledWith("/r/a\\b.txt");
+  });
+
+  it("asks a bucket for a few times at once, not all", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const statTimes = vi.fn(async () => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return null;
+    });
+    const bucket: CompareSide = {
+      kind: "storage",
+      provider: provider({ statTimes } as never),
+      root: "/r",
+    };
+    const local: CompareSide = {
+      kind: "local",
+      provider: provider(),
+      root: "/l",
+    };
+    const rows = Array.from({ length: 40 }, (_, i) =>
+      row(`f${i}.txt`, "differs"),
+    );
+    const out = await withBucketTimes(rows, local, bucket);
+    expect(statTimes).toHaveBeenCalledTimes(40);
+    expect(most).toBeLessThanOrEqual(8);
+    expect(out.map((r) => r.path)).toEqual(rows.map((r) => r.path));
   });
 });

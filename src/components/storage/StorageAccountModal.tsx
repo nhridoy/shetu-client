@@ -96,6 +96,8 @@ export default function StorageAccountModal({
     name: account === "new" ? "" : account.name,
   });
   const [hasSecret, setHasSecret] = useState(false);
+  // An edit starts locked until the saved values arrive, so they can't overwrite typing.
+  const [loaded, setLoaded] = useState(account === "new");
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,7 +111,12 @@ export default function StorageAccountModal({
       .getState()
       .view(id)
       .then((v) => {
-        if (!live || !v) return;
+        if (!live) return;
+        if (!v) {
+          setError("Couldn't load this account");
+          return;
+        }
+        setLoaded(true);
         setHasSecret(v.hasSecret);
         setForm((f) => ({
           ...f,
@@ -175,140 +182,144 @@ export default function StorageAccountModal({
       title={id ? "Edit storage account" : "New storage account"}
     >
       <form
-        className="space-y-2 text-sm"
+        className="text-sm"
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <Field>
-          <FieldLabel htmlFor={`${uid}-name`}>Name</FieldLabel>
-          <Input
-            id={`${uid}-name`}
-            name="name"
-            value={form.name}
-            onChange={text("name")}
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${uid}-provider`}>Provider</FieldLabel>
-          <select
-            id={`${uid}-provider`}
-            name="provider"
-            className={selectClass}
-            value={form.provider}
-            onChange={(e) => set("provider")(e.target.value as StorageProvider)}
-          >
-            {PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {form.provider === "r2" && (
+        <fieldset disabled={!loaded} className="space-y-2">
           <Field>
-            <FieldLabel htmlFor={`${uid}-r2AccountId`}>
-              Cloudflare account ID
+            <FieldLabel htmlFor={`${uid}-name`}>Name</FieldLabel>
+            <Input
+              id={`${uid}-name`}
+              name="name"
+              value={form.name}
+              onChange={text("name")}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${uid}-provider`}>Provider</FieldLabel>
+            <select
+              id={`${uid}-provider`}
+              name="provider"
+              className={selectClass}
+              value={form.provider}
+              onChange={(e) =>
+                set("provider")(e.target.value as StorageProvider)
+              }
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {form.provider === "r2" && (
+            <Field>
+              <FieldLabel htmlFor={`${uid}-r2AccountId`}>
+                Cloudflare account ID
+              </FieldLabel>
+              <Input
+                id={`${uid}-r2AccountId`}
+                name="r2AccountId"
+                value={form.r2AccountId}
+                onChange={text("r2AccountId")}
+              />
+            </Field>
+          )}
+          {form.provider !== "r2" && (
+            <Field>
+              <FieldLabel htmlFor={`${uid}-region`}>Region</FieldLabel>
+              <Input
+                id={`${uid}-region`}
+                name="region"
+                value={form.region}
+                placeholder="us-east-1"
+                onChange={text("region")}
+              />
+            </Field>
+          )}
+          <Field>
+            <FieldLabel htmlFor={`${uid}-endpoint`}>Endpoint</FieldLabel>
+            <Input
+              id={`${uid}-endpoint`}
+              name="endpoint"
+              value={custom ? form.endpoint : presetEndpoint(form)}
+              readOnly={!custom}
+              placeholder="https://minio.example.com"
+              onChange={text("endpoint")}
+            />
+          </Field>
+          {custom && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                name="pathStyle"
+                checked={form.pathStyle}
+                onCheckedChange={set("pathStyle")}
+                aria-label="Path-style addressing"
+              />
+              <span className="text-dark-300">
+                Path-style addressing (MinIO usually needs this)
+              </span>
+            </div>
+          )}
+          <Field>
+            <FieldLabel htmlFor={`${uid}-bucket`}>Bucket</FieldLabel>
+            <Input
+              id={`${uid}-bucket`}
+              name="bucket"
+              value={form.bucket}
+              onChange={text("bucket")}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${uid}-accessKeyId`}>Access key</FieldLabel>
+            <Input
+              id={`${uid}-accessKeyId`}
+              name="accessKeyId"
+              value={form.accessKeyId}
+              autoComplete="off"
+              onChange={text("accessKeyId")}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${uid}-secretAccessKey`}>
+              Secret key{hasSecret && " (Saved — leave empty to keep it)"}
             </FieldLabel>
             <Input
-              id={`${uid}-r2AccountId`}
-              name="r2AccountId"
-              value={form.r2AccountId}
-              onChange={text("r2AccountId")}
+              id={`${uid}-secretAccessKey`}
+              name="secretAccessKey"
+              type="password"
+              value={form.secretAccessKey}
+              autoComplete="off"
+              onChange={text("secretAccessKey")}
             />
           </Field>
-        )}
-        {form.provider !== "r2" && (
-          <Field>
-            <FieldLabel htmlFor={`${uid}-region`}>Region</FieldLabel>
-            <Input
-              id={`${uid}-region`}
-              name="region"
-              value={form.region}
-              placeholder="us-east-1"
-              onChange={text("region")}
-            />
-          </Field>
-        )}
-        <Field>
-          <FieldLabel htmlFor={`${uid}-endpoint`}>Endpoint</FieldLabel>
-          <Input
-            id={`${uid}-endpoint`}
-            name="endpoint"
-            value={custom ? form.endpoint : presetEndpoint(form)}
-            readOnly={!custom}
-            placeholder="https://minio.example.com"
-            onChange={text("endpoint")}
-          />
-        </Field>
-        {custom && (
-          <div className="flex items-center gap-2">
-            <Checkbox
-              name="pathStyle"
-              checked={form.pathStyle}
-              onCheckedChange={set("pathStyle")}
-              aria-label="Path-style addressing"
-            />
-            <span className="text-dark-300">
-              Path-style addressing (MinIO usually needs this)
-            </span>
+          <p className="text-xs text-dark-400">
+            Interrupted uploads can leave parts in the bucket. Add a lifecycle
+            rule to delete incomplete multipart uploads after a few days.
+          </p>
+          {testResult && <p className="text-xs text-green-400">{testResult}</p>}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy || !loaded}
+              onClick={() => void runTest()}
+            >
+              Test connection
+            </Button>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy || !loaded}>
+              Save
+            </Button>
           </div>
-        )}
-        <Field>
-          <FieldLabel htmlFor={`${uid}-bucket`}>Bucket</FieldLabel>
-          <Input
-            id={`${uid}-bucket`}
-            name="bucket"
-            value={form.bucket}
-            onChange={text("bucket")}
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${uid}-accessKeyId`}>Access key</FieldLabel>
-          <Input
-            id={`${uid}-accessKeyId`}
-            name="accessKeyId"
-            value={form.accessKeyId}
-            autoComplete="off"
-            onChange={text("accessKeyId")}
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${uid}-secretAccessKey`}>
-            Secret key{hasSecret && " (Saved — leave empty to keep it)"}
-          </FieldLabel>
-          <Input
-            id={`${uid}-secretAccessKey`}
-            name="secretAccessKey"
-            type="password"
-            value={form.secretAccessKey}
-            autoComplete="off"
-            onChange={text("secretAccessKey")}
-          />
-        </Field>
-        <p className="text-xs text-dark-400">
-          Interrupted uploads can leave parts in the bucket. Add a lifecycle
-          rule to delete incomplete multipart uploads after a few days.
-        </p>
-        {testResult && <p className="text-xs text-green-400">{testResult}</p>}
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={busy}
-            onClick={() => void runTest()}
-          >
-            Test connection
-          </Button>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={busy}>
-            Save
-          </Button>
-        </div>
+        </fieldset>
       </form>
     </Modal>
   );

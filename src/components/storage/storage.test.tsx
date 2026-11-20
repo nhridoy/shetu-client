@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
+import StorageAccountList from "./StorageAccountList";
 import StorageAccountModal from "./StorageAccountModal";
 
 (
@@ -134,5 +135,47 @@ describe("StorageAccountModal", () => {
       unknown
     >;
     expect("secretAccessKey" in patch).toBe(false);
+  });
+
+  it("can't save an edit before the saved account has loaded", async () => {
+    let finish: (v: unknown) => void = () => {};
+    h.invoke.mockImplementation(
+      () => new Promise((r) => (finish = r)) as never,
+    );
+    useStorageAccountStore.setState({
+      save,
+      test,
+      view: (id: string) => h.invoke("storage_account_view", { id }),
+    } as never);
+    await render(
+      <StorageAccountModal
+        account={{ id: "s1", name: "Photos", vaultId: "v1" }}
+        onClose={() => {}}
+      />,
+    );
+    expect(button("Save")?.disabled).toBe(true);
+    await act(async () =>
+      finish({
+        provider: "aws",
+        endpoint: null,
+        region: "us-east-1",
+        bucket: "photos",
+        pathStyle: false,
+        r2AccountId: null,
+        accessKeyId: "AKIA",
+        hasSecret: true,
+      }),
+    );
+    expect(button("Save")?.disabled).toBe(false);
+  });
+
+  it("shows list errors instead of an empty list", async () => {
+    useStorageAccountStore.setState({
+      accounts: [],
+      error: "Couldn't delete: offline",
+      fetchStorageAccounts: async () => {},
+    } as never);
+    await render(<StorageAccountList />);
+    expect(text()).toContain("Couldn't delete: offline");
   });
 });

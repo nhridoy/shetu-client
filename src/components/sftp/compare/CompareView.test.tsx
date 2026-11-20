@@ -8,12 +8,16 @@ const mocks = vi.hoisted(() => ({
   loadComparison: vi.fn(),
   copyRows: vi.fn(async () => []),
   deleteEntry: vi.fn(async () => {}),
+  withBucketTimes: vi.fn(async (rows: unknown) => rows),
+  toastError: vi.fn(),
 }));
+vi.mock("sonner", () => ({ toast: { error: mocks.toastError } }));
 vi.mock("@/lib/sftp/folderCompare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/sftp/folderCompare")>()),
   loadComparison: mocks.loadComparison,
   copyRows: mocks.copyRows,
   deleteEntry: mocks.deleteEntry,
+  withBucketTimes: mocks.withBucketTimes,
 }));
 
 import { useFileBrowserStore } from "@/stores/sftp/fileBrowserStore";
@@ -186,5 +190,64 @@ describe("CompareView", () => {
     await render();
     expect(text()).toContain("Permission denied");
     expect(document.querySelectorAll("[data-compare-row]")).toHaveLength(0);
+  });
+
+  it("names a bucket pane by its account", async () => {
+    useSftpStore.setState({
+      root: {
+        type: "split",
+        id: "s",
+        direction: "horizontal",
+        children: [
+          { type: "leaf", id: "L", connectionType: "local", size: 50 },
+          {
+            type: "leaf",
+            id: "R",
+            connectionType: "storage",
+            storageAccountId: "a1",
+            storageName: "Photos",
+            size: 50,
+          },
+        ],
+      } as never,
+    });
+    await render();
+    expect(text()).toContain("Photos: /var/www/site");
+  });
+
+  it("says so and copies nothing when the newer-file check can't run", async () => {
+    mocks.withBucketTimes.mockRejectedValueOnce(new Error("stat: timed out"));
+    await render();
+    await click(button("Copy to right", rowEl("index.html")));
+    expect(mocks.copyRows).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.stringContaining("timed out"),
+    );
+  });
+
+  it("rescans when a pane connects somewhere else", async () => {
+    await render();
+    expect(mocks.loadComparison).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      useSftpStore.setState({
+        root: {
+          type: "split",
+          id: "s",
+          direction: "horizontal",
+          children: [
+            { type: "leaf", id: "L", connectionType: "local", size: 50 },
+            {
+              type: "leaf",
+              id: "R",
+              connectionType: "host",
+              hostId: "h2",
+              hostName: "web-02",
+              size: 50,
+            },
+          ],
+        } as never,
+      }),
+    );
+    expect(mocks.loadComparison).toHaveBeenCalledTimes(2);
   });
 });

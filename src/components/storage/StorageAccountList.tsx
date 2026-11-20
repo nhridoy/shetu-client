@@ -14,6 +14,7 @@ import { useVaultStore } from "@/stores/vault/vaultStore";
 /** S3-compatible bucket accounts, opened from a file pane's "Connect Bucket". */
 export default function StorageAccountList() {
   const accounts = useStorageAccountStore((s) => s.accounts);
+  const error = useStorageAccountStore((s) => s.error);
   const currentVaultId = useVaultStore((s) => s.currentVaultId);
   const [editing, setEditing] = useState<StorageAccount | "new" | null>(null);
   const [deleting, setDeleting] = useState<StorageAccount | null>(null);
@@ -42,6 +43,11 @@ export default function StorageAccountList() {
         </Button>
       </SectionHeader>
 
+      {error && (
+        <p role="alert" className="mb-3 text-xs text-red-400">
+          {error}
+        </p>
+      )}
       {accounts.length === 0 ? (
         <EmptyState
           icon={CloudIcon}
