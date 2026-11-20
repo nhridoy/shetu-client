@@ -49,6 +49,118 @@ impl DavTarget {
     }
 }
 
+/// What a WebDAV upload's reply means for the job (`None`: it landed).
+pub fn status_error(status: u16) -> Option<crate::transfers::model::JobError> {
+    use crate::transfers::model::{JobError, DEST_CHANGED};
+    let operation = |why: &str| Some(JobError::Operation(why.to_string()));
+    match status {
+        200 | 201 | 204 => None,
+        401 => operation("upload: the server refused the username or password"),
+        403 => operation("upload: the server refused to write there"),
+        404 | 409 => operation("upload: the folder doesn't exist on the server"),
+        405 => operation("upload: the server doesn't allow uploads there"),
+        412 => Some(JobError::Operation(DEST_CHANGED.into())),
+        code => Some(JobError::Connection(format!(
+            "upload: the server answered {code}"
+        ))),
+    }
+}
+
+fn request_error(e: reqwest013::Error) -> crate::transfers::model::JobError {
+    use crate::transfers::model::JobError;
+    if crate::storage::tls::is_cert_error(&e) {
+        return JobError::Operation(crate::storage::tls::CERT_UNTRUSTED.into());
+    }
+    JobError::Connection(format!("upload: {e}"))
+}
+
+type Chunk = Result<Vec<u8>, std::io::Error>;
+
+/// One streaming `PUT`: the body is fed chunk by chunk, so memory stays constant at any size.
+/// Dropping it unfinished aborts the request.
+pub struct DavUpload {
+    tx: Option<tokio::sync::mpsc::Sender<Chunk>>,
+    reply: Option<tokio::task::JoinHandle<Result<u16, reqwest013::Error>>>,
+}
+
+impl DavTarget {
+    pub fn start_put(&self, ui_path: &str, opts: crate::transfers::io::WriteOpts) -> DavUpload {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Chunk>(4);
+        let body = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|chunk| (chunk, rx))
+        });
+        let mut req = self
+            .client
+            .put(self.url_for(ui_path, false))
+            .basic_auth(&self.username, Some(&self.password))
+            .body(reqwest013::Body::wrap_stream(body));
+        // Nextcloud and ownCloud keep the file's own time; other servers ignore it.
+        if opts.mtime > 0 {
+            req = req.header("X-OC-Mtime", opts.mtime.to_string());
+        }
+        if opts.if_not_exists {
+            req = req.header("If-None-Match", "*");
+        }
+        let reply = tokio::spawn(async move { req.send().await.map(|r| r.status().as_u16()) });
+        DavUpload {
+            tx: Some(tx),
+            reply: Some(reply),
+        }
+    }
+}
+
+impl DavUpload {
+    /// The request's outcome, once it ended (early, on a refusal or a dropped connection).
+    async fn outcome(&mut self) -> Result<(), crate::transfers::model::JobError> {
+        use crate::transfers::model::JobError;
+        let Some(reply) = self.reply.take() else {
+            return Err(JobError::Stopped);
+        };
+        match reply.await {
+            Ok(Ok(status)) => status_error(status).map_or(Ok(()), Err),
+            Ok(Err(e)) => Err(request_error(e)),
+            Err(_) => Err(JobError::Stopped),
+        }
+    }
+
+    pub async fn send(&mut self, chunk: Vec<u8>) -> Result<(), crate::transfers::model::JobError> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Err(crate::transfers::model::JobError::Stopped);
+        };
+        if tx.send(Ok(chunk)).await.is_err() {
+            // The server ended the request: report why.
+            self.tx = None;
+            return match self.outcome().await {
+                Ok(()) => Err(crate::transfers::model::JobError::Connection(
+                    "upload: the server closed the connection".into(),
+                )),
+                Err(e) => Err(e),
+            };
+        }
+        Ok(())
+    }
+
+    /// Ends the body and waits for the server's answer.
+    pub async fn finish(&mut self) -> Result<(), crate::transfers::model::JobError> {
+        self.tx = None;
+        self.outcome().await
+    }
+
+    /// Stops the request; the server discards (or replaces later) what it got.
+    pub fn abort(&mut self) {
+        self.tx = None;
+        if let Some(reply) = self.reply.take() {
+            reply.abort();
+        }
+    }
+}
+
+impl Drop for DavUpload {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 /// Moves a whole folder in one WebDAV `MOVE`, never over an existing one.
 pub async fn move_dir(t: &DavTarget, from: &str, to: &str) -> Result<(), String> {
     let method = reqwest013::Method::from_bytes(b"MOVE").map_err(|e| e.to_string())?;
@@ -218,5 +330,78 @@ pub(crate) mod tests {
         let (port, _) = dav_server(412).await;
         let err = move_dir(&target(port), "/a", "/b").await.unwrap_err();
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn status_error_maps_webdav_replies() {
+        use crate::transfers::model::{JobError, DEST_CHANGED};
+        assert_eq!(status_error(201), None);
+        assert_eq!(status_error(204), None);
+        assert!(matches!(status_error(401), Some(JobError::Operation(_))));
+        assert_eq!(
+            status_error(412),
+            Some(JobError::Operation(DEST_CHANGED.into()))
+        );
+        assert!(matches!(status_error(507), Some(JobError::Connection(_))));
+    }
+
+    async fn upload(status: u16, opts: crate::transfers::io::WriteOpts, size: usize) -> Seen {
+        use crate::transfers::io::{copy, Side};
+        let (port, seen) = dav_server(status).await;
+        let dir = std::env::temp_dir().join(format!("shetu-dav-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.bin");
+        std::fs::write(&src, vec![7u8; size]).unwrap();
+        let side = Side::Remote(crate::storage::Remote {
+            op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            dav: Some(Arc::new(target(port))),
+        });
+        copy(
+            &Side::Local,
+            &src.display().to_string(),
+            &side,
+            "/big file.bin",
+            0,
+            &tokio_util::sync::CancellationToken::new(),
+            opts,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let got = seen.lock().unwrap()[0].clone();
+        got
+    }
+
+    #[tokio::test]
+    async fn streaming_put_sends_the_whole_body_in_chunks() {
+        let got = upload(
+            201,
+            crate::transfers::io::WriteOpts {
+                mtime: 1_700_000_000,
+                if_not_exists: false,
+            },
+            20 * 1024 * 1024,
+        )
+        .await;
+        assert_eq!(got.line, "PUT /dav/big%20file.bin HTTP/1.1");
+        assert_eq!(got.body_len, 20 * 1024 * 1024);
+        assert_eq!(got.header("x-oc-mtime"), Some("1700000000"));
+        assert_eq!(got.header("if-none-match"), None);
+    }
+
+    #[tokio::test]
+    async fn if_not_exists_sends_if_none_match() {
+        let got = upload(
+            201,
+            crate::transfers::io::WriteOpts {
+                mtime: 0,
+                if_not_exists: true,
+            },
+            10,
+        )
+        .await;
+        assert_eq!(got.header("if-none-match"), Some("*"));
+        assert_eq!(got.header("x-oc-mtime"), None);
     }
 }

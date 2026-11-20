@@ -161,6 +161,8 @@ enum Writer {
     Local(tokio::fs::File),
     Sftp(russh_sftp::client::fs::File),
     Remote(RemoteWriter),
+    /// A WebDAV upload, streamed as one PUT (OpenDAL's WebDAV writer buffers the whole file).
+    Dav(crate::storage::webdav::DavUpload),
 }
 
 #[cfg(test)]
@@ -214,6 +216,7 @@ impl Writer {
                 .await
                 .map_err(|e| opendal_err("write", e)),
             Writer::Remote(RemoteWriter(None)) => Err(JobError::Stopped),
+            Writer::Dav(u) => u.send(buf.to_vec()).await,
         }
     }
 
@@ -238,14 +241,17 @@ impl Writer {
                 r.0 = None;
                 Ok(())
             }
+            Writer::Dav(u) => u.finish().await,
         }
     }
 
     /// A bucket upload that won't finish is aborted, so its parts don't stay billed. Best
     /// effort; files need nothing (the `.part` stays for a resume).
     async fn abort(&mut self) {
-        if let Writer::Remote(r) = self {
-            r.abort().await;
+        match self {
+            Writer::Remote(r) => r.abort().await,
+            Writer::Dav(u) => u.abort(),
+            _ => {}
         }
     }
 }
@@ -339,11 +345,15 @@ async fn open_part(
             Ok(Writer::Sftp(f))
         }
         Side::Remote(Remote { op, dav }) => {
+            // WebDAV streams its own PUT (and never writes metadata, which OpenDAL would send
+            // as a separate PROPPATCH that some servers refuse).
+            if let Some(dav) = dav {
+                return Ok(Writer::Dav(dav.start_put(part, opts)));
+            }
             let can = op.info().capability();
             let path = key(part);
             let mut w = op.writer_with(&path).chunk(REMOTE_PART);
-            // WebDAV would send metadata as a separate PROPPATCH that some servers refuse.
-            if opts.mtime > 0 && can.write_with_user_metadata && dav.is_none() {
+            if opts.mtime > 0 && can.write_with_user_metadata {
                 w = w.user_metadata([(
                     crate::storage::ops::MTIME_KEY.to_string(),
                     opts.mtime.to_string(),
