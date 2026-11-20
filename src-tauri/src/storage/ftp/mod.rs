@@ -214,4 +214,87 @@ mod tests {
             "2024-01-02T03:04:05Z"
         );
     }
+
+    fn leftovers(fake: &FakeFtp) -> Vec<String> {
+        fake.names()
+            .into_iter()
+            .filter(|n| n.contains(".shetu-"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn upload_goes_beside_the_target() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        fake.put("/site", Node::Dir);
+        plain(&fake)
+            .write("site/index.html", b"<h1>hi</h1>".to_vec())
+            .await
+            .unwrap();
+        let cmds = fake.commands();
+        let stor = cmds
+            .iter()
+            .position(|c| c.starts_with("STOR site/.index.html.shetu-"))
+            .unwrap_or_else(|| panic!("{cmds:?}"));
+        assert!(
+            cmds[stor..].iter().any(|c| c == "RNTO site/index.html"),
+            "{cmds:?}"
+        );
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"<h1>hi</h1>".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn replace_deletes_then_renames() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        plain(&fake)
+            .write("site/index.html", b"new".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"new".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn an_empty_upload_creates_the_file() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        let op = plain(&fake);
+        let mut w = op.writer("empty.txt").await.unwrap();
+        w.close().await.unwrap();
+        assert_eq!(fake.get("/empty.txt"), Some(Node::File(Vec::new())));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_upload_leaves_nothing() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        let op = plain(&fake);
+        let mut w = op.writer("cut.bin").await.unwrap();
+        w.write(vec![1u8; 65536]).await.unwrap();
+        w.abort().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+        assert!(fake.get("/cut.bin").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_upload_leaves_nothing() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        let op = plain(&fake);
+        let mut w = op.writer("cut.bin").await.unwrap();
+        w.write(vec![1u8; 65536]).await.unwrap();
+        drop(w);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(fake.names().is_empty(), "{:?}", fake.names());
+    }
 }

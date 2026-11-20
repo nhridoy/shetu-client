@@ -15,3 +15,8 @@ Every change Shetu made to these files is listed here.
 - Listing and stat go through `listing.rs` (new): `MLSD` when `FEAT` advertises it (exact times),
   else `LIST -a` (dot-files), else `LIST`; `.`/`..` are skipped; MLSD's `type=OS.unix=slink:` is
   read as a link; each symlink is resolved once with `SIZE` (a size = file, otherwise folder).
+- Uploads `STOR` to a hidden temp name in the target's own folder (`.<name>.shetu-<id>`, upstream
+  put it in the root and used `APPE`). On publish, a server that refuses to rename onto an existing
+  file has the old file moved aside first, restored if anything fails, then deleted. `abort` and
+  dropping an unfinished writer let the cut transfer end and delete the temp file (upstream's
+  `abort` was unsupported). An upload with no writes still creates the empty file.

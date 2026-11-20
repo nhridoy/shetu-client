@@ -148,7 +148,8 @@ impl FtpLazyWriter {
                 }
             }
 
-            let tmp_path = (!self.append).then_some(build_tmp_path_of(&self.path));
+            // Shetu: the temp file sits beside the target, not in the root.
+            let tmp_path = (!self.append).then(|| super::writer::temp_beside(&self.path, ""));
             let w = FtpWriter::new(ftp_stream, self.path.clone(), tmp_path);
             self.inner = Some(w);
         }
@@ -163,19 +164,14 @@ impl oio::Write for FtpLazyWriter {
     }
 
     async fn close(&mut self) -> Result<Metadata> {
-        match &mut self.inner {
-            Some(w) => w.close().await,
-            None => Ok(MetadataBuilder::unknown().build()),
-        }
+        // Shetu: an upload with no writes still creates the file.
+        self.inner().await?.close().await
     }
 
     async fn abort(&mut self) -> Result<()> {
         match &mut self.inner {
             Some(w) => w.abort().await,
-            None => Err(Error::new(
-                ErrorKind::Unsupported,
-                "FtpWriter doesn't support abort",
-            )),
+            None => Ok(()),
         }
     }
 }
