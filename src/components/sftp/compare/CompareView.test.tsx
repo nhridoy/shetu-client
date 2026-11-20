@@ -160,6 +160,7 @@ describe("CompareView", () => {
       "right",
       expect.objectContaining({ kind: "local", root: "/home/me/site" }),
       expect.objectContaining({ kind: "remote", root: "/var/www/site" }),
+      expect.any(Function),
     );
     expect(mocks.loadComparison).toHaveBeenCalledTimes(2);
   });

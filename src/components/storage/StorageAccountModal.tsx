@@ -128,6 +128,9 @@ export default function StorageAccountModal({
           pathStyle: v.pathStyle,
           accessKeyId: v.accessKeyId,
         }));
+      })
+      .catch(() => {
+        if (live) setError("Couldn't load this account");
       });
     return () => {
       live = false;

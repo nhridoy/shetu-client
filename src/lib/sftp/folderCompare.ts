@@ -132,6 +132,8 @@ export async function copyRows(
   direction: Direction,
   left: CompareSide,
   right: CompareSide,
+  /** Checked before each folder's transfer: false (a pane reconnected) stops the copy. */
+  stillListed: () => boolean = () => true,
 ): Promise<TransferFileResult[]> {
   const [from, to] = direction === "right" ? [left, right] : [right, left];
   const picked = copyable(rows, direction);
@@ -153,6 +155,7 @@ export async function copyRows(
   }
   const results: TransferFileResult[] = [];
   for (const [parent, group] of groups) {
+    if (!stillListed()) break;
     const files: FileItem[] = group.map((r) => {
       const e = (direction === "right" ? r.left : r.right) as CompareEntry;
       const path = under(from, r.path);

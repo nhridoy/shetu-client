@@ -178,4 +178,22 @@ describe("StorageAccountModal", () => {
     await render(<StorageAccountList />);
     expect(text()).toContain("Couldn't delete: offline");
   });
+
+  it("says so when the saved account can't be loaded, and stays locked", async () => {
+    useStorageAccountStore.setState({
+      save,
+      test,
+      view: async () => {
+        throw new Error("vault locked");
+      },
+    } as never);
+    await render(
+      <StorageAccountModal
+        account={{ id: "s1", name: "Photos", vaultId: "v1" }}
+        onClose={() => {}}
+      />,
+    );
+    expect(text()).toContain("Couldn't load this account");
+    expect(button("Save")?.disabled).toBe(true);
+  });
 });
