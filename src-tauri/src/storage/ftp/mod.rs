@@ -21,7 +21,6 @@ mod writer;
 pub(crate) mod fake;
 
 pub use backend::FtpBuilder as Ftp;
-pub use config::FtpConfig;
 pub use core::forget_pools;
 
 #[cfg(test)]

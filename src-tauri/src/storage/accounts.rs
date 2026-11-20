@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 const RECORD: &str = "storage_accounts";
-const TEXT_FIELDS: [&str; 13] = [
+const TEXT_FIELDS: [&str; 14] = [
     "provider",
     "endpoint",
     "region",
@@ -22,8 +22,11 @@ const TEXT_FIELDS: [&str; 13] = [
     "username",
     "password",
     "trustedCertSha256",
+    "root",
 ];
-const PROVIDERS: [&str; 7] = ["aws", "r2", "b2", "wasabi", "spaces", "custom", "webdav"];
+const PROVIDERS: [&str; 8] = [
+    "aws", "r2", "b2", "wasabi", "spaces", "custom", "webdav", "ftp",
+];
 /// Per request body or part (8 MiB) — room for a slow uplink.
 pub const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// Per whole call — a server-side copy of up to 5 GiB.
@@ -49,6 +52,12 @@ pub struct StorageAccountData {
     pub password: String,
     /// A self-signed server certificate the user trusted (SHA-256, lowercase hex).
     pub trusted_cert_sha256: Option<String>,
+    /// FTP: the server's port (21 when absent).
+    pub port: Option<u16>,
+    /// FTP: `false` = plain FTP; absent or `true` = FTPS (explicit TLS).
+    pub ftp_secure: Option<bool>,
+    /// FTP: the starting folder; absent = where the login lands.
+    pub root: Option<String>,
 }
 
 /// What the account form may see: everything but the secret key or password.
@@ -67,6 +76,9 @@ pub struct StorageAccountView {
     pub url: Option<String>,
     pub username: Option<String>,
     pub trusted_cert_sha256: Option<String>,
+    pub port: Option<u16>,
+    pub ftp_secure: Option<bool>,
+    pub root: Option<String>,
     pub has_secret: bool,
 }
 
@@ -176,21 +188,71 @@ pub fn operator_for(d: &StorageAccountData) -> Result<Operator, String> {
 /// operator gets the app's own client (rustls/ring, platform roots, the account's pin).
 fn layered(op: Operator, client: reqwest013::Client) -> Operator {
     let transport = opendal_http_transport_reqwest::ReqwestTransport::new(client);
-    op.with_context(
-        opendal::OperationContext::new()
-            .with_http_transport(opendal::HttpTransporter::new(transport)),
+    layers(
+        op.with_context(
+            opendal::OperationContext::new()
+                .with_http_transport(opendal::HttpTransporter::new(transport)),
+        ),
     )
-    .layer(opendal::layers::RetryLayer::new())
-    .layer(
+}
+
+/// Retry and timeouts, for every provider.
+fn layers(op: Operator) -> Operator {
+    op.layer(opendal::layers::RetryLayer::new()).layer(
         opendal::layers::TimeoutLayer::new()
             .with_timeout(OP_TIMEOUT)
             .with_io_timeout(IO_TIMEOUT),
     )
 }
 
+/// An FTP server's host: a name or address, without a scheme, path or `user@`.
+fn ftp_host(d: &StorageAccountData) -> Result<&str, String> {
+    let host = non_empty(&d.server).ok_or("Server is required")?;
+    if host.contains("://") || host.contains('/') || host.contains('@') || host.contains(' ') {
+        return Err("Enter just the server name, like ftp.example.com".into());
+    }
+    Ok(host)
+}
+
+/// The FTP operator: FTPS with the app's TLS setup (and the account's pin) unless the account
+/// chose plain FTP. Every operator for the same settings shares one capped connection pool.
+fn ftp_remote(d: &StorageAccountData) -> Result<super::Remote, String> {
+    let host = ftp_host(d)?;
+    let port = d.port.unwrap_or(21);
+    let secure = d.ftp_secure != Some(false);
+    let username = d.username.clone().unwrap_or_default();
+    let root = d.root.clone().unwrap_or_default();
+    let pin = d.trusted_cert_sha256.as_deref();
+    let key = super::tls::sha256_hex(
+        format!(
+            "{host}\n{port}\n{secure}\n{username}\n{}\n{root}\n{pin:?}",
+            d.password
+        )
+        .as_bytes(),
+    );
+    let scheme = if secure { "ftps" } else { "ftp" };
+    let mut builder = super::ftp::Ftp::default()
+        .endpoint(&format!("{scheme}://{host}:{port}"))
+        .root(&root)
+        .user(&username)
+        .password(&d.password)
+        .pool_key(key);
+    if secure {
+        builder = builder.tls(std::sync::Arc::new(super::tls::client_config(pin)?));
+    }
+    let op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
+    Ok(super::Remote {
+        op: layers(op),
+        dav: None,
+    })
+}
+
 /// The account's storage side: an S3 operator, or a WebDAV one with its upload target. A
 /// pinned certificate gives the WebDAV operator (and uploads) their own trusting client.
 pub fn remote_for(d: &StorageAccountData) -> Result<super::Remote, String> {
+    if d.provider == "ftp" {
+        return ftp_remote(d);
+    }
     if d.provider != "webdav" {
         return Ok(super::Remote {
             op: operator_for(d)?,
@@ -316,7 +378,7 @@ pub fn load_account(
 
 /// Whether the current provider's own secret is stored.
 fn has_secret(d: &StorageAccountData) -> bool {
-    if d.provider == "webdav" {
+    if d.provider == "webdav" || d.provider == "ftp" {
         !d.password.is_empty()
     } else {
         !d.secret_access_key.is_empty()
@@ -339,6 +401,9 @@ pub fn view(db: &LocalDb, crypto: &CryptoState, id: &str) -> Option<StorageAccou
         url: d.url,
         username: d.username,
         trusted_cert_sha256: d.trusted_cert_sha256,
+        port: d.port,
+        ftp_secure: d.ftp_secure,
+        root: d.root,
     })
 }
 
@@ -359,6 +424,17 @@ fn apply_patch(payload: &mut Map<String, Value>, patch: &Value) {
     if let Some(Value::Bool(b)) = patch.get("pathStyle") {
         payload.insert("pathStyle".into(), Value::Bool(*b));
     }
+    for key in ["port", "ftpSecure"] {
+        match patch.get(key) {
+            Some(Value::Null) => {
+                payload.remove(key);
+            }
+            Some(v @ (Value::Number(_) | Value::Bool(_))) => {
+                payload.insert(key.into(), v.clone());
+            }
+            _ => {}
+        }
+    }
 }
 
 fn validate(d: &StorageAccountData) -> Result<(), String> {
@@ -373,6 +449,19 @@ fn validate(d: &StorageAccountData) -> Result<(), String> {
             return Err("Password is required".into());
         }
         return webdav_url(d).map(|_| ());
+    }
+    if d.provider == "ftp" {
+        ftp_host(d)?;
+        if d.port == Some(0) {
+            return Err("Port must be between 1 and 65535".into());
+        }
+        if non_empty(&d.username).is_none() {
+            return Err("Username is required".into());
+        }
+        if d.password.is_empty() {
+            return Err("Password is required".into());
+        }
+        return Ok(());
     }
     if d.bucket.trim().is_empty() {
         return Err("Bucket is required".into());
@@ -889,5 +978,104 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again.name.as_deref(), Some("Backups"));
+    }
+
+    fn ftp(server: &str) -> StorageAccountData {
+        StorageAccountData {
+            provider: "ftp".into(),
+            server: Some(server.into()),
+            username: Some("me".into()),
+            password: "pw".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ftp_validation() {
+        assert!(validate(&ftp("ftp.example.com")).is_ok());
+        for bad in [
+            "",
+            "ftp://ftp.example.com",
+            "ftp.example.com/www",
+            "me@ftp.example.com",
+        ] {
+            assert!(validate(&ftp(bad)).is_err(), "{bad}");
+        }
+        let mut d = ftp("ftp.example.com");
+        d.port = Some(0);
+        assert!(validate(&d).is_err());
+        let mut d = ftp("ftp.example.com");
+        d.username = None;
+        assert!(validate(&d).is_err());
+        let mut d = ftp("ftp.example.com");
+        d.password = String::new();
+        assert!(validate(&d).is_err());
+    }
+
+    #[test]
+    fn ftp_view_shows_fields_not_password() {
+        let (db, crypto) = fixture();
+        let row = save(
+            &db,
+            &crypto,
+            None,
+            "v1",
+            "Host",
+            &json!({"provider": "ftp", "server": "ftp.example.com", "port": 2121,
+                    "ftpSecure": false, "root": "/public_html", "username": "me",
+                    "password": "pw-secret-value"}),
+            DEVICE,
+        )
+        .unwrap();
+        let v = view(&db, &crypto, &row.id).unwrap();
+        assert_eq!(v.port, Some(2121));
+        assert_eq!(v.ftp_secure, Some(false));
+        assert_eq!(v.root.as_deref(), Some("/public_html"));
+        assert!(v.has_secret);
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(!text.contains("pw-secret-value"), "{text}");
+    }
+
+    async fn ftp_fake() -> (crate::storage::ftp::fake::FakeFtp, StorageAccountData) {
+        use crate::storage::ftp::fake::{FakeFtp, FakeOpts, Node};
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        fake.put("/a.txt", Node::File(b"abc".to_vec()));
+        fake.put("/docs", Node::Dir);
+        let mut d = ftp("127.0.0.1");
+        d.port = Some(fake.port);
+        d.ftp_secure = Some(false);
+        (fake, d)
+    }
+
+    #[tokio::test]
+    async fn remote_for_ftp_lists_the_fake_server() {
+        let (_fake, d) = ftp_fake().await;
+        let r = remote_for(&d).unwrap();
+        assert!(r.dav.is_none());
+        assert!(super::super::ops::check_access_raw(&r.op).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ftp_rename_moves_files_and_folders() {
+        use crate::storage::ftp::fake::Node;
+        let (fake, d) = ftp_fake().await;
+        let op = remote_for(&d).unwrap().op;
+        super::super::ops::rename_native(&op, "/a.txt", "/b.txt")
+            .await
+            .unwrap();
+        super::super::ops::rename_native(&op, "/docs", "/archive")
+            .await
+            .unwrap();
+        assert_eq!(fake.get("/b.txt"), Some(Node::File(b"abc".to_vec())));
+        assert_eq!(fake.get("/archive"), Some(Node::Dir));
+        fake.put("/c.txt", Node::File(b"c".to_vec()));
+        let before = fake.commands().len();
+        let err = super::super::ops::rename_native(&op, "/b.txt", "/c.txt")
+            .await
+            .unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(!fake.commands()[before..]
+            .iter()
+            .any(|c| c.starts_with("RNFR")));
     }
 }

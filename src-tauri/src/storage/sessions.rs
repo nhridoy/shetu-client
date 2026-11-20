@@ -91,6 +91,7 @@ impl StorageSessions {
             open.sessions.clear();
             open.latest.clear();
         }
+        super::ftp::forget_pools();
     }
 
     /// An operator for a transfer end: an open pane's on that bucket, else a new one.
@@ -230,6 +231,10 @@ pub async fn storage_rename(
     match &remote.dav {
         // A server move: one request, and never over an existing name (OpenDAL's overwrites).
         Some(dav) => super::webdav::move_path(dav, &from, &to, is_dir).await,
+        // FTP renames files and folders itself.
+        None if remote.op.info().capability().rename => {
+            ops::rename_native(&remote.op, &from, &to).await
+        }
         None => ops::rename_tree(&remote.op, &from, &to, is_dir).await,
     }
 }
@@ -410,5 +415,27 @@ mod tests {
         let c = s.begin("pane-1");
         s.forget("pane-1", b);
         assert!(s.insert_if(c, "pane-1".into(), account("c"), memory()));
+    }
+
+    #[tokio::test]
+    async fn sign_out_forgets_ftp_pools() {
+        use crate::storage::ftp::fake::{FakeFtp, FakeOpts};
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        let d = crate::storage::accounts::StorageAccountData {
+            provider: "ftp".into(),
+            server: Some("127.0.0.1".into()),
+            port: Some(fake.port),
+            ftp_secure: Some(false),
+            username: Some("me".into()),
+            password: "pw".into(),
+            ..Default::default()
+        };
+        let connects = || fake.connects.load(std::sync::atomic::Ordering::SeqCst);
+        remote_for(&d).unwrap().op.list("/").await.unwrap();
+        remote_for(&d).unwrap().op.list("/").await.unwrap();
+        assert_eq!(connects(), 1, "one shared pool reuses its connection");
+        StorageSessions::default().clear();
+        remote_for(&d).unwrap().op.list("/").await.unwrap();
+        assert_eq!(connects(), 2);
     }
 }
