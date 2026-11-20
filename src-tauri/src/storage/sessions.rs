@@ -16,8 +16,6 @@ const READ_MAX: u64 = 10 * 1024 * 1024;
 #[derive(Default)]
 pub struct StorageSessions {
     open: Mutex<Panes>,
-    /// The last attempt number handed out (by `begin`).
-    attempts: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -25,6 +23,9 @@ struct Panes {
     sessions: HashMap<String, (StorageRef, Remote)>,
     /// Each pane's latest connect attempt; only it may store the pane's session.
     latest: HashMap<String, u64>,
+    /// The last attempt number handed out. Under the same lock as `latest`, so tickets are
+    /// published in the order they're numbered and never after a disconnect that followed them.
+    last: u64,
 }
 
 /// A saved account's storage side, built from the encrypted store.
@@ -45,13 +46,12 @@ impl StorageSessions {
 
     /// Starts a connect for the pane: its ticket, which supersedes the pane's earlier ones.
     pub fn begin(&self, sid: &str) -> u64 {
-        let attempt = self
-            .attempts
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        if let Ok(mut open) = self.open.lock() {
-            open.latest.insert(sid.to_string(), attempt);
-        }
+        let Ok(mut open) = self.open.lock() else {
+            return 0; // never a pane's latest: the connect can't store
+        };
+        open.last += 1;
+        let attempt = open.last;
+        open.latest.insert(sid.to_string(), attempt);
         attempt
     }
 
@@ -66,6 +66,15 @@ impl StorageSessions {
         }
         open.sessions.insert(sid, (r, op));
         true
+    }
+
+    /// A failed connect drops its ticket, if no newer connect took the pane since.
+    pub fn forget(&self, sid: &str, attempt: u64) {
+        if let Ok(mut open) = self.open.lock() {
+            if open.latest.get(sid) == Some(&attempt) {
+                open.latest.remove(sid);
+            }
+        }
     }
 
     /// Disconnect: the session goes, and so does every connect still running for the pane.
@@ -126,9 +135,20 @@ pub async fn storage_connect(
     sessions: Sessions<'_>,
 ) -> Result<String, String> {
     let attempt = sessions.begin(&session_id);
-    let account = load_account(&db, &crypto, &account_id)?;
-    let op = remote_for(&account)?;
-    check_account_access(&account, &op).await?;
+    let opened = async {
+        let account = load_account(&db, &crypto, &account_id)?;
+        let op = remote_for(&account)?;
+        check_account_access(&account, &op).await?;
+        Ok::<_, String>((account, op))
+    }
+    .await;
+    let (account, op) = match opened {
+        Ok(opened) => opened,
+        Err(e) => {
+            sessions.forget(&session_id, attempt);
+            return Err(e);
+        }
+    };
     let provider = account.provider.clone();
     let r = StorageRef {
         account_id,
@@ -378,5 +398,17 @@ mod tests {
         s.remove("pane-2");
         assert!(s.insert_if(a, "pane-1".into(), account("a"), memory()));
         assert!(!s.insert_if(b, "pane-2".into(), account("b"), memory()));
+    }
+
+    #[test]
+    fn a_failed_connect_forgets_only_its_own_ticket() {
+        let s = StorageSessions::default();
+        let a = s.begin("pane-1");
+        s.forget("pane-1", a);
+        assert!(s.open.lock().unwrap().latest.is_empty());
+        let b = s.begin("pane-1");
+        let c = s.begin("pane-1");
+        s.forget("pane-1", b);
+        assert!(s.insert_if(c, "pane-1".into(), account("c"), memory()));
     }
 }
