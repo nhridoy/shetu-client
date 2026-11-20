@@ -360,7 +360,7 @@ impl FtpBackend {
 
 #[cfg(test)]
 mod build_test {
-    use super::super::FtpConfig;
+    use super::super::config::FtpConfig;
     use super::FtpBuilder;
     use opendal::*;
 
