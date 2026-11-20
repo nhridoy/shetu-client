@@ -183,7 +183,8 @@ pub fn remote_for(d: &StorageAccountData) -> Result<super::Remote, String> {
     let username = d.username.clone().unwrap_or_default();
     let builder = opendal::services::Webdav::default()
         .endpoint(&endpoint)
-        .root(url.path())
+        // OpenDAL encodes the root itself; the parsed path is already encoded.
+        .root(&crate::import::encoding::percent_decode(url.path()))
         .username(&username)
         .password(&d.password);
     let mut op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
@@ -768,5 +769,15 @@ mod tests {
             parsed(cert_payload("untrusted", "nas.lan:443", &b, None)),
             json!({"kind": "untrusted", "host": "nas.lan:443", "sha256": b, "previous": null})
         );
+    }
+
+    #[test]
+    fn a_webdav_path_with_spaces_is_not_encoded_twice() {
+        let mut d = dav("other");
+        d.url = Some("https://nas.lan/My%20Files/J%C3%BCrgen/".into());
+        let r = remote_for(&d).unwrap();
+        assert_eq!(r.op.info().root(), "/My Files/Jürgen/");
+        d.url = Some("https://nas.lan/My Files/".into());
+        assert_eq!(remote_for(&d).unwrap().op.info().root(), "/My Files/");
     }
 }

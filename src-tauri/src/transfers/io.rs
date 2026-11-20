@@ -32,6 +32,9 @@ pub struct WriteOpts {
     pub mtime: i64,
     /// Refuse to write over an existing key (`DEST_CHANGED`), where the service supports it.
     pub if_not_exists: bool,
+    /// The body's exact length, sent as `Content-Length` (WebDAV), so a cut upload never
+    /// looks finished to the server.
+    pub len: Option<u64>,
 }
 
 fn key(path: &str) -> String {
@@ -706,6 +709,7 @@ mod tests {
             WriteOpts {
                 mtime: 1_700_000_000,
                 if_not_exists: false,
+                len: None,
             },
             |_| {},
         )

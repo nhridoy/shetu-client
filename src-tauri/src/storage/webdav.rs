@@ -81,13 +81,37 @@ type Chunk = Result<Vec<u8>, std::io::Error>;
 pub struct DavUpload {
     tx: Option<tokio::sync::mpsc::Sender<Chunk>>,
     reply: Option<tokio::task::JoinHandle<Result<u16, reqwest013::Error>>>,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// How long the server may stop reading (or answering) before the upload fails.
+    stall: std::time::Duration,
 }
+
+const STALLED: &str = "upload: the server stopped reading";
 
 impl DavTarget {
     pub fn start_put(&self, ui_path: &str, opts: crate::transfers::io::WriteOpts) -> DavUpload {
+        self.start_put_stalling(ui_path, opts, super::accounts::IO_TIMEOUT)
+    }
+
+    pub fn start_put_stalling(
+        &self,
+        ui_path: &str,
+        opts: crate::transfers::io::WriteOpts,
+        stall: std::time::Duration,
+    ) -> DavUpload {
+        use std::sync::atomic::Ordering;
         let (tx, rx) = tokio::sync::mpsc::channel::<Chunk>(4);
-        let body = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|chunk| (chunk, rx))
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stopped.clone();
+        let body = futures::stream::unfold((rx, flag), |(mut rx, flag)| async move {
+            match rx.recv().await {
+                Some(chunk) => Some((chunk, (rx, flag))),
+                // A stopped body must not end like a finished one, or the server keeps the cut file.
+                None if flag.load(Ordering::SeqCst) => {
+                    Some((Err(std::io::Error::other("upload stopped")), (rx, flag)))
+                }
+                None => None,
+            }
         });
         let mut req = self
             .client
@@ -101,10 +125,15 @@ impl DavTarget {
         if opts.if_not_exists {
             req = req.header("If-None-Match", "*");
         }
+        if let Some(len) = opts.len {
+            req = req.header(reqwest013::header::CONTENT_LENGTH, len);
+        }
         let reply = tokio::spawn(async move { req.send().await.map(|r| r.status().as_u16()) });
         DavUpload {
             tx: Some(tx),
             reply: Some(reply),
+            stopped,
+            stall,
         }
     }
 }
@@ -127,7 +156,13 @@ impl DavUpload {
         let Some(tx) = self.tx.as_ref() else {
             return Err(crate::transfers::model::JobError::Stopped);
         };
-        if tx.send(Ok(chunk)).await.is_err() {
+        let Ok(sent) = tokio::time::timeout(self.stall, tx.send(Ok(chunk))).await else {
+            self.abort();
+            return Err(crate::transfers::model::JobError::Connection(
+                STALLED.into(),
+            ));
+        };
+        if sent.is_err() {
             // The server ended the request: report why.
             self.tx = None;
             return match self.outcome().await {
@@ -143,11 +178,23 @@ impl DavUpload {
     /// Ends the body and waits for the server's answer.
     pub async fn finish(&mut self) -> Result<(), crate::transfers::model::JobError> {
         self.tx = None;
-        self.outcome().await
+        let stall = self.stall;
+        match tokio::time::timeout(stall, self.outcome()).await {
+            Ok(done) => done,
+            Err(_) => {
+                self.abort();
+                Err(crate::transfers::model::JobError::Connection(
+                    STALLED.into(),
+                ))
+            }
+        }
     }
 
     /// Stops the request; the server discards (or replaces later) what it got.
     pub fn abort(&mut self) {
+        // Set before the sender goes, so the body ends in an error rather than cleanly.
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.tx = None;
         if let Some(reply) = self.reply.take() {
             reply.abort();
@@ -193,6 +240,8 @@ pub(crate) mod tests {
         pub line: String,
         pub headers: Vec<(String, String)>,
         pub body_len: usize,
+        /// The body ended properly (its full length, or chunked's final empty chunk).
+        pub complete: bool,
     }
 
     impl Seen {
@@ -251,11 +300,14 @@ pub(crate) mod tests {
                     let get =
                         |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
                     let mut rest = buf[head_end..].to_vec();
+                    let mut complete = true;
                     let body_len = if let Some(len) = get("content-length") {
                         let len: usize = len.parse().unwrap_or(0);
                         fill(&mut tcp, &mut rest, len).await;
-                        len
+                        complete = rest.len() >= len;
+                        rest.len().min(len)
                     } else if get("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+                        complete = false;
                         let mut total = 0usize;
                         loop {
                             let Some(i) = rest.windows(2).position(|w| w == b"\r\n") else {
@@ -275,6 +327,7 @@ pub(crate) mod tests {
                             let end = (i + 2 + size + 2).min(rest.len());
                             rest.drain(..end);
                             if size == 0 {
+                                complete = end == i + 4;
                                 break;
                             }
                             total += size;
@@ -287,6 +340,7 @@ pub(crate) mod tests {
                         line,
                         headers,
                         body_len,
+                        complete,
                     });
                     let reply = format!(
                         "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
@@ -380,6 +434,7 @@ pub(crate) mod tests {
             crate::transfers::io::WriteOpts {
                 mtime: 1_700_000_000,
                 if_not_exists: false,
+                len: None,
             },
             20 * 1024 * 1024,
         )
@@ -397,11 +452,117 @@ pub(crate) mod tests {
             crate::transfers::io::WriteOpts {
                 mtime: 0,
                 if_not_exists: true,
+                len: None,
             },
             10,
         )
         .await;
         assert_eq!(got.header("if-none-match"), Some("*"));
         assert_eq!(got.header("x-oc-mtime"), None);
+    }
+
+    #[tokio::test]
+    async fn upload_sends_its_length() {
+        let got = upload(
+            201,
+            crate::transfers::io::WriteOpts {
+                mtime: 0,
+                if_not_exists: false,
+                len: Some(4096),
+            },
+            4096,
+        )
+        .await;
+        assert_eq!(got.header("content-length"), Some("4096"));
+        assert_eq!(got.header("transfer-encoding"), None);
+        assert!(got.complete);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_upload_never_reaches_the_server_complete() {
+        for len in [Some(1_000_000u64), None] {
+            let (port, seen) = dav_server(201).await;
+            let t = target(port);
+            let mut up = t.start_put(
+                "/half.bin",
+                crate::transfers::io::WriteOpts {
+                    mtime: 0,
+                    if_not_exists: false,
+                    len,
+                },
+            );
+            up.send(vec![1u8; 65536]).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            up.abort();
+            drop(up);
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert!(
+                !seen.lock().unwrap().iter().any(|s| s.complete),
+                "len {len:?}: {:?}",
+                seen.lock().unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_upload_to_a_server_that_stops_reading_fails() {
+        // Accepts the connection, then never reads.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let held = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(held);
+        });
+        let t = target(port);
+        let mut up = t.start_put_stalling(
+            "/stuck.bin",
+            crate::transfers::io::WriteOpts::default(),
+            std::time::Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let mut failed = None;
+        for _ in 0..400 {
+            if let Err(e) = up.send(vec![0u8; 1 << 20]).await {
+                failed = Some(e);
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                failed,
+                Some(crate::transfers::model::JobError::Connection(_))
+            ),
+            "{failed:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn an_upload_the_server_never_answers_fails() {
+        // Reads every byte, then never replies.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            while tcp.read(&mut buf).await.is_ok_and(|n| n > 0) {}
+        });
+        let t = target(port);
+        let mut up = t.start_put_stalling(
+            "/quiet.bin",
+            crate::transfers::io::WriteOpts::default(),
+            std::time::Duration::from_millis(300),
+        );
+        up.send(vec![0u8; 1024]).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), up.finish()).await;
+        assert!(
+            matches!(
+                got,
+                Ok(Err(crate::transfers::model::JobError::Connection(_)))
+            ),
+            "{got:?}"
+        );
     }
 }
