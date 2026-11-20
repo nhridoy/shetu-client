@@ -5,6 +5,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import { extractError } from "@/lib/common/extractError";
+import { parseCertError, requestCertTrust } from "@/lib/storage/certTrust";
 import {
   type StorageAccount,
   type StorageAccountPatch,
@@ -19,6 +20,7 @@ const PROVIDERS: { value: StorageProvider; label: string }[] = [
   { value: "wasabi", label: "Wasabi" },
   { value: "spaces", label: "DigitalOcean Spaces" },
   { value: "custom", label: "Custom (MinIO, other S3-compatible)" },
+  { value: "webdav", label: "WebDAV (Nextcloud, ownCloud, NAS)" },
 ];
 
 interface Form {
@@ -31,6 +33,14 @@ interface Form {
   pathStyle: boolean;
   accessKeyId: string;
   secretAccessKey: string;
+  webdavKind: "nextcloud" | "other";
+  server: string;
+  url: string;
+  username: string;
+  password: string;
+  trustedCertSha256: string | null;
+  /** The user trusted or forgot a certificate in this form: send it on Save. */
+  pinTouched: boolean;
 }
 
 const EMPTY: Form = {
@@ -43,7 +53,24 @@ const EMPTY: Form = {
   pathStyle: false,
   accessKeyId: "",
   secretAccessKey: "",
+  webdavKind: "nextcloud",
+  server: "",
+  url: "",
+  username: "",
+  password: "",
+  trustedCertSha256: null,
+  pinTouched: false,
 };
+
+/** The WebDAV address (the same rule as Rust's `webdav_url`), for display. */
+export function davUrl(f: Form): string {
+  if (f.webdavKind === "other") return f.url;
+  const host = f.server
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+  return `https://${host || "<server>"}/remote.php/webdav/`;
+}
 
 /** The endpoint a preset uses (the same rule as Rust's `endpoint_for`), for display. */
 export function presetEndpoint(f: Form): string {
@@ -66,6 +93,18 @@ export function presetEndpoint(f: Form): string {
 
 /** Only what the form holds; an untyped secret is left out so Rust keeps the stored one. */
 function toPatch(f: Form): StorageAccountPatch {
+  if (f.provider === "webdav") {
+    const dav: StorageAccountPatch = {
+      provider: "webdav",
+      webdavKind: f.webdavKind,
+      username: f.username.trim(),
+    };
+    if (f.webdavKind === "nextcloud") dav.server = f.server.trim();
+    else dav.url = f.url.trim();
+    if (f.password) dav.password = f.password;
+    if (f.pinTouched) dav.trustedCertSha256 = f.trustedCertSha256;
+    return dav;
+  }
   const patch: StorageAccountPatch = {
     provider: f.provider,
     region: f.region.trim(),
@@ -127,6 +166,11 @@ export default function StorageAccountModal({
           endpoint: v.endpoint ?? "",
           pathStyle: v.pathStyle,
           accessKeyId: v.accessKeyId,
+          webdavKind: v.webdavKind === "other" ? "other" : "nextcloud",
+          server: v.server ?? "",
+          url: v.url ?? "",
+          username: v.username ?? "",
+          trustedCertSha256: v.trustedCertSha256 ?? null,
         }));
       })
       .catch(() => {
@@ -148,28 +192,45 @@ export default function StorageAccountModal({
     setTestResult(null);
     setError(null);
     setBusy(true);
+    const store = useStorageAccountStore.getState();
     try {
-      setTestResult(
-        await useStorageAccountStore.getState().test(id, toPatch(form)),
-      );
+      setTestResult(await store.test(id, toPatch(form)));
     } catch (err) {
-      setError(extractError(err, "Couldn't reach the bucket"));
+      const prompt = parseCertError(err);
+      // Trusting here only goes into the form; Save stores it (never a half-filled account).
+      if (prompt && (await requestCertTrust(prompt))) {
+        const next = {
+          ...form,
+          trustedCertSha256: prompt.sha256,
+          pinTouched: true,
+        };
+        setForm(next);
+        try {
+          setTestResult(await store.test(id, toPatch(next)));
+        } catch (again) {
+          setError(extractError(again, "Couldn't connect"));
+        }
+      } else if (!prompt) {
+        setError(extractError(err, "Couldn't connect"));
+      }
     } finally {
       setBusy(false);
     }
   };
 
+  const webdav = form.provider === "webdav";
   const submit = async () => {
-    if (!form.bucket.trim()) {
+    if (!webdav && !form.bucket.trim()) {
       setError("Bucket is required");
       return;
     }
     setError(null);
     setBusy(true);
     const store = useStorageAccountStore.getState();
+    const fallbackName = webdav ? davUrl(form) : form.bucket.trim();
     const ok = await store.save(
       id,
-      form.name.trim() || form.bucket.trim(),
+      form.name.trim() || fallbackName,
       toPatch(form),
     );
     setBusy(false);
@@ -219,91 +280,196 @@ export default function StorageAccountModal({
               ))}
             </select>
           </Field>
-          {form.provider === "r2" && (
-            <Field>
-              <FieldLabel htmlFor={`${uid}-r2AccountId`}>
-                Cloudflare account ID
-              </FieldLabel>
-              <Input
-                id={`${uid}-r2AccountId`}
-                name="r2AccountId"
-                value={form.r2AccountId}
-                onChange={text("r2AccountId")}
-              />
-            </Field>
+          {webdav ? (
+            <>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-webdavKind`}>
+                  Server type
+                </FieldLabel>
+                <select
+                  id={`${uid}-webdavKind`}
+                  name="webdavKind"
+                  className={selectClass}
+                  value={form.webdavKind}
+                  onChange={(e) =>
+                    set("webdavKind")(e.target.value as Form["webdavKind"])
+                  }
+                >
+                  <option value="nextcloud">Nextcloud / ownCloud</option>
+                  <option value="other">Other WebDAV</option>
+                </select>
+              </Field>
+              {form.webdavKind === "nextcloud" ? (
+                <>
+                  <Field>
+                    <FieldLabel htmlFor={`${uid}-server`}>Server</FieldLabel>
+                    <Input
+                      id={`${uid}-server`}
+                      name="server"
+                      value={form.server}
+                      placeholder="cloud.example.com"
+                      onChange={text("server")}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor={`${uid}-davUrl`}>Address</FieldLabel>
+                    <Input
+                      id={`${uid}-davUrl`}
+                      name="davUrl"
+                      value={davUrl(form)}
+                      readOnly
+                    />
+                  </Field>
+                </>
+              ) : (
+                <Field>
+                  <FieldLabel htmlFor={`${uid}-url`}>URL</FieldLabel>
+                  <Input
+                    id={`${uid}-url`}
+                    name="url"
+                    value={form.url}
+                    placeholder="https://nas.local:5006/dav/"
+                    onChange={text("url")}
+                  />
+                </Field>
+              )}
+              <Field>
+                <FieldLabel htmlFor={`${uid}-username`}>Username</FieldLabel>
+                <Input
+                  id={`${uid}-username`}
+                  name="username"
+                  value={form.username}
+                  autoComplete="off"
+                  onChange={text("username")}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-password`}>
+                  Password{hasSecret && " (Saved — leave empty to keep it)"}
+                </FieldLabel>
+                <Input
+                  id={`${uid}-password`}
+                  name="password"
+                  type="password"
+                  value={form.password}
+                  autoComplete="off"
+                  onChange={text("password")}
+                />
+              </Field>
+              {form.trustedCertSha256 && (
+                <div className="flex items-center gap-2 text-xs text-dark-300">
+                  <span className="flex-1 truncate">
+                    Trusted certificate {form.trustedCertSha256.slice(0, 16)}…
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        trustedCertSha256: null,
+                        pinTouched: true,
+                      }))
+                    }
+                  >
+                    Forget
+                  </Button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {form.provider === "r2" && (
+                <Field>
+                  <FieldLabel htmlFor={`${uid}-r2AccountId`}>
+                    Cloudflare account ID
+                  </FieldLabel>
+                  <Input
+                    id={`${uid}-r2AccountId`}
+                    name="r2AccountId"
+                    value={form.r2AccountId}
+                    onChange={text("r2AccountId")}
+                  />
+                </Field>
+              )}
+              {form.provider !== "r2" && (
+                <Field>
+                  <FieldLabel htmlFor={`${uid}-region`}>Region</FieldLabel>
+                  <Input
+                    id={`${uid}-region`}
+                    name="region"
+                    value={form.region}
+                    placeholder="us-east-1"
+                    onChange={text("region")}
+                  />
+                </Field>
+              )}
+              <Field>
+                <FieldLabel htmlFor={`${uid}-endpoint`}>Endpoint</FieldLabel>
+                <Input
+                  id={`${uid}-endpoint`}
+                  name="endpoint"
+                  value={custom ? form.endpoint : presetEndpoint(form)}
+                  readOnly={!custom}
+                  placeholder="https://minio.example.com"
+                  onChange={text("endpoint")}
+                />
+              </Field>
+              {custom && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    name="pathStyle"
+                    checked={form.pathStyle}
+                    onCheckedChange={set("pathStyle")}
+                    aria-label="Path-style addressing"
+                  />
+                  <span className="text-dark-300">
+                    Path-style addressing (MinIO usually needs this)
+                  </span>
+                </div>
+              )}
+              <Field>
+                <FieldLabel htmlFor={`${uid}-bucket`}>Bucket</FieldLabel>
+                <Input
+                  id={`${uid}-bucket`}
+                  name="bucket"
+                  value={form.bucket}
+                  onChange={text("bucket")}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-accessKeyId`}>
+                  Access key
+                </FieldLabel>
+                <Input
+                  id={`${uid}-accessKeyId`}
+                  name="accessKeyId"
+                  value={form.accessKeyId}
+                  autoComplete="off"
+                  onChange={text("accessKeyId")}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-secretAccessKey`}>
+                  Secret key{hasSecret && " (Saved — leave empty to keep it)"}
+                </FieldLabel>
+                <Input
+                  id={`${uid}-secretAccessKey`}
+                  name="secretAccessKey"
+                  type="password"
+                  value={form.secretAccessKey}
+                  autoComplete="off"
+                  onChange={text("secretAccessKey")}
+                />
+              </Field>
+              <p className="text-xs text-dark-400">
+                Interrupted uploads can leave parts in the bucket. Add a
+                lifecycle rule to delete incomplete multipart uploads after a
+                few days.
+              </p>
+            </>
           )}
-          {form.provider !== "r2" && (
-            <Field>
-              <FieldLabel htmlFor={`${uid}-region`}>Region</FieldLabel>
-              <Input
-                id={`${uid}-region`}
-                name="region"
-                value={form.region}
-                placeholder="us-east-1"
-                onChange={text("region")}
-              />
-            </Field>
-          )}
-          <Field>
-            <FieldLabel htmlFor={`${uid}-endpoint`}>Endpoint</FieldLabel>
-            <Input
-              id={`${uid}-endpoint`}
-              name="endpoint"
-              value={custom ? form.endpoint : presetEndpoint(form)}
-              readOnly={!custom}
-              placeholder="https://minio.example.com"
-              onChange={text("endpoint")}
-            />
-          </Field>
-          {custom && (
-            <div className="flex items-center gap-2">
-              <Checkbox
-                name="pathStyle"
-                checked={form.pathStyle}
-                onCheckedChange={set("pathStyle")}
-                aria-label="Path-style addressing"
-              />
-              <span className="text-dark-300">
-                Path-style addressing (MinIO usually needs this)
-              </span>
-            </div>
-          )}
-          <Field>
-            <FieldLabel htmlFor={`${uid}-bucket`}>Bucket</FieldLabel>
-            <Input
-              id={`${uid}-bucket`}
-              name="bucket"
-              value={form.bucket}
-              onChange={text("bucket")}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${uid}-accessKeyId`}>Access key</FieldLabel>
-            <Input
-              id={`${uid}-accessKeyId`}
-              name="accessKeyId"
-              value={form.accessKeyId}
-              autoComplete="off"
-              onChange={text("accessKeyId")}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${uid}-secretAccessKey`}>
-              Secret key{hasSecret && " (Saved — leave empty to keep it)"}
-            </FieldLabel>
-            <Input
-              id={`${uid}-secretAccessKey`}
-              name="secretAccessKey"
-              type="password"
-              value={form.secretAccessKey}
-              autoComplete="off"
-              onChange={text("secretAccessKey")}
-            />
-          </Field>
-          <p className="text-xs text-dark-400">
-            Interrupted uploads can leave parts in the bucket. Add a lifecycle
-            rule to delete incomplete multipart uploads after a few days.
-          </p>
           {testResult && <p className="text-xs text-green-400">{testResult}</p>}
           {error && <p className="text-xs text-red-400">{error}</p>}
           <div className="flex justify-end gap-2 pt-2">
