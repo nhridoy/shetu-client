@@ -175,6 +175,58 @@ pub async fn probe_within(
     port: u16,
     limit: std::time::Duration,
 ) -> Result<String, String> {
+    probe_with(host, port, limit, |tcp| async move { Ok(tcp) }).await
+}
+
+/// The certificate an FTPS server presents: greeting, `AUTH TLS`, then the handshake.
+pub async fn probe_ftp(host: &str, port: u16) -> Result<String, String> {
+    probe_with(
+        host,
+        port,
+        std::time::Duration::from_secs(10),
+        |mut tcp| async move {
+            ftp_reply(&mut tcp).await?;
+            tokio::io::AsyncWriteExt::write_all(&mut tcp, b"AUTH TLS\r\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            match ftp_reply(&mut tcp).await? {
+                code if code.starts_with("234") => Ok(tcp),
+                _ => Err(crate::storage::ftp::AUTH_TLS_REFUSED.to_string()),
+            }
+        },
+    )
+    .await
+}
+
+/// Reads one FTP reply (multi-line `220-` … `220 ` included) and returns its last line.
+async fn ftp_reply(tcp: &mut tokio::net::TcpStream) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+    loop {
+        let mut line = Vec::new();
+        loop {
+            let b = tcp.read_u8().await.map_err(|e| e.to_string())?;
+            if b == b'\n' {
+                break;
+            }
+            line.push(b);
+        }
+        let line = String::from_utf8_lossy(&line).trim_end().to_string();
+        if line.len() >= 4 && line.as_bytes()[3] == b' ' {
+            return Ok(line);
+        }
+    }
+}
+
+async fn probe_with<F, Fut>(
+    host: &str,
+    port: u16,
+    limit: std::time::Duration,
+    prepare: F,
+) -> Result<String, String>
+where
+    F: FnOnce(tokio::net::TcpStream) -> Fut,
+    Fut: std::future::Future<Output = Result<tokio::net::TcpStream, String>>,
+{
     let provider = provider();
     let recorder = Arc::new(Recorder {
         seen: Mutex::new(None),
@@ -191,6 +243,7 @@ pub async fn probe_within(
         let tcp = tokio::net::TcpStream::connect((host, port))
             .await
             .map_err(|e| format!("Couldn't reach {host}:{port}: {e}"))?;
+        let tcp = prepare(tcp).await?;
         let _ = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(name, tcp)
             .await;
@@ -212,6 +265,10 @@ pub fn is_cert_error(e: &(dyn std::error::Error + 'static)) -> bool {
             err.downcast_ref::<rustls::Error>(),
             Some(rustls::Error::InvalidCertificate(_))
         ) {
+            return true;
+        }
+        // suppaftp keeps only the text of a TLS failure (rustls' Display of InvalidCertificate).
+        if err.to_string().contains("invalid peer certificate") {
             return true;
         }
         if let Some(inner) = err
@@ -340,5 +397,20 @@ pub(crate) mod tests {
         )
         .await;
         assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn probe_ftp_reads_the_certificate() {
+        use crate::storage::ftp::fake::{self_signed_tls, FakeFtp, FakeOpts};
+        let (tls, der) = self_signed_tls();
+        let fake = FakeFtp::start(FakeOpts {
+            tls: Some(tls),
+            ..FakeOpts::default()
+        })
+        .await;
+        assert_eq!(
+            probe_ftp("127.0.0.1", fake.port).await.unwrap(),
+            sha256_hex(&der)
+        );
     }
 }

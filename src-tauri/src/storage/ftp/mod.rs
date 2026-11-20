@@ -4,6 +4,10 @@
 /// URI scheme the service reports.
 pub const FTP_SCHEME: &str = "ftp";
 
+/// Shown when an FTPS account's server refuses `AUTH TLS` (never retried as plain FTP).
+pub const AUTH_TLS_REFUSED: &str =
+    "This server doesn't support FTPS; choose FTP (unencrypted) if you trust the network.";
+
 /// Most connections one account opens at once: shared hosts often allow only a few per
 /// address, and this leaves one free for browsing while the queue runs its 3 transfers.
 pub const MAX_CONNECTIONS: usize = 4;

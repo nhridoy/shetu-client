@@ -21,3 +21,5 @@ Every change Shetu made to these files is listed here.
   dropping an unfinished writer let the cut transfer end and delete the temp file (upstream's
   `abort` was unsupported). An upload with no writes still creates the empty file.
 - `rename` is supported (`RNFR`/`RNTO`) for files and folders (upstream: unsupported).
+- A server that answers `AUTH TLS` with an error fails with `AUTH_TLS_REFUSED`; an FTPS account
+  is never used as plain FTP.

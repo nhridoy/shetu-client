@@ -133,12 +133,19 @@ impl ManageObject for Manager {
                 .tls
                 .clone()
                 .ok_or_else(|| FtpError::SecureError("FTPS needs a TLS config".to_string()))?;
+            // Shetu: a server that won't start TLS is never used as plain FTP.
             stream
                 .into_secure(
                     AsyncRustlsConnector::from(TlsConnector::from(cfg)),
                     &self.host,
                 )
-                .await?
+                .await
+                .map_err(|e| match e {
+                    FtpError::UnexpectedResponse(_) => {
+                        FtpError::SecureError(super::AUTH_TLS_REFUSED.to_string())
+                    }
+                    e => e,
+                })?
         } else {
             stream
         };

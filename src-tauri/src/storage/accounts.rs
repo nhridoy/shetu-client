@@ -302,13 +302,29 @@ pub fn cert_payload(kind: &str, host: &str, sha256: &str, previous: Option<&str>
 /// For an `https` WebDAV account whose connection failed on its certificate: the certificate
 /// the server presents, as a trust question (`untrusted`, or `changed` from the pinned one).
 pub async fn cert_error(d: &StorageAccountData, e: &opendal::Error) -> Option<String> {
-    if d.provider != "webdav" || !super::tls::is_cert_error(e) {
+    if !super::tls::is_cert_error(e) {
         return None;
     }
-    let url = tauri::Url::parse(&webdav_url(d).ok()?).ok()?;
-    let host = url.host_str()?.to_string();
-    let port = url.port_or_known_default()?;
-    let sha = super::tls::probe(&host, port).await.ok()?;
+    let (host, port, ftp) = match d.provider.as_str() {
+        "webdav" => {
+            let url = tauri::Url::parse(&webdav_url(d).ok()?).ok()?;
+            (
+                url.host_str()?.to_string(),
+                url.port_or_known_default()?,
+                false,
+            )
+        }
+        "ftp" if d.ftp_secure != Some(false) => {
+            (ftp_host(d).ok()?.to_string(), d.port.unwrap_or(21), true)
+        }
+        _ => return None,
+    };
+    let sha = if ftp {
+        super::tls::probe_ftp(&host, port).await
+    } else {
+        super::tls::probe(&host, port).await
+    }
+    .ok()?;
     let previous = d.trusted_cert_sha256.as_deref();
     let kind = if previous.is_some() {
         "changed"
@@ -334,6 +350,9 @@ pub async fn check_account_access(
             Some(dav) => super::webdav::check_folder(dav).await,
             None => Ok(()),
         },
+        Err(e) if e.to_string().contains(super::ftp::AUTH_TLS_REFUSED) => {
+            Err(super::ftp::AUTH_TLS_REFUSED.to_string())
+        }
         Err(e) => Err(match cert_error(d, &e).await {
             Some(question) => question,
             None => format!("Couldn't connect: {e}"),
@@ -1077,5 +1096,74 @@ mod tests {
         assert!(!fake.commands()[before..]
             .iter()
             .any(|c| c.starts_with("RNFR")));
+    }
+
+    async fn ftps_fake(
+        opts: crate::storage::ftp::fake::FakeOpts,
+    ) -> (
+        crate::storage::ftp::fake::FakeFtp,
+        StorageAccountData,
+        Vec<u8>,
+    ) {
+        use crate::storage::ftp::fake::{self_signed_tls, FakeFtp, FakeOpts};
+        let (tls, der) = self_signed_tls();
+        let fake = FakeFtp::start(FakeOpts {
+            tls: Some(tls),
+            ..opts
+        })
+        .await;
+        let mut d = ftp("127.0.0.1");
+        d.port = Some(fake.port);
+        (fake, d, der)
+    }
+
+    #[tokio::test]
+    async fn ftps_cert_failure_is_a_cert_error() {
+        let (_fake, d, der) = ftps_fake(Default::default()).await;
+        let err = super::super::ops::check_access_raw(&remote_for(&d).unwrap().op)
+            .await
+            .unwrap_err();
+        assert!(super::super::tls::is_cert_error(&err), "{err}");
+        let question = cert_error(&d, &err).await.expect("a cert question");
+        let v: serde_json::Value =
+            serde_json::from_str(question.strip_prefix("cert:").unwrap()).unwrap();
+        assert_eq!(v["kind"], "untrusted");
+        assert_eq!(v["sha256"], super::super::tls::sha256_hex(&der));
+    }
+
+    #[tokio::test]
+    async fn ftps_changed_cert_is_reported() {
+        let (_fake, mut d, _) = ftps_fake(Default::default()).await;
+        d.trusted_cert_sha256 = Some("00".repeat(32));
+        let err = super::super::ops::check_access_raw(&remote_for(&d).unwrap().op)
+            .await
+            .unwrap_err();
+        let question = cert_error(&d, &err).await.expect("a cert question");
+        let v: serde_json::Value =
+            serde_json::from_str(question.strip_prefix("cert:").unwrap()).unwrap();
+        assert_eq!(v["kind"], "changed");
+        assert_eq!(v["previous"], "00".repeat(32));
+    }
+
+    #[tokio::test]
+    async fn ftps_never_falls_back_to_plain() {
+        let (fake, d, _) = ftps_fake(crate::storage::ftp::fake::FakeOpts {
+            refuse_auth_tls: true,
+            ..Default::default()
+        })
+        .await;
+        let got = check_account_access(&d, &remote_for(&d).unwrap()).await;
+        assert_eq!(got, Err(crate::storage::ftp::AUTH_TLS_REFUSED.to_string()));
+        assert!(!fake.commands().iter().any(|c| c.starts_with("USER")));
+    }
+
+    #[tokio::test]
+    async fn plain_ftp_errors_are_not_cert_questions() {
+        let (_fake, mut d) = ftp_fake().await;
+        d.password = "wrong".into();
+        let err = check_account_access(&d, &remote_for(&d).unwrap())
+            .await
+            .unwrap_err();
+        assert!(!err.starts_with("cert:"), "{err}");
     }
 }
