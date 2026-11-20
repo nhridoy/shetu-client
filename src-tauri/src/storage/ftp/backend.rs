@@ -23,6 +23,7 @@ use std::sync::Arc;
 use http::Uri;
 use log::debug;
 use suppaftp::list::File;
+use suppaftp::tokio_rustls::rustls::ClientConfig;
 use suppaftp::types::Response;
 use suppaftp::FtpError;
 use suppaftp::Status;
@@ -41,9 +42,25 @@ use opendal::*;
 #[derive(Debug, Default)]
 pub struct FtpBuilder {
     pub(super) config: FtpConfig,
+    /// Shetu: the TLS setup FTPS uses (required for `ftps://`).
+    pub(super) tls: Option<Arc<ClientConfig>>,
+    /// Shetu: operators with the same key share one capped connection pool.
+    pub(super) pool_key: Option<String>,
 }
 
 impl FtpBuilder {
+    /// Shetu: the TLS client config for FTPS (its verifier decides which certificates pass).
+    pub fn tls(mut self, config: Arc<ClientConfig>) -> Self {
+        self.tls = Some(config);
+        self
+    }
+
+    /// Shetu: share the connection pool with every operator built with the same key.
+    pub fn pool_key(mut self, key: String) -> Self {
+        self.pool_key = Some(key);
+        self
+    }
+
     /// set endpoint for ftp backend.
     pub fn endpoint(mut self, endpoint: &str) -> Self {
         self.config.endpoint = if endpoint.is_empty() {
@@ -128,7 +145,21 @@ impl Builder for FtpBuilder {
             }
         };
 
-        let root = normalize_root(&self.config.root.unwrap_or_default());
+        if enable_secure && self.tls.is_none() {
+            return Err(Error::new(
+                ErrorKind::ConfigInvalid,
+                "FTPS needs a TLS config",
+            ));
+        }
+
+        // Shetu: an empty root means "where the login lands" (no CWD at all).
+        let cwd = self
+            .config
+            .root
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .map(normalize_root);
+        let root = cwd.clone().unwrap_or_else(|| "/".to_string());
 
         let user = match &self.config.user {
             None => "".to_string(),
@@ -163,13 +194,19 @@ impl Builder for FtpBuilder {
         let manager = Manager {
             endpoint: endpoint.clone(),
             host: host.to_string(),
-            root: root.clone(),
+            root: cwd,
             user: user.clone(),
             password: password.clone(),
             enable_secure,
+            tls: self.tls.clone(),
         };
 
-        let core = Arc::new(FtpCore::new(info, capability, manager.clone()));
+        let core = Arc::new(FtpCore::new(
+            info,
+            capability,
+            manager.clone(),
+            self.pool_key.as_deref(),
+        ));
         Ok(FtpBackend { core })
     }
 }
@@ -353,11 +390,11 @@ mod build_test {
 
     #[test]
     fn test_build() {
-        // ftps scheme, should suffix with default port 21
+        // Shetu: ftps needs a TLS config, so it doesn't build without one.
         let b = FtpBuilder::default()
             .endpoint("ftps://ftp_server.local")
             .build();
-        assert!(b.is_ok());
+        assert!(b.is_err());
 
         // ftp scheme
         let b = FtpBuilder::default()
@@ -365,11 +402,11 @@ mod build_test {
             .build();
         assert!(b.is_ok());
 
-        // no scheme
+        // no scheme means ftps, which needs a TLS config
         let b = FtpBuilder::default()
             .endpoint("ftp_server.local:8765")
             .build();
-        assert!(b.is_ok());
+        assert!(b.is_err());
 
         // invalid scheme
         let b = FtpBuilder::default()

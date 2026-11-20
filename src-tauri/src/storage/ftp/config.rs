@@ -68,6 +68,9 @@ impl opendal::Configurator for FtpConfig {
     }
 
     fn into_builder(self) -> Self::Builder {
-        FtpBuilder { config: self }
+        FtpBuilder {
+            config: self,
+            ..Default::default()
+        }
     }
 }

@@ -85,22 +85,27 @@ impl ServerCertVerifier for PinnedVerifier {
 
 /// An HTTP client that trusts the system's roots, plus the pinned certificate if any.
 pub fn client_for(pin: Option<&str>) -> Result<reqwest013::Client, String> {
+    let config = client_config(pin)?;
+    reqwest013::Client::builder()
+        .tls_backend_preconfigured(config)
+        .build()
+        .map_err(|e| format!("TLS setup: {e}"))
+}
+
+/// The app's TLS client setup: ring, platform roots, and the account's pin if any.
+pub fn client_config(pin: Option<&str>) -> Result<rustls::ClientConfig, String> {
     let provider = provider();
     let verifier = PinnedVerifier {
         system: rustls_platform_verifier::Verifier::new(provider.clone())
             .map_err(|e| format!("TLS setup: {e}"))?,
         pin: pin.map(str::to_lowercase),
     };
-    let config = rustls::ClientConfig::builder_with_provider(provider)
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("TLS setup: {e}"))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
-        .with_no_client_auth();
-    reqwest013::Client::builder()
-        .tls_backend_preconfigured(config)
-        .build()
-        .map_err(|e| format!("TLS setup: {e}"))
+        .with_no_client_auth())
 }
 
 /// Accepts any certificate and keeps the leaf: only for reading a fingerprint to show.

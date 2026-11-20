@@ -45,6 +45,22 @@ impl Default for FakeOpts {
 
 pub type Tree = Arc<Mutex<BTreeMap<String, Node>>>;
 
+/// A self-signed server config for `localhost`, and its certificate (DER).
+pub fn self_signed_tls() -> (Arc<rustls::ServerConfig>, Vec<u8>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der()).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![der.clone().into()], key)
+    .unwrap();
+    (Arc::new(config), der)
+}
+
 pub struct FakeFtp {
     pub port: u16,
     /// Every command received (passwords masked), across connections.

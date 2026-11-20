@@ -24,14 +24,42 @@ use suppaftp::tokio::AsyncRustlsConnector;
 use suppaftp::tokio::AsyncRustlsFtpStream;
 use suppaftp::tokio::ImplAsyncFtpStream;
 use suppaftp::tokio_rustls::rustls::ClientConfig;
-use suppaftp::tokio_rustls::rustls::RootCertStore;
 use suppaftp::tokio_rustls::TlsConnector;
 use suppaftp::types::FileType;
+use suppaftp::types::Response;
 use suppaftp::FtpError;
 use suppaftp::Status;
 
 use opendal::raw::*;
 use opendal::*;
+
+type Pools = std::collections::HashMap<String, Arc<bounded::Pool<Manager>>>;
+
+/// Shetu: pools shared by key, so every operator for one account stays under the cap.
+static POOLS: std::sync::LazyLock<std::sync::Mutex<Pools>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn shared_pool(key: Option<&str>, manager: Manager) -> Arc<bounded::Pool<Manager>> {
+    let new =
+        |manager| bounded::Pool::new(bounded::PoolConfig::new(super::MAX_CONNECTIONS), manager);
+    let Some(key) = key else {
+        return new(manager);
+    };
+    let Ok(mut pools) = POOLS.lock() else {
+        return new(manager);
+    };
+    pools
+        .entry(key.to_string())
+        .or_insert_with(|| new(manager))
+        .clone()
+}
+
+/// Shetu: drops every shared pool (sign-out); pooled connections close as they're released.
+pub fn forget_pools() {
+    if let Ok(mut pools) = POOLS.lock() {
+        pools.clear();
+    }
+}
 
 pub struct FtpCore {
     info: ServiceInfo,
@@ -40,8 +68,13 @@ pub struct FtpCore {
 }
 
 impl FtpCore {
-    pub fn new(info: ServiceInfo, capability: Capability, manager: Manager) -> Self {
-        let pool = bounded::Pool::new(bounded::PoolConfig::new(64), manager);
+    pub fn new(
+        info: ServiceInfo,
+        capability: Capability,
+        manager: Manager,
+        pool_key: Option<&str>,
+    ) -> Self {
+        let pool = shared_pool(pool_key, manager);
         Self {
             info,
             capability,
@@ -76,10 +109,13 @@ impl FtpCore {
 pub struct Manager {
     pub endpoint: String,
     pub host: String,
-    pub root: String,
+    /// Shetu: `None` = stay where the login lands.
+    pub root: Option<String>,
     pub user: String,
     pub password: String,
     pub enable_secure: bool,
+    /// Shetu: the injected TLS setup (no platform-certificate loading here).
+    pub tls: Option<Arc<ClientConfig>>,
 }
 
 impl ManageObject for Manager {
@@ -90,19 +126,13 @@ impl ManageObject for Manager {
         let stream = ImplAsyncFtpStream::connect(&self.endpoint).await?;
         // switch to secure mode if ssl/tls is on.
         let mut ftp_stream = if self.enable_secure {
-            let mut root_store = RootCertStore::empty();
-            for cert in
-                rustls_native_certs::load_native_certs().expect("could not load platform certs")
-            {
-                root_store.add(cert).unwrap();
-            }
-
-            let cfg = ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
+            let cfg = self
+                .tls
+                .clone()
+                .ok_or_else(|| FtpError::SecureError("FTPS needs a TLS config".to_string()))?;
             stream
                 .into_secure(
-                    AsyncRustlsConnector::from(TlsConnector::from(Arc::new(cfg))),
+                    AsyncRustlsConnector::from(TlsConnector::from(cfg)),
                     &self.host,
                 )
                 .await?
@@ -115,17 +145,22 @@ impl ManageObject for Manager {
             ftp_stream.login(&self.user, &self.password).await?;
         }
 
-        // change to the root path
-        match ftp_stream.cwd(&self.root).await {
-            Err(FtpError::UnexpectedResponse(e)) if e.status == Status::FileUnavailable => {
-                ftp_stream.mkdir(&self.root).await?;
-                // Then change to root path
-                ftp_stream.cwd(&self.root).await?;
+        // Shetu: change to the root path, never creating it.
+        if let Some(root) = &self.root {
+            match ftp_stream.cwd(root).await {
+                Err(FtpError::UnexpectedResponse(e)) if e.status == Status::FileUnavailable => {
+                    let shown = match root.trim_end_matches('/') {
+                        "" => "/",
+                        r => r,
+                    };
+                    return Err(FtpError::UnexpectedResponse(Response::new(
+                        Status::FileUnavailable,
+                        format!("{shown} doesn't exist on the server").into_bytes(),
+                    )));
+                }
+                Err(e) => return Err(e),
+                Ok(_) => (),
             }
-            // Other errors, return.
-            Err(e) => return Err(e),
-            // Do nothing if success.
-            Ok(_) => (),
         }
 
         ftp_stream.transfer_type(FileType::Binary).await?;
