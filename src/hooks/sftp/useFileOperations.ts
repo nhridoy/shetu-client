@@ -88,11 +88,16 @@ export function useFileOperations({
           if (hostId.startsWith("storage:")) {
             const accountId = hostId.slice("storage:".length);
             const started = disconnectsRef.current;
-            // Answers the account's provider.
+            // Answers the account's provider. Rust refuses a connect whose pane was closed
+            // meanwhile: that stops quietly.
             const connect = () =>
               invoke<string>("storage_connect", {
                 sessionId: paneId,
                 accountId,
+              }).catch((err) => {
+                if (disconnectsRef.current !== started)
+                  throw new ConnectCancelled("The pane was closed");
+                throw err;
               });
             const accounts = useStorageAccountStore.getState();
             let kind: string;
@@ -123,15 +128,9 @@ export function useFileOperations({
                 throw new ConnectCancelled("The pane was closed");
               kind = await connect();
             }
-            // Closed while connecting: drop the session the connect just opened, unless a
-            // newer connect in this pane already owns it.
-            if (disconnectsRef.current !== started) {
-              if (!getProvider(paneId))
-                await invoke("storage_disconnect", { sessionId: paneId }).catch(
-                  () => {},
-                );
+            // Closed after the connect finished: the disconnect already removed its session.
+            if (disconnectsRef.current !== started)
               throw new ConnectCancelled("The pane was closed");
-            }
             const provider = new StorageFileProvider(hostId, paneId);
             provider.kind = kind === "webdav" ? "webdav" : "s3";
             providerRef.current = provider;
