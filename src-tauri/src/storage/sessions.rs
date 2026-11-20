@@ -15,9 +15,16 @@ const READ_MAX: u64 = 10 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct StorageSessions {
-    open: Mutex<HashMap<String, (StorageRef, Remote)>>,
-    /// Advanced by every sign-out, under the `open` lock.
-    generation: std::sync::atomic::AtomicU64,
+    open: Mutex<Panes>,
+    /// The last attempt number handed out (by `begin`).
+    attempts: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Default)]
+struct Panes {
+    sessions: HashMap<String, (StorageRef, Remote)>,
+    /// Each pane's latest connect attempt; only it may store the pane's session.
+    latest: HashMap<String, u64>,
 }
 
 /// A saved account's storage side, built from the encrypted store.
@@ -33,46 +40,55 @@ pub fn operator_from_store(
 
 impl StorageSessions {
     pub fn get(&self, sid: &str) -> Option<(StorageRef, Remote)> {
-        self.open.lock().ok()?.get(sid).cloned()
+        self.open.lock().ok()?.sessions.get(sid).cloned()
     }
 
-    /// Taken when a connect starts; see `insert_if`.
-    pub fn generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    /// Starts a connect for the pane: its ticket, which supersedes the pane's earlier ones.
+    pub fn begin(&self, sid: &str) -> u64 {
+        let attempt = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if let Ok(mut open) = self.open.lock() {
+            open.latest.insert(sid.to_string(), attempt);
+        }
+        attempt
     }
 
-    /// Stores a session only if no sign-out happened since `started`, so a connect still in
-    /// flight at sign-out can't leave a bucket (and its credentials) open afterwards.
-    pub fn insert_if(&self, started: u64, sid: String, r: StorageRef, op: Remote) -> bool {
+    /// Stores a session only for the pane's latest attempt: a connect superseded by a newer
+    /// one, or still in flight at disconnect or sign-out, can't replace or reopen the pane.
+    pub fn insert_if(&self, attempt: u64, sid: String, r: StorageRef, op: Remote) -> bool {
         let Ok(mut open) = self.open.lock() else {
             return false;
         };
-        if self.generation() != started {
+        if open.latest.get(&sid) != Some(&attempt) {
             return false;
         }
-        open.insert(sid, (r, op));
+        open.sessions.insert(sid, (r, op));
         true
     }
 
+    /// Disconnect: the session goes, and so does every connect still running for the pane.
     pub fn remove(&self, sid: &str) {
         if let Ok(mut open) = self.open.lock() {
-            open.remove(sid);
+            open.sessions.remove(sid);
+            open.latest.remove(sid);
         }
     }
 
-    /// Sign-out: every open bucket is forgotten.
+    /// Sign-out: every open bucket and every connect in flight is forgotten.
     pub fn clear(&self) {
         if let Ok(mut open) = self.open.lock() {
-            open.clear();
-            self.generation
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            open.sessions.clear();
+            open.latest.clear();
         }
     }
 
     /// An operator for a transfer end: an open pane's on that bucket, else a new one.
     pub fn remote_for_ref(&self, app: &tauri::AppHandle, r: &StorageRef) -> Result<Remote, String> {
         let open = self.open.lock().ok().and_then(|o| {
-            o.values()
+            o.sessions
+                .values()
                 .find(|(seen, _)| seen == r)
                 .map(|(_, op)| op.clone())
         });
@@ -109,7 +125,7 @@ pub async fn storage_connect(
     crypto: tauri::State<'_, CryptoState>,
     sessions: Sessions<'_>,
 ) -> Result<String, String> {
-    let started = sessions.generation();
+    let attempt = sessions.begin(&session_id);
     let account = load_account(&db, &crypto, &account_id)?;
     let op = remote_for(&account)?;
     check_account_access(&account, &op).await?;
@@ -118,8 +134,8 @@ pub async fn storage_connect(
         account_id,
         bucket: account.bucket,
     };
-    if !sessions.insert_if(started, session_id, r, op) {
-        return Err("Signed out while the bucket was opening".into());
+    if !sessions.insert_if(attempt, session_id, r, op) {
+        return Err("The pane was closed while connecting".into());
     }
     Ok(provider)
 }
@@ -277,7 +293,7 @@ mod tests {
             account_id: "a".into(),
             bucket: "b".into(),
         };
-        assert!(s.insert_if(s.generation(), "pane-1".into(), r.clone(), op));
+        assert!(s.insert_if(s.begin("pane-1"), "pane-1".into(), r.clone(), op));
         assert_eq!(s.get("pane-1").map(|(seen, _)| seen), Some(r));
         s.clear();
         assert!(s.get("pane-1").is_none());
@@ -295,12 +311,12 @@ mod tests {
             account_id: "a".into(),
             bucket: "b".into(),
         };
-        let started = s.generation();
+        let a = s.begin("pane-1");
         s.clear();
-        assert!(!s.insert_if(started, "pane-1".into(), r.clone(), op()));
+        assert!(!s.insert_if(a, "pane-1".into(), r.clone(), op()));
         assert!(s.get("pane-1").is_none());
-        let started = s.generation();
-        assert!(s.insert_if(started, "pane-1".into(), r, op()));
+        let b = s.begin("pane-1");
+        assert!(s.insert_if(b, "pane-1".into(), r, op()));
         assert!(s.get("pane-1").is_some());
     }
 
@@ -316,8 +332,51 @@ mod tests {
             bucket: "b".into(),
         };
         // The pane reconnected to bucket-b while a call for bucket-a was in flight.
-        assert!(s.insert_if(s.generation(), "pane-1".into(), r, op));
+        assert!(s.insert_if(s.begin("pane-1"), "pane-1".into(), r, op));
         assert!(s.op("pane-1", "bucket-a").is_err());
         assert!(s.op("pane-1", "bucket-b").is_ok());
+    }
+
+    fn memory() -> Remote {
+        Remote {
+            op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            dav: None,
+        }
+    }
+
+    fn account(id: &str) -> StorageRef {
+        StorageRef {
+            account_id: id.into(),
+            bucket: "b".into(),
+        }
+    }
+
+    #[test]
+    fn a_connect_after_its_pane_closed_is_not_kept() {
+        let s = StorageSessions::default();
+        let a = s.begin("pane-1");
+        s.remove("pane-1");
+        assert!(!s.insert_if(a, "pane-1".into(), account("a"), memory()));
+        assert!(s.get("pane-1").is_none());
+    }
+
+    #[test]
+    fn an_older_connect_never_replaces_a_newer_one() {
+        let s = StorageSessions::default();
+        let a = s.begin("pane-1");
+        let b = s.begin("pane-1");
+        assert!(s.insert_if(b, "pane-1".into(), account("b"), memory()));
+        assert!(!s.insert_if(a, "pane-1".into(), account("a"), memory()));
+        assert_eq!(s.get("pane-1").unwrap().0.account_id, "b");
+    }
+
+    #[test]
+    fn tickets_are_per_pane() {
+        let s = StorageSessions::default();
+        let a = s.begin("pane-1");
+        let b = s.begin("pane-2");
+        s.remove("pane-2");
+        assert!(s.insert_if(a, "pane-1".into(), account("a"), memory()));
+        assert!(!s.insert_if(b, "pane-2".into(), account("b"), memory()));
     }
 }
