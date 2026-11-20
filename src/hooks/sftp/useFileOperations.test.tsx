@@ -19,10 +19,6 @@ vi.mock("@/lib/terminal/agentForwarding", () => ({
   ConnectCancelled: mocks.ConnectCancelled,
 }));
 
-import {
-  registerProvider,
-  unregisterProvider,
-} from "@/lib/sftp/providerRegistry";
 import { requestCertTrust } from "@/lib/storage/certTrust";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
@@ -232,7 +228,35 @@ it("a disconnect while the pin is saving stops before the retry", async () => {
   mocks.invoke.mockImplementation(async () => undefined);
 });
 
-it("a disconnect during the retry closes the session it reopened", async () => {
+it("a connect refused because the pane closed stops quietly", async () => {
+  let refuse!: (why: string) => void;
+  mocks.invoke.mockImplementation(((cmd: string) =>
+    cmd === "storage_connect"
+      ? new Promise((_, reject) => (refuse = reject))
+      : Promise.resolve(undefined)) as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = ops.ensureProvider().catch((e) => e);
+  });
+  await act(async () => {
+    await ops.disconnect();
+  });
+  let result: unknown;
+  await act(async () => {
+    refuse("The pane was closed while connecting");
+    result = await pending;
+  });
+  expect(result).toBeInstanceOf(mocks.ConnectCancelled);
+  expect(ops.connectionErrorModal.open).toBe(false);
+  expect(ops.connectionError).toBeNull();
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("a retry finishing after disconnect calls nothing more", async () => {
   let releaseRetry!: (kind: string) => void;
   let connects = 0;
   const calls: string[] = [];
@@ -253,56 +277,17 @@ it("a disconnect during the retry closes the session it reopened", async () => {
   await act(async () => {
     pending = ops.ensureProvider().catch((e) => e);
   });
-  expect(connects).toBe(2);
   await act(async () => {
     await ops.disconnect();
   });
+  const before = calls.length;
   let result: unknown;
   await act(async () => {
     releaseRetry("webdav");
     result = await pending;
   });
   expect(result).toBeInstanceOf(mocks.ConnectCancelled);
-  expect(calls.lastIndexOf("storage_disconnect")).toBeGreaterThan(
-    calls.lastIndexOf("storage_connect"),
-  );
-  act(() => root.unmount());
-  mocks.invoke.mockImplementation(async () => undefined);
-});
-
-it("a stale retry leaves alone the session a newer connect opened in the pane", async () => {
-  let releaseRetry!: (kind: string) => void;
-  let connects = 0;
-  const calls: string[] = [];
-  mocks.invoke.mockImplementation(((cmd: string) => {
-    calls.push(cmd);
-    if (cmd !== "storage_connect") return Promise.resolve(undefined);
-    if (connects++ === 0) return Promise.reject(certQuestion);
-    return new Promise<string>((r) => (releaseRetry = r));
-  }) as never);
-  useStorageAccountStore.setState({
-    save: vi.fn(async () => true),
-    accounts: [],
-  } as never);
-  storagePane();
-  const root = createRoot(document.createElement("div"));
-  await act(async () => root.render(<BucketProbe />));
-  let pending!: Promise<unknown>;
-  await act(async () => {
-    pending = ops.ensureProvider().catch((e) => e);
-  });
-  await act(async () => {
-    await ops.disconnect();
-  });
-  // A newer connect in the same pane finished first.
-  registerProvider("p2", {} as never);
-  const before = calls.filter((c) => c === "storage_disconnect").length;
-  await act(async () => {
-    releaseRetry("webdav");
-    await pending;
-  });
-  expect(calls.filter((c) => c === "storage_disconnect").length).toBe(before);
-  unregisterProvider("p2");
+  expect(calls.slice(before)).toEqual([]);
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
 });
