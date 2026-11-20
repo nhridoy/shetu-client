@@ -309,10 +309,30 @@ pub async fn check_folder(t: &DavTarget) -> Result<(), String> {
 }
 
 /// Whether a `PROPFIND` answer's resource type is a collection, under any namespace prefix.
-/// Walks the tags (text can't hold a raw `<`), so only a `collection` element inside the first
-/// `resourcetype` counts. Depth 0 answers for the requested resource alone.
+/// The XML without CDATA sections and comments, the only places text can hold a raw `<`.
+fn markup_only(xml: &str) -> String {
+    let mut out = String::new();
+    let mut rest = xml;
+    loop {
+        let next = [("<![cdata[", "]]>"), ("<!--", "-->")]
+            .into_iter()
+            .filter_map(|(open, close)| rest.find(open).map(|i| (i, open.len(), close)))
+            .min_by_key(|(i, _, _)| *i);
+        let Some((i, open_len, close)) = next else {
+            break;
+        };
+        out.push_str(&rest[..i]);
+        let after = &rest[i + open_len..];
+        rest = after.find(close).map_or("", |j| &after[j + close.len()..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Walks the tags, so only a `collection` element inside the first `resourcetype` counts.
+/// Depth 0 answers for the requested resource alone.
 fn is_collection(xml: &str) -> bool {
-    let xml = xml.to_ascii_lowercase();
+    let xml = markup_only(&xml.to_ascii_lowercase());
     let mut inside = false;
     for tag in xml.split('<').skip(1) {
         let tag = tag.split('>').next().unwrap_or_default();
@@ -914,5 +934,7 @@ pub(crate) mod tests {
         assert!(!is_collection(named));
         let bare = r#"<multistatus xmlns="DAV:"><response><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response></multistatus>"#;
         assert!(is_collection(bare));
+        let cdata = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:displayname><![CDATA[<d:resourcetype><d:collection/>]]></d:displayname><!-- <d:resourcetype><d:collection/> --><d:resourcetype/></d:prop></d:propstat></d:response></d:multistatus>"#;
+        assert!(!is_collection(cdata));
     }
 }
