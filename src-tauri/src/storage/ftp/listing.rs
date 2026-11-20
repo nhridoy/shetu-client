@@ -38,8 +38,12 @@ fn mlsx_line(line: &str) -> String {
         .join(";")
 }
 
-fn is_self_or_parent(f: &File) -> bool {
-    matches!(f.name(), "." | "..")
+/// An MLSD line: facts, a space, then the pathname, which may itself contain `;` or spaces
+/// (suppaftp would take only what follows the last `;`).
+fn mlsd_entry(line: &str) -> Option<(String, File)> {
+    let (facts, name) = line.split_once(' ')?;
+    let file = suppaftp::list::ListParser::parse_mlsd(&format!("{} x", mlsx_line(facts))).ok()?;
+    Some((name.to_string(), file))
 }
 
 /// `path` is OpenDAL's: `/` for the root, else `dir/` relative to it.
@@ -52,17 +56,21 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
             let has = conn
                 .feat()
                 .await
-                .map(|f| f.keys().any(|k| k.eq_ignore_ascii_case("MLSD")))
+                // RFC 3659: the MLST feature line advertises MLSD too.
+                .map(|f| {
+                    f.keys()
+                        .any(|k| k.eq_ignore_ascii_case("MLST") || k.eq_ignore_ascii_case("MLSD"))
+                })
                 .unwrap_or(false);
             *core.mlsd.get_or_init(|| has)
         }
     };
-    let files: Vec<File> = if mlsd {
+    let files: Vec<(String, File)> = if mlsd {
         conn.mlsd(target.as_deref())
             .await
             .map_err(format_ftp_error)?
             .iter()
-            .filter_map(|l| suppaftp::list::ListParser::parse_mlsd(&mlsx_line(l)).ok())
+            .filter_map(|l| mlsd_entry(l))
             .collect()
     } else {
         let with_a = match &target {
@@ -72,8 +80,8 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
         match conn.list(Some(&with_a)).await {
             Ok(lines) => lines,
             Err(_) => {
-                // A failed data command can leave its reply unread: use a fresh connection.
-                drop(conn);
+                // A failed data command can leave its reply unread: never reuse that connection.
+                drop(conn.detach());
                 conn = core.ftp_connect(Operation::List).await?;
                 conn.list(target.as_deref())
                     .await
@@ -82,24 +90,30 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
         }
         .iter()
         .filter_map(|l| File::from_str(l).ok())
+        .map(|f| (f.name().to_string(), f))
         .collect()
     };
     let mut out = Vec::with_capacity(files.len());
-    for f in files.iter().filter(|f| !is_self_or_parent(f)) {
+    for (name, f) in files
+        .iter()
+        .filter(|(n, _)| !matches!(n.as_str(), "." | ".."))
+    {
         let (dir, size) = if f.is_symlink() {
             let full = match &target {
-                Some(t) => format!("{t}/{}", f.name()),
-                None => f.name().to_string(),
+                Some(t) => format!("{t}/{name}"),
+                None => name.clone(),
             };
             match conn.size(&full).await {
                 Ok(n) => (false, n as u64),
-                Err(_) => (true, 0),
+                // The server answered: not a plain file (or no SIZE), so treat it as a folder.
+                Err(suppaftp::FtpError::UnexpectedResponse(_)) => (true, 0),
+                Err(e) => return Err(format_ftp_error(e)),
             }
         } else {
             (f.is_directory(), f.size() as u64)
         };
         out.push(Entry {
-            name: f.name().to_string(),
+            name: name.clone(),
             dir,
             size,
             modified: f.modified(),

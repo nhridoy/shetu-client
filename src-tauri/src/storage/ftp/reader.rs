@@ -34,12 +34,16 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 
 pub struct FtpReadStream {
-    /// Keep the connection alive while data stream is alive.
-    _ftp_stream: bounded::Object<Manager>,
+    /// Keep the connection alive while data stream is alive; `None` once released.
+    ftp_stream: Option<bounded::Object<Manager>>,
 
-    data_stream: Box<dyn AsyncRead + Sync + Send + Unpin + 'static>,
+    /// `None` once the transfer was finalized.
+    data_stream: Option<Box<dyn AsyncRead + Sync + Send + Unpin + 'static>>,
     chunk: usize,
     buf: BytesMut,
+    /// Shetu: the bytes asked for (`u64::MAX` = to the end) and read so far.
+    want: u64,
+    got: u64,
 }
 
 /// # Safety
@@ -67,23 +71,46 @@ impl FtpReadStream {
             .take(size as _);
 
         Ok(Self {
-            _ftp_stream: ftp_stream,
+            ftp_stream: Some(ftp_stream),
 
-            data_stream: Box::new(ds),
+            data_stream: Some(Box::new(ds)),
             chunk: 1024 * 1024,
             buf: BytesMut::new(),
+            want: size,
+            got: 0,
         })
+    }
+}
+
+impl Drop for FtpReadStream {
+    /// Shetu: a transfer that wasn't finalized leaves its connection mid-command; it must
+    /// never go back to the pool.
+    fn drop(&mut self) {
+        if self.data_stream.is_some() {
+            if let Some(conn) = self.ftp_stream.take() {
+                drop(conn.detach());
+            }
+        }
     }
 }
 
 impl oio::ReadStream for FtpReadStream {
     async fn read(&mut self) -> Result<Buffer> {
+        let Some(data) = self.data_stream.as_mut() else {
+            return Ok(Buffer::new());
+        };
         self.buf.resize(self.chunk, 0);
-        let n = self
-            .data_stream
-            .read(&mut self.buf)
-            .await
-            .map_err(new_std_io_error)?;
+        let n = data.read(&mut self.buf).await.map_err(new_std_io_error)?;
+        self.got += n as u64;
+        // Shetu: the server ended the data before the range did: its final reply says whether
+        // that's the whole file (226) or an aborted transfer (426).
+        if n == 0 && self.got < self.want {
+            if let (Some(data), Some(conn)) = (self.data_stream.take(), self.ftp_stream.as_mut()) {
+                conn.finalize_retr_stream(data)
+                    .await
+                    .map_err(format_ftp_error)?;
+            }
+        }
         Ok(Buffer::from(self.buf.split_to(n).freeze()))
     }
 }

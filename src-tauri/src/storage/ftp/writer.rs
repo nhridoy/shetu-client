@@ -17,11 +17,14 @@
 // under the License.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use asyncband::pool::bounded;
 use bytes::Buf;
+use suppaftp::{FtpError, FtpResult, Status};
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+use tokio::time::timeout;
 
 use super::core::format_ftp_error;
 use super::core::FtpCore;
@@ -122,9 +125,11 @@ impl FtpWriter {
             return Err(format_ftp_error(first));
         }
         if let Err(e) = conn.rename(tmp, &target).await {
-            let _ = conn.rename(&backup, &target).await;
-            let _ = conn.rm(tmp).await;
-            self.backup = None;
+            if conn.rename(&backup, &target).await.is_ok() {
+                let _ = conn.rm(tmp).await;
+                self.backup = None;
+            }
+            // Otherwise the backup stays recorded: abort or drop restore it.
             return Err(format_ftp_error(e));
         }
         let _ = conn.rm(&backup).await;
@@ -135,7 +140,8 @@ impl FtpWriter {
     /// Ends a started upload that won't be published and deletes its temp file.
     async fn discard(&mut self) {
         self.done = true;
-        self.abandoned().await;
+        // Its own task owns the work, so cancelling this abort can't drop it halfway.
+        let _ = tokio::spawn(self.abandoned()).await;
     }
 
     fn abandoned(&mut self) -> impl std::future::Future<Output = ()> + Send + 'static {
@@ -151,8 +157,22 @@ impl FtpWriter {
     }
 }
 
+/// How long one clean-up step may wait for the server.
+const CLEANUP_LIMIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(30)
+};
+/// Tries at recovering a cut publish, waiting `RETRY_BASE` × 2ⁿ between them.
+const RECOVERY_TRIES: u32 = 5;
+const RETRY_BASE: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(1)
+};
+
 /// Cleans up an upload that won't finish. A cut publish may have left its connection
-/// mid-command, so it recovers on a fresh one: the old file goes back if the target is gone.
+/// mid-command, so it recovers on fresh ones: the old file goes back if the target is gone.
 async fn abandon(
     core: Arc<FtpCore>,
     conn: Option<bounded::Object<Manager>>,
@@ -164,25 +184,67 @@ async fn abandon(
 ) {
     if !publishing {
         if let Some(mut conn) = conn {
-            cleanup(&mut conn, data, tmp).await;
+            if timeout(CLEANUP_LIMIT, cleanup(&mut conn, data, tmp))
+                .await
+                .is_err()
+            {
+                // Still mid-command: never back to the pool.
+                drop(conn.detach());
+            }
         }
         return;
     }
-    drop((conn, data));
-    let Ok(mut conn) = core.ftp_connect(Operation::Write).await else {
-        return;
-    };
+    if let Some(conn) = conn {
+        drop(conn.detach());
+    }
+    drop(data);
+    for attempt in 0..RECOVERY_TRIES {
+        if attempt > 0 {
+            tokio::time::sleep(RETRY_BASE * 2u32.pow(attempt - 1)).await;
+        }
+        let Ok(mut conn) = core.ftp_connect(Operation::Write).await else {
+            continue;
+        };
+        let step = recover(&mut conn, &target, backup.as_deref(), tmp.as_deref());
+        match timeout(CLEANUP_LIMIT, step).await {
+            Ok(Ok(())) => return,
+            Ok(Err(_)) => {}
+            Err(_) => drop(conn.detach()),
+        }
+    }
+    log::warn!("ftp: couldn't finish cleaning up an upload to {target}");
+}
+
+/// Puts the old file back if the target is missing (else drops the backup), and deletes the
+/// temp file. An error means the server couldn't be asked; the caller tries again.
+async fn recover(
+    conn: &mut bounded::Object<Manager>,
+    target: &str,
+    backup: Option<&str>,
+    tmp: Option<&str>,
+) -> FtpResult<()> {
     if let Some(backup) = backup {
-        if conn.size(&backup).await.is_ok() {
-            if conn.size(&target).await.is_ok() {
-                let _ = conn.rm(&backup).await;
+        if exists(conn, backup).await? {
+            if exists(conn, target).await? {
+                conn.rm(backup).await?;
             } else {
-                let _ = conn.rename(&backup, &target).await;
+                conn.rename(backup, target).await?;
             }
         }
     }
     if let Some(tmp) = tmp {
-        let _ = conn.rm(&tmp).await;
+        if exists(conn, tmp).await? {
+            conn.rm(tmp).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn exists(conn: &mut bounded::Object<Manager>, path: &str) -> FtpResult<bool> {
+    match conn.size(path).await {
+        Ok(_) => Ok(true),
+        Err(FtpError::UnexpectedResponse(r)) if r.status == Status::FileUnavailable => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -249,10 +311,8 @@ impl oio::Write for FtpWriter {
                 .map_err(format_ftp_error)?;
         }
         if let Some(tmp) = self.tmp_path.clone() {
-            if let Err(e) = self.publish(&tmp).await {
-                self.done = true;
-                return Err(e);
-            }
+            // A failed publish stays undone, so abort or drop recover what it left.
+            self.publish(&tmp).await?;
         }
         self.done = true;
         Ok(MetadataBuilder::unknown().build())

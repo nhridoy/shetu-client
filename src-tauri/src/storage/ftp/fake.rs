@@ -33,6 +33,14 @@ pub struct FakeOpts {
     pub home: String,
     /// Wait this long before answering `RNTO` (after doing it).
     pub rnto_delay: Option<std::time::Duration>,
+    /// Close the control connection when `SIZE` arrives.
+    pub drop_on_size: bool,
+    /// Send only this many bytes of a `RETR`, then answer 426.
+    pub retr_abort_after: Option<usize>,
+    /// Refuse this many `RNTO`s onto this path (553).
+    pub fail_rnto: Option<(String, Arc<AtomicUsize>)>,
+    /// Take a `STOR`'s data, then never answer.
+    pub silent_after_stor: bool,
 }
 
 impl Default for FakeOpts {
@@ -45,6 +53,10 @@ impl Default for FakeOpts {
             refuse_auth_tls: false,
             home: "/".into(),
             rnto_delay: None,
+            drop_on_size: false,
+            retr_abort_after: None,
+            fail_rnto: None,
+            silent_after_stor: false,
         }
     }
 }
@@ -76,6 +88,8 @@ pub struct FakeFtp {
     /// Control connections accepted so far.
     pub connects: Arc<AtomicUsize>,
     pub fs: Tree,
+    /// While set, new connections are closed at once.
+    pub down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The fixed time every entry reports: 2024-01-02 03:04:05 UTC.
@@ -90,12 +104,23 @@ impl FakeFtp {
         let connects = Arc::new(AtomicUsize::new(0));
         let active = Arc::new(AtomicUsize::new(0));
         let fs: Tree = Arc::new(Mutex::new(BTreeMap::new()));
-        let (l, p, c, f) = (log.clone(), peak.clone(), connects.clone(), fs.clone());
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (l, p, c, f, d) = (
+            log.clone(),
+            peak.clone(),
+            connects.clone(),
+            fs.clone(),
+            down.clone(),
+        );
         tokio::spawn(async move {
             loop {
                 let Ok((tcp, _)) = listener.accept().await else {
                     return;
                 };
+                if d.load(Ordering::SeqCst) {
+                    drop(tcp);
+                    continue;
+                }
                 c.fetch_add(1, Ordering::SeqCst);
                 let now = active.fetch_add(1, Ordering::SeqCst) + 1;
                 p.fetch_max(now, Ordering::SeqCst);
@@ -123,6 +148,7 @@ impl FakeFtp {
             peak,
             connects,
             fs,
+            down,
         }
     }
 
@@ -364,8 +390,8 @@ impl Session {
                 }
                 "FEAT" => {
                     let mut lines = vec!["211-Features:".to_string()];
+                    // RFC 3659: the MLST line advertises MLSD too.
                     if self.opts.mlsd {
-                        lines.push(" MLSD".into());
                         lines.push(" MLST type*;size*;modify*;".into());
                     }
                     lines.extend([" SIZE".into(), " MDTM".into(), " REST STREAM".into()]);
@@ -426,6 +452,11 @@ impl Session {
                         continue;
                     }
                     let dir = join(&self.cwd, &target);
+                    if !matches!(self.resolved(&dir), Some(Node::Dir)) {
+                        self.pasv = None;
+                        self.say("550 No such directory").await;
+                        continue;
+                    }
                     let body: String = self
                         .children(&dir)
                         .into_iter()
@@ -455,6 +486,7 @@ impl Session {
                         None => self.say("550 No such file").await,
                     }
                 }
+                "SIZE" if self.opts.drop_on_size => return,
                 "SIZE" => match self.resolved(&join(&self.cwd, &arg)) {
                     Some(Node::File(b)) => self.say(&format!("213 {}", b.len())).await,
                     _ => self.say("550 Could not get file size").await,
@@ -471,7 +503,18 @@ impl Session {
                     let rest = std::mem::take(&mut self.rest);
                     match self.resolved(&join(&self.cwd, &arg)) {
                         Some(Node::File(b)) => {
-                            self.send_data(b[rest.min(b.len())..].to_vec()).await
+                            let body = b[rest.min(b.len())..].to_vec();
+                            match self.opts.retr_abort_after {
+                                Some(n) => {
+                                    self.say("150 Opening data connection").await;
+                                    if let Some(mut data) = self.data().await {
+                                        let _ = data.write_all(&body[..n.min(body.len())]).await;
+                                        let _ = data.shutdown().await;
+                                    }
+                                    self.say("426 Connection closed; transfer aborted").await
+                                }
+                                None => self.send_data(body).await,
+                            }
                         }
                         _ => {
                             self.pasv = None;
@@ -485,6 +528,14 @@ impl Session {
                         self.pasv = None;
                         self.say("553 Could not create file").await;
                         continue;
+                    }
+                    if self.opts.silent_after_stor {
+                        self.say("150 Ok to send data").await;
+                        if let Some(mut data) = self.data().await {
+                            let mut sink = Vec::new();
+                            let _ = data.read_to_end(&mut sink).await;
+                        }
+                        std::future::pending::<()>().await;
                     }
                     if let Some(bytes) = self.receive_data().await {
                         let mut fs = self.fs.lock().unwrap();
@@ -559,9 +610,17 @@ impl Session {
                         continue;
                     };
                     let to = join(&self.cwd, &arg);
+                    let forced = self.opts.fail_rnto.as_ref().is_some_and(|(p, left)| {
+                        *p == to
+                            && left
+                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                    n.checked_sub(1)
+                                })
+                                .is_ok()
+                    });
                     let moved = {
                         let mut fs = self.fs.lock().unwrap();
-                        if fs.contains_key(&to) && self.opts.refuse_rnto_over_existing {
+                        if forced || (fs.contains_key(&to) && self.opts.refuse_rnto_over_existing) {
                             false
                         } else {
                             let keys: Vec<String> = fs

@@ -359,4 +359,144 @@ mod tests {
             crate::transfers::model::JobError::Operation(_)
         ));
     }
+
+    #[tokio::test]
+    async fn refusing_to_delete_a_full_folder_is_an_error() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        fake.put("/full", Node::Dir);
+        fake.put("/full/x", Node::File(b"x".to_vec()));
+        assert!(plain(&fake).delete("full/").await.is_err());
+        assert!(fake.get("/full").is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_missing_file_is_fine() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        plain(&fake).delete("nope.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mlsd_names_keep_semicolons() {
+        let fake = FakeFtp::start(FakeOpts::default()).await;
+        fake.put("/report;final.txt", Node::File(b"r".to_vec()));
+        fake.put("/final.txt", Node::File(b"ff".to_vec()));
+        assert_eq!(
+            entries(&plain(&fake), "/").await,
+            vec![("final.txt".into(), 2), ("report;final.txt".into(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_symlink_probe_that_loses_the_connection_is_an_error() {
+        let fake = FakeFtp::start(FakeOpts {
+            drop_on_size: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/a.txt", Node::File(b"abc".to_vec()));
+        fake.put("/latest", Node::Link("/a.txt".into()));
+        assert!(plain(&fake).list("/").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_download_the_server_aborts_is_an_error() {
+        let fake = FakeFtp::start(FakeOpts {
+            retr_abort_after: Some(2),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/a.bin", Node::File(b"abcdef".to_vec()));
+        assert!(plain(&fake).read("a.bin").await.is_err());
+    }
+
+    /// Starts a replace of `/site/index.html` ("old") and cuts its close mid-publish.
+    async fn cut_replace(opts: FakeOpts) -> (FakeFtp, opendal::Writer) {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            rnto_delay: Some(std::time::Duration::from_millis(150)),
+            ..opts
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        let mut w = plain(&fake).writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        let cut = tokio::time::timeout(std::time::Duration::from_millis(250), w.close()).await;
+        assert!(cut.is_err(), "the close should still be running");
+        (fake, w)
+    }
+
+    fn target_kept(fake: &FakeFtp) {
+        assert!(
+            matches!(fake.get("/site/index.html"), Some(Node::File(_))),
+            "{:?}",
+            fake.names()
+        );
+        assert!(leftovers(fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rollback_is_recovered_by_abort() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            fail_rnto: Some((
+                "/site/index.html".into(),
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(3)),
+            )),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        let mut w = plain(&fake).writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        assert!(w.close().await.is_err());
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"old".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_abort_still_recovers() {
+        let (fake, mut w) = cut_replace(FakeOpts::default()).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(1), w.abort()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        target_kept(&fake);
+    }
+
+    #[tokio::test]
+    async fn recovery_waits_out_a_server_that_is_briefly_down() {
+        let (fake, mut w) = cut_replace(FakeOpts::default()).await;
+        fake.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let down = fake.down.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            down.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        target_kept(&fake);
+    }
+
+    #[tokio::test]
+    async fn a_silent_server_doesnt_hold_connections_after_cancels() {
+        let fake = FakeFtp::start(FakeOpts {
+            silent_after_stor: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        let op = plain(&fake);
+        for i in 0..5 {
+            let mut w = op.writer(&format!("f{i}.bin")).await.unwrap();
+            w.write(vec![1u8; 1024]).await.unwrap();
+            let aborted = tokio::time::timeout(std::time::Duration::from_secs(5), w.abort()).await;
+            assert!(aborted.is_ok(), "abort {i} hung");
+        }
+        let listed = tokio::time::timeout(std::time::Duration::from_secs(5), op.list("/")).await;
+        assert!(matches!(listed, Ok(Ok(_))), "{listed:?}");
+    }
 }

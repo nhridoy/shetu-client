@@ -48,11 +48,33 @@ impl oio::OneShotDelete for FtpDeleter {
         };
 
         match result {
+            Ok(_) => (),
+            // Shetu: 550 also means "refused" (a folder that isn't empty, no permission): it's
+            // only a success when the entry really is gone.
             Err(FtpError::UnexpectedResponse(Response {
                 status: Status::FileUnavailable,
                 ..
-            }))
-            | Ok(_) => (),
+            })) => {
+                let still_there = if path.ends_with('/') {
+                    ftp_stream.nlst(Some(&path)).await.map(|_| ())
+                } else {
+                    ftp_stream.size(&path).await.map(|_| ())
+                };
+                match still_there {
+                    Ok(()) => {
+                        return Err(Error::new(
+                            ErrorKind::PermissionDenied,
+                            "the server refused to delete it",
+                        )
+                        .with_context("path", &path))
+                    }
+                    Err(FtpError::UnexpectedResponse(Response {
+                        status: Status::FileUnavailable,
+                        ..
+                    })) => (),
+                    Err(e) => return Err(format_ftp_error(e)),
+                }
+            }
             Err(e) => {
                 return Err(format_ftp_error(e));
             }

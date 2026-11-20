@@ -27,3 +27,14 @@ Every change Shetu made to these files is listed here.
   file goes back if the target is missing, and the backup and temp files are deleted.
 - A relative root is sent to `CWD` as typed (from where the login lands), not made absolute.
 - `530`/`532` (login refused) map to `PermissionDenied`, so they aren't retried as connection errors.
+- Listing reads `MLSD` support from the standard `MLST` feature line too; MLSD names are taken
+  whole (after the first space), so names with `;` survive. A symlink probe that loses its
+  connection is an error, not a folder.
+- Delete: a `550` counts as success only when the entry is really gone (`SIZE`/`NLST` check);
+  otherwise it's a refusal (`PermissionDenied`).
+- Downloads: when the data ends before the requested range, the final reply is read, so an
+  aborted transfer (`426`) is an error; an unfinished transfer's connection is detached from the
+  pool instead of returned mid-command.
+- Upload clean-up runs in its own task (cancelling an abort can't drop it), bounds each wait
+  (30 s), detaches connections left mid-command, and retries a cut publish's recovery with
+  backoff; a failed rollback keeps its backup for that recovery.
