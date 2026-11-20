@@ -28,6 +28,7 @@ describe("StorageFileProvider", () => {
     const items = await p.listFiles("/docs");
     expect(h.invoke).toHaveBeenCalledWith("storage_list", {
       sessionId: "pane-7",
+      accountId: "a1",
       path: "/docs",
     });
     expect(items.map((i) => [i.name, i.type, i.size])).toEqual([
@@ -46,6 +47,7 @@ describe("StorageFileProvider", () => {
     await p.moveFile("/docs/a", "/docs/b");
     expect(h.invoke).toHaveBeenCalledWith("storage_rename", {
       sessionId: "pane-7",
+      accountId: "a1",
       from: "/docs/a",
       to: "/docs/b",
       isDir: true,
@@ -53,6 +55,7 @@ describe("StorageFileProvider", () => {
     await p.removeFile("/docs/a");
     expect(h.invoke).toHaveBeenCalledWith("storage_delete", {
       sessionId: "pane-7",
+      accountId: "a1",
       path: "/docs/a",
       isDir: true,
     });
@@ -65,6 +68,7 @@ describe("StorageFileProvider", () => {
     await p.delete("/docs/b.txt");
     expect(h.invoke).toHaveBeenCalledWith("storage_delete", {
       sessionId: "pane-7",
+      accountId: "a1",
       path: "/docs/b.txt",
       isDir: false,
     });
@@ -90,5 +94,13 @@ describe("StorageFileProvider", () => {
     expect(ask).toHaveBeenCalledWith(expect.stringContaining("3 items"));
     ask.mockReturnValue(true);
     expect(await confirmFolderRename(p, "/docs", "docs", ask)).toBe(true);
+  });
+
+  it("names its account in every call, so a reconnected pane refuses it", async () => {
+    h.invoke.mockResolvedValue([]);
+    await p.listFiles("/");
+    await p.mkdir("/new");
+    for (const [, args] of h.invoke.mock.calls)
+      expect(args).toMatchObject({ sessionId: "pane-7", accountId: "a1" });
   });
 });

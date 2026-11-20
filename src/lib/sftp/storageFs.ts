@@ -38,7 +38,13 @@ const unsupported = (what: string) =>
 export class StorageFileProvider extends RemoteFileProviderImpl {
   private async call<T>(cmd: string, args: Record<string, unknown> = {}) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<T>(cmd, { sessionId: this.getSessionId(), ...args });
+    // The account goes with every call: Rust refuses it if the pane has since reconnected to
+    // another bucket, so nothing in flight lands there.
+    return invoke<T>(cmd, {
+      sessionId: this.getSessionId(),
+      accountId: this.id.slice("storage:".length),
+      ...args,
+    });
   }
 
   /** `(size, mtime)` of an object, or null when no object has that name (a folder). */

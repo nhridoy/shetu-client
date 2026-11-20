@@ -86,10 +86,14 @@ impl StorageSessions {
         }
     }
 
-    fn op(&self, sid: &str) -> Result<Operator, String> {
-        self.get(sid)
-            .map(|(_, op)| op)
-            .ok_or_else(|| "Bucket not open — reconnect the pane".to_string())
+    /// The pane's operator, only if the pane still shows `account_id`: a call already in flight
+    /// when the pane reconnected to another bucket must not act on that one.
+    fn op(&self, sid: &str, account_id: &str) -> Result<Operator, String> {
+        match self.get(sid) {
+            Some((r, op)) if r.account_id == account_id => Ok(op),
+            Some(_) => Err("The pane now shows another bucket".to_string()),
+            None => Err("Bucket not open — reconnect the pane".to_string()),
+        }
     }
 }
 
@@ -127,78 +131,86 @@ pub fn storage_disconnect(session_id: String, sessions: Sessions<'_>) {
 #[tauri::command]
 pub async fn storage_list(
     session_id: String,
+    account_id: String,
     path: String,
     sessions: Sessions<'_>,
 ) -> Result<Vec<StorageEntry>, String> {
-    ops::list_dir(&sessions.op(&session_id)?, &path).await
+    ops::list_dir(&sessions.op(&session_id, &account_id)?, &path).await
 }
 
 #[tauri::command]
 pub async fn storage_list_recursive(
     session_id: String,
+    account_id: String,
     path: String,
     cap: usize,
     sessions: Sessions<'_>,
 ) -> Result<Vec<StorageEntry>, String> {
-    ops::list_tree(&sessions.op(&session_id)?, &path, cap).await
+    ops::list_tree(&sessions.op(&session_id, &account_id)?, &path, cap).await
 }
 
 #[tauri::command]
 pub async fn storage_stat(
     session_id: String,
+    account_id: String,
     path: String,
     sessions: Sessions<'_>,
 ) -> Result<Option<(u64, i64)>, String> {
-    ops::stat(&sessions.op(&session_id)?, &path).await
+    ops::stat(&sessions.op(&session_id, &account_id)?, &path).await
 }
 
 #[tauri::command]
 pub async fn storage_mkdir(
     session_id: String,
+    account_id: String,
     path: String,
     sessions: Sessions<'_>,
 ) -> Result<(), String> {
-    ops::mkdir(&sessions.op(&session_id)?, &path).await
+    ops::mkdir(&sessions.op(&session_id, &account_id)?, &path).await
 }
 
 #[tauri::command]
 pub async fn storage_delete(
     session_id: String,
+    account_id: String,
     path: String,
     is_dir: bool,
     sessions: Sessions<'_>,
 ) -> Result<(), String> {
-    ops::delete(&sessions.op(&session_id)?, &path, is_dir).await
+    ops::delete(&sessions.op(&session_id, &account_id)?, &path, is_dir).await
 }
 
 #[tauri::command]
 pub async fn storage_rename(
     session_id: String,
+    account_id: String,
     from: String,
     to: String,
     is_dir: bool,
     sessions: Sessions<'_>,
 ) -> Result<(), String> {
-    ops::rename_tree(&sessions.op(&session_id)?, &from, &to, is_dir).await
+    ops::rename_tree(&sessions.op(&session_id, &account_id)?, &from, &to, is_dir).await
 }
 
 #[tauri::command]
 pub async fn storage_read(
     session_id: String,
+    account_id: String,
     path: String,
     sessions: Sessions<'_>,
 ) -> Result<Vec<u8>, String> {
-    ops::read_small(&sessions.op(&session_id)?, &path, READ_MAX).await
+    ops::read_small(&sessions.op(&session_id, &account_id)?, &path, READ_MAX).await
 }
 
 #[tauri::command]
 pub async fn storage_write(
     session_id: String,
+    account_id: String,
     path: String,
     data: Vec<u8>,
     sessions: Sessions<'_>,
 ) -> Result<(), String> {
-    ops::write_small(&sessions.op(&session_id)?, &path, data).await
+    ops::write_small(&sessions.op(&session_id, &account_id)?, &path, data).await
 }
 
 #[cfg(test)]
@@ -256,7 +268,7 @@ mod tests {
         assert_eq!(s.get("pane-1").map(|(seen, _)| seen), Some(r));
         s.clear();
         assert!(s.get("pane-1").is_none());
-        assert!(s.op("pane-1").is_err());
+        assert!(s.op("pane-1", "a").is_err());
     }
 
     #[test]
@@ -274,5 +286,19 @@ mod tests {
         let started = s.generation();
         assert!(s.insert_if(started, "pane-1".into(), r, op()));
         assert!(s.get("pane-1").is_some());
+    }
+
+    #[test]
+    fn a_call_for_one_account_never_reaches_another() {
+        let s = StorageSessions::default();
+        let op = Operator::new(opendal::services::Memory::default()).unwrap();
+        let r = StorageRef {
+            account_id: "bucket-b".into(),
+            bucket: "b".into(),
+        };
+        // The pane reconnected to bucket-b while a call for bucket-a was in flight.
+        assert!(s.insert_if(s.generation(), "pane-1".into(), r, op));
+        assert!(s.op("pane-1", "bucket-a").is_err());
+        assert!(s.op("pane-1", "bucket-b").is_ok());
     }
 }
