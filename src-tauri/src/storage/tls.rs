@@ -162,6 +162,14 @@ impl ServerCertVerifier for Recorder {
 
 /// The SHA-256 of the certificate a server presents, read without trusting it.
 pub async fn probe(host: &str, port: u16) -> Result<String, String> {
+    probe_within(host, port, std::time::Duration::from_secs(10)).await
+}
+
+pub async fn probe_within(
+    host: &str,
+    port: u16,
+    limit: std::time::Duration,
+) -> Result<String, String> {
     let provider = provider();
     let recorder = Arc::new(Recorder {
         seen: Mutex::new(None),
@@ -174,12 +182,18 @@ pub async fn probe(host: &str, port: u16) -> Result<String, String> {
         .with_custom_certificate_verifier(recorder.clone())
         .with_no_client_auth();
     let name = ServerName::try_from(host.to_string()).map_err(|e| format!("{host}: {e}"))?;
-    let tcp = tokio::net::TcpStream::connect((host, port))
+    let handshake = async {
+        let tcp = tokio::net::TcpStream::connect((host, port))
+            .await
+            .map_err(|e| format!("Couldn't reach {host}:{port}: {e}"))?;
+        let _ = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, tcp)
+            .await;
+        Ok::<(), String>(())
+    };
+    tokio::time::timeout(limit, handshake)
         .await
-        .map_err(|e| format!("Couldn't reach {host}:{port}: {e}"))?;
-    let _ = tokio_rustls::TlsConnector::from(Arc::new(config))
-        .connect(name, tcp)
-        .await;
+        .map_err(|_| format!("{host}:{port} didn't finish the TLS handshake"))??;
     let seen = recorder.seen.lock().ok().and_then(|s| s.clone());
     seen.map(|der| sha256_hex(&der))
         .ok_or_else(|| format!("{host}:{port} didn't present a certificate"))
@@ -304,5 +318,22 @@ pub(crate) mod tests {
         let h = sha256_hex(b"abc");
         assert_eq!(h.len(), 64);
         assert_eq!(&h[..8], "ba7816bf");
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_never_completes_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let held = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(held);
+        });
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            probe_within("localhost", port, std::time::Duration::from_millis(200)),
+        )
+        .await;
+        assert!(matches!(got, Ok(Err(_))), "{got:?}");
     }
 }

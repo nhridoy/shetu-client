@@ -94,13 +94,28 @@ pub fn webdav_url(d: &StorageAccountData) -> Result<String, String> {
         if host.is_empty() {
             return Err("Server is required".into());
         }
-        return Ok(format!("https://{host}/remote.php/webdav/"));
+        return checked_url(format!("https://{host}/remote.php/webdav/"));
     }
     let url = non_empty(&d.url).ok_or("URL is required")?;
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("The URL must start with http:// or https://".into());
     }
-    Ok(url.to_string())
+    checked_url(url.to_string())
+}
+
+/// A server folder URL: a host, and no sign-in, query or fragment (paths are appended to it).
+fn checked_url(url: String) -> Result<String, String> {
+    let u = tauri::Url::parse(&url).map_err(|e| format!("Bad URL {url}: {e}"))?;
+    if u.host_str().is_none_or(str::is_empty) {
+        return Err("The URL has no host".into());
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("Put the username and password in their own fields, not in the URL".into());
+    }
+    if u.query().is_some() || u.fragment().is_some() {
+        return Err("The URL can't have a ? or # part".into());
+    }
+    Ok(url)
 }
 
 /// The endpoint for a provider preset, the custom one, or a WebDAV server.
@@ -153,11 +168,20 @@ pub fn operator_for(d: &StorageAccountData) -> Result<Operator, String> {
     }
     Ok(layered(
         Operator::new(builder).map_err(|e| format!("Couldn't set up the bucket: {e}"))?,
+        super::tls::client_for(None)?,
     ))
 }
 
-fn layered(op: Operator) -> Operator {
-    op.layer(opendal::layers::RetryLayer::new()).layer(
+/// OpenDAL installs no default HTTP transport without `auto-register-services`: every
+/// operator gets the app's own client (rustls/ring, platform roots, the account's pin).
+fn layered(op: Operator, client: reqwest013::Client) -> Operator {
+    let transport = opendal_http_transport_reqwest::ReqwestTransport::new(client);
+    op.with_context(
+        opendal::OperationContext::new()
+            .with_http_transport(opendal::HttpTransporter::new(transport)),
+    )
+    .layer(opendal::layers::RetryLayer::new())
+    .layer(
         opendal::layers::TimeoutLayer::new()
             .with_timeout(OP_TIMEOUT)
             .with_io_timeout(IO_TIMEOUT),
@@ -187,17 +211,10 @@ pub fn remote_for(d: &StorageAccountData) -> Result<super::Remote, String> {
         .root(&crate::import::encoding::percent_decode(url.path()))
         .username(&username)
         .password(&d.password);
-    let mut op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
+    let op = Operator::new(builder).map_err(|e| format!("Couldn't set up the server: {e}"))?;
     let client = super::tls::client_for(d.trusted_cert_sha256.as_deref())?;
-    if d.trusted_cert_sha256.is_some() {
-        let transport = opendal_http_transport_reqwest::ReqwestTransport::new(client.clone());
-        op = op.with_context(
-            opendal::OperationContext::new()
-                .with_http_transport(opendal::HttpTransporter::new(transport)),
-        );
-    }
     Ok(super::Remote {
-        op: layered(op),
+        op: layered(op, client.clone()),
         dav: Some(std::sync::Arc::new(super::webdav::DavTarget {
             base: if base.ends_with('/') {
                 base
@@ -245,9 +262,16 @@ pub async fn cert_error(d: &StorageAccountData, e: &opendal::Error) -> Option<St
 }
 
 /// Lists one entry; a certificate the user must decide on comes back as a `cert:` error.
-pub async fn check_account_access(d: &StorageAccountData, op: &Operator) -> Result<(), String> {
-    match super::ops::check_access_raw(op).await {
-        Ok(()) => Ok(()),
+pub async fn check_account_access(
+    d: &StorageAccountData,
+    remote: &super::Remote,
+) -> Result<(), String> {
+    match super::ops::check_access_raw(&remote.op).await {
+        // OpenDAL lists a missing WebDAV folder as empty: the folder itself must exist.
+        Ok(()) => match &remote.dav {
+            Some(dav) => super::webdav::check_folder(dav).await,
+            None => Ok(()),
+        },
         Err(e) => Err(match cert_error(d, &e).await {
             Some(question) => question,
             None => format!("Couldn't connect: {e}"),
@@ -290,10 +314,19 @@ pub fn load_account(
     parse(&payload)
 }
 
+/// Whether the current provider's own secret is stored.
+fn has_secret(d: &StorageAccountData) -> bool {
+    if d.provider == "webdav" {
+        !d.password.is_empty()
+    } else {
+        !d.secret_access_key.is_empty()
+    }
+}
+
 pub fn view(db: &LocalDb, crypto: &CryptoState, id: &str) -> Option<StorageAccountView> {
     let d = load_account(db, crypto, id).ok()?;
     Some(StorageAccountView {
-        has_secret: !d.secret_access_key.is_empty() || !d.password.is_empty(),
+        has_secret: has_secret(&d),
         provider: d.provider,
         endpoint: d.endpoint,
         region: d.region,
@@ -450,7 +483,7 @@ pub async fn storage_test(
     let (_, payload) = merged(&db, &crypto, id.as_deref(), &patch)?;
     let d = parse(&payload)?;
     validate(&d)?;
-    check_account_access(&d, &remote_for(&d)?.op).await?;
+    check_account_access(&d, &remote_for(&d)?).await?;
     Ok(match d.provider.as_str() {
         "webdav" => format!("Connected to {}", webdav_url(&d)?),
         _ => format!("Connected to {}", d.bucket),
@@ -779,5 +812,62 @@ mod tests {
         assert_eq!(r.op.info().root(), "/My Files/Jürgen/");
         d.url = Some("https://nas.lan/My Files/".into());
         assert_eq!(remote_for(&d).unwrap().op.info().root(), "/My Files/");
+    }
+
+    #[test]
+    fn webdav_url_refuses_unusable_urls() {
+        let url = |u: &str| {
+            let mut d = dav("other");
+            d.url = Some(u.into());
+            webdav_url(&d)
+        };
+        for bad in [
+            "https://me:pw@nas.lan/dav/",
+            "https://nas.lan/dav/?x=1",
+            "https://nas.lan/dav/#top",
+            "https://",
+            "https://:443/dav/",
+        ] {
+            assert!(url(bad).is_err(), "{bad}");
+        }
+        assert!(url("https://nas.lan/dav/").is_ok());
+        assert!(url("http://[::1]:8443/dav/").is_ok());
+    }
+
+    #[test]
+    fn has_secret_follows_the_provider() {
+        let mut d = dav("other");
+        d.password = String::new();
+        d.secret_access_key = "left-from-s3".into();
+        assert!(!has_secret(&d));
+    }
+
+    #[tokio::test]
+    async fn a_missing_webdav_root_fails_the_check() {
+        let (port, _) = crate::storage::webdav::tests::dav_server(404).await;
+        let mut d = dav("other");
+        d.url = Some(format!("http://127.0.0.1:{port}/missing/"));
+        let r = remote_for(&d).unwrap();
+        assert!(check_account_access(&d, &r).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn every_account_gets_an_http_transport() {
+        // Without auto-register-services OpenDAL installs no default transport.
+        let (port, _) = crate::storage::webdav::tests::dav_server(404).await;
+        let mut s3 = data("custom");
+        s3.endpoint = Some(format!("http://127.0.0.1:{port}"));
+        s3.path_style = true;
+        let mut webdav = dav("other");
+        webdav.url = Some(format!("http://127.0.0.1:{port}/dav/"));
+        for d in [s3, webdav] {
+            let r = remote_for(&d).unwrap();
+            let got = super::super::ops::check_access_raw(&r.op).await;
+            assert!(
+                !format!("{got:?}").contains("not installed"),
+                "{}: {got:?}",
+                d.provider
+            );
+        }
     }
 }

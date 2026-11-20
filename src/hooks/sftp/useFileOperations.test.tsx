@@ -19,6 +19,7 @@ vi.mock("@/lib/terminal/agentForwarding", () => ({
   ConnectCancelled: mocks.ConnectCancelled,
 }));
 
+import { requestCertTrust } from "@/lib/storage/certTrust";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import { useFileOperations } from "./useFileOperations";
@@ -101,6 +102,98 @@ it("trusting a certificate on connect saves the pin and retries", async () => {
   });
   expect(save).toHaveBeenCalledWith("a1", "NAS", { trustedCertSha256: sha });
   expect(connects).toBe(2);
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+const certQuestion = `cert:${JSON.stringify({ kind: "untrusted", host: "nas.lan:5006", sha256: "cd".repeat(32), previous: null })}`;
+function storagePane() {
+  useSftpStore.setState({
+    edits: [],
+    root: {
+      type: "leaf",
+      id: "p2",
+      connectionType: "storage",
+      storageAccountId: "a1",
+      storageName: "NAS",
+      size: 100,
+    } as never,
+  });
+}
+
+it("saves the pin under the account's current name, not the pane's old one", async () => {
+  let connects = 0;
+  mocks.invoke.mockImplementation((async (cmd: string) => {
+    if (cmd === "storage_connect" && connects++ === 0) throw certQuestion;
+    return cmd === "storage_connect" ? "webdav" : undefined;
+  }) as never);
+  const save = vi.fn(async () => true);
+  useStorageAccountStore.setState({
+    save,
+    accounts: [{ id: "a1", name: "Renamed NAS", vaultId: "v1" }],
+    view: async () => ({ provider: "webdav" }),
+  } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  await act(async () => {
+    await ops.ensureProvider();
+  });
+  expect(save).toHaveBeenCalledWith("a1", "Renamed NAS", {
+    trustedCertSha256: "cd".repeat(32),
+  });
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("takes the pane's kind from the connect itself", async () => {
+  mocks.invoke.mockImplementation((async (cmd: string) =>
+    cmd === "storage_connect" ? "webdav" : undefined) as never);
+  useStorageAccountStore.setState({
+    view: async () => {
+      throw new Error("locked");
+    },
+  } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let provider: unknown;
+  await act(async () => {
+    provider = await ops.ensureProvider();
+  });
+  expect((provider as { kind?: string }).kind).toBe("webdav");
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("a pane disconnected during the certificate question doesn't save or reconnect", async () => {
+  let release!: (trust: boolean) => void;
+  vi.mocked(requestCertTrust).mockImplementationOnce(
+    () => new Promise<boolean>((r) => (release = r)),
+  );
+  let connects = 0;
+  mocks.invoke.mockImplementation((async (cmd: string) => {
+    if (cmd === "storage_connect" && connects++ === 0) throw certQuestion;
+    return cmd === "storage_connect" ? "webdav" : undefined;
+  }) as never);
+  const save = vi.fn(async () => true);
+  useStorageAccountStore.setState({ save } as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = ops.ensureProvider().catch((e) => e);
+  });
+  await act(async () => {
+    await ops.disconnect();
+  });
+  await act(async () => {
+    release(true);
+    await pending;
+  });
+  expect(save).not.toHaveBeenCalled();
+  expect(connects).toBe(1);
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
 });

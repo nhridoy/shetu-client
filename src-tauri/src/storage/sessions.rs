@@ -100,7 +100,7 @@ impl StorageSessions {
 
 type Sessions<'a> = tauri::State<'a, StorageSessions>;
 
-/// Opens a pane on an account's bucket after checking it can be listed. Returns the bucket.
+/// Opens a pane on an account's storage after checking it can be listed. Returns the provider.
 #[tauri::command]
 pub async fn storage_connect(
     session_id: String,
@@ -112,8 +112,8 @@ pub async fn storage_connect(
     let started = sessions.generation();
     let account = load_account(&db, &crypto, &account_id)?;
     let op = remote_for(&account)?;
-    check_account_access(&account, &op.op).await?;
-    let bucket = account.bucket.clone();
+    check_account_access(&account, &op).await?;
+    let provider = account.provider.clone();
     let r = StorageRef {
         account_id,
         bucket: account.bucket,
@@ -121,7 +121,7 @@ pub async fn storage_connect(
     if !sessions.insert_if(started, session_id, r, op) {
         return Err("Signed out while the bucket was opening".into());
     }
-    Ok(bucket)
+    Ok(provider)
 }
 
 #[tauri::command]
@@ -192,9 +192,9 @@ pub async fn storage_rename(
 ) -> Result<(), String> {
     let remote = sessions.remote(&session_id, &account_id)?;
     match &remote.dav {
-        // A WebDAV folder moves in one request (OpenDAL only renames files).
-        Some(dav) if is_dir => super::webdav::move_dir(dav, &from, &to).await,
-        _ => ops::rename_tree(&remote.op, &from, &to, is_dir).await,
+        // A server move: one request, and never over an existing name (OpenDAL's overwrites).
+        Some(dav) => super::webdav::move_path(dav, &from, &to, is_dir).await,
+        None => ops::rename_tree(&remote.op, &from, &to, is_dir).await,
     }
 }
 

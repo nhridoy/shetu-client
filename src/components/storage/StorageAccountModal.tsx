@@ -134,7 +134,8 @@ export default function StorageAccountModal({
     ...EMPTY,
     name: account === "new" ? "" : account.name,
   });
-  const [hasSecret, setHasSecret] = useState(false);
+  // Which kind of secret is stored: an S3 secret key or a WebDAV password.
+  const [secretFor, setSecretFor] = useState<"s3" | "webdav" | null>(null);
   // An edit starts locked until the saved values arrive, so they can't overwrite typing.
   const [loaded, setLoaded] = useState(account === "new");
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +157,9 @@ export default function StorageAccountModal({
           return;
         }
         setLoaded(true);
-        setHasSecret(v.hasSecret);
+        setSecretFor(
+          v.hasSecret ? (v.provider === "webdav" ? "webdav" : "s3") : null,
+        );
         setForm((f) => ({
           ...f,
           provider: v.provider,
@@ -219,6 +222,7 @@ export default function StorageAccountModal({
   };
 
   const webdav = form.provider === "webdav";
+  const hasSecret = secretFor === (webdav ? "webdav" : "s3");
   const submit = async () => {
     if (!webdav && !form.bucket.trim()) {
       setError("Bucket is required");
@@ -252,7 +256,7 @@ export default function StorageAccountModal({
           void submit();
         }}
       >
-        <fieldset disabled={!loaded} className="space-y-2">
+        <fieldset disabled={!loaded || busy} className="space-y-2">
           <Field>
             <FieldLabel htmlFor={`${uid}-name`}>Name</FieldLabel>
             <Input

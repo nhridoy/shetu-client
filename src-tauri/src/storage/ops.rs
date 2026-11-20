@@ -127,6 +127,8 @@ pub async fn check_access_raw(op: &Operator) -> Result<(), opendal::Error> {
 /// `(size, mtime)` of an object, `None` when it doesn't exist.
 pub async fn stat(op: &Operator, ui_path: &str) -> Result<Option<(u64, i64)>, String> {
     match op.stat(&to_key(ui_path, false)).await {
+        // A folder reads as absent: callers take None for "a folder" (WebDAV stats folders).
+        Ok(meta) if meta.is_dir() => Ok(None),
         Ok(meta) => Ok(Some((meta.content_length(), mtime_of(&meta)))),
         Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(err("stat", e)),
@@ -191,14 +193,6 @@ pub(crate) async fn rename_tree_inner(
     };
     if taken {
         return Err(format!("{to} already exists. Nothing was moved."));
-    }
-    // A server that can move (WebDAV) renames a file in one request: no copy, no size limit.
-    // (OpenDAL renames files only; a WebDAV folder moves through `webdav::move_dir`.)
-    if !is_dir && op.info().capability().rename {
-        return op
-            .rename(&to_key(from, false), &to_key(to, false))
-            .await
-            .map_err(|e| err("rename", e));
     }
     if let Some((key, _, _)) = objects.iter().find(|(_, size, _)| *size > limit) {
         return Err(format!(
@@ -437,17 +431,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rename_uses_native_move_when_supported() {
+    async fn stat_reports_a_folder_as_absent() {
+        // Callers read None as "a folder" (WebDAV stats folders too).
         let op = folder();
-        assert!(op.info().capability().rename);
-        put(&op, "a.txt", "a").await;
-        rename_tree(&op, "/a.txt", "/b.txt", false).await.unwrap();
-        assert_eq!(read_small(&op, "/b.txt", 10).await.unwrap(), b"a");
-        assert_eq!(stat(&op, "/a.txt").await.unwrap(), None);
-        put(&op, "c.txt", "c").await;
-        let err = rename_tree(&op, "/b.txt", "/c.txt", false)
-            .await
-            .unwrap_err();
-        assert!(err.contains("already exists"), "{err}");
+        op.create_dir("docs/").await.unwrap();
+        assert_eq!(stat(&op, "/docs").await.unwrap(), None);
     }
 }

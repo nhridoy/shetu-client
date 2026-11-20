@@ -82,11 +82,15 @@ pub struct DavUpload {
     tx: Option<tokio::sync::mpsc::Sender<Chunk>>,
     reply: Option<tokio::task::JoinHandle<Result<u16, reqwest013::Error>>>,
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The declared `Content-Length`, and how much has been sent against it.
+    len: Option<u64>,
+    sent: u64,
     /// How long the server may stop reading (or answering) before the upload fails.
     stall: std::time::Duration,
 }
 
 const STALLED: &str = "upload: the server stopped reading";
+const RESIZED: &str = "upload: the file changed size while it was uploading";
 
 impl DavTarget {
     pub fn start_put(&self, ui_path: &str, opts: crate::transfers::io::WriteOpts) -> DavUpload {
@@ -133,6 +137,8 @@ impl DavTarget {
             tx: Some(tx),
             reply: Some(reply),
             stopped,
+            len: opts.len,
+            sent: 0,
             stall,
         }
     }
@@ -142,10 +148,13 @@ impl DavUpload {
     /// The request's outcome, once it ended (early, on a refusal or a dropped connection).
     async fn outcome(&mut self) -> Result<(), crate::transfers::model::JobError> {
         use crate::transfers::model::JobError;
-        let Some(reply) = self.reply.take() else {
+        // Awaited in place, so a timed-out or dropped wait can still abort the request.
+        let Some(reply) = self.reply.as_mut() else {
             return Err(JobError::Stopped);
         };
-        match reply.await {
+        let done = reply.await;
+        self.reply = None;
+        match done {
             Ok(Ok(status)) => status_error(status).map_or(Ok(()), Err),
             Ok(Err(e)) => Err(request_error(e)),
             Err(_) => Err(JobError::Stopped),
@@ -156,6 +165,13 @@ impl DavUpload {
         let Some(tx) = self.tx.as_ref() else {
             return Err(crate::transfers::model::JobError::Stopped);
         };
+        self.sent += chunk.len() as u64;
+        if self.len.is_some_and(|len| self.sent > len) {
+            self.abort();
+            return Err(crate::transfers::model::JobError::Connection(
+                RESIZED.into(),
+            ));
+        }
         let Ok(sent) = tokio::time::timeout(self.stall, tx.send(Ok(chunk))).await else {
             self.abort();
             return Err(crate::transfers::model::JobError::Connection(
@@ -177,6 +193,12 @@ impl DavUpload {
 
     /// Ends the body and waits for the server's answer.
     pub async fn finish(&mut self) -> Result<(), crate::transfers::model::JobError> {
+        if self.len.is_some_and(|len| self.sent != len) {
+            self.abort();
+            return Err(crate::transfers::model::JobError::Connection(
+                RESIZED.into(),
+            ));
+        }
         self.tx = None;
         let stall = self.stall;
         match tokio::time::timeout(stall, self.outcome()).await {
@@ -208,15 +230,45 @@ impl Drop for DavUpload {
     }
 }
 
-/// Moves a whole folder in one WebDAV `MOVE`, never over an existing one.
-pub async fn move_dir(t: &DavTarget, from: &str, to: &str) -> Result<(), String> {
+/// How long a `MOVE` or `PROPFIND` may wait for the server (OpenDAL's requests get the same).
+const REQUEST_TIMEOUT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_secs(1)
+} else {
+    super::accounts::OP_TIMEOUT
+};
+
+/// Fails unless the account's folder exists.
+pub async fn check_folder(t: &DavTarget) -> Result<(), String> {
+    let method = reqwest013::Method::from_bytes(b"PROPFIND").map_err(|e| e.to_string())?;
+    let res = t
+        .client
+        .request(method, &t.base)
+        .basic_auth(&t.username, Some(&t.password))
+        .header("Depth", "0")
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't connect: {e}"))?;
+    match res.status().as_u16() {
+        200 | 207 => Ok(()),
+        404 => Err(format!("{} doesn't exist on the server", t.base)),
+        code => Err(format!(
+            "Couldn't open {}: the server answered {code}",
+            t.base
+        )),
+    }
+}
+
+/// Moves a file or a whole folder in one WebDAV `MOVE`, never over an existing one.
+pub async fn move_path(t: &DavTarget, from: &str, to: &str, dir: bool) -> Result<(), String> {
     let method = reqwest013::Method::from_bytes(b"MOVE").map_err(|e| e.to_string())?;
     let res = t
         .client
-        .request(method, t.url_for(from, true))
+        .request(method, t.url_for(from, dir))
         .basic_auth(&t.username, Some(&t.password))
-        .header("Destination", t.url_for(to, true))
+        .header("Destination", t.url_for(to, dir))
         .header("Overwrite", "F")
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("Couldn't move {from}: {e}"))?;
@@ -240,6 +292,8 @@ pub(crate) mod tests {
         pub line: String,
         pub headers: Vec<(String, String)>,
         pub body_len: usize,
+        /// FNV-1a of the body bytes received.
+        pub body_hash: u64,
         /// The body ended properly (its full length, or chunked's final empty chunk).
         pub complete: bool,
     }
@@ -252,6 +306,14 @@ pub(crate) mod tests {
                 .map(|(_, v)| v.as_str())
         }
     }
+
+    pub(crate) fn fnv(bytes: &[u8], mut h: u64) -> u64 {
+        for b in bytes {
+            h = (h ^ *b as u64).wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    pub(crate) const FNV_START: u64 = 0xcbf29ce484222325;
 
     async fn fill(tcp: &mut tokio::net::TcpStream, rest: &mut Vec<u8>, want: usize) {
         let mut chunk = [0u8; 65536];
@@ -301,10 +363,12 @@ pub(crate) mod tests {
                         |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
                     let mut rest = buf[head_end..].to_vec();
                     let mut complete = true;
+                    let mut body_hash = FNV_START;
                     let body_len = if let Some(len) = get("content-length") {
                         let len: usize = len.parse().unwrap_or(0);
                         fill(&mut tcp, &mut rest, len).await;
                         complete = rest.len() >= len;
+                        body_hash = fnv(&rest[..rest.len().min(len)], body_hash);
                         rest.len().min(len)
                     } else if get("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
                         complete = false;
@@ -325,6 +389,8 @@ pub(crate) mod tests {
                             .unwrap_or(0);
                             fill(&mut tcp, &mut rest, i + 2 + size + 2).await;
                             let end = (i + 2 + size + 2).min(rest.len());
+                            body_hash =
+                                fnv(&rest[i + 2..(i + 2 + size).min(rest.len())], body_hash);
                             rest.drain(..end);
                             if size == 0 {
                                 complete = end == i + 4;
@@ -340,6 +406,7 @@ pub(crate) mod tests {
                         line,
                         headers,
                         body_len,
+                        body_hash,
                         complete,
                     });
                     let reply = format!(
@@ -364,7 +431,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn move_dir_sends_one_move_without_overwrite() {
         let (port, seen) = dav_server(201).await;
-        move_dir(&target(port), "/Photos 2024", "/Archive/Photos")
+        move_path(&target(port), "/Photos 2024", "/Archive/Photos", true)
             .await
             .unwrap();
         let got = seen.lock().unwrap()[0].clone();
@@ -382,7 +449,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn move_dir_reports_a_refusal() {
         let (port, _) = dav_server(412).await;
-        let err = move_dir(&target(port), "/a", "/b").await.unwrap_err();
+        let err = move_path(&target(port), "/a", "/b", true)
+            .await
+            .unwrap_err();
         assert!(err.contains("already exists"), "{err}");
     }
 
@@ -405,7 +474,7 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("shetu-dav-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.bin");
-        std::fs::write(&src, vec![7u8; size]).unwrap();
+        std::fs::write(&src, pattern(size)).unwrap();
         let side = Side::Remote(crate::storage::Remote {
             op: opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
             dav: Some(Arc::new(target(port))),
@@ -441,6 +510,7 @@ pub(crate) mod tests {
         .await;
         assert_eq!(got.line, "PUT /dav/big%20file.bin HTTP/1.1");
         assert_eq!(got.body_len, 20 * 1024 * 1024);
+        assert_eq!(got.body_hash, fnv(&pattern(20 * 1024 * 1024), FNV_START));
         assert_eq!(got.header("x-oc-mtime"), Some("1700000000"));
         assert_eq!(got.header("if-none-match"), None);
     }
@@ -564,5 +634,103 @@ pub(crate) mod tests {
             ),
             "{got:?}"
         );
+    }
+
+    fn pattern(size: usize) -> Vec<u8> {
+        (0..size).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[tokio::test]
+    async fn a_file_moves_without_overwrite() {
+        let (port, seen) = dav_server(201).await;
+        move_path(&target(port), "/a b.txt", "/c.txt", false)
+            .await
+            .unwrap();
+        let got = seen.lock().unwrap()[0].clone();
+        assert_eq!(got.line, "MOVE /dav/a%20b.txt HTTP/1.1");
+        assert_eq!(
+            got.header("destination"),
+            Some(format!("http://127.0.0.1:{port}/dav/c.txt").as_str())
+        );
+        assert_eq!(got.header("overwrite"), Some("F"));
+    }
+
+    #[tokio::test]
+    async fn a_move_the_server_never_answers_fails() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let held = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(held);
+        });
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            move_path(&target(port), "/a", "/b", true),
+        )
+        .await;
+        assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_finish_timeout_drops_the_connection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (closed_tx, closed) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            while tcp.read(&mut buf).await.is_ok_and(|n| n > 0) {}
+            let _ = closed_tx.send(());
+        });
+        let mut up = target(port).start_put_stalling(
+            "/quiet.bin",
+            crate::transfers::io::WriteOpts::default(),
+            std::time::Duration::from_millis(300),
+        );
+        up.send(vec![0u8; 1024]).await.unwrap();
+        assert!(up.finish().await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), closed)
+                .await
+                .is_ok(),
+            "the request kept running after finish gave up"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_upload_longer_than_its_length_fails() {
+        let (port, seen) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/grew.bin",
+            crate::transfers::io::WriteOpts {
+                len: Some(10),
+                ..Default::default()
+            },
+        );
+        assert!(up.send(vec![1u8; 20]).await.is_err());
+        assert!(up.finish().await.is_err());
+        drop(up);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !seen.lock().unwrap().iter().any(|s| s.complete),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_upload_shorter_than_its_length_fails() {
+        let (port, _) = dav_server(201).await;
+        let mut up = target(port).start_put(
+            "/shrank.bin",
+            crate::transfers::io::WriteOpts {
+                len: Some(100),
+                ..Default::default()
+            },
+        );
+        up.send(vec![1u8; 10]).await.unwrap();
+        assert!(up.finish().await.is_err());
     }
 }
