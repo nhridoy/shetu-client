@@ -37,7 +37,7 @@ const unsupported = (what: string) =>
  */
 export class StorageFileProvider extends RemoteFileProviderImpl {
   /** Set after connect: a bucket (S3) or a server (WebDAV). */
-  kind: "s3" | "webdav" = "s3";
+  kind: "s3" | "webdav" | "ftp" = "s3";
 
   private async call<T>(cmd: string, args: Record<string, unknown> = {}) {
     const { invoke } = await import("@tauri-apps/api/core");

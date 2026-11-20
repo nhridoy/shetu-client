@@ -132,7 +132,7 @@ export function useFileOperations({
             if (disconnectsRef.current !== started)
               throw new ConnectCancelled("The pane was closed");
             const provider = new StorageFileProvider(hostId, paneId);
-            provider.kind = kind === "webdav" ? "webdav" : "s3";
+            provider.kind = kind === "webdav" || kind === "ftp" ? kind : "s3";
             providerRef.current = provider;
             registerProvider(paneId, provider);
             await useSftpStore.getState().ensureTransferListener();
