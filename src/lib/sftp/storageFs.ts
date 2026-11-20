@@ -36,6 +36,9 @@ const unsupported = (what: string) =>
  * drag and drop and compare treat it like an SFTP pane; Rust resolves the id to the bucket.
  */
 export class StorageFileProvider extends RemoteFileProviderImpl {
+  /** Set after connect: a bucket (S3) or a server (WebDAV). */
+  kind: "s3" | "webdav" = "s3";
+
   private async call<T>(cmd: string, args: Record<string, unknown> = {}) {
     const { invoke } = await import("@tauri-apps/api/core");
     // The account goes with every call: Rust refuses it if the pane has since reconnected to
@@ -172,4 +175,12 @@ export async function confirmFolderRename(
   return ask(
     `Rename "${name}" and the ${count} items in it? Each object is copied to the new name, then deleted.`,
   );
+}
+
+/** Only a bucket folder rename copies every object (a WebDAV server moves it in one go). */
+export function needsRenameConfirm(
+  provider: StorageFileProvider,
+  file: FileItem,
+): boolean {
+  return provider.kind === "s3" && file.type === "directory";
 }

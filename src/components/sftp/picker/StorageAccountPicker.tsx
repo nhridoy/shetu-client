@@ -1,5 +1,5 @@
-import { CloudIcon } from "@phosphor-icons/react";
-import { useEffect } from "react";
+import { CloudIcon, HardDrivesIcon } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
   type StorageAccount,
@@ -15,10 +15,28 @@ export default function StorageAccountPicker({
   onClose: () => void;
 }) {
   const accounts = useStorageAccountStore((s) => s.accounts);
+  // Kinds live in each account's encrypted data: read them for the icons.
+  const [kinds, setKinds] = useState<Record<string, "s3" | "webdav">>({});
 
   useEffect(() => {
     void useStorageAccountStore.getState().fetchStorageAccounts();
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    const store = useStorageAccountStore.getState();
+    void Promise.all(
+      accounts.map(async (a) => {
+        const v = await store.view(a.id).catch(() => null);
+        return [a.id, v?.provider === "webdav" ? "webdav" : "s3"] as const;
+      }),
+    ).then((pairs) => {
+      if (live) setKinds(Object.fromEntries(pairs));
+    });
+    return () => {
+      live = false;
+    };
+  }, [accounts]);
 
   if (accounts.length === 0) {
     return (
@@ -43,7 +61,14 @@ export default function StorageAccountPicker({
               onClose();
             }}
           >
-            <CloudIcon className="h-4 w-4 text-dark-400" />
+            {kinds[account.id] === "webdav" ? (
+              <HardDrivesIcon
+                data-kind="webdav"
+                className="h-4 w-4 text-dark-400"
+              />
+            ) : (
+              <CloudIcon data-kind="s3" className="h-4 w-4 text-dark-400" />
+            )}
             {account.name}
           </button>
         </li>

@@ -10,11 +10,17 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+vi.mock("@/lib/storage/certTrust", async (orig) => ({
+  ...(await orig<typeof import("@/lib/storage/certTrust")>()),
+  requestCertTrust: vi.fn(async () => true),
+}));
 vi.mock("@/lib/terminal/agentForwarding", () => ({
   resolveUsernameOrAsk: mocks.resolveUsernameOrAsk,
   ConnectCancelled: mocks.ConnectCancelled,
 }));
 
+import { useSftpStore } from "@/stores/sftp/sftpStore";
+import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import { useFileOperations } from "./useFileOperations";
 
 (
@@ -58,4 +64,43 @@ it("cancelling the username question stops quietly, without the connection error
   expect(ops.connectionErrorModal.open).toBe(false);
   expect(ops.connectionError).toBeNull();
   act(() => root.unmount());
+});
+
+function BucketProbe() {
+  ops = useFileOperations({ paneId: "p2", hostId: "storage:a1" });
+  return null;
+}
+
+it("trusting a certificate on connect saves the pin and retries", async () => {
+  const sha = "ab".repeat(32);
+  const question = `cert:${JSON.stringify({ kind: "untrusted", host: "nas.lan:5006", sha256: sha, previous: null })}`;
+  let connects = 0;
+  mocks.invoke.mockImplementation((async (cmd: string) => {
+    if (cmd === "storage_connect" && connects++ === 0) throw question;
+    return cmd === "storage_connect" ? "nas" : undefined;
+  }) as never);
+  const save = vi.fn(async () => true);
+  useStorageAccountStore.setState({
+    save,
+    view: async () => ({ provider: "webdav" }),
+  } as never);
+  useSftpStore.setState({
+    root: {
+      type: "leaf",
+      id: "p2",
+      connectionType: "storage",
+      storageAccountId: "a1",
+      storageName: "NAS",
+      size: 100,
+    } as never,
+  });
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  await act(async () => {
+    await ops.ensureProvider();
+  });
+  expect(save).toHaveBeenCalledWith("a1", "NAS", { trustedCertSha256: sha });
+  expect(connects).toBe(2);
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
 });

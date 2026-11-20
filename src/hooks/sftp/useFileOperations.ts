@@ -12,7 +12,12 @@ import {
   unregisterProvider,
 } from "@/lib/sftp/providerRegistry";
 import { RemoteFileProviderImpl } from "@/lib/sftp/remoteFs";
-import { confirmFolderRename, StorageFileProvider } from "@/lib/sftp/storageFs";
+import {
+  confirmFolderRename,
+  needsRenameConfirm,
+  StorageFileProvider,
+} from "@/lib/sftp/storageFs";
+import { parseCertError, requestCertTrust } from "@/lib/storage/certTrust";
 import {
   ConnectCancelled,
   resolveUsernameOrAsk,
@@ -21,7 +26,8 @@ import {
   fileBrowserActions,
   useFileBrowserStore,
 } from "@/stores/sftp/fileBrowserStore";
-import { useSftpStore } from "@/stores/sftp/sftpStore";
+import { findLeaf, useSftpStore } from "@/stores/sftp/sftpStore";
+import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
 import type { FileItem } from "@/types/sftp/sftpTypes";
 
 interface UseFileOperationsParams {
@@ -78,11 +84,35 @@ export function useFileOperations({
         try {
           // A bucket pane: "storage:<accountId>"; Rust opens the bucket under the pane id.
           if (hostId.startsWith("storage:")) {
-            await invoke("storage_connect", {
-              sessionId: paneId,
-              accountId: hostId.slice("storage:".length),
-            });
+            const accountId = hostId.slice("storage:".length);
+            const connect = () =>
+              invoke("storage_connect", { sessionId: paneId, accountId });
+            const accounts = useStorageAccountStore.getState();
+            try {
+              await connect();
+            } catch (err) {
+              // A server certificate the user hasn't decided on: ask, pin it, try again.
+              const prompt = parseCertError(err);
+              if (!prompt) throw err;
+              if (!(await requestCertTrust(prompt)))
+                throw new Error("The server's certificate isn't trusted");
+              const root = useSftpStore.getState().root;
+              const leaf = root ? findLeaf(root, paneId) : null;
+              const name =
+                leaf?.type === "leaf" ? (leaf.storageName ?? "") : "";
+              const saved = await accounts.save(accountId, name, {
+                trustedCertSha256: prompt.sha256,
+              });
+              if (!saved)
+                throw new Error(
+                  useStorageAccountStore.getState().error ??
+                    "Couldn't save the certificate",
+                );
+              await connect();
+            }
             const provider = new StorageFileProvider(hostId, paneId);
+            const view = await accounts.view(accountId).catch(() => null);
+            provider.kind = view?.provider === "webdav" ? "webdav" : "s3";
             providerRef.current = provider;
             registerProvider(paneId, provider);
             await useSftpStore.getState().ensureTransferListener();
@@ -205,7 +235,7 @@ export function useFileOperations({
         currentPath === "/" ? `/${trimmed}` : `${currentPath}/${trimmed}`;
       if (
         provider instanceof StorageFileProvider &&
-        file.type === "directory" &&
+        needsRenameConfirm(provider, file) &&
         !(await confirmFolderRename(provider, renamingPath, file.name))
       )
         return;
