@@ -53,3 +53,6 @@ Every change Shetu made to these files is listed here.
   error), and a replayed close won't record a second backup over an unresolved one.
 - Recovery counts a refused delete (550) as done only when the listing confirms the name is
   gone; when it gives up, the error names where the old file is kept.
+- Recovery and the publish-time folder check use one pooled connection at a time (publish hands
+  its connection back while listing), so a pool busy with other uploads can't stall them. A
+  normal clean-up whose temp-file delete fails goes through recovery instead of reporting done.

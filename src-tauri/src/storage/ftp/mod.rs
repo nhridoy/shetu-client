@@ -684,4 +684,57 @@ mod tests {
             fake.names()
         );
     }
+
+    #[tokio::test]
+    async fn a_refused_delete_on_a_normal_abort_is_reported() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_dele: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        let op = plain(&fake);
+        let mut w = op.writer("kept.bin").await.unwrap();
+        w.write(vec![1u8; 1024]).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), w.abort()).await;
+        assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn recovery_works_with_the_pool_nearly_full() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            rnto_delay: Some(std::time::Duration::from_millis(150)),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        let op = plain(&fake);
+        // Three other uploads hold three of the four connections.
+        let mut busy = Vec::new();
+        for i in 0..3 {
+            let mut w = op.writer(&format!("busy{i}.bin")).await.unwrap();
+            w.write(vec![1u8; 16]).await.unwrap();
+            busy.push(w);
+        }
+        let mut w = op.writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        let moved = async {
+            while !fake.names().iter().any(|n| n.contains(".shetu-old-")) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::select! {
+            r = w.close() => panic!("the close finished before the cut: {r:?}"),
+            _ = moved => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => panic!("the old file was never moved aside"),
+        }
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"old".to_vec()))
+        );
+        drop(busy);
+    }
 }

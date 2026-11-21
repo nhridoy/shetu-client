@@ -126,7 +126,12 @@ impl FtpWriter {
             return Ok(());
         };
         // Only a file is moved aside: never a folder, nor something the listing can't tell.
-        match super::listing::lookup(&self.core, &target).await {
+        // The listing needs a connection of its own: hand this one back meanwhile, so a full
+        // pool can't stall it.
+        drop(self.ftp_stream.take());
+        let looked = super::listing::lookup(&self.core, &target).await;
+        self.ftp_stream = Some(self.core.ftp_connect(Operation::Write).await?);
+        match looked {
             Ok(Some(entry)) if !entry.dir => {}
             other => {
                 let e = match other {
@@ -233,7 +238,9 @@ async fn abandon(
             return Ok(());
         };
         match timeout(CLEANUP_LIMIT, cleanup(&mut c, data, tmp.clone())).await {
-            Ok(()) => return Ok(()),
+            Ok(true) => return Ok(()),
+            // The delete didn't go through: retry it (with a presence check) below.
+            Ok(false) => drop(c),
             // Still mid-command: never back to the pool. The server may have stored the temp
             // file anyway, so delete it on fresh connections below.
             Err(_) => drop(c.detach()),
@@ -248,14 +255,9 @@ async fn abandon(
         if attempt > 0 {
             tokio::time::sleep(RETRY_BASE * 2u32.pow(attempt - 1)).await;
         }
-        let Ok(mut conn) = core.ftp_connect(Operation::Write).await else {
-            continue;
-        };
-        let step = recover(&core, &mut conn, &target, backup.as_deref(), tmp.as_deref());
-        match timeout(CLEANUP_LIMIT, step).await {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(_)) => {}
-            Err(_) => drop(conn.detach()),
+        let step = recover(&core, &target, backup.as_deref(), tmp.as_deref());
+        if let Ok(Ok(())) = timeout(CLEANUP_LIMIT, step).await {
+            return Ok(());
         }
     }
     // Gave up: name what's left so it can be found.
@@ -275,16 +277,23 @@ async fn abandon(
 /// error means it couldn't be confirmed; the caller tries again.
 async fn recover(
     core: &FtpCore,
-    conn: &mut bounded::Object<Manager>,
     target: &str,
     backup: Option<&str>,
     tmp: Option<&str>,
 ) -> Result<()> {
+    // One connection at a time (each command takes and returns its own), so recovery never
+    // needs two from a pool other uploads may be using.
     if let Some(backup) = backup {
         if exists(core, target).await? {
-            gone(core, conn.rm(backup).await, backup).await?;
+            let r = core.ftp_connect(Operation::Write).await?.rm(backup).await;
+            gone(core, r, backup).await?;
         } else {
-            done_or_missing(conn.rename(backup, target).await)?;
+            let r = core
+                .ftp_connect(Operation::Write)
+                .await?
+                .rename(backup, target)
+                .await;
+            done_or_missing(r)?;
             if !exists(core, target).await? {
                 return Err(Error::new(
                     ErrorKind::Unexpected,
@@ -294,7 +303,8 @@ async fn recover(
         }
     }
     if let Some(tmp) = tmp {
-        gone(core, conn.rm(tmp).await, tmp).await?;
+        let r = core.ftp_connect(Operation::Write).await?.rm(tmp).await;
+        gone(core, r, tmp).await?;
     }
     Ok(())
 }
@@ -335,16 +345,18 @@ fn done_or_missing(r: suppaftp::FtpResult<()>) -> Result<()> {
 }
 
 /// Lets the server finish the cut transfer (so the temp file exists), then deletes it.
+/// `false` when the temp file's delete didn't go through.
 async fn cleanup(
     conn: &mut bounded::Object<Manager>,
     data: Option<Box<dyn AsyncWrite + Sync + Send + Unpin + 'static>>,
     tmp: Option<String>,
-) {
+) -> bool {
     if let Some(data) = data {
         let _ = conn.finalize_put_stream(data).await;
     }
-    if let Some(tmp) = tmp {
-        let _ = conn.rm(&tmp).await;
+    match tmp {
+        Some(tmp) => conn.rm(&tmp).await.is_ok(),
+        None => true,
     }
 }
 
