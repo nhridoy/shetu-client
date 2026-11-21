@@ -45,6 +45,8 @@ pub struct FakeOpts {
     pub no_size: bool,
     /// After doing an `RNTO` onto a path containing this, drop the connection unanswered.
     pub vanish_after_rnto: Option<String>,
+    /// Refuse every listing (LIST, NLST, MLSD) with 550.
+    pub refuse_list: bool,
 }
 
 impl Default for FakeOpts {
@@ -63,6 +65,7 @@ impl Default for FakeOpts {
             silent_after_stor: false,
             no_size: false,
             vanish_after_rnto: None,
+            refuse_list: false,
         }
     }
 }
@@ -441,6 +444,10 @@ impl Session {
                         self.say(&format!("229 Entering Extended Passive Mode (|||{p}|)"))
                             .await
                     }
+                }
+                "LIST" | "NLST" | "MLSD" if self.opts.refuse_list => {
+                    self.pasv = None;
+                    self.say("550 Permission denied").await
                 }
                 "LIST" | "NLST" => {
                     let mut all = false;

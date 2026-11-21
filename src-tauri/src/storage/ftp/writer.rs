@@ -146,13 +146,20 @@ impl FtpWriter {
     }
 
     /// Ends a started upload that won't be published and deletes its temp file.
-    async fn discard(&mut self) {
+    async fn discard(&mut self) -> Result<()> {
         self.done = true;
         // Its own task owns the work, so cancelling this abort can't drop it halfway.
-        let _ = tokio::spawn(self.abandoned()).await;
+        match tokio::spawn(self.abandoned()).await {
+            Ok(true) => Ok(()),
+            _ => Err(Error::new(
+                ErrorKind::Unexpected,
+                "couldn't finish cleaning up the cut upload; a temporary file may remain",
+            )
+            .with_context("path", &self.target_path)),
+        }
     }
 
-    fn abandoned(&mut self) -> impl std::future::Future<Output = ()> + Send + 'static {
+    fn abandoned(&mut self) -> impl std::future::Future<Output = bool> + Send + 'static {
         abandon(
             self.core.clone(),
             self.ftp_stream.take(),
@@ -189,14 +196,14 @@ async fn abandon(
     tmp: Option<String>,
     backup: Option<String>,
     publishing: bool,
-) {
+) -> bool {
     let mut conn = conn;
     if !publishing {
         let Some(mut c) = conn.take() else {
-            return;
+            return true;
         };
         match timeout(CLEANUP_LIMIT, cleanup(&mut c, data, tmp.clone())).await {
-            Ok(()) => return,
+            Ok(()) => return true,
             // Still mid-command: never back to the pool. The server may have stored the temp
             // file anyway, so delete it on fresh connections below.
             Err(_) => drop(c.detach()),
@@ -216,17 +223,19 @@ async fn abandon(
         };
         let step = recover(&core, &mut conn, &target, backup.as_deref(), tmp.as_deref());
         match timeout(CLEANUP_LIMIT, step).await {
-            Ok(Ok(())) => return,
+            Ok(Ok(())) => return true,
             Ok(Err(_)) => {}
             Err(_) => drop(conn.detach()),
         }
     }
     log::warn!("ftp: couldn't finish cleaning up an upload to {target}");
+    false
 }
 
 /// Puts the old file back if the target is missing (else drops the backup), and deletes the
-/// temp file. Presence comes from folder listings (not `SIZE`, which some servers lack or
-/// refuse). An error means the server couldn't be asked; the caller tries again.
+/// temp file. It acts on the hidden names directly ("no such file" means already done) rather
+/// than looking for them, since a plain `LIST` may hide them; the target is then checked. An
+/// error means it couldn't be confirmed; the caller tries again.
 async fn recover(
     core: &FtpCore,
     conn: &mut bounded::Object<Manager>,
@@ -235,22 +244,35 @@ async fn recover(
     tmp: Option<&str>,
 ) -> Result<()> {
     if let Some(backup) = backup {
-        if exists(core, backup).await? {
-            if exists(core, target).await? {
-                conn.rm(backup).await.map_err(format_ftp_error)?;
-            } else {
-                conn.rename(backup, target)
-                    .await
-                    .map_err(format_ftp_error)?;
+        if exists(core, target).await? {
+            done_or_missing(conn.rm(backup).await)?;
+        } else {
+            done_or_missing(conn.rename(backup, target).await)?;
+            if !exists(core, target).await? {
+                return Err(Error::new(
+                    ErrorKind::Unexpected,
+                    "couldn't put the old file back",
+                ));
             }
         }
     }
     if let Some(tmp) = tmp {
-        if exists(core, tmp).await? {
-            conn.rm(tmp).await.map_err(format_ftp_error)?;
-        }
+        done_or_missing(conn.rm(tmp).await)?;
     }
     Ok(())
+}
+
+/// A command on a name that may already be gone: 550 counts as done.
+fn done_or_missing(r: suppaftp::FtpResult<()>) -> Result<()> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(FtpError::UnexpectedResponse(resp))
+            if resp.status == suppaftp::Status::FileUnavailable =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(format_ftp_error(e)),
+    }
 }
 
 /// Lets the server finish the cut transfer (so the temp file exists), then deletes it.
@@ -324,7 +346,6 @@ impl oio::Write for FtpWriter {
     }
 
     async fn abort(&mut self) -> Result<()> {
-        self.discard().await;
-        Ok(())
+        self.discard().await
     }
 }

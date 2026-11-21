@@ -552,4 +552,42 @@ mod tests {
         );
         assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
     }
+
+    #[tokio::test]
+    async fn a_refused_listing_is_not_taken_as_absence() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_list: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        assert!(plain(&fake).delete("nope.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn recovery_restores_a_backup_plain_list_hides() {
+        let (fake, mut w) = cut_replace(FakeOpts {
+            mlsd: false,
+            list_a: false,
+            ..FakeOpts::default()
+        })
+        .await;
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        target_kept(&fake);
+    }
+
+    #[tokio::test]
+    async fn abort_reports_a_clean_up_that_gave_up() {
+        let fake = FakeFtp::start(FakeOpts {
+            silent_after_stor: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        let op = plain(&fake);
+        let mut w = op.writer("stuck.bin").await.unwrap();
+        w.write(vec![1u8; 1024]).await.unwrap();
+        fake.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), w.abort()).await;
+        assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
 }

@@ -48,6 +48,11 @@ fn mlsd_entry(line: &str) -> Option<(String, File)> {
 
 /// `path` is OpenDAL's: `/` for the root, else `dir/` relative to it.
 pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
+    list_dir_with(core, path).await.map(|(entries, _)| entries)
+}
+
+/// The listing, and whether it can show hidden files (MLSD or `LIST -a`; plain `LIST` may not).
+async fn list_dir_with(core: &FtpCore, path: &str) -> Result<(Vec<Entry>, bool)> {
     let target = (path != "/").then(|| path.trim_end_matches('/').to_string());
     let mut conn = core.ftp_connect(Operation::List).await?;
     let mlsd = match core.mlsd.get() {
@@ -65,6 +70,7 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
             *core.mlsd.get_or_init(|| has)
         }
     };
+    let mut shows_hidden = true;
     let files: Vec<(String, File)> = if mlsd {
         conn.mlsd(target.as_deref())
             .await
@@ -80,6 +86,7 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
         match conn.list(Some(&with_a)).await {
             Ok(lines) => lines,
             Err(_) => {
+                shows_hidden = false;
                 // A failed data command can leave its reply unread: never reuse that connection.
                 drop(conn.detach());
                 conn = core.ftp_connect(Operation::List).await?;
@@ -119,18 +126,30 @@ pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
             modified: f.modified(),
         });
     }
-    Ok(out)
+    Ok((out, shows_hidden))
 }
 
 /// Whether `path` (OpenDAL's, relative to the root) is in its folder's listing. Works on
-/// servers without `SIZE`, and for folders; a missing parent folder means "no".
+/// servers without `SIZE`, and for folders. An error means "can't tell", never "no".
 pub async fn exists(core: &FtpCore, path: &str) -> Result<bool> {
     let name = get_basename(path).trim_end_matches('/');
-    match list_dir(core, get_parent(path)).await {
-        Ok(entries) => Ok(entries.iter().any(|e| e.name == name)),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
+    // A refused listing (550, which also reads as "not found") proves nothing: unknown.
+    let unknown = |e: Error| {
+        Error::new(ErrorKind::Unexpected, "couldn't check whether it exists").set_source(e)
+    };
+    let (entries, shows_hidden) = list_dir_with(core, get_parent(path))
+        .await
+        .map_err(unknown)?;
+    if entries.iter().any(|e| e.name == name) {
+        return Ok(true);
     }
+    if name.starts_with('.') && !shows_hidden {
+        return Err(Error::new(
+            ErrorKind::Unexpected,
+            "couldn't check whether a hidden file exists: the server lists without hidden files",
+        ));
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

@@ -42,3 +42,7 @@ Every change Shetu made to these files is listed here.
   which some servers lack or refuse. A clean-up that times out still deletes the temp file on
   fresh connections. An unanswered move-aside keeps the backup record for recovery. A download
   cancelled while waiting for its final reply detaches its connection.
+- Presence checks answer only when sure: a refused listing, or a plain `LIST` (no MLSD/`-a`)
+  that may hide dot-files, is "unknown", not "absent". Upload recovery acts on the hidden backup
+  and temp names directly (550 = already gone) and then confirms the target. `abort` returns an
+  error when clean-up gives up after its retries.
