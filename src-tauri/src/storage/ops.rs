@@ -164,6 +164,18 @@ pub async fn rename_tree(op: &Operator, from: &str, to: &str, is_dir: bool) -> R
 
 /// `limit` is the largest copyable object; `fail_after` (tests only) fails the copy after
 /// that many objects.
+/// A server that renames natively (FTP): one request for a file or a folder, never onto an
+/// existing name.
+pub async fn rename_native(op: &Operator, from: &str, to: &str) -> Result<(), String> {
+    let (from_key, to_key_) = (to_key(from, false), to_key(to, false));
+    if op.exists(&to_key_).await.map_err(|e| err("stat", e))? {
+        return Err(format!("{to} already exists. Nothing was moved."));
+    }
+    op.rename(&from_key, &to_key_)
+        .await
+        .map_err(|e| err("rename", e))
+}
+
 pub(crate) async fn rename_tree_inner(
     op: &Operator,
     from: &str,

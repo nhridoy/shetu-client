@@ -16,7 +16,9 @@ export default function StorageAccountPicker({
 }) {
   const accounts = useStorageAccountStore((s) => s.accounts);
   // Kinds live in each account's encrypted data: read them for the icons.
-  const [kinds, setKinds] = useState<Record<string, "s3" | "webdav">>({});
+  const [kinds, setKinds] = useState<Record<string, "s3" | "webdav" | "ftp">>(
+    {},
+  );
 
   useEffect(() => {
     void useStorageAccountStore.getState().fetchStorageAccounts();
@@ -28,7 +30,8 @@ export default function StorageAccountPicker({
     void Promise.all(
       accounts.map(async (a) => {
         const v = await store.view(a.id).catch(() => null);
-        return [a.id, v?.provider === "webdav" ? "webdav" : "s3"] as const;
+        const p = v?.provider;
+        return [a.id, p === "webdav" || p === "ftp" ? p : "s3"] as const;
       }),
     ).then((pairs) => {
       if (live) setKinds(Object.fromEntries(pairs));
@@ -61,9 +64,9 @@ export default function StorageAccountPicker({
               onClose();
             }}
           >
-            {kinds[account.id] === "webdav" ? (
+            {kinds[account.id] && kinds[account.id] !== "s3" ? (
               <HardDrivesIcon
-                data-kind="webdav"
+                data-kind={kinds[account.id]}
                 className="h-4 w-4 text-dark-400"
               />
             ) : (

@@ -21,6 +21,7 @@ const PROVIDERS: { value: StorageProvider; label: string }[] = [
   { value: "spaces", label: "DigitalOcean Spaces" },
   { value: "custom", label: "Custom (MinIO, other S3-compatible)" },
   { value: "webdav", label: "WebDAV (Nextcloud, ownCloud, NAS)" },
+  { value: "ftp", label: "FTP / FTPS" },
 ];
 
 interface Form {
@@ -41,6 +42,10 @@ interface Form {
   trustedCertSha256: string | null;
   /** The user trusted or forgot a certificate in this form: send it on Save. */
   pinTouched: boolean;
+  /** FTP: port as typed (empty = 21), FTPS unless false, starting folder. */
+  port: string;
+  ftpSecure: boolean;
+  root: string;
 }
 
 const EMPTY: Form = {
@@ -60,6 +65,9 @@ const EMPTY: Form = {
   password: "",
   trustedCertSha256: null,
   pinTouched: false,
+  port: "",
+  ftpSecure: true,
+  root: "",
 };
 
 /** The WebDAV address (the same rule as Rust's `webdav_url`), for display. */
@@ -93,6 +101,19 @@ export function presetEndpoint(f: Form): string {
 
 /** Only what the form holds; an untyped secret is left out so Rust keeps the stored one. */
 function toPatch(f: Form): StorageAccountPatch {
+  if (f.provider === "ftp") {
+    const ftp: StorageAccountPatch = {
+      provider: "ftp",
+      server: f.server.trim(),
+      port: f.port.trim() ? Number(f.port.trim()) : null,
+      ftpSecure: f.ftpSecure,
+      root: f.root.trim() || null,
+      username: f.username.trim(),
+    };
+    if (f.password) ftp.password = f.password;
+    if (f.pinTouched) ftp.trustedCertSha256 = f.trustedCertSha256;
+    return ftp;
+  }
   if (f.provider === "webdav") {
     const dav: StorageAccountPatch = {
       provider: "webdav",
@@ -134,8 +155,8 @@ export default function StorageAccountModal({
     ...EMPTY,
     name: account === "new" ? "" : account.name,
   });
-  // Which kind of secret is stored: an S3 secret key or a WebDAV password.
-  const [secretFor, setSecretFor] = useState<"s3" | "webdav" | null>(null);
+  // Which kind of secret is stored: an S3 secret key or a server (WebDAV/FTP) password.
+  const [secretFor, setSecretFor] = useState<"s3" | "password" | null>(null);
   // An edit starts locked until the saved values arrive, so they can't overwrite typing.
   const [loaded, setLoaded] = useState(account === "new");
   const [error, setError] = useState<string | null>(null);
@@ -157,9 +178,8 @@ export default function StorageAccountModal({
           return;
         }
         setLoaded(true);
-        setSecretFor(
-          v.hasSecret ? (v.provider === "webdav" ? "webdav" : "s3") : null,
-        );
+        const password = v.provider === "webdav" || v.provider === "ftp";
+        setSecretFor(v.hasSecret ? (password ? "password" : "s3") : null);
         setForm((f) => ({
           ...f,
           provider: v.provider,
@@ -174,6 +194,9 @@ export default function StorageAccountModal({
           url: v.url ?? "",
           username: v.username ?? "",
           trustedCertSha256: v.trustedCertSha256 ?? null,
+          port: v.port ? String(v.port) : "",
+          ftpSecure: v.ftpSecure !== false,
+          root: v.root ?? "",
         }));
       })
       .catch(() => {
@@ -222,16 +245,21 @@ export default function StorageAccountModal({
   };
 
   const webdav = form.provider === "webdav";
-  const hasSecret = secretFor === (webdav ? "webdav" : "s3");
+  const ftp = form.provider === "ftp";
+  const hasSecret = secretFor === (webdav || ftp ? "password" : "s3");
   const submit = async () => {
-    if (!webdav && !form.bucket.trim()) {
+    if (!webdav && !ftp && !form.bucket.trim()) {
       setError("Bucket is required");
       return;
     }
     setError(null);
     setBusy(true);
     const store = useStorageAccountStore.getState();
-    const fallbackName = webdav ? davUrl(form) : form.bucket.trim();
+    const fallbackName = ftp
+      ? form.server.trim()
+      : webdav
+        ? davUrl(form)
+        : form.bucket.trim();
     const ok = await store.save(
       id,
       form.name.trim() || fallbackName,
@@ -243,6 +271,55 @@ export default function StorageAccountModal({
   };
 
   const custom = form.provider === "custom";
+  // Username, password and a trusted certificate: shared by WebDAV and FTP.
+  const credentials = (
+    <>
+      <Field>
+        <FieldLabel htmlFor={`${uid}-username`}>Username</FieldLabel>
+        <Input
+          id={`${uid}-username`}
+          name="username"
+          value={form.username}
+          autoComplete="off"
+          onChange={text("username")}
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor={`${uid}-password`}>
+          Password{hasSecret && " (Saved — leave empty to keep it)"}
+        </FieldLabel>
+        <Input
+          id={`${uid}-password`}
+          name="password"
+          type="password"
+          value={form.password}
+          autoComplete="off"
+          onChange={text("password")}
+        />
+      </Field>
+      {form.trustedCertSha256 && (
+        <div className="flex items-center gap-2 text-xs text-dark-300">
+          <span className="flex-1 truncate">
+            Trusted certificate {form.trustedCertSha256.slice(0, 16)}…
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              setForm((f) => ({
+                ...f,
+                trustedCertSha256: null,
+                pinTouched: true,
+              }))
+            }
+          >
+            Forget
+          </Button>
+        </div>
+      )}
+    </>
+  );
   return (
     <Modal
       open
@@ -284,7 +361,61 @@ export default function StorageAccountModal({
               ))}
             </select>
           </Field>
-          {webdav ? (
+          {ftp ? (
+            <>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-server`}>Server</FieldLabel>
+                <Input
+                  id={`${uid}-server`}
+                  name="server"
+                  value={form.server}
+                  placeholder="ftp.example.com"
+                  onChange={text("server")}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-port`}>Port</FieldLabel>
+                <Input
+                  id={`${uid}-port`}
+                  name="port"
+                  inputMode="numeric"
+                  value={form.port}
+                  placeholder="21"
+                  onChange={text("port")}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`${uid}-ftpSecure`}>Security</FieldLabel>
+                <select
+                  id={`${uid}-ftpSecure`}
+                  name="ftpSecure"
+                  className={selectClass}
+                  value={form.ftpSecure ? "ftps" : "ftp"}
+                  onChange={(e) => set("ftpSecure")(e.target.value === "ftps")}
+                >
+                  <option value="ftps">FTPS (encrypted)</option>
+                  <option value="ftp">FTP (unencrypted)</option>
+                </select>
+                {!form.ftpSecure && (
+                  <p className="mt-1 text-xs text-amber-400">
+                    Plain FTP sends your password and files unencrypted. Use it
+                    only on a network you trust.
+                  </p>
+                )}
+              </Field>
+              {credentials}
+              <Field>
+                <FieldLabel htmlFor={`${uid}-root`}>Starting folder</FieldLabel>
+                <Input
+                  id={`${uid}-root`}
+                  name="root"
+                  value={form.root}
+                  placeholder="Where the login lands"
+                  onChange={text("root")}
+                />
+              </Field>
+            </>
+          ) : webdav ? (
             <>
               <Field>
                 <FieldLabel htmlFor={`${uid}-webdavKind`}>
@@ -337,50 +468,7 @@ export default function StorageAccountModal({
                   />
                 </Field>
               )}
-              <Field>
-                <FieldLabel htmlFor={`${uid}-username`}>Username</FieldLabel>
-                <Input
-                  id={`${uid}-username`}
-                  name="username"
-                  value={form.username}
-                  autoComplete="off"
-                  onChange={text("username")}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor={`${uid}-password`}>
-                  Password{hasSecret && " (Saved — leave empty to keep it)"}
-                </FieldLabel>
-                <Input
-                  id={`${uid}-password`}
-                  name="password"
-                  type="password"
-                  value={form.password}
-                  autoComplete="off"
-                  onChange={text("password")}
-                />
-              </Field>
-              {form.trustedCertSha256 && (
-                <div className="flex items-center gap-2 text-xs text-dark-300">
-                  <span className="flex-1 truncate">
-                    Trusted certificate {form.trustedCertSha256.slice(0, 16)}…
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() =>
-                      setForm((f) => ({
-                        ...f,
-                        trustedCertSha256: null,
-                        pinTouched: true,
-                      }))
-                    }
-                  >
-                    Forget
-                  </Button>
-                </div>
-              )}
+              {credentials}
             </>
           ) : (
             <>

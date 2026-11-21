@@ -83,6 +83,7 @@ Termius-style client notice it.
 | Folder compare / watch-and-upload | M | med |
 | S3-compatible buckets (AWS, MinIO, R2, B2) — **done** (2026-11-19, `feat/s3`) | L | med |
 | WebDAV — **done** (2026-11-20, `feat/webdav`) | M–L | low–med |
+| FTP / FTPS — **done** (2026-11-20, `feat/ftp`) | M | low–med |
 
 ### E. Hosts & import (client)
 | Feature | Size | Value |
@@ -141,7 +142,7 @@ Every phase is its own design → plan → build → review → PR cycle.
 4. **Switcher imports:** PuTTY, Termius, MobaXterm, SecureCRT, …; host export.
 5. **Accounts & security:** devices/revoke, TOTP + backup codes, app lock, security events,
    realtime sync.
-6. **Files:** resume/persistent queue, compare; then S3, WebDAV.
+6. **Files:** resume/persistent queue, compare; then S3, WebDAV, FTP.
 7. **Connections:** jump chains, proxies, certificates; Telnet, Serial; Mosh later.
 8. **Teams:** audit log, presence, policies; SSH CA; multiplayer last.
 9. **Extras** as demand shows: AI suggestions, i18n, cloud import, automations, bridge.

@@ -12,7 +12,8 @@ export type StorageProvider =
   | "wasabi"
   | "spaces"
   | "custom"
-  | "webdav";
+  | "webdav"
+  | "ftp";
 
 /** List entry: plaintext columns only. Secrets never live in store state. */
 export interface StorageAccount {
@@ -35,6 +36,10 @@ export interface StorageAccountView {
   url?: string | null;
   username?: string | null;
   trustedCertSha256?: string | null;
+  /** FTP: port (21 when absent), FTPS unless `false`, starting folder. */
+  port?: number | null;
+  ftpSecure?: boolean | null;
+  root?: string | null;
   hasSecret: boolean;
 }
 
@@ -55,6 +60,9 @@ export type StorageAccountPatch = Partial<{
   password: string;
   /** `null` forgets a trusted certificate. */
   trustedCertSha256: string | null;
+  port: number | null;
+  ftpSecure: boolean;
+  root: string | null;
 }>;
 
 interface StorageAccountState {

@@ -289,6 +289,77 @@ describe("StorageAccountModal", () => {
     expect(text()).not.toContain("Saved");
   });
 
+  it("shows FTP fields and saves them", async () => {
+    await render(<StorageAccountModal account="new" onClose={() => {}} />);
+    await act(async () => setValue("provider", "ftp"));
+    for (const name of [
+      "server",
+      "port",
+      "ftpSecure",
+      "username",
+      "password",
+      "root",
+    ])
+      expect(field(name), name).not.toBeNull();
+    expect((field("port") as HTMLInputElement).placeholder).toBe("21");
+    expect(field("ftpSecure")?.value).toBe("ftps");
+    expect(text()).not.toContain("sends your password");
+    await act(async () => setValue("ftpSecure", "ftp"));
+    expect(text()).toContain("sends your password");
+    await act(async () => setValue("server", "ftp.example.com"));
+    await act(async () => setValue("port", "2121"));
+    await act(async () => setValue("username", "me"));
+    await act(async () => setValue("password", "pw"));
+    await act(async () => setValue("root", "/public_html"));
+    await act(async () => button("Save")?.click());
+    expect((save.mock.calls[0] as unknown[])[2]).toMatchObject({
+      provider: "ftp",
+      server: "ftp.example.com",
+      port: 2121,
+      ftpSecure: false,
+      username: "me",
+      password: "pw",
+      root: "/public_html",
+    });
+  });
+
+  it("an FTP account shows its trusted certificate and can forget it", async () => {
+    useStorageAccountStore.setState({
+      save,
+      test,
+      view: async () => ({
+        provider: "ftp",
+        endpoint: null,
+        region: "",
+        bucket: "",
+        pathStyle: false,
+        r2AccountId: null,
+        accessKeyId: "",
+        server: "ftp.example.com",
+        port: 21,
+        ftpSecure: true,
+        root: null,
+        username: "me",
+        trustedCertSha256: "ef".repeat(32),
+        hasSecret: true,
+      }),
+    } as never);
+    await render(
+      <StorageAccountModal
+        account={{ id: "f1", name: "Host", vaultId: "v1" }}
+        onClose={() => {}}
+      />,
+    );
+    expect(text()).toContain("efefefef");
+    expect(text()).toContain("Saved");
+    await act(async () => button("Forget")?.click());
+    await act(async () => button("Save")?.click());
+    expect((save.mock.calls[0] as unknown[])[2]).toMatchObject({
+      provider: "ftp",
+      trustedCertSha256: null,
+    });
+  });
+
   it("shows a trusted certificate and can forget it", async () => {
     useStorageAccountStore.setState({
       save,

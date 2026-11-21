@@ -61,6 +61,11 @@ csv = "1"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 log = "0.4"
+# FTP storage panes: a patched copy of OpenDAL's FTP service lives in src/storage/ftp.
+suppaftp = { version = "10.0.2", default-features = false, features = ["tokio-rustls-ring"] }
+asyncband = { version = "0.7.1", features = ["pool"] }
+bytes = "1"
+http = "1"
 regex = "1"
 notify = "8"
 tauri-plugin-single-instance = "2"

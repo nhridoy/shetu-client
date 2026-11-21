@@ -19,6 +19,7 @@ vi.mock("@/lib/terminal/agentForwarding", () => ({
   ConnectCancelled: mocks.ConnectCancelled,
 }));
 
+import { needsRenameConfirm } from "@/lib/sftp/storageFs";
 import { requestCertTrust } from "@/lib/storage/certTrust";
 import { useSftpStore } from "@/stores/sftp/sftpStore";
 import { useStorageAccountStore } from "@/stores/storage/storageAccountStore";
@@ -288,6 +289,24 @@ it("a retry finishing after disconnect calls nothing more", async () => {
   });
   expect(result).toBeInstanceOf(mocks.ConnectCancelled);
   expect(calls.slice(before)).toEqual([]);
+  act(() => root.unmount());
+  mocks.invoke.mockImplementation(async () => undefined);
+});
+
+it("an FTP pane renames folders without the bucket prompt", async () => {
+  mocks.invoke.mockImplementation((async (cmd: string) =>
+    cmd === "storage_connect" ? "ftp" : undefined) as never);
+  storagePane();
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<BucketProbe />));
+  let provider: unknown;
+  await act(async () => {
+    provider = await ops.ensureProvider();
+  });
+  expect((provider as { kind?: string }).kind).toBe("ftp");
+  expect(
+    needsRenameConfirm(provider as never, { type: "directory" } as never),
+  ).toBe(false);
   act(() => root.unmount());
   mocks.invoke.mockImplementation(async () => undefined);
 });
