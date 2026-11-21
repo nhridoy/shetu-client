@@ -51,6 +51,8 @@ pub struct FakeOpts {
     pub fractional_times: bool,
     /// Refuse every `DELE` with 550.
     pub refuse_dele: bool,
+    /// Leave the `type` fact out of MLSD/MLST lines (RFC 3659 allows it).
+    pub omit_type: bool,
 }
 
 impl Default for FakeOpts {
@@ -72,6 +74,7 @@ impl Default for FakeOpts {
             refuse_list: false,
             fractional_times: false,
             refuse_dele: false,
+            omit_type: false,
         }
     }
 }
@@ -313,12 +316,23 @@ impl Session {
         }
     }
 
-    fn mlsx_line(name: &str, node: &Node) -> String {
-        match node {
-            Node::Dir => format!("type=dir;modify={MODIFIED}; {name}"),
-            Node::File(b) => format!("type=file;size={};modify={MODIFIED}; {name}", b.len()),
-            Node::Link(to) => format!("type=OS.unix=slink:{to};modify={MODIFIED}; {name}"),
-        }
+    fn mlsx_line(&self, name: &str, node: &Node) -> String {
+        let modify = if self.opts.fractional_times {
+            format!("{MODIFIED}.123")
+        } else {
+            MODIFIED.to_string()
+        };
+        let (kind, size) = match node {
+            Node::Dir => ("type=dir;".to_string(), String::new()),
+            Node::File(b) => ("type=file;".to_string(), format!("size={};", b.len())),
+            Node::Link(to) => (format!("type=OS.unix=slink:{to};"), String::new()),
+        };
+        let kind = if self.opts.omit_type {
+            String::new()
+        } else {
+            kind
+        };
+        format!("{kind}{size}modify={modify}; {name}")
     }
 
     /// Opens the pending passive data connection, upgraded when `PROT P` is on.
@@ -498,23 +512,15 @@ impl Session {
                     let body: String = self
                         .children(&dir)
                         .into_iter()
-                        .map(|(n, node)| Self::mlsx_line(&n, &node) + "\r\n")
+                        .map(|(n, node)| self.mlsx_line(&n, &node) + "\r\n")
                         .collect();
-                    let body = if self.opts.fractional_times {
-                        body.replace(
-                            &format!("modify={MODIFIED};"),
-                            &format!("modify={MODIFIED}.123;"),
-                        )
-                    } else {
-                        body
-                    };
                     self.send_data(body.into_bytes()).await;
                 }
                 "MLST" if self.opts.mlsd => {
                     let path = join(&self.cwd, &arg);
                     match self.node(&path) {
                         Some(node) => {
-                            let line = Self::mlsx_line(&path, &node);
+                            let line = self.mlsx_line(&path, &node);
                             self.say("250-Listing").await;
                             self.say(&format!(" {line}")).await;
                             self.say("250 End").await

@@ -56,3 +56,6 @@ Every change Shetu made to these files is listed here.
 - Recovery and the publish-time folder check use one pooled connection at a time (publish hands
   its connection back while listing), so a pool busy with other uploads can't stall them. A
   normal clean-up whose temp-file delete fails goes through recovery instead of reporting done.
+- An MLSD record without a `type` fact is still listed, but its type counts as unknown, so
+  publish never moves it aside. A replayed `close` after a failed connection checkout takes a
+  connection before publishing.

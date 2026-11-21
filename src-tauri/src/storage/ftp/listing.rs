@@ -58,6 +58,8 @@ struct Listing {
     shows_hidden: bool,
     /// Every line was understood, so a name that isn't in `names` really is absent.
     complete: bool,
+    /// MLSD records without a `type` fact (RFC 3659 allows it): shown, but of unknown type.
+    untyped: Vec<String>,
 }
 
 /// `path` is OpenDAL's: `/` for the root, else `dir/` relative to it.
@@ -86,6 +88,7 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<Listing> {
     let mut shows_hidden = true;
     let mut complete = true;
     let mut names = Vec::new();
+    let mut untyped = Vec::new();
     let mut files: Vec<(String, File)> = Vec::new();
     if mlsd {
         for line in conn
@@ -96,6 +99,13 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<Listing> {
             match mlsd_entry(&line) {
                 Some((name, file)) => {
                     names.push(name.clone());
+                    let facts = line.split_once(' ').map_or("", |(f, _)| f);
+                    if !facts
+                        .split(';')
+                        .any(|f| f.trim().to_ascii_lowercase().starts_with("type="))
+                    {
+                        untyped.push(name.clone());
+                    }
                     match file {
                         Some(file) => files.push((name, file)),
                         None => complete = false,
@@ -162,13 +172,14 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<Listing> {
         names,
         shows_hidden,
         complete,
+        untyped,
     })
 }
 
 /// What a folder listing says about one name.
 enum Presence {
     Found(Entry),
-    /// Listed, but its details didn't parse.
+    /// Listed, but its details (or its type) aren't known.
     Listed,
     Absent,
 }
@@ -184,6 +195,9 @@ async fn presence(core: &FtpCore, path: &str) -> Result<Presence> {
     let listing = list_dir_with(core, get_parent(path))
         .await
         .map_err(unknown)?;
+    if listing.untyped.iter().any(|n| n == name) {
+        return Ok(Presence::Listed);
+    }
     if let Some(entry) = listing.entries.into_iter().find(|e| e.name == name) {
         return Ok(Presence::Found(entry));
     }

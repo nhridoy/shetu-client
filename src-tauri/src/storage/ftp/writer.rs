@@ -120,6 +120,10 @@ impl FtpWriter {
             )
             .with_context("backup", backup));
         }
+        // A replayed close after a failed checkout has no connection yet: take one first.
+        if self.ftp_stream.is_none() {
+            self.ftp_stream = Some(self.core.ftp_connect(Operation::Write).await?);
+        }
         self.publishing = true;
         let target = self.target_path.clone();
         let Err(first) = self.conn()?.rename(tmp, &target).await else {

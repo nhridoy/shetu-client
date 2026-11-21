@@ -737,4 +737,43 @@ mod tests {
         );
         drop(busy);
     }
+
+    #[tokio::test]
+    async fn fractional_times_dont_touch_names() {
+        let fake = FakeFtp::start(FakeOpts {
+            fractional_times: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put(
+            "/report-modify=20240102030405;.txt",
+            Node::File(b"r".to_vec()),
+        );
+        assert_eq!(
+            entries(&plain(&fake), "/").await,
+            vec![("report-modify=20240102030405;.txt".into(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_untyped_listing_never_moves_a_folder_aside() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            omit_type: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/docs", Node::Dir);
+        fake.put("/site/docs/x.txt", Node::File(b"x".to_vec()));
+        let mut w = plain(&fake).writer("site/docs").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        assert!(w.close().await.is_err());
+        let _ = w.abort().await;
+        assert_eq!(fake.get("/site/docs"), Some(Node::Dir));
+        assert_eq!(
+            fake.get("/site/docs/x.txt"),
+            Some(Node::File(b"x".to_vec()))
+        );
+    }
 }
