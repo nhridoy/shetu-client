@@ -421,19 +421,25 @@ mod tests {
         fake.put("/site/index.html", Node::File(b"old".to_vec()));
         let mut w = plain(&fake).writer("site/index.html").await.unwrap();
         w.write(b"new".to_vec()).await.unwrap();
-        let cut = tokio::time::timeout(std::time::Duration::from_millis(250), w.close()).await;
-        assert!(cut.is_err(), "the close should still be running");
-        assert!(
-            fake.names().iter().any(|n| n.contains(".shetu-old-")),
-            "the cut must come after the old file was moved aside: {:?}",
-            fake.names()
-        );
+        // Cut the close right after the server moved the old file aside (its reply is still
+        // held back by `rnto_delay`), so recovery has a real backup to restore.
+        let moved = async {
+            while !fake.names().iter().any(|n| n.contains(".shetu-old-")) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::select! {
+            r = w.close() => panic!("the close finished before the cut: {r:?}"),
+            _ = moved => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("the old file was never moved aside"),
+        }
         (fake, w)
     }
 
     fn target_kept(fake: &FakeFtp) {
-        assert!(
-            matches!(fake.get("/site/index.html"), Some(Node::File(_))),
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"old".to_vec())),
             "{:?}",
             fake.names()
         );
@@ -589,5 +595,93 @@ mod tests {
         fake.down.store(true, std::sync::atomic::Ordering::SeqCst);
         let got = tokio::time::timeout(std::time::Duration::from_secs(10), w.abort()).await;
         assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn fractional_mlsd_times_still_list() {
+        let fake = FakeFtp::start(FakeOpts {
+            fractional_times: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/a.txt", Node::File(b"abc".to_vec()));
+        assert_eq!(entries(&plain(&fake), "/").await, vec![("a.txt".into(), 3)]);
+    }
+
+    #[tokio::test]
+    async fn a_retried_close_keeps_the_real_backup() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            vanish_after_rnto: Some(".shetu-old-".into()),
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/index.html", Node::File(b"old".to_vec()));
+        // Like an account's operator: the retry layer replays temporary failures.
+        let op = plain(&fake).layer(
+            opendal::layers::RetryLayer::new().with_min_delay(std::time::Duration::from_millis(10)),
+        );
+        let mut w = op.writer("site/index.html").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        assert!(w.close().await.is_err());
+        let _ = w.abort().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            fake.get("/site/index.html"),
+            Some(Node::File(b"old".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn a_folder_at_the_target_is_never_moved_aside() {
+        let fake = FakeFtp::start(FakeOpts {
+            refuse_rnto_over_existing: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        fake.put("/site", Node::Dir);
+        fake.put("/site/docs", Node::Dir);
+        fake.put("/site/docs/x.txt", Node::File(b"x".to_vec()));
+        let mut w = plain(&fake).writer("site/docs").await.unwrap();
+        w.write(b"new".to_vec()).await.unwrap();
+        assert!(w.close().await.is_err());
+        let _ = w.abort().await;
+        assert_eq!(fake.get("/site/docs"), Some(Node::Dir));
+        assert_eq!(
+            fake.get("/site/docs/x.txt"),
+            Some(Node::File(b"x".to_vec()))
+        );
+        assert!(leftovers(&fake).is_empty(), "{:?}", fake.names());
+    }
+
+    #[tokio::test]
+    async fn a_refused_delete_after_a_timeout_is_reported() {
+        let fake = FakeFtp::start(FakeOpts {
+            silent_after_stor: true,
+            refuse_dele: true,
+            ..FakeOpts::default()
+        })
+        .await;
+        let op = plain(&fake);
+        let mut w = op.writer("stuck.bin").await.unwrap();
+        w.write(vec![1u8; 1024]).await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), w.abort()).await;
+        assert!(matches!(got, Ok(Err(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_listing_during_recovery_keeps_and_names_the_backup() {
+        let (fake, mut w) = cut_replace(FakeOpts::default()).await;
+        fake.lists_refused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = w.abort().await.unwrap_err().to_string();
+        assert!(err.contains(".shetu-old-"), "{err}");
+        assert!(
+            fake.names().iter().any(|n| n.contains(".shetu-old-")),
+            "the backup must survive: {:?}",
+            fake.names()
+        );
     }
 }

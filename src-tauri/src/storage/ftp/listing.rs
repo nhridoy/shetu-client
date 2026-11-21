@@ -22,37 +22,50 @@ pub struct Entry {
     pub modified: SystemTime,
 }
 
-/// MLSD's `type=OS.unix=slink:/target` has a second `=` that suppaftp's parser can't take.
+/// Normalises MLSD facts for suppaftp's parser: `type=OS.unix=slink:/target` has a second `=`,
+/// and `modify=…` / `create=…` may carry a fraction of a second (RFC 3659), which it rejects.
 fn mlsx_line(line: &str) -> String {
     line.split(';')
         .map(|fact| {
             let lower = fact.to_ascii_lowercase();
             if lower.starts_with("type=os.unix=slink") || lower.starts_with("type=os.unix=symlink")
             {
-                "type=link"
+                "type=link".to_string()
+            } else if lower.starts_with("modify=") || lower.starts_with("create=") {
+                fact.split('.').next().unwrap_or(fact).to_string()
             } else {
-                fact
+                fact.to_string()
             }
         })
         .collect::<Vec<_>>()
         .join(";")
 }
 
-/// An MLSD line: facts, a space, then the pathname, which may itself contain `;` or spaces
-/// (suppaftp would take only what follows the last `;`).
-fn mlsd_entry(line: &str) -> Option<(String, File)> {
+/// An MLSD line split into its pathname, which may itself contain `;` or spaces (suppaftp would
+/// take only what follows the last `;`), and its parsed facts if they parse.
+fn mlsd_entry(line: &str) -> Option<(String, Option<File>)> {
     let (facts, name) = line.split_once(' ')?;
-    let file = suppaftp::list::ListParser::parse_mlsd(&format!("{} x", mlsx_line(facts))).ok()?;
+    let file = suppaftp::list::ListParser::parse_mlsd(&format!("{} x", mlsx_line(facts))).ok();
     Some((name.to_string(), file))
+}
+
+/// One folder's listing.
+struct Listing {
+    entries: Vec<Entry>,
+    /// Every name the server sent, including lines whose details didn't parse.
+    names: Vec<String>,
+    /// MLSD or `LIST -a`; a plain `LIST` may leave out dot-files.
+    shows_hidden: bool,
+    /// Every line was understood, so a name that isn't in `names` really is absent.
+    complete: bool,
 }
 
 /// `path` is OpenDAL's: `/` for the root, else `dir/` relative to it.
 pub async fn list_dir(core: &FtpCore, path: &str) -> Result<Vec<Entry>> {
-    list_dir_with(core, path).await.map(|(entries, _)| entries)
+    list_dir_with(core, path).await.map(|l| l.entries)
 }
 
-/// The listing, and whether it can show hidden files (MLSD or `LIST -a`; plain `LIST` may not).
-async fn list_dir_with(core: &FtpCore, path: &str) -> Result<(Vec<Entry>, bool)> {
+async fn list_dir_with(core: &FtpCore, path: &str) -> Result<Listing> {
     let target = (path != "/").then(|| path.trim_end_matches('/').to_string());
     let mut conn = core.ftp_connect(Operation::List).await?;
     let mlsd = match core.mlsd.get() {
@@ -71,19 +84,32 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<(Vec<Entry>, bool)>
         }
     };
     let mut shows_hidden = true;
-    let files: Vec<(String, File)> = if mlsd {
-        conn.mlsd(target.as_deref())
+    let mut complete = true;
+    let mut names = Vec::new();
+    let mut files: Vec<(String, File)> = Vec::new();
+    if mlsd {
+        for line in conn
+            .mlsd(target.as_deref())
             .await
             .map_err(format_ftp_error)?
-            .iter()
-            .filter_map(|l| mlsd_entry(l))
-            .collect()
+        {
+            match mlsd_entry(&line) {
+                Some((name, file)) => {
+                    names.push(name.clone());
+                    match file {
+                        Some(file) => files.push((name, file)),
+                        None => complete = false,
+                    }
+                }
+                None => complete = false,
+            }
+        }
     } else {
         let with_a = match &target {
             Some(t) => format!("-a {t}"),
             None => "-a".to_string(),
         };
-        match conn.list(Some(&with_a)).await {
+        let lines = match conn.list(Some(&with_a)).await {
             Ok(lines) => lines,
             Err(_) => {
                 shows_hidden = false;
@@ -94,12 +120,17 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<(Vec<Entry>, bool)>
                     .await
                     .map_err(format_ftp_error)?
             }
+        };
+        for line in lines.iter().filter(|l| !l.starts_with("total ")) {
+            match File::from_str(line) {
+                Ok(file) => {
+                    names.push(file.name().to_string());
+                    files.push((file.name().to_string(), file));
+                }
+                Err(_) => complete = false,
+            }
         }
-        .iter()
-        .filter_map(|l| File::from_str(l).ok())
-        .map(|f| (f.name().to_string(), f))
-        .collect()
-    };
+    }
     let mut out = Vec::with_capacity(files.len());
     for (name, f) in files
         .iter()
@@ -126,30 +157,63 @@ async fn list_dir_with(core: &FtpCore, path: &str) -> Result<(Vec<Entry>, bool)>
             modified: f.modified(),
         });
     }
-    Ok((out, shows_hidden))
+    Ok(Listing {
+        entries: out,
+        names,
+        shows_hidden,
+        complete,
+    })
 }
 
-/// Whether `path` (OpenDAL's, relative to the root) is in its folder's listing. Works on
-/// servers without `SIZE`, and for folders. An error means "can't tell", never "no".
-pub async fn exists(core: &FtpCore, path: &str) -> Result<bool> {
+/// What a folder listing says about one name.
+enum Presence {
+    Found(Entry),
+    /// Listed, but its details didn't parse.
+    Listed,
+    Absent,
+}
+
+/// An error when the listing can't tell (refused, lines it couldn't read, hidden names it may
+/// omit): never "absent" by default.
+async fn presence(core: &FtpCore, path: &str) -> Result<Presence> {
     let name = get_basename(path).trim_end_matches('/');
-    // A refused listing (550, which also reads as "not found") proves nothing: unknown.
+    // A refused listing (550, which also reads as "not found") proves nothing.
     let unknown = |e: Error| {
         Error::new(ErrorKind::Unexpected, "couldn't check whether it exists").set_source(e)
     };
-    let (entries, shows_hidden) = list_dir_with(core, get_parent(path))
+    let listing = list_dir_with(core, get_parent(path))
         .await
         .map_err(unknown)?;
-    if entries.iter().any(|e| e.name == name) {
-        return Ok(true);
+    if let Some(entry) = listing.entries.into_iter().find(|e| e.name == name) {
+        return Ok(Presence::Found(entry));
     }
-    if name.starts_with('.') && !shows_hidden {
+    if listing.names.iter().any(|n| n == name) {
+        return Ok(Presence::Listed);
+    }
+    if !listing.complete || (name.starts_with('.') && !listing.shows_hidden) {
         return Err(Error::new(
             ErrorKind::Unexpected,
-            "couldn't check whether a hidden file exists: the server lists without hidden files",
+            "couldn't check whether it exists: the server's listing may leave it out",
         ));
     }
-    Ok(false)
+    Ok(Presence::Absent)
+}
+
+/// `path`'s entry, or `None` when it's surely absent; an error when the type can't be told.
+pub async fn lookup(core: &FtpCore, path: &str) -> Result<Option<Entry>> {
+    match presence(core, path).await? {
+        Presence::Found(entry) => Ok(Some(entry)),
+        Presence::Absent => Ok(None),
+        Presence::Listed => Err(Error::new(
+            ErrorKind::Unexpected,
+            "couldn't read the server's details for it",
+        )),
+    }
+}
+
+/// Whether `path` is in its folder's listing. An error means "can't tell", never "no".
+pub async fn exists(core: &FtpCore, path: &str) -> Result<bool> {
+    Ok(!matches!(presence(core, path).await?, Presence::Absent))
 }
 
 #[cfg(test)]
@@ -163,6 +227,10 @@ mod tests {
         assert_eq!(
             super::mlsx_line("type=file;size=3; a"),
             "type=file;size=3; a"
+        );
+        assert_eq!(
+            super::mlsx_line("type=file;modify=20240102030405.123; a"),
+            "type=file;modify=20240102030405; a"
         );
     }
 }

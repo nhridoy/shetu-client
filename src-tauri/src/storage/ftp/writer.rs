@@ -112,11 +112,37 @@ impl FtpWriter {
     /// Puts the finished temp file at the target. If the server won't rename onto an existing
     /// file, the old one is moved aside first and put back if anything fails.
     async fn publish(&mut self, tmp: &str) -> Result<()> {
+        // A replayed close (the retry layer) must not record a second backup over the real one.
+        if let Some(backup) = &self.backup {
+            return Err(Error::new(
+                ErrorKind::Unexpected,
+                "an earlier attempt moved the old file aside; abort puts it back",
+            )
+            .with_context("backup", backup));
+        }
         self.publishing = true;
         let target = self.target_path.clone();
         let Err(first) = self.conn()?.rename(tmp, &target).await else {
             return Ok(());
         };
+        // Only a file is moved aside: never a folder, nor something the listing can't tell.
+        match super::listing::lookup(&self.core, &target).await {
+            Ok(Some(entry)) if !entry.dir => {}
+            other => {
+                let e = match other {
+                    Ok(Some(_)) => {
+                        Error::new(ErrorKind::IsADirectory, "a folder already has that name")
+                            .with_context("path", &target)
+                    }
+                    Ok(None) => format_ftp_error(first),
+                    Err(e) => e,
+                };
+                if self.conn()?.rm(tmp).await.is_ok() {
+                    self.started = false;
+                }
+                return Err(e);
+            }
+        }
         // Recorded before the move, so a cut mid-command can still put the old file back.
         let backup = temp_beside(&target, "old-");
         self.backup = Some(backup.clone());
@@ -150,16 +176,20 @@ impl FtpWriter {
         self.done = true;
         // Its own task owns the work, so cancelling this abort can't drop it halfway.
         match tokio::spawn(self.abandoned()).await {
-            Ok(true) => Ok(()),
-            _ => Err(Error::new(
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(why)) => {
+                Err(Error::new(ErrorKind::Unexpected, why).with_context("path", &self.target_path))
+            }
+            Err(_) => Err(Error::new(
                 ErrorKind::Unexpected,
-                "couldn't finish cleaning up the cut upload; a temporary file may remain",
-            )
-            .with_context("path", &self.target_path)),
+                "couldn't finish cleaning up the cut upload",
+            )),
         }
     }
 
-    fn abandoned(&mut self) -> impl std::future::Future<Output = bool> + Send + 'static {
+    fn abandoned(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::result::Result<(), String>> + Send + 'static {
         abandon(
             self.core.clone(),
             self.ftp_stream.take(),
@@ -196,14 +226,14 @@ async fn abandon(
     tmp: Option<String>,
     backup: Option<String>,
     publishing: bool,
-) -> bool {
+) -> std::result::Result<(), String> {
     let mut conn = conn;
     if !publishing {
         let Some(mut c) = conn.take() else {
-            return true;
+            return Ok(());
         };
         match timeout(CLEANUP_LIMIT, cleanup(&mut c, data, tmp.clone())).await {
-            Ok(()) => return true,
+            Ok(()) => return Ok(()),
             // Still mid-command: never back to the pool. The server may have stored the temp
             // file anyway, so delete it on fresh connections below.
             Err(_) => drop(c.detach()),
@@ -223,13 +253,20 @@ async fn abandon(
         };
         let step = recover(&core, &mut conn, &target, backup.as_deref(), tmp.as_deref());
         match timeout(CLEANUP_LIMIT, step).await {
-            Ok(Ok(())) => return true,
+            Ok(Ok(())) => return Ok(()),
             Ok(Err(_)) => {}
             Err(_) => drop(conn.detach()),
         }
     }
-    log::warn!("ftp: couldn't finish cleaning up an upload to {target}");
-    false
+    // Gave up: name what's left so it can be found.
+    let why = match &backup {
+        Some(backup) => {
+            format!("couldn't finish cleaning up the cut upload; the old file is kept as {backup}")
+        }
+        None => "couldn't finish cleaning up the cut upload; a temporary file may remain".into(),
+    };
+    log::warn!("ftp: {why} (upload to {target})");
+    Err(why)
 }
 
 /// Puts the old file back if the target is missing (else drops the backup), and deletes the
@@ -245,7 +282,7 @@ async fn recover(
 ) -> Result<()> {
     if let Some(backup) = backup {
         if exists(core, target).await? {
-            done_or_missing(conn.rm(backup).await)?;
+            gone(core, conn.rm(backup).await, backup).await?;
         } else {
             done_or_missing(conn.rename(backup, target).await)?;
             if !exists(core, target).await? {
@@ -257,9 +294,31 @@ async fn recover(
         }
     }
     if let Some(tmp) = tmp {
-        done_or_missing(conn.rm(tmp).await)?;
+        gone(core, conn.rm(tmp).await, tmp).await?;
     }
     Ok(())
+}
+
+/// A delete's outcome: 550 counts as done only when the listing confirms the name is gone
+/// (550 can also be a refusal).
+async fn gone(core: &FtpCore, r: suppaftp::FtpResult<()>, path: &str) -> Result<()> {
+    match r {
+        Ok(()) => Ok(()),
+        Err(FtpError::UnexpectedResponse(resp))
+            if resp.status == suppaftp::Status::FileUnavailable =>
+        {
+            if exists(core, path).await? {
+                Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "the server refused to delete it",
+                )
+                .with_context("path", path))
+            } else {
+                Ok(())
+            }
+        }
+        Err(e) => Err(format_ftp_error(e)),
+    }
 }
 
 /// A command on a name that may already be gone: 550 counts as done.

@@ -47,6 +47,10 @@ pub struct FakeOpts {
     pub vanish_after_rnto: Option<String>,
     /// Refuse every listing (LIST, NLST, MLSD) with 550.
     pub refuse_list: bool,
+    /// Give MLSD `modify` facts a fraction of a second (RFC 3659 allows it).
+    pub fractional_times: bool,
+    /// Refuse every `DELE` with 550.
+    pub refuse_dele: bool,
 }
 
 impl Default for FakeOpts {
@@ -66,6 +70,8 @@ impl Default for FakeOpts {
             no_size: false,
             vanish_after_rnto: None,
             refuse_list: false,
+            fractional_times: false,
+            refuse_dele: false,
         }
     }
 }
@@ -99,6 +105,8 @@ pub struct FakeFtp {
     pub fs: Tree,
     /// While set, new connections are closed at once.
     pub down: Arc<std::sync::atomic::AtomicBool>,
+    /// While set, every listing is refused (550).
+    pub lists_refused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The fixed time every entry reports: 2024-01-02 03:04:05 UTC.
@@ -114,6 +122,8 @@ impl FakeFtp {
         let active = Arc::new(AtomicUsize::new(0));
         let fs: Tree = Arc::new(Mutex::new(BTreeMap::new()));
         let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lists_refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lr = lists_refused.clone();
         let (l, p, c, f, d) = (
             log.clone(),
             peak.clone(),
@@ -143,6 +153,7 @@ impl FakeFtp {
                     rest: 0,
                     rnfr: None,
                     prot_p: false,
+                    lists_refused: lr.clone(),
                 };
                 let active = active.clone();
                 tokio::spawn(async move {
@@ -158,6 +169,7 @@ impl FakeFtp {
             connects,
             fs,
             down,
+            lists_refused,
         }
     }
 
@@ -207,6 +219,7 @@ struct Session {
     rest: usize,
     rnfr: Option<String>,
     prot_p: bool,
+    lists_refused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn join(cwd: &str, arg: &str) -> String {
@@ -445,7 +458,9 @@ impl Session {
                             .await
                     }
                 }
-                "LIST" | "NLST" | "MLSD" if self.opts.refuse_list => {
+                "LIST" | "NLST" | "MLSD"
+                    if self.opts.refuse_list || self.lists_refused.load(Ordering::SeqCst) =>
+                {
                     self.pasv = None;
                     self.say("550 Permission denied").await
                 }
@@ -485,6 +500,14 @@ impl Session {
                         .into_iter()
                         .map(|(n, node)| Self::mlsx_line(&n, &node) + "\r\n")
                         .collect();
+                    let body = if self.opts.fractional_times {
+                        body.replace(
+                            &format!("modify={MODIFIED};"),
+                            &format!("modify={MODIFIED}.123;"),
+                        )
+                    } else {
+                        body
+                    };
                     self.send_data(body.into_bytes()).await;
                 }
                 "MLST" if self.opts.mlsd => {
@@ -563,6 +586,7 @@ impl Session {
                         fs.insert(path, Node::File([old, bytes].concat()));
                     }
                 }
+                "DELE" if self.opts.refuse_dele => self.say("550 Permission denied").await,
                 "DELE" => {
                     let path = join(&self.cwd, &arg);
                     let removed = {

@@ -46,3 +46,10 @@ Every change Shetu made to these files is listed here.
   that may hide dot-files, is "unknown", not "absent". Upload recovery acts on the hidden backup
   and temp names directly (550 = already gone) and then confirms the target. `abort` returns an
   error when clean-up gives up after its retries.
+- MLSD `modify`/`create` facts with a fraction of a second are accepted (the fraction is
+  dropped before parsing). Presence checks count every listed name, and a listing with lines it
+  couldn't read can't prove absence.
+- Publishing never moves aside anything but a confirmed file (a folder at the target is an
+  error), and a replayed close won't record a second backup over an unresolved one.
+- Recovery counts a refused delete (550) as done only when the listing confirms the name is
+  gone; when it gives up, the error names where the old file is kept.
